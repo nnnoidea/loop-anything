@@ -4,7 +4,7 @@ import copy
 import sqlite3
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from loop_anything.runtime.task_scope import normalize_run
 from pathlib import Path
 from loop_anything.runtime.model import Conflict, Invalid, validate, current_definition
@@ -86,7 +86,7 @@ class Store:
             db.commit()
         return {'id': draft_id, 'revision': revision, 'updated_at': now, 'loop_definition': loop_definition, 'implementations': implementations, **extra}
 
-    def create(self, key, title, inputs=None, settings=None, authorization='', acquire=False, bindings=None, fallback_node=None, global_agent_node=None, notification_command=None):
+    def create(self, key, title, inputs=None, settings=None, authorization='', acquire=False, bindings=None, fallback_node=None, global_agent_node=None, notification_command=None, _db=None):
         if type(acquire) is not bool:
             raise Invalid('acquire must be boolean')
         item = next((c for c in self.catalog() if c['key'] == key), None)
@@ -138,9 +138,12 @@ class Store:
             from loop_anything.interfaces.agent_tasks import acquire_in_run
             acquire_in_run(run, 'interactive')
         self.log(run, 'created', 'Run created; entry Task is recorded before scheduling')
-        with self.connection() as db:
-            self._save(db, run)
-            db.commit()
+        if _db is not None:
+            self._save(_db, run)
+        else:
+            with self.connection() as db:
+                self._save(db, run)
+                db.commit()
         return run
 
     @staticmethod
@@ -229,18 +232,21 @@ class Store:
             return result
 
     @contextmanager
-    def edit(self, run_id):
-        with self.connection() as db:
-            db.execute('BEGIN IMMEDIATE')
+    def edit(self, run_id, _db=None):
+        with (self.connection() if _db is None else nullcontext(_db)) as db:
+            if _db is None:
+                db.execute('BEGIN IMMEDIATE')
             run = self._load(db, run_id)
             before = copy.deepcopy(run)
             yield run
             if run == before:
-                db.rollback()
+                if _db is None:
+                    db.rollback()
                 return
             if run.get('schema_version') == 2 and {k: (v['spec'], v.get('execution_id')) for k, v in run['tasks'].items()} != {k: (v['spec'], v.get('execution_id')) for k, v in before['tasks'].items()}:
                 from loop_anything.runtime.timeline_plan import validate_task_dependencies
                 validate_task_dependencies(run)
             run['revision'] += 1
             self._save(db, run)
-            db.commit()
+            if _db is None:
+                db.commit()

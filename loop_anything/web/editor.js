@@ -1,11 +1,11 @@
 'use strict';
 // The editor produces the same public JSON consumed by the CLI and Engine.
-let editor=null, savedDrafts=[], editSelection=null, connectFrom=null, dragState=null;
+let editor=null, savedDrafts=[], editSelection=null, connectFrom=null, dragState=null, editorSave=null, editorBusy=false, editorOperation=null;
 const editorPage=document.createElement('section');editorPage.id='loop_definition-editor';editorPage.hidden=true;
-editorPage.innerHTML=`<div class="page-heading editor-top"><div><div class="eyebrow">LOOP EDITOR</div><h1>设计你的 Loop</h1><span class="saved-state" id="editor-save-status">未保存的草稿</span></div><div class="toolbar"><button id="editor-json">JSON</button><button id="editor-save">保存草稿</button><button id="editor-validate">验证</button><button class="primary" id="editor-publish">发布 Loop</button></div></div>
-<div class="editor-layout"><div class="editor-left"><section class="panel"><div class="editor-settings"><label>Loop 名称<input id="bp-name" placeholder="例如：每日质量巡检"></label><label>Loop ID<input id="bp-id" placeholder="daily-quality"></label><label>Version<input id="bp-version" value="1"></label></div><div class="editor-meta-extra"><details><summary>描述与初始输入</summary><label>描述<input id="bp-description"></label><div class="editor-inline"><label>入口节点<select id="bp-entry"></select></label></div><div id="author-defaults"></div></details></div><div class="editor-help"><span id="editor-hint">拖动节点调整布局 · 点击节点编辑 · 点击「连线」选择下一节点</span><button id="add-node">＋ 添加节点</button></div><div class="canvas-scroll"><div class="editor-canvas" id="editor-canvas"></div></div><div id="editor-edges-list" class="editor-edge-list"></div><div class="editor-report" id="editor-report">可随时保存不完整的草稿。发布前检查输入来源、输出契约与节点实现。</div></section></div><aside class="panel editor-right"><div class="panel-heading"><h2 id="property-title">Loop 定义结构</h2><span class="revision">DRAFT</span></div><div class="editor-properties" id="editor-properties"></div></aside></div>`;
+editorPage.innerHTML=`<div class="page-heading editor-top"><div><div class="eyebrow">LOOP EDITOR</div><h1>设计你的 Loop</h1><span class="saved-state" id="editor-save-status">未保存的草稿</span></div><div class="toolbar"><button id="editor-json">JSON</button><button class="primary" id="editor-publish">保存并使用</button></div></div>
+<div class="editor-layout"><div class="editor-left"><section class="panel"><div class="editor-settings"><label>Loop 名称<input id="bp-name" placeholder="例如：每日质量巡检"></label><details class="editor-identity"><summary>标识与版本 · 自动管理</summary><label>Loop ID<input id="bp-id" placeholder="daily-quality"></label><label>Version<input id="bp-version" value="1"></label></details></div><div class="editor-meta-extra"><details><summary>描述与初始输入</summary><label>描述<input id="bp-description"></label><div class="editor-inline"><label>入口节点<select id="bp-entry"></select></label></div><div id="author-defaults"></div></details></div><div class="editor-help"><span id="editor-hint">拖动节点调整布局 · 点击节点编辑 · 点击「连线」选择下一节点</span><button id="add-node">＋ 添加节点</button></div><div class="canvas-scroll"><div class="editor-canvas" id="editor-canvas"></div></div><div id="editor-edges-list" class="editor-edge-list"></div><div class="editor-report" id="editor-report">可随时保存不完整的草稿。发布前检查输入来源、输出契约与节点实现。</div></section></div><aside class="panel editor-right"><div class="panel-heading"><h2 id="property-title">Loop 定义结构</h2><span class="revision">DRAFT</span></div><div class="editor-properties" id="editor-properties"></div></aside></div>`;
 document.querySelector('main').append(editorPage);
-editorPage.querySelector('.editor-top').insertAdjacentHTML('beforebegin','<div class="run-navigation"><button id="editor-back">← 返回 Loop 库</button><span>编辑副本 · 不影响原版本或已有 Run；未保存修改在本次会话保留。</span></div>');
+editorPage.querySelector('.editor-top').insertAdjacentHTML('beforebegin','<div class="run-navigation"><button id="editor-back">← 返回 Loop 库</button><span>编辑此 Loop · 修改自动保存为草稿，保存并使用后供新运行采用；已有 Run 保持不变。</span></div>');
 const guideAuthor=document.createElement('details');guideAuthor.className='guide-author';
 guideAuthor.innerHTML='<summary>给使用者的说明 · 用途、边界与参数解释</summary><p class="editor-note">这些说明会显示在 Loop 详情和启动表单中。它们不是 Loop 操作手册或节点 Skill，也不会改变调度规则。</p><div id="guide-author-fields"></div>';
 editorPage.querySelector('.editor-left .panel').append(guideAuthor);
@@ -32,20 +32,31 @@ async function platformCall(tool,values={}){
 }
 async function newLoopDefinition(source=null,versionOnly=false){
   if(source && source.loop_definition.schema_version!==2)throw new Error('历史 Loop 定义仅供查看');
-  rememberEditor();
-  if(editor?.dirty && !confirm('当前草稿尚未保存，是否切换？修改将保留在本次会话中。'))return false;
+  if(page==='editor')await saveEditor();
+  if(source&&versionOnly){
+    const drafts=await api('drafts');
+    const reusable=drafts.find(d=>d.loop_definition.id===source.loop_definition.id&&!catalog.some(c=>c.loop_definition.id===d.loop_definition.id&&c.loop_definition.version===d.loop_definition.version));
+    if(reusable){editor={...reusable,dirty:false};await openEditor();return true;}
+  }
   const result=source?await platformCall('copy_loop',{key:source.key,new_version:versionOnly}):await platformCall('create_loop',{name:'我的新 Loop'});
   const loaded=(await platformCall('read_loop',{draft_id:result.draft_id})).loop;
   editor={...loaded,dirty:false};
   await openEditor();
 }
 async function editWithTool(tool,values){
-  await saveEditor();
-  const result=await platformCall(tool,{draft_id:editor.id,revision:editor.revision,...values});
-  const loaded=(await platformCall('read_loop',{draft_id:result.draft_id})).loop;
-  Object.assign(editor,loaded,{dirty:false});
-  editor.loop_definition.layout ||= {};
-  populateMeta();renderEditor();renderProperties();saveState();
+  if(editorOperation)await editorOperation;
+  const operation=performEditorEdit(tool,values);editorOperation=operation;
+  try{return await operation;}finally{if(editorOperation===operation)editorOperation=null;}
+}
+async function performEditorEdit(tool,values){
+  clearTimeout(dirty.timer);editorBusy=true;editorPage.inert=true;
+  try{
+    await saveEditor();
+    const result=await platformCall(tool,{draft_id:editor.id,revision:editor.revision,...values});
+    const loaded=(await platformCall('read_loop',{draft_id:result.draft_id})).loop;
+    Object.assign(editor,loaded,{dirty:false});editor.loop_definition.layout ||= {};
+    populateMeta();renderEditor();renderProperties();saveState();
+  }finally{editorBusy=false;editorPage.inert=false;}
 }
 
 function openEditor(){
@@ -90,14 +101,14 @@ function collectGuideAuthor(){
   if(Object.keys(parameters).length)g.parameters=parameters;else delete g.parameters;
   if(Object.keys(g).length)editor.loop_definition.guide=g;else delete editor.loop_definition.guide;
 }
-function saveState(){ $('editor-save-status').textContent=editor.dirty?'有未保存修改':`已保存 · revision ${editor.revision}`; }
-function dirty(){editor.dirty=true;saveState();$('editor-report').className='editor-report';$('editor-report').textContent='草稿已修改，请重新验证后发布。';}
-function ensurePositions(){
-  Object.keys(editor.loop_definition.nodes).forEach((id,i)=>{
-    const p=editor.loop_definition.layout[id];
-    if(!p || !Number.isFinite(p.x) || !Number.isFinite(p.y))editor.loop_definition.layout[id]={x:35+i%3*240,y:45+Math.floor(i/3)*205};
-  });
+function saveState(){ $('editor-save-status').textContent=editor.dirty?'正在保存草稿…':`草稿已保存 · revision ${editor.revision}`; }
+function dirty(){
+  editor.dirty=true;editor.edits=(editor.edits||0)+1;saveState();
+  $('editor-report').className='editor-report';$('editor-report').textContent='修改自动保存为草稿；保存并使用时统一检查。';
+  clearTimeout(dirty.timer);const target=editor;
+  dirty.timer=setTimeout(()=>{if(page==='editor'&&editor===target&&!editorBusy)saveEditor().catch(e=>{$('editor-save-status').textContent='尚未保存 · '+e.message;});},650);
 }
+function ensurePositions(){editor.loop_definition.layout=Object.fromEntries(loopNodePositions(editor.loop_definition));}
 function renderEditor(){
   const b=editor.loop_definition;ensurePositions();const canvas=$('editor-canvas');
   const positions=Object.values(b.layout);
@@ -105,13 +116,13 @@ function renderEditor(){
   canvas.style.height=Math.max(500,...positions.map(p=>(Number(p.y)||0)+185))+'px';
   canvas.innerHTML=Object.entries(b.nodes).map(([id,n])=>{
     const p=b.layout[id],kind=chosenImplementation(editor,id)?.kind || '未选用';
-    return `<article class="editor-node ${editSelection?.node===id?'picked':''} ${connectFrom?'connect-target':''}" data-editor-card="${esc(id)}" style="left:${p.x}px;top:${p.y}px"><div class="editor-node-head" data-drag-node="${esc(id)}" role="button" tabindex="0" aria-label="编辑节点 ${esc(n.label || id)}"><span class="node-icon">${kind==='agent'?'✧':kind==='event'?'◷':'▤'}</span>${esc(n.label || id)}</div><div class="editor-node-id">${esc(id)}</div>${authorPortButtons(id,n)}<div class="editor-node-footer"><span>${b.entry===id?'入口 · ':b.fallback_node===id?'兜底 · ':''}${esc(kind)}</span><button data-connect-node="${esc(id)}" title="选择此节点后再点击目标节点">连线 ＋</button></div></article>`;
+    return `<article class="editor-node ${editSelection?.node===id?'picked':''} ${connectFrom?'connect-target':''}" data-editor-card="${esc(id)}" style="left:${p.x}px;top:${p.y}px"><div class="editor-node-head" data-drag-node="${esc(id)}" role="button" tabindex="0" aria-label="编辑节点 ${esc(n.label || id)}"><span class="node-icon">${kind==='agent'?'✧':kind==='event'?'◷':'▤'}</span>${esc(n.label || id)}</div><div class="editor-node-id">${esc(id)}</div>${authorPortButtons(id,n)}<div class="editor-node-footer"><span>${b.entry===id?'入口 · ':b.fallback_node===id?'兜底 · ':''}${esc(mapImplementationLabel(editor,id,{}))}</span><button data-connect-node="${esc(id)}" title="选择此节点后再点击目标节点">连线 ＋</button></div></article>`;
   }).join('') || '<div class="canvas-empty"><div class="empty-mark">◇</div><h2>从第一个业务步骤开始</h2><p>添加节点，声明输入与输出，再将它们连接起来。</p></div>';
   requestAnimationFrame(drawEditorEdges);
   if(b.schema_version===2){
     $('editor-edges-list').innerHTML='<h3>本轮构建模板</h3>'+Object.entries(b.plans || {}).map(([name,p])=>`<div class="edge-row"><button data-edit-edge="${esc(name)}">${esc(name)} · ${Object.keys(p.steps).length} 步</button></div>`).join('')+'<button id="editor-json">编辑构建模板、Seed 与完整 JSON</button>';
     $('editor-edges-list').insertAdjacentHTML('afterbegin',`<label>当前构建模板<select id="author-plan-select">${Object.keys(b.plans || {}).map(k=>`<option ${k===authorPlan?'selected':''}>${esc(k)}</option>`).join('')}</select></label><div class="row"><input id="new-plan-name" placeholder="新模板名称"><button type="button" id="new-author-plan">＋ 模板</button></div>`);
-    $('editor-hint').textContent='选择输出端口，再选择输入端口；连线按钮设置先后顺序。';return;
+    $('editor-hint').textContent='实线是依赖，紫色虚线是后续安排；点节点修改循环、Skill 与实现。';return;
   }
 }
 
@@ -119,16 +130,16 @@ function drawEditorEdges(){
   const canvas=$('editor-canvas');canvas.querySelector('svg')?.remove();
   const ns='http://www.w3.org/2000/svg',svg=document.createElementNS(ns,'svg');svg.classList.add('editor-edges');
   svg.setAttribute('width',canvas.style.width);svg.setAttribute('height',canvas.style.height);
-  svg.innerHTML='<defs><marker id="studio-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7" fill="#849bcc"/></marker></defs>';
-  for(const e of loop_definitionEdges({...editor.loop_definition,plans:{[authorPlan]:editor.loop_definition.plans[authorPlan] || {steps:{}}}})){
+  svg.innerHTML='<defs><marker id="studio-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7" fill="#849bcc"/></marker><marker id="studio-plan-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7" fill="#9564cf"/></marker></defs>';
+  for(const e of [...loop_definitionEdges(editor.loop_definition),...loopRelationships(editor.loop_definition).filter(e=>e.kind==='planning')]){
     const a=editor.loop_definition.layout[e.from],b=editor.loop_definition.layout[e.to];if(!a||!b)continue;
     const out=canvas.querySelector(`[data-port-node="${CSS.escape(e.from)}"][data-output-port="${CSS.escape(e.output||'')}"]`),input=canvas.querySelector(`[data-port-node="${CSS.escape(e.to)}"][data-input-port="${CSS.escape(e.input||'')}"]`);
     const box=canvas.getBoundingClientRect(),ob=out?.getBoundingClientRect(),ib=input?.getBoundingClientRect();
     const sx=ob?ob.right-box.left:a.x+200,sy=ob?ob.top+ob.height/2-box.top:a.y+65,tx=ib?ib.left-box.left:b.x,ty=ib?ib.top+ib.height/2-box.top:b.y+65;
     const bend=Math.max(65,Math.abs(tx-sx)/2);
-    const d=e.from===e.to?`M ${sx} ${sy} C ${sx+90} ${sy-130}, ${a.x-90} ${sy-130}, ${tx} ${ty}`:`M ${sx} ${sy} C ${sx+bend} ${sy}, ${tx-bend} ${ty}, ${tx} ${ty}`;
-    const line=document.createElementNS(ns,'path');line.setAttribute('d',d);line.setAttribute('class','edge'+(editSelection?.edge===e.id?' edge-picked':''));line.setAttribute('marker-end','url(#studio-arrow)');svg.appendChild(line);
-    const hit=document.createElementNS(ns,'path');hit.setAttribute('d',d);hit.setAttribute('class','edge-hit');hit.dataset.editEdge=e.id;svg.appendChild(hit);
+    const d=e.kind==='planning'?loopEdgePath(e,a,b).d:e.from===e.to?`M ${sx} ${sy} C ${sx+90} ${sy-130}, ${a.x-90} ${sy-130}, ${tx} ${ty}`:`M ${sx} ${sy} C ${sx+bend} ${sy}, ${tx-bend} ${ty}, ${tx} ${ty}`;
+    const line=document.createElementNS(ns,'path');line.setAttribute('d',d);line.setAttribute('class','edge'+(e.kind==='planning'?' planning':'')+(e.id&&editSelection?.edge===e.id?' edge-picked':''));line.setAttribute('marker-end',e.kind==='planning'?'url(#studio-plan-arrow)':'url(#studio-arrow)');svg.appendChild(line);
+    const hit=document.createElementNS(ns,'path');hit.setAttribute('d',d);hit.setAttribute('class','edge-hit');if(e.kind==='planning')hit.dataset.editPlanning=e.from;else hit.dataset.editEdge=e.id;svg.appendChild(hit);
   }
   canvas.prepend(svg);
 }
@@ -150,17 +161,37 @@ async function addEdge(from,to){
 }
 
 async function saveEditor(){
-  collectAll();const result=await api('drafts',{id:editor.id,revision:editor.revision,loop_definition:editor.loop_definition,implementations:editor.implementations,assets:editor.assets || [],checks:editor.checks || {}});
-  Object.assign(editor,{id:result.id,revision:result.revision,dirty:false});savedEditorRoute();saveState();return result;
+  clearTimeout(dirty.timer);const target=editor;
+  if(editorSave)await editorSave;
+  if(editor!==target)throw new Error('编辑页面已切换，请重新读取当前草稿。');
+  collectAll();const edits=target.edits||0;
+  const payload=structuredClone({id:target.id,revision:target.revision,loop_definition:target.loop_definition,implementations:target.implementations,assets:target.assets||[],checks:target.checks||{}});
+  editorSave=api('drafts',payload);
+  try{
+    const result=await editorSave;Object.assign(target,{id:result.id,revision:result.revision,dirty:(target.edits||0)!==edits});
+    if(editor===target&&page==='editor'){const route=parseRoute(location.hash);if(route.type==='editor'&&route.id===target.routeId)savedEditorRoute();saveState();}
+    return result;
+  }finally{editorSave=null;}
 }
+async function saveAndUseLoop(){
+  if(editorBusy)return;editorBusy=true;editorPage.inert=true;
+  try{
+    await saveEditor();const report=await platformCall('validate_loop',{draft_id:editor.id});renderReport(report);if(!report.valid)return;
+    const result=await platformCall('publish_loop',{draft_id:editor.id,revision:editor.revision,auto_version:true});
+    editor.revision=result.revision;editor.loop_definition.version=result.version;$('bp-version').value=result.version;editor.dirty=false;
+    await loadCatalog();await openPreparation(result.key);toast('已保存为可用版本，请核对本次运行设置。');
+  }finally{editorBusy=false;editorPage.inert=false;}
+}
+
 function renderReport(report){
   const r=$('editor-report');r.className='editor-report '+(report.valid?'success':'failure');
   r.innerHTML=`<strong>${report.valid?'✓ 结构有效':'需要修正'}</strong>`+report.errors.map(x=>`<p>• ${esc(x)}</p>`).join('')+((report.unbound_nodes || []).length?`<p>待绑定：${report.unbound_nodes.map(esc).join('、')}。仍可导出、分享和安装；不表示已具备运行条件。</p>`:'')+report.warnings.map(x=>`<p class="small">${esc(x)}</p>`).join('');
 }
 document.addEventListener('click',event=>safely(async()=>{
-  const el=event.target.closest('button,[data-edit-edge]');if(!el)return;const d=el.dataset;
+  const el=event.target.closest('button,[data-edit-edge],[data-edit-planning]');if(!el)return;const d=el.dataset;
   if(d.copyLoopDefinition || d.versionLoopDefinition){await newLoopDefinition(catalog.find(c=>c.key===(d.copyLoopDefinition || d.versionLoopDefinition)),!!d.versionLoopDefinition);return;}
-  if(d.openDraft){rememberEditor();if(editor?.dirty && !confirm('当前草稿尚未保存，是否切换？'))return;editor={...structuredClone(savedDrafts.find(x=>x.id===d.openDraft)),dirty:false};openEditor();return;}
+  if(d.openDraft){if(page==='editor')await saveEditor();editor={...structuredClone(savedDrafts.find(x=>x.id===d.openDraft)),dirty:false};openEditor();return;}
+  if(d.editPlanning){selectEditor({node:d.editPlanning});$('author-plan-nodes')?.scrollIntoView({block:'nearest'});return;}
   if(d.editEdge){selectEditor({edge:d.editEdge});return;}
   if(d.connectNode){collectAll();connectFrom=d.connectNode;renderEditor();return;}
   switch(el.id){
@@ -168,15 +199,13 @@ document.addEventListener('click',event=>safely(async()=>{
     case 'new-loop_definition':if(editor?.dirty){await openEditor();toast('已返回未保存草稿；可先保存后再新建');}else await newLoopDefinition();break;
     case 'add-fallback-node':{collectAll();let id='fallback',i=1;while(Object.hasOwn(editor.loop_definition.nodes,id))id='fallback_'+i++;await editWithTool('put_node',{node_id:id,label:'Agent 兜底',instructions:'读取当前未覆盖状态，按用户授权用工具处理相关任务，再完成本节点。',inputs:[],outputs:[]});await editWithTool('set_loop',{fallback_node:id});editSelection={node:id};renderEditor();renderProperties();toast('已添加兜底节点，请选择它的 Agent 实现。');break;}
     case 'add-node':{collectAll();let i=1;while(Object.hasOwn(editor.loop_definition.nodes,'node_'+i))i++;const id='node_'+i;await editWithTool('put_node',{node_id:id,label:'新节点 '+i,instructions:'声明本节点的业务职责',inputs:[],outputs:[{name:'result',type:'string'}]});editSelection={node:id};renderEditor();renderProperties();break;}
-    case 'editor-save':await saveEditor();toast('草稿已保存');break;
-    case 'editor-validate':await saveEditor();renderReport(await platformCall('validate_loop',{draft_id:editor.id}));break;
-    case 'editor-publish':{await saveEditor();const report=await platformCall('validate_loop',{draft_id:editor.id});renderReport(report);if(!report.valid)return;const result=await platformCall('publish_loop',{draft_id:editor.id,revision:editor.revision});await loadCatalog();await openLoop(result.key);toast('已发布到本机，未启动。');break;}
+    case 'editor-publish':await saveAndUseLoop();break;
     case 'editor-json':collectAll();$('editor-json-value').value=pretty({loop_definition:editor.loop_definition,implementations:editor.implementations});jsonDialog.showModal();break;
     case 'editor-import':{const value=JSON.parse($('editor-json-value').value);if(!value.loop_definition || !value.loop_definition.nodes || Array.isArray(value.loop_definition.nodes) || value.loop_definition.schema_version!==2)throw new Error('需要当前 loop_definition（含 nodes 和 plans）；implementations 可以省略');value.implementations ||= {};const report=await api('validate',{...value});if(!report.valid)throw new Error('JSON 未通过校验：'+report.errors.join('；'));editor.loop_definition=value.loop_definition;editor.implementations=value.implementations;editor.loop_definition.layout ||= {};editSelection=null;jsonDialog.close();populateMeta();dirty();renderEditor();renderProperties();break;}
     case 'editor-export':{const content=$('editor-json-value').value;JSON.parse(content);const url=URL.createObjectURL(new Blob([content],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=(editor.loop_definition.id || 'loop_definition')+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);break;}
   }
 }));
-editorPage.addEventListener('submit',e=>{e.preventDefault();safely(async()=>{collectAll();dirty();renderEditor();renderProperties();toast('已应用到当前草稿');});});
+editorPage.addEventListener('submit',e=>{e.preventDefault();safely(async()=>{await saveEditor();renderEditor();});});
 editorPage.addEventListener('input',()=>{if(editor)dirty();});
 editorPage.addEventListener('change',e=>{if(e.target.id==='bp-defaults')safely(async()=>{collectMeta();renderGuideAuthor();});if(editor)dirty();});
 editorPage.addEventListener('pointerdown',e=>{

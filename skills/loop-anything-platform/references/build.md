@@ -8,7 +8,7 @@
 
 先与作者明确任务、每步输入输出、哪些工作由脚本或 Agent 完成。不要替作者增加未要求的业务步骤。
 
-- **开始或复用**：`list_loops` 找现有资产；`read_loop` 读它的实际定义。`create_loop` 建立草稿与通用入口；`copy_loop` 从已安装版本复制为草稿；new_version:true 保留 Loop ID 并递增版本，原有 Run 不变。
+- **开始或复用**：`list_loops` 找现有资产；`read_loop` 读它的实际定义。`create_loop` 建立草稿与通用入口；`copy_loop` 从已安装版本复制为草稿；普通修改传 new_version:true，保留 Loop ID 并自动选择后续版本，原有 Run 不变；只有用户要另建一个 Loop 时才使用普通复制。
 - **业务说明**：`set_loop` 写入作者提供的 `handbook`、用途说明、初始输入默认值或明确的运行限额。平台 Skill 不维护这些业务内容。
 - **节点**：`put_node` 写一个节点的职责、端口和可选作者 Skill。用 `skills: [{"name":"方法名","content":"作者提供的业务方法"}]` 直接绑定到该节点；Agent 读取节点任务时会获得这些内容。端口列表使用 `name` 加 `type`，嵌套契约使用 `schema`；工具生成输出记录类型。节点机械完成约束统一用 assertions 表达，例如 eq 比较字段值；不从约束自动填业务结果。入口端口变更会同步其初始位置。
 - **候选实现**：`set_implementation` 提供 node_id、implementation_id 和 agent、command、external、event 或 approval 配置。同一节点可多次添加不同 ID；default:true 选为 Loop 默认，default:false 取消该候选的默认地位，省略则不改默认。已存在的候选可只传 ID 与 default 调整默认。填写实际命令参数列表。外部任务还需 observe；删除指定候选时用 unbind:true，不能伪装成模拟实现。`put_asset` 把作者编写的脚本/文档附进包。
@@ -18,7 +18,7 @@
 - **Agent 命令**：用 `set_implementation` 设置 kind="agent" 和用户提供的 command，例如 `["codex", "exec", "-"]`；cwd/timeout 按实际需要明确设置；Agent 留空 timeout 时不限时，脚本命令默认 60 秒。平台向标准输入传入任务 prompt，原样执行命令；模型、工具和权限沿用用户配置。无需专用启动器或工具注册。
 - **可复用批次**：`put_step` 将节点加入一个命名模板。可用 implementation 指定模板选用的候选 ID，通常留给 Run 或任务选择。用 `plan_parameters` 声明运行时参数；`each` 指向参数里的列表。`connect_steps` 把上游 output 连到下游 input，`collect:true` 表示收集全部展开结果。
 - **初始或复用输入**：在 `put_step.inputs` 中使用 `{"record":"initial.result"}` 等明确来源。入口的真实输出位置由 `read_loop` 返回，不猜名字。普通参数值用 `literal`；运行时替换值可以写 `{"literal":{"$":"values.参数名"}}`。列表元素对应 `item`。
-- **检查与交付**：`validate_loop` 检查结构并单列缺失实现。修正错误后 `publish_loop` 安装为一个版本，不启动；`export_loop` 导出包含附件的包，客户端 `--output 文件.loop.zip` 保存它。
+- **检查与交付**：`validate_loop` 检查结构并单列缺失实现。修正错误后 `publish_loop` 安装为一个版本，不启动；日常迭代可传 auto_version:true，在版本已存在时自动选用新版本，返回最新 draft_id/revision 和实际 version，原版本不被覆盖；`export_loop` 导出包含附件的包，客户端 `--output 文件.loop.zip` 保存它。
 
 每次编辑带上 `draft_id` 和刚返回的 `revision`。出现版本冲突，重新 `read_loop` 后再决定修改，不盲目覆盖。工具返回当前验证结果；未完整连接的草稿可保存，但必须修正结构错误才能发布。
 
@@ -40,7 +40,9 @@
 
 ## 修改既有设计
 
-读取后只修改相关节点或步骤，不重写整个Loop 定义。`remove_step` 要求先处理消费者，`remove_node` 要求先移除引用它的步骤。新发布版本不迁移既有 Run。
+先查看是否已有该 Loop 的未发布草稿并继续编辑，避免每次小改都复制一份。读取后只修改相关节点或步骤，不重写整个Loop 定义。`remove_step` 要求先处理消费者，`remove_node` 要求先移除引用它的步骤。新发布版本不迁移既有 Run。
+
+网页编辑会自动保存草稿，“保存并使用”统一校验、安装版本并进入启动准备，不直接执行任务。循环安排通过节点的 plan_nodes 声明；它表示可安排后续的新任务，不是把同一批任务连成依赖环。脚本依此声明安排任务，Agent 仍按原授权与 Task 范围操作。删除节点或步骤时网页会列出引用，可定位修改，或显式确认一并断开；缺失输入必须修正后才可发布。
 
 可缺实现地构建、分享、安装和创建 Run；实际需要执行任务时才检查实现选择。切换已有候选只需在 Run 或任务中指定 ID，不需要复制 Loop。平台不自动修复命令、路径或依赖。业务脚本怎样实现仍由作者及其 Agent 决定。
 

@@ -6,6 +6,7 @@ function routeHash(route){
   if(route.type==='catalog')return '#loop_definitions';
   if(route.type==='loop')return '#loop/'+encodeURIComponent(route.key)+'/'+(route.tab || 'overview');
   if(route.type==='editor')return '#edit/'+encodeURIComponent(route.id);
+  if(route.type==='prepare')return '#prepare/'+encodeURIComponent(route.id);
   if(route.type==='run')return '#run/'+encodeURIComponent(route.id);
   return '#';
 }
@@ -14,6 +15,7 @@ function parseRoute(hash){
   if(!parts[0])return {type:'home'};
   if(parts[0]==='loop_definitions')return {type:'catalog'};
   if(parts[0]==='loop')return {type:'loop',key:decodeURIComponent(parts[1] || ''),tab:['overview','flow','prepare'].includes(parts[2])?parts[2]:'overview'};
+  if(parts[0]==='prepare')return {type:'prepare',id:decodeURIComponent(parts[1] || '')};
   if(parts[0]==='edit')return {type:'editor',id:decodeURIComponent(parts[1] || '')};
   return {type:'run',id:decodeURIComponent(parts[0]==='run'?parts[1]:parts[0])}; // old #run-... links
 }
@@ -39,10 +41,15 @@ function savedEditorRoute(){
 async function navigateTo(route,{replace=false,external=false,capture=true}={}){
   const previous=activeRoute,serial=++navigationSerial;
   if(capture && page==='editor' && routeHash(route)!==routeHash(previous)){
-    try{rememberEditor();}catch(error){if(external)history.replaceState(null,'',routeHash(previous));toast('草稿中有未应用的无效内容，请先修正；修改仍保留：'+error.message);return false;}
+    try{if(editorOperation)await editorOperation;await saveEditor();rememberEditor();}catch(error){if(external)history.replaceState(null,'',routeHash(previous));toast('草稿中有未应用的无效内容，请先修正；修改仍保留：'+error.message);return false;}
     // Keep the draft in memory on navigation. beforeunload protects reload/closing.
   }
   try{
+    if($('web-chat'))$('web-chat').inert=true;
+    if(['launch','runs'].includes(page) && routeHash(route)!==routeHash(previous)){
+      if(conversation)conversationDrafts.set(conversation.id || conversation.run_id,$('web-chat-input').value);
+      clearTimeout(savePreparation.timer);await savePreparation();if(page==='launch')$('create-dialog').close();
+    }
     let session;
     if(route.type==='editor'){
       session=editorSessions.get(route.id);
@@ -56,19 +63,20 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
     activeRoute=structuredClone(route);
     if(route.type==='catalog'){page='catalog';await loadCatalog();}
     else if(route.type==='loop'){page='loop';loopKey=route.key;loopTab=route.tab || 'overview';renderLoop();}
+    else if(route.type==='prepare'){if(await enterPreparation(route.id)===false)return true;}
     else if(route.type==='editor'){
       editor=session.editor;editSelection=session.selection;connectFrom=null;page='editor';
       editor.loop_definition.layout ||= {};populateMeta();renderEditor();renderProperties();saveState();
     }else if(route.type==='run'){
       if(previous.type!=='run' && previous.type!=='home')runReturns.set(route.id,structuredClone(previous));
-      selected=route.id;run=nextRun;settingsBase=null;filterNode=null;page='runs';renderRun();
-    }else{page='runs';await refresh();}
-    showPage();updateNavigationUI();window.scrollTo(0,0);return true;
+      selected=route.id;run=nextRun;settingsBase=null;filterNode=null;page='runs';renderRun();await enterRunChat(route.id);
+    }else{page='runs';await refresh();if(run)await enterRunChat(run.id);}
+    showPage();updateNavigationUI();window.scrollTo(0,0);if(page==='runs')requestAnimationFrame(()=>sizeTaskGraph());return true;
   }catch(error){
     if(serial!==navigationSerial)return false;
     if(external){activeRoute={type:'catalog'};history.replaceState(null,'','#loop_definitions');page='catalog';showPage();updateNavigationUI();}
     toast(error.message);return false;
-  }
+  }finally{if(serial===navigationSerial&&$('web-chat'))$('web-chat').inert=false;}
 }
 function navLink(route,label){return `<a href="${esc(routeHash(route))}" data-route-link>${esc(label)}</a>`;}
 function relatedRunsHTML(key){
@@ -76,14 +84,17 @@ function relatedRunsHTML(key){
   return `<h3>这个版本的运行 · ${rows.length}</h3><p class="small muted">每个 Run 有独立的目标、Timeline 和历史，修改Loop 定义不会改变已有运行。</p>${rows.map(r=>`<p>${navLink({type:'run',id:r.id},r.title)} ${badge(r.status)}</p>`).join('') || '<p class="muted">还没有运行。</p>'}`;
 }
 function updateNavigationUI(){
+  if(typeof renderPreparationNav==='function')renderPreparationNav();
+  $('run-list').querySelectorAll('[data-run]').forEach(b=>b.classList.toggle('chosen',page==='runs'&&b.dataset.run===selected));
   const crumbs=[navLink({type:'catalog'},'Loop 库')];
   if(page==='loop'){
     crumbs.push(esc(currentLoop()?.loop_definition.name || loopKey));
     if($('loop-runs')){const content=relatedRunsHTML(loopKey);if($('loop-runs').innerHTML!==content)$('loop-runs').innerHTML=content;}
+  }else if(page==='launch' && conversation){crumbs.push(navLink({type:'loop',key:conversation.launch.key},launchItem()?.loop_definition.name || 'Loop'));crumbs.push('启动准备');
   }else if(page==='editor' && editor){
     if(editor.returnTo?.type==='loop')crumbs.push(navLink(editor.returnTo,'来源 Loop'));
-    crumbs.push(esc(editor.loop_definition.name || '草稿')+' · 编辑副本');
-    $('editor-back').textContent=editor.returnTo?.type==='loop'?'← 返回 Loop '+(editor.returnTo.tab==='prepare'?'使用准备':'详情'):'← 返回 Loop 库';
+    crumbs.push(esc(editor.loop_definition.name || '草稿')+' · 编辑');
+    $('editor-back').textContent=editor.returnTo?.type==='loop'?'← 返回 Loop '+(editor.returnTo.tab==='prepare'?'使用准备':'详情'):editor.returnTo?.type==='prepare'?'← 返回启动准备':'← 返回 Loop 库';
   }else if(page==='runs' && run){
     const c=catalog.find(c=>c.key===run.loop_key);
     const asset={type:'loop',key:run.loop_key,tab:'overview'};

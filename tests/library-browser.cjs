@@ -82,7 +82,7 @@ assert [n for n in z.namelist() if n.endswith('/SKILL.md')]==['platform/loop-any
     await page.locator('#loop-detail [data-create]').click();
     await page.locator('#launch-review').click();
     await page.locator('#launch-confirm').waitFor({state:'visible'});
-    await page.locator('#create-dialog .close-dialog').first().click();
+    await page.locator('#preparation-back').click();
     assert.equal(await runCount(),0);
     // A changed preflight result after review still blocks final dispatch.
     await page.locator('#library-back').click();
@@ -116,7 +116,8 @@ assert [n for n in z.namelist() if n.endswith('/SKILL.md')]==['platform/loop-any
     await page.locator('#launch-start').click();assert.equal(await runCount(),0);
     await page.locator('#launch-back').click();
     assert.equal(await page.getByLabel(/本次目标/).inputValue(),'用户的实际目标');
-    await page.locator('#launch-bindings [data-binding-node="initialize"]').selectOption(JSON.stringify('secondary'));
+    await page.locator('#preparation-flow [data-map-node="initialize"]').click();
+    await page.locator('#preparation-flow [data-map-details="initialize"] [data-candidate="secondary"] [data-map-choice]').click();
     const authorization='允许处理本测试的故障，不允许访问外部服务';
     await page.locator('#create-authorization').fill(authorization);
     await page.locator('#launch-review').click();
@@ -145,7 +146,7 @@ assert [n for n in z.namelist() if n.endswith('/SKILL.md')]==['platform/loop-any
     const manualRun=await waitRun(run.id,s=>!s.agent_sessions.length);
     assert.equal(manualRun.records[manualRun.tasks.first.spec.outputs.result.id][0].value,'已提交的人工结果');
     assert.equal(run.inputs.request,'用户的实际目标');assert.equal(run.inputs.budget,4);assert.equal(run.inputs.enabled,false);assert.deepEqual(run.inputs.extra,['kept']);assert.deepEqual(run.inputs.settings,{region:'changed'});
-    assert.equal(writes.filter(u=>u.endsWith('/api/runs')).length,1);
+    assert.equal(writes.filter(u=>/\/api\/conversations\/[^/]+\/start$/.test(u)).length,1);
     // Author descriptions are editable without JSON and survive save/reopen.
     await page.locator('#loop_definitions-nav').click();
     await page.locator(`[data-loop="${keys[2]}"]`).first().click();
@@ -166,7 +167,6 @@ assert [n for n in z.namelist() if n.endswith('/SKILL.md')]==['platform/loop-any
     await page.goBack();await page.locator('#loop_definition-editor').waitFor({state:'visible'});
     await page.locator('.guide-author > summary').filter({hasText:'Loop 操作手册'}).click();
     await page.locator('#handbook-instructions').fill('启动前：与用户讨论。节点执行：读写状态，安排后续任务。');
-    await page.locator('#editor-save').click();
     await page.locator('#editor-save-status').filter({hasText:'已保存'}).waitFor();
     const drafts=await (await page.request.get(url+'/api/drafts')).json();assert.equal(drafts[0].loop_definition.guide.purpose,'修改后的用户说明');
     assert(page.url().includes('#edit/'+drafts[0].id));
@@ -221,7 +221,8 @@ assert [n for n in z.namelist() if n.endswith('/SKILL.md')]==['platform/loop-any
     assert.equal(await page.locator('.dependency-scroll [data-task-focus]').count(),2);
     assert.equal(await page.locator('[data-skip-action]').count(),0);
     await page.locator('.graph-panel > summary').click();
-    assert((await page.locator('#graph-caption').innerText()).includes('Engine 不会补建省略的步骤'));
+    assert.equal(await page.locator('#graph [data-map-node]').count(),Object.keys(state.loop_definition.nodes).length);
+    assert.equal(Object.keys((await waitRun(created.id,s=>s.tasks)).tasks).length,2);
     assert((await page.locator('#graph').innerText()).includes('未安排 Task'));
     await page.screenshot({path:path.join(root,'ui-omitted.png'),fullPage:true});
     assert.equal(state.executions.filter(e=>e.node===sb.entry).length,1);
@@ -263,14 +264,14 @@ assert [n for n in z.namelist() if n.endswith('/SKILL.md')]==['platform/loop-any
     const candidates={default:'first',options:{first:{kind:'agent'},chosen:{kind:'agent'}}};
     await page.locator('#add-author-candidate').click();
     await page.locator('[data-candidate-id]').fill('chosen');
-    await page.locator('#author-default').fill('chosen');
+    await page.locator('#author-default').selectOption('chosen');
     await page.locator('.guide-author > summary').filter({hasText:'Loop 操作手册'}).click();
     await page.locator('#handbook-instructions').fill('Read current issues and use the selected fallback Agent.');
-    await page.locator('#editor-publish').click();await page.locator('#loop-detail').waitFor({state:'visible'});
-    await page.locator('#loop-detail [data-create]').click();
+    await page.locator('#editor-publish').click();await page.locator('#launch-page').waitFor({state:'visible'});
     assert.equal(await page.locator('#launch-fallback').inputValue(),'fallback');
     await page.locator('#launch-fallback').selectOption('');
-    await page.locator('#launch-bindings [data-binding-node="fallback"]').selectOption(JSON.stringify('chosen'));
+    await page.locator('#preparation-flow [data-map-node="fallback"]').click();
+    await page.locator('#preparation-flow [data-map-details="fallback"] [data-candidate="chosen"] [data-map-choice]').click();
     await page.locator('#launch-field-0').fill('Explicit fallback browser test');
     await page.locator('#launch-review').click();await page.locator('#launch-confirm').waitFor({state:'visible'});
     await page.locator('#launch-ack').check();await page.locator('#launch-start').click();

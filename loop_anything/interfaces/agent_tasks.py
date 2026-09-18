@@ -63,8 +63,8 @@ def acquire_in_run(run, kind, token=None, execution_id=None, task_id=None):
     return owner
 
 
-def acquire(store, run_id, task_id=None):
-    with store.edit(run_id) as run:
+def acquire(store, run_id, task_id=None, _db=None):
+    with store.edit(run_id, _db=_db) as run:
         owner = copy.deepcopy(acquire_in_run(run, 'interactive', task_id=task_id))
     return owner
 

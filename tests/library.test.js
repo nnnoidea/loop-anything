@@ -7,6 +7,7 @@ const context=vm.createContext({document:{createElement:()=>({}),querySelector:(
 context.$=()=>({addEventListener(){},parentElement:{after(){}}});
 context.window={addEventListener(){}};
 vm.runInContext(fs.readFileSync('loop_anything/web/library.js','utf8'),context);
+vm.runInContext(fs.readFileSync('loop_anything/web/loop_graph.js','utf8'),context);
 vm.runInContext(fs.readFileSync('loop_anything/web/navigation.js','utf8'),context);
 function run(code){return vm.runInContext(code,context);}
 test('routes round-trip versions, tabs, draft and Run identities with escaped keys',()=>{
@@ -62,4 +63,15 @@ test('Loop handbook and node Skill render their own body formats without mutatio
   assert(!skill.includes('&quot;content&quot;'));
   assert.equal(run('hand.instructions'),'<b>启动与后续任务</b>');
   assert.equal(run('skill.content'),'<b>证据分析</b>');
+});
+
+test('definition relationships distinguish repeat planning from data dependencies without inventing routes',()=>{
+  const bp={schema_version:2,entry:'start',nodes:{start:{plan_nodes:['work']},work:{},judge:{plan_nodes:['work','judge','end']},end:{},freeAgent:{}},plans:{batch:{steps:{work:{node:'work'},judge:{node:'judge',inputs:{value:{from:'work',port:'result'}}}}}}};
+  const before=JSON.stringify(bp),edges=JSON.parse(run(`JSON.stringify(loopRelationships(${before}))`));
+  assert(edges.some(e=>e.from==='work'&&e.to==='judge'&&e.kind==='dependency'&&!e.repeats));
+  assert(edges.some(e=>e.from==='judge'&&e.to==='work'&&e.repeats));
+  assert(edges.some(e=>e.from==='judge'&&e.to==='judge'&&e.repeats));
+  assert(edges.some(e=>e.from==='judge'&&e.to==='end'&&!e.repeats));
+  assert(!edges.some(e=>e.from==='end'||e.from==='freeAgent'));
+  assert.equal(JSON.stringify(bp),before);
 });

@@ -12,17 +12,6 @@ for(const [id,label] of [['records','结果记录'],['task-history','运行过�
   const button=document.createElement('button');button.dataset.tab=id;button.textContent=label;button.className='v2-tab';button.hidden=true;
   document.querySelector('.tabs').append(button);
 }
-function loop_definitionEdges(bp){
-  if(bp.schema_version!==2)return [...(bp.transitions || [])];
-  return Object.entries(bp.plans || {}).flatMap(([name,plan])=>Object.entries(plan.steps).flatMap(([key,step])=>[
-    ...(step.after || []).filter(k=>plan.steps[k]).map(k=>({id:name,from:plan.steps[k].node,to:step.node})),
-    ...Object.entries(step.inputs || {}).flatMap(([port,source])=>{
-      if(source.from && plan.steps[source.from])return [{id:name,from:plan.steps[source.from].node,to:step.node,output:source.port,input:port}];
-      const seedPort=Object.entries(bp.seed?.outputs || {}).find(([,d])=>d.id===source.record)?.[0];
-      return seedPort?[{id:name,from:bp.entry,to:step.node,output:seedPort,input:port}]:[];
-    })
-  ]));
-}
 function renderTimelineSettings(){
   document.querySelectorAll('.v2-tab').forEach(b=>b.hidden=false);
   $('v2-fields').hidden=false;
@@ -41,7 +30,7 @@ function renderV2Inspect(tab){
     <form id="hook-form"><label>目标节点<select id="hook-node">${Object.entries(run.loop_definition.nodes).map(([id,n])=>`<option value="${esc(id)}">${esc(n.label || id)}</option>`).join('')}</select></label>
     <label>动作<select id="hook-action"><option value="pause">执行前暂停</option><option value="notify-before">执行前通知</option><option value="notify-after">完成后通知</option></select></label>
     <label>频率<select id="hook-frequency"><option value="once">仅下一次</option><option value="always">后续每次</option></select></label>
-    <label>通知内容<input id="hook-message" placeholder="通过用户配置的通知命令发送"></label><button class="primary" ${ended?'disabled':''}>添加 Hook</button></form></div>`+
+    <label>显示或发送<select id="hook-route"><option value="workspace">仅在网页显示</option><option value="user">通过已配置出口发送</option></select></label><label>通知内容<input id="hook-message" placeholder="通过用户配置的通知命令发送"></label><button class="primary" ${ended?'disabled':''}>添加 Hook</button></form></div>`+
     run.settings.hooks.map(h=>`<div class="task-card"><strong>${esc(h.id)}</strong> · ${esc(h.action)} / ${esc(h.phase)} / ${esc(h.frequency)}<p>${esc(pretty(h.target))}</p><button data-toggle-hook="${esc(h.id)}" ${ended?'disabled':''}>${h.enabled===false?'启用':'停用'}</button></div>`).join('')+
     run.hook_firings.filter(f=>f.status==='held').map(f=>`<div class="task-card">${esc(f.tasks)} · 暂停中 <button class="primary" data-release-gate="${esc(f.id)}" ${ended?'disabled':''}>放行本次工作</button></div>`).join('')+
     '<div class="task-card"><h2>通知收件箱 / 送达回执</h2><p>这里保留通知状态与回执；实际发送使用用户配置的命令，未配置或发送失败会明确显示。</p></div>'+
@@ -65,7 +54,7 @@ document.addEventListener('submit',event=>{
   if(event.target.id!=='hook-form')return;event.preventDefault();
   safely(async()=>{
     const action=$('hook-action').value;
-    const hook={id:crypto.randomUUID(),action:action==='pause'?'pause':'notify',phase:action==='notify-after'?'after':'before',frequency:$('hook-frequency').value,target:{node:$('hook-node').value},message:$('hook-message').value};
+    const hook={id:crypto.randomUUID(),action:action==='pause'?'pause':'notify',phase:action==='notify-after'?'after':'before',frequency:$('hook-frequency').value,target:{node:$('hook-node').value},message:$('hook-message').value,route:$('hook-route').value};
     await api(`runs/${run.id}/settings`,{revision:run.settings.revision,change:{hooks:[...run.settings.hooks,hook]}});settingsBase=null;await refresh();toast('Hook 已添加');
   });
 });

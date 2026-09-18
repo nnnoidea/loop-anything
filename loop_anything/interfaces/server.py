@@ -16,6 +16,8 @@ from loop_anything.paths import platform_skill_directory
 def serve(store, engine, port, initial_run=None, protection=None, open_browser=False):
     root = Path(__file__).resolve().parents[1] / 'web'
     stop = threading.Event()
+    from loop_anything.interfaces.web_agent import WebAgent
+    web_agent = WebAgent(store, engine)
     timeline_guide = (platform_skill_directory() / 'references/run.md').read_text(encoding='utf-8')
 
     def scheduler():
@@ -48,11 +50,26 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
         def do_GET(self):
             try:
                 self.get()
+            except Conflict as exc:
+                self.send({'error': str(exc)}, 409)
             except Invalid as exc:
                 self.send({'error': str(exc)}, 404)
 
         def get(self):
             parts = urlsplit(self.path).path.strip('/').split('/')
+            if len(parts) == 5 and parts[0] == 'web':
+                web_agent.turn(parts[1], parts[2])
+                if parts[3:] == ['api', 'tools']:
+                    self.send({'tools': web_agent.definitions(parts[1], parts[2])})
+                    return
+                if parts[3:] == ['api', 'platform']:
+                    parts = ['api', 'platform']
+            if parts == ['api', 'conversations']:
+                self.send(web_agent.list())
+                return
+            if len(parts) == 3 and parts[:2] == ['api', 'conversations']:
+                self.send(web_agent.view(web_agent.read(parts[2])))
+                return
             if parts == ['api', 'tools']:
                 from loop_anything.interfaces.platform_tools import PlatformTools
                 self.send({'tools': PlatformTools(store).definitions()})
@@ -141,7 +158,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.send({'snapshot': run, 'execution_id': execution['id'], 'token': execution['token'],
                            'settings_revision': execution['settings_revision'], 'output_contract': node_for(run, execution['node'])['outputs']})
             else:
-                filename = {name: name for name in ('app.js', 'settings.js', 'forms.js', 'workspace.js', 'authoring.js', 'workspace.css', 'task_history.js', 'style.css', 'graph.css', 'editor.js', 'editor.css', 'packages.js', 'library.js', 'library.css', 'navigation.js')}.get('/'.join(parts))
+                filename = {name: name for name in ('app.js', 'loop_graph.js', 'settings.js', 'forms.js', 'workspace.js', 'authoring.js', 'workspace.css', 'conversation.js', 'conversation.css', 'task_history.js', 'style.css', 'graph.css', 'editor.js', 'editor.css', 'packages.js', 'library.js', 'library.css', 'navigation.js')}.get('/'.join(parts))
                 if parts == ['']:
                     filename = 'index.html'
                 if not filename:
@@ -182,6 +199,27 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.send({'error': 'Internal error; inspect engine console'}, 500)
 
         def post(self, parts, body):
+            if len(parts) == 5 and parts[0] == 'web' and parts[3:] == ['api', 'tools']:
+                result = web_agent.tool(parts[1], parts[2], body['tool'], body.get('arguments', {}))
+                self.send(result, 200 if result['ok'] else 409 if result['error']['code'] == 'conflict' else 400)
+                return
+            if parts == ['api', 'conversations']:
+                self.send(web_agent.create(body.get('key'), body.get('run_id')), 201)
+                return
+            if len(parts) == 4 and parts[:2] == ['api', 'conversations']:
+                ident, action = parts[2:]
+                if action == 'update':
+                    result = web_agent.update(ident, body['revision'], body.get('launch'), body.get('agent'))
+                elif action == 'send':
+                    result = web_agent.send(ident, body['revision'], body['message'], body.get('start', False), body.get('scope_task'))
+                elif action == 'start':
+                    result = web_agent.start(ident, body['revision'])
+                elif action == 'recover':
+                    result = web_agent.recover(ident, body.get('confirmed_stopped'))
+                else:
+                    raise Invalid('Unknown conversation operation')
+                self.send(result)
+                return
             if parts == ['api', 'tools']:
                 from loop_anything.interfaces.platform_tools import PlatformTools
                 result = PlatformTools(store).respond(body['tool'], body.get('arguments', {}))

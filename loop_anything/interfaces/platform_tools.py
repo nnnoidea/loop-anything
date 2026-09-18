@@ -37,7 +37,7 @@ class PlatformTools:
             ('remove_step', 'Remove a batch step if no other step depends on it. Reconnect its consumers first.', dict(draft, plan=TEXT, step=TEXT), ['draft_id', 'revision', 'plan', 'step'], False),
             ('connect_steps', 'Connect an existing batch step output to another step input; collect=true aggregates all outputs of a list-expanded step. This records the source, not a new task.', dict(draft, plan=TEXT, from_step=TEXT, output=TEXT, to_step=TEXT, input=TEXT, collect=BOOL), ['draft_id', 'revision', 'plan', 'from_step', 'output', 'to_step', 'input'], False),
             ('validate_loop', 'Validate a draft and report missing implementations separately. Validation never runs handlers.', {'draft_id': TEXT}, ['draft_id'], True),
-            ('publish_loop', 'Publish a validated draft through the existing Loop package installer; may have zero/partial/full implementations. Does not start a Run.', draft, ['draft_id', 'revision'], False),
+            ('publish_loop', 'Publish a validated draft through the existing Loop package installer. auto_version=true selects a new version if already installed, preserving the Loop ID and old Runs. Returns the current draft revision. Does not start a Run.', dict(draft, auto_version=BOOL), ['draft_id', 'revision'], False),
             ('export_loop', 'Export draft definition and attached resources as a Loop ZIP. The CLI client can save the returned base64 via --output.', {'draft_id': TEXT}, ['draft_id'], True),
             ('start_run', 'After user discussion, create a Run and acquire operation rights atomically. Complete entry_task_id using read_task/complete_task, arrange tasks and finish; no second initializer is launched. Optional bindings map node IDs to candidate IDs or null; missing implementations do not prevent Run creation. Optional fallback_node overrides the Loop choice; an empty string disables fallback. notification_command is this Run notification sender argv; persist an explicit chat destination rather than relying on the server environment.', {'key': TEXT, 'title': TEXT, 'inputs': OBJ, 'authorization': TEXT, 'bindings': OBJ, 'fallback_node': TEXT, 'global_agent_node': TEXT, 'notification_command': STRINGS}, ['key', 'title', 'authorization'], False),
             ('retry_notification', 'Retry one failed notification at its saved destination, including after the Run ends. Check whether an unknown delivery already arrived before retrying. Supply token if holding global operation rights; otherwise no overlapping Agent may be active.', {'run_id': TEXT, 'notification_id': TEXT, 'token': TEXT}, ['run_id', 'notification_id'], False),
@@ -73,6 +73,16 @@ class PlatformTools:
         if loop is None:
             raise Invalid('Unknown installed Loop key')
         return loop
+
+    def _next_version(self, bp):
+        versions = {item['loop_definition']['version'] for item in self.store.catalog()
+                    if item['loop_definition']['id'] == bp['id']}
+        if bp['version'].isdigit():
+            return str(max([int(bp['version'])] + [int(v) for v in versions if v.isdigit()]) + 1)
+        candidate = bp['version'] + '-next'
+        while candidate in versions:
+            candidate += '-next'
+        return candidate
 
     def _validation(self, draft):
         report = validate_v2(draft['loop_definition'], draft['implementations'])
@@ -160,8 +170,7 @@ class PlatformTools:
                 checks = doc.get('checks', {})
             bp = copy.deepcopy(source['loop_definition'])
             if a.get('new_version'):
-                version = bp['version']
-                bp['version'] = str(int(version) + 1) if version.isdigit() else version + '-next'
+                bp['version'] = self._next_version(bp)
             else:
                 bp['id'] = uid('loop')
                 bp['name'] = a.get('name', bp.get('name', bp['id']) + ' · 副本')
@@ -173,9 +182,13 @@ class PlatformTools:
             return self._validation(draft)
         if name in ('publish_loop', 'export_loop'):
             from loop_anything.packaging.packages import make_archive, decode_assets, install
+            if name == 'publish_loop' and a.get('auto_version') and any(item['loop_definition']['id'] == bp['id'] and item['loop_definition']['version'] == bp['version'] for item in self.store.catalog()):
+                bp['version'] = self._next_version(bp)
             raw = make_archive({'loop_definition': bp, 'implementations': implementations, 'checks': draft.get('checks', {})}, decode_assets(draft.get('assets', [])))
             if name == 'publish_loop':
-                return install(self.store, raw)
+                if a.get('auto_version'):
+                    draft = self.store.save_draft(bp, implementations, draft['id'], draft['revision'], draft.get('assets'), draft.get('checks'))
+                return dict(install(self.store, raw), draft_id=draft['id'], revision=draft['revision'])
             return {'filename': bp['id'] + '.loop.zip', 'base64': base64.b64encode(raw).decode()}
         if name == 'set_loop':
             for field in ('name', 'version', 'description', 'defaults', 'limits', 'guide', 'fallback_node', 'global_agent_node'):

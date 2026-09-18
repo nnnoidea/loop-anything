@@ -37,7 +37,7 @@ function executionLabel(implementation,version=2){
 }
 function libraryCard(item){
   const bp=item.loop_definition,guide=guideOf(bp),summary=implementationSummary(item);
-  return `<article class="panel catalog-card"><div class="library-card-top"><span class="loop-mark">↻</span><span class="badge">版本 ${esc(bp.version)}</span></div><h2><button class="card-title" data-loop="${esc(item.key)}">${esc(bp.name || bp.id)}</button></h2><p class="muted card-description">${esc(guide.purpose || bp.description || '作者尚未提供用途说明。可先查看流程与使用准备。')}</p><p class="implementation-level">${esc(summary.text)}</p><button class="primary" data-loop="${esc(item.key)}">了解这个 Loop →</button></article>`;
+  return `<article class="panel catalog-card"><div class="library-card-top"><span class="loop-mark">↻</span><span class="badge">版本 ${esc(bp.version)}</span></div><h2><button class="card-title" data-loop="${esc(item.key)}">${esc(bp.name || bp.id)}</button></h2><p class="muted card-description">${esc(guide.purpose || bp.description || '作者尚未提供用途说明。可先查看流程与使用准备。')}</p><p class="implementation-level">${esc(summary.text)}</p><div class="card-actions"><button class="primary" data-create="${esc(item.key)}">启动</button><button data-loop="${esc(item.key)}">了解这个 Loop →</button></div></article>`;
 }
 const loopPage=document.createElement('section');loopPage.id='loop-detail';loopPage.hidden=true;document.querySelector('main').append(loopPage);
 const authorizationField=document.createElement('label');authorizationField.innerHTML='本次用户授权<textarea id="create-authorization" rows="3" placeholder="例如：可自行修复并继续实验，但不得增加预算"></textarea>';$('create-title').parentElement.after(authorizationField);
@@ -63,7 +63,7 @@ async function downloadLoopPackage(){
 }
 function overviewHTML(item){
   const bp=item.loop_definition,g=guideOf(bp);
-  return `<p class="source-note">以下为作者说明，不代表平台已验证业务效果。缺少说明时不会自动猜测。</p><div class="guide-grid">${Object.entries(guideFields).map(([k,title])=>prose(title,g[k] || (k==='purpose'?bp.description:''))).join('')}</div>${loopHandbookHTML(bp,item.timeline_guide)}<p>Agent 兜底：${bp.fallback_node?esc(bp.nodes[bp.fallback_node]?.label || bp.fallback_node):'未启用'}。可在启动时调整。</p><details><summary>高级 · Loop 定义与绑定（只读）</summary><pre>${esc(pretty(item))}</pre></details><section id="loop-runs"></section>`;
+  return `${loopGraphHTML(item)}<p class="source-note">以下为作者说明，不代表平台已验证业务效果。缺少说明时不会自动猜测。</p><div class="guide-grid">${Object.entries(guideFields).map(([k,title])=>prose(title,g[k] || (k==='purpose'?bp.description:''))).join('')}</div>${loopHandbookHTML(bp,item.timeline_guide)}<p>Agent 兜底：${bp.fallback_node?esc(bp.nodes[bp.fallback_node]?.label || bp.fallback_node):'未启用'}。可在启动时调整。</p><details><summary>高级 · Loop 定义与绑定（只读）</summary><pre>${esc(pretty(item))}</pre></details><section id="loop-runs"></section>`;
 }
 function sourceText(source){
   if(!source || typeof source!=='object')return '查看完整契约';
@@ -75,10 +75,10 @@ function sourceText(source){
   if(Object.hasOwn(source,'literal'))return '固定值：'+pretty(source.literal);
   return '由具体 Task 指定来源';
 }
-function flowHTML(item){
+function flowHTML(item,showGraph=true){
   const bp=item.loop_definition;
   const rules=bp.schema_version===2?Object.entries(bp.plans || {}).map(([name,p])=>`<li><strong>${esc(name)}</strong> · ${Object.entries(p.steps).map(([k,s])=>esc(k)+(s.each?'（按列表展开）':'')).join('、')}<details><summary>查看参数、输入绑定与聚合</summary><pre>${esc(pretty(p))}</pre></details></li>`):(bp.transitions || []).map(r=>`<li>${esc(r.from)} → ${esc(r.to)}</li>`);
-  return `<div class="loop-notice">这里展示可用步骤模板，不是一次运行的固定路线。Agent 可在授权范围内规划具体 Task；Timeline 工具按模板构建本轮 Tasks；Engine 只推进已安排且输入就绪的工作。没有画出的动态计划，不代表不会发生。</div><h3>从「${esc(bp.nodes[bp.entry]?.label || bp.entry)}」开始</h3><p class="muted">展开一个步骤，了解它的职责和交接信息。</p><div class="step-grid">${Object.entries(bp.nodes).map(([id,node])=>`<details class="step-card"><summary><span>${esc(node.label || id)}</span><small>${esc(executionLabel(item.implementations[id],bp.schema_version))}</small></summary><p>${esc(node.description || node.instructions || '作者尚未说明本步骤职责。')}</p><h4>需要哪些信息</h4><ul>${Object.entries(node.inputs || {}).map(([name,spec])=>`<li><strong>${esc(name)}</strong> · ${esc(spec.type || '按来源读取')}<br>${esc(sourceText(bp.schema_version===2?(id===bp.entry?bp.seed?.inputs?.[name]:null):spec))}</li>`).join('') || '<li>未声明输入</li>'}</ul><h4>会写入哪些结果</h4><ul>${Object.entries(node.outputs || {}).map(([name,spec])=>`<li>${esc(name)} · ${esc(spec.record_type?'共享记录 '+spec.record_type:spec.type)}</li>`).join('') || '<li>未声明输出</li>'}</ul>${chosenImplementation(item,id)?.kind!=='agent' && node.plan_nodes?.length?`<p>脚本可新增的声明任务：${node.plan_nodes.map(n=>esc(bp.nodes[n]?.label || n)).join('、')}。是否规划取决于运行时决策。</p>`:''}<p class="muted">可能等待：输入未就绪、运行暂停，或本步骤所需的外部事件 / 用户结果。</p>${docView('节点专业 Skill',node.skills?.length?node.skills:null)}<details><summary>高级 · 完整节点契约</summary><pre>${esc(pretty(node))}</pre></details></details>`).join('')}</div><h3>本轮构建模板</h3><ul class="rule-list">${rules.join('') || '<li>未声明构建模板。作者可使用构建工具补充模板；运行时按 Timeline 规则或终止信号结束。</li>'}</ul>`;
+  return `${showGraph?loopGraphHTML(item):''}<div class="loop-notice">这里展示可用步骤模板，不是一次运行的固定路线。Agent 可在授权范围内规划具体 Task；Timeline 工具按模板构建本轮 Tasks；Engine 只推进已安排且输入就绪的工作。没有画出的动态计划，不代表不会发生。</div><h3>从「${esc(bp.nodes[bp.entry]?.label || bp.entry)}」开始</h3><p class="muted">展开一个步骤，了解它的职责和交接信息。</p><div class="step-grid">${Object.entries(bp.nodes).map(([id,node])=>`<details class="step-card"><summary><span>${esc(node.label || id)}</span><small>${esc(executionLabel(item.implementations[id],bp.schema_version))}</small></summary><p>${esc(node.description || node.instructions || '作者尚未说明本步骤职责。')}</p><h4>需要哪些信息</h4><ul>${Object.entries(node.inputs || {}).map(([name,spec])=>`<li><strong>${esc(name)}</strong> · ${esc(spec.type || '按来源读取')}<br>${esc(sourceText(bp.schema_version===2?(id===bp.entry?bp.seed?.inputs?.[name]:null):spec))}</li>`).join('') || '<li>未声明输入</li>'}</ul><h4>会写入哪些结果</h4><ul>${Object.entries(node.outputs || {}).map(([name,spec])=>`<li>${esc(name)} · ${esc(spec.record_type?'共享记录 '+spec.record_type:spec.type)}</li>`).join('') || '<li>未声明输出</li>'}</ul>${chosenImplementation(item,id)?.kind!=='agent' && node.plan_nodes?.length?`<p>脚本可新增的声明任务：${node.plan_nodes.map(n=>esc(bp.nodes[n]?.label || n)).join('、')}。是否规划取决于运行时决策。</p>`:''}<p class="muted">可能等待：输入未就绪、运行暂停，或本步骤所需的外部事件 / 用户结果。</p>${docView('节点专业 Skill',node.skills?.length?node.skills:null)}<details><summary>高级 · 完整节点契约</summary><pre>${esc(pretty(node))}</pre></details></details>`).join('')}</div><h3>本轮构建模板</h3><ul class="rule-list">${rules.join('') || '<li>未声明构建模板。作者可使用构建工具补充模板；运行时按 Timeline 规则或终止信号结束。</li>'}</ul>`;
 }
 const checkNames={implementation:'节点实现',manifest:'包定义完整性',asset:'随包资源',cwd:'工作目录',executable:'执行程序',script:'入口脚本',path:'作者要求的路径',program:'作者要求的程序',env:'环境变量',manual_or_event:'外部输入',runtime:'运行时行为',structure:'Loop 定义结构',environment:'本机环境'};
 function checkAdvice(c){
@@ -102,7 +102,7 @@ function preparationHTML(item){
 }
 function renderLoop(){
   const item=currentLoop();if(!item)return;const bp=item.loop_definition;
-  loopPage.innerHTML=`<div class="page-heading"><div><button id="library-back" class="back-link">← Loop 库</button><h1>${esc(bp.name || bp.id)}</h1><span class="muted">版本 ${esc(bp.version)} · ${esc(implementationSummary(item).text)}</span></div><div class="toolbar"><button data-copy-loop-definition="${esc(item.key)}">复制并编辑</button><button data-version-loop-definition="${esc(item.key)}">创建新版本</button><button class="primary" data-create="${esc(item.key)}">使用这个 Loop →</button></div></div><div class="loop-content panel"><div class="tabs">${[['overview','概览'],['flow','流程与步骤'],['prepare','使用准备']].map(([k,label])=>`<button data-loop-tab="${k}" class="${loopTab===k?'selected':''}" aria-pressed="${loopTab===k}">${label}</button>`).join('')}</div><div class="loop-tab-body">${loopTab==='overview'?overviewHTML(item):loopTab==='flow'?flowHTML(item):preparationHTML(item)}</div></div>`;
+  loopPage.innerHTML=`<div class="page-heading"><div><button id="library-back" class="back-link">← Loop 库</button><h1>${esc(bp.name || bp.id)}</h1><span class="muted">版本 ${esc(bp.version)} · ${esc(implementationSummary(item).text)}</span></div><div class="toolbar"><button data-copy-loop-definition="${esc(item.key)}">复制为另一个 Loop</button><button data-version-loop-definition="${esc(item.key)}">编辑 Loop</button><button class="primary" data-create="${esc(item.key)}">启动</button></div></div><div class="loop-content panel"><div class="tabs">${[['overview','概览'],['flow','流程与步骤'],['prepare','使用准备']].map(([k,label])=>`<button data-loop-tab="${k}" class="${loopTab===k?'selected':''}" aria-pressed="${loopTab===k}">${label}</button>`).join('')}</div><div class="loop-tab-body">${loopTab==='overview'?overviewHTML(item):loopTab==='flow'?flowHTML(item):preparationHTML(item)}</div></div>`;
 }
 async function preflight(item){
   let report;
@@ -175,26 +175,24 @@ function renderLaunchFields(item){
   }).join('') || '<p>没有声明启动参数。</p>';
   $('launch-fields')._fields=fields;
 }
-function collectLaunchInputs(){
+function collectLaunchInputs(requireComplete=true){
   let values=JSON.parse($('create-inputs').value);
   if(!values || typeof values!=='object' || Array.isArray(values))throw new Error('初始输入必须是 JSON 对象');
   if(launchMode==='form'){
     values=Object.assign(Object.create(null),values);
     for(const [i,f] of $('launch-fields')._fields.entries()){
       const el=$('launch-field-'+i),text=el.value;
-      if(!text && f.type!=='string'){if(f.required)throw new Error('请填写 '+f.label);delete values[f.key];continue;}
+      if(!text && f.type!=='string'){if(f.required&&requireComplete)throw new Error('请填写 '+f.label);delete values[f.key];continue;}
       values[f.key]=parseField(text,el.tagName==='SELECT'?'json':f.type,f.label);
     }
   }
   $('create-inputs').value=pretty(values);return values;
 }
 function prepareLaunch(item){
-  if(!$('launch-bindings'))$('launch-fields').insertAdjacentHTML('afterend','<details open><summary>本次 Run 的默认实现</summary><p class="small muted">可沿用默认或改选候选；未选用的节点在实际需要执行时报告。</p><div id="launch-bindings"></div></details>');
-  if(!$('launch-fallback'))$('launch-bindings').parentElement.insertAdjacentHTML('afterend','<label>Agent 兜底节点<select id="launch-fallback"></select></label><p class="small muted">未覆盖状态交给所选节点。Agent 由该节点的实现选择决定；留空时只记录问题。</p>');
+  if(!$('launch-fallback'))$('launch-fields').insertAdjacentHTML('afterend','<label>Agent 兜底节点<select id="launch-fallback"></select></label><p class="small muted">未覆盖状态交给所选节点。Agent 由该节点的实现选择决定；留空时只记录问题。</p>');
   if(!$('launch-global-agent'))$('launch-fallback').parentElement.insertAdjacentHTML('afterend','<label>全局 Agent 节点<select id="launch-global-agent"></select></label>');
   $('launch-global-agent').innerHTML=globalAgentOptions(item.loop_definition,item.loop_definition.global_agent_node);
   $('launch-fallback').innerHTML=fallbackOptions(item.loop_definition,item.loop_definition.fallback_node);
-  $('launch-bindings').innerHTML=bindingFields(item);
   $('create-authorization').value='';launchEpoch++;pendingLaunch=null;launchMode='form';$('create-dialog').scrollTop=0;$('launch-error').textContent='';$('launch-confirm').hidden=true;$('launch-edit').hidden=false;$('launch-fields').hidden=false;$('launch-json').hidden=true;$('launch-mode').textContent='切换到高级 JSON';$('launch-ack').checked=false;
   $('create-implementation-note').textContent='接下来会检查本机条件，并列出实际执行方式。现在不会启动任何工作。';renderLaunchFields(item);
 }
@@ -209,7 +207,8 @@ async function reviewLaunch(){
     const report=await preflight(item);
     if(epoch!==launchEpoch || !$('create-dialog').open)return;
     if(preventsStart(report)){$('launch-error').textContent='运行前检查发现缺项，请先在「使用准备」中处理。';$('create-dialog').close();await openLoop(item.key,'prepare');toast('发现阻塞项，尚未启动。请查看使用准备。');return;}
-    pendingLaunch={key:item.key,title,inputs,authorization:$('create-authorization').value,bindings:readBindingFields($('launch-bindings')),fallback_node:$('launch-fallback').value,global_agent_node:$('launch-global-agent').value};
+    await savePreparation();
+    pendingLaunch={key:item.key,title,inputs,authorization:$('create-authorization').value,bindings:structuredClone(launchBindings),fallback_node:$('launch-fallback').value,global_agent_node:$('launch-global-agent').value};
     $('launch-summary').innerHTML=prose('使用的 Loop',item.loop_definition.name || item.loop_definition.id)+prose('运行名称',title)+prose('用户授权',pendingLaunch.authorization || '未提供额外授权')+`<h4>本次参数</h4><dl class="input-summary">${Object.entries(inputs).map(([k,v])=>`<dt>${esc(guideOf(item.loop_definition).parameters?.[k]?.label || k)}</dt><dd>${esc(typeof v==='string'?v:pretty(v))}</dd>`).join('') || '<dd>无启动参数</dd>'}</dl>`+executionHTML(item,pendingLaunch.bindings)+`<h4>运行前检查</h4>${launchCheckHTML(report)}`;
     $('launch-edit').hidden=true;$('launch-confirm').hidden=false;$('launch-ack').checked=false;$('launch-start').disabled=false;$('create-dialog').scrollTop=0;
   }catch(error){$('launch-error').textContent=error.message;}
@@ -225,15 +224,17 @@ async function startReviewedLaunch(){
   if(!$('launch-ack').checked){toast('请先确认执行方式和未验证项。');return;}
   const epoch=launchEpoch;launchBusy=true;$('launch-start').disabled=true;
   try{
+    await savePreparation();
     const payload=structuredClone(pendingLaunch),item=catalog.find(c=>c.key===payload.key),report=await preflight(item);
     if(epoch!==launchEpoch || !$('create-dialog').open)return;
     if(preventsStart(report)){pendingLaunch=null;$('create-dialog').close();await openLoop(item.key,'prepare');throw new Error('环境检查结果已变化，未启动。');}
-    const created=await api('runs',payload);pendingLaunch=null;$('create-dialog').close();await selectRun(created.id);
-  }finally{launchBusy=false;$('launch-start').disabled=false;}
+    if(conversation.agent?.command?.length){await sendWebMessage('按页面中已确认的配置启动本次运行，完成初始化并安排工作。',true);return;}
+    const created=await api(`conversations/${conversation.id}/start`,{revision:conversation.revision});pendingLaunch=null;preparationDirty=false;await selectRun(created.run_id);
+  }finally{launchBusy=false;$('launch-start').disabled=!!conversation?.busy;}
 }
 async function editLoopNode(id){
   const item=currentLoop();if(!item)return;
-  if(await newLoopDefinition(item)===false)return;
+  if(await newLoopDefinition(item,true)===false)return;
   selectEditor({node:id});
 }
 document.addEventListener('click',event=>safely(async()=>{
