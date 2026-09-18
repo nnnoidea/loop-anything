@@ -48,6 +48,25 @@ class PlatformToolTests(unittest.TestCase):
         self.assertTrue(self.tools.call('validate_loop', {'draft_id': self.draft['draft_id']})['valid'])
         return self.tools.call('publish_loop', {'draft_id': self.draft['draft_id'], 'revision': self.draft['revision']})['key']
 
+    def test_frequent_edits_keep_identity_and_automatically_skip_installed_versions(self):
+        key = self.build()
+        before = self.store.catalog()
+        run = self.store.create(key, 'Existing Run', {'request': 'original'})
+        snapshot = self.store.get(run['id'])
+        second = self.tools.call('copy_loop', {'key': key, 'new_version': True})
+        self.tools.call('publish_loop', {'draft_id': second['draft_id'], 'revision': second['revision'], 'auto_version': True})
+        third = self.tools.call('copy_loop', {'key': key, 'new_version': True})
+        doc = self.tools.call('read_loop', {'draft_id': third['draft_id']})['loop']
+        self.assertEqual('3', doc['loop_definition']['version'])
+        changed = self.tools.call('set_loop', {'draft_id': self.draft['draft_id'], 'revision': self.draft['revision'], 'description': 'new requirements'})
+        published = self.tools.call('publish_loop', {'draft_id': changed['draft_id'], 'revision': changed['revision'], 'auto_version': True})
+        self.assertEqual('3', published['version'])
+        self.assertEqual(snapshot, self.store.get(run['id']))
+        self.assertEqual(before[0], next(c for c in self.store.catalog() if c['key'] == key))
+        self.assertEqual(1, len({c['loop_definition']['id'] for c in self.store.catalog()}))
+        stale = self.tools.respond('publish_loop', {'draft_id': changed['draft_id'], 'revision': changed['revision'], 'auto_version': True})
+        self.assertFalse(stale['ok'])
+
     def test_author_tools_publish_then_user_tools_initialize_and_run(self):
         key = self.build()
         started = self.tools.call('start_run', {'key': key, 'title': 'User run', 'inputs': {'request': 'uppercase'}, 'authorization': 'Run this example'})

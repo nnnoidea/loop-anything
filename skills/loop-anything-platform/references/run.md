@@ -4,7 +4,7 @@
 
 ## 从任意入口继续已有 Run
 
-终端、微信、飞书里的 Agent 连接同一个平台实例，读取同一条 Timeline。Run 不属于聊天会话；换入口不新建 Run，也不要求读取之前的聊天历史。
+终端、网页、微信、飞书里的 Agent 连接同一个平台实例，读取同一条 Timeline。Run 不属于聊天会话；换入口不新建 Run，也不要求读取之前的聊天历史。
 
 1. 已知 Run ID 就直接读取；否则用 `list_runs`，可传 query 按名称、Run ID、Loop 名称或目标筛选，或传 status 按运行状态筛选。返回列表按创建时间从新到旧；多个候选无法区分时请用户选择，不猜测“最近一个”就是目标。
 2. 无需 token，调用 `read_timeline` 查看最新目标、要求、指导、授权、记录索引、任务和异常。需要时用 `next_tasks`、`read_task`、`read_record`、`read_plans` 读取详情；完整事实和变更历史由 `read_run` 读取。查看状态不取得操作权，其他 Agent 可以继续工作。
@@ -20,6 +20,16 @@ python3 scripts/call.py acquire_run --arguments '{"run_id":"RUN_ID"}'
 `read_timeline` 返回 `read_only: true` 时只是查看，不授予写入权；此时 scope_task 的 null 不能理解为有全局权限。带有效 token 读取时，`read_only: false`，scope_task 才表示本次操作范围；写入仍受 Run 终态及已派发任务的保护。显式传入过期或错误令牌会报错，不会默默切成只读。
 
 把影响后续工作的已确认目标、约束和决定写入现有 settings、任务安排或任务结果，分别使用 change_settings、change_task/build_plan/add_task、complete_task；不要只在聊天里说“记住了”。无需另外维护一份跨入口摘要或复制全部聊天记录。通知接收位置独立于操作入口；换聊天不会自动更改它。
+
+## 在网页对话中操作
+
+网页 prompt 提供 `tool_url` 时，所有调用都用这个地址覆盖 `--url`，先 `list` 查看本次可用工具。这个入口已绑定所选准备页或 Run，并代管本次 token；参数中不传 run_id 或 token；`acquire_run` 也不传 task_id，操作范围由网页选择。`read_task` 等任务工具仍需具体 task_id。下文普通终端示例中的 run_id/token 应省略，不能换回默认平台地址绕过范围限制。
+
+- 启动前：`read_loop` 读取作者说明，`read_preparation` 读取页面选项与 revision。讨论确定的输入和候选用 `change_preparation`（revision、change）保存，用户会看到更新；不会因此执行业务工作。
+- 用户明确要求启动时：`start_prepared_run`（revision）创建并取得同一个 Run 的操作权，返回 run_id、entry_task_id。再次 `list` 获取运行工具，然后按入口契约初始化并安排工作，最后 `finish`。脚本入口交给 Engine 执行。普通讨论不调用启动工具；启动后不重新创建 Run。
+- 运行中：只读工具直接读取最新 Timeline。需要写入才 `acquire_run`，范围由用户在网页中选择；取得后重新读取版本再改动，完成后 `finish`。冲突时告知用户，不能抢占其他 Agent。
+
+最终标准输出作为网页回复；业务结果仍必须由工具提交。网页对话记录保存在本机，其他入口仍通过 Timeline 获取已确认的业务事实。网页 Agent 的命令、目录和超时单独保存在本机，修改它不改变节点的候选实现。每条消息重新调用一次命令；当前回复在命令退出后整体显示。
 
 ## 被平台命令唤醒时
 

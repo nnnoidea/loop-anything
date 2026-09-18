@@ -41,6 +41,7 @@ node --test tests/library.test.js tests/task-history.test.js
 ```sh
 node tests/library-browser.cjs
 node tests/visual-browser.cjs
+node tests/web-agent-browser.cjs
 ```
 
 它使用隔离的临时数据库。普通测试使用模拟结果或本地命令，不调用真实模型。真实 Agent 场景需另外明确模型、环境和业务边界。

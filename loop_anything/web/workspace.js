@@ -42,7 +42,7 @@ function taskDependencyGraph(items){
 }
 let graphScale=null,graphRun=null;
 function sizeTaskGraph(mode){
-  const canvas=document.querySelector('.process-canvas'),scroll=canvas?.closest('.dependency-scroll');if(!canvas)return;
+  const canvas=document.querySelector('.process-canvas'),scroll=canvas?.closest('.dependency-scroll');if(!canvas || !canvas.offsetWidth || !canvas.offsetHeight || scroll.clientWidth<=24 || scroll.clientHeight<=24)return;
   if(graphRun!==run.id){graphScale=null;graphRun=run.id;}
   const fit=Math.min(1,(scroll.clientWidth-24)/canvas.offsetWidth,(scroll.clientHeight-24)/canvas.offsetHeight);
   graphScale=mode==='fit'?fit:mode==='in'?Math.min(1.5,(graphScale||fit)+.15):mode==='out'?Math.max(.2,(graphScale||fit)-.15):graphScale??Math.min(1,(scroll.clientWidth-24)/canvas.offsetWidth);

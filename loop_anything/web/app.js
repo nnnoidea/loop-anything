@@ -18,6 +18,7 @@ async function api(url, data) {
 function toast(message) { $('toast').textContent = message; $('toast').style.display = 'block'; clearTimeout(toast.timer); toast.timer = setTimeout(() => $('toast').style.display = 'none', 5500); }
 async function safely(fn) { try { await fn(); } catch (error) { toast(error.message); } }
 function showPage() {
+  if($('launch-page'))$('launch-page').hidden=page!=='launch';
   $('workspace').hidden = page !== 'runs' || !run;
   $('empty').hidden = page !== 'runs' || !!run;
   $('catalog-page').hidden = page !== 'catalog';
@@ -32,8 +33,9 @@ async function refresh() {
   loading = true;
   try {
     runs = await api('runs');
+    await loadPreparationCards();
     $('engine-status').textContent = 'Engine connected';
-    const listHTML = runs.map(r => `<button class="run-item ${selected === r.id ? 'chosen' : ''}" data-run="${esc(r.id)}"><strong>${esc(r.title)}</strong><small>${esc(labels[r.status])} · ${r.executions.length} executions</small></button>`).join('');
+    const listHTML = runs.map(r => `<button class="run-item ${page==='runs' && selected === r.id ? 'chosen' : ''}" data-run="${esc(r.id)}"><strong>${esc(r.title)}</strong><small>${esc(labels[r.status])} · ${r.executions.length} executions</small></button>`).join('');
     if(listSignature !== listHTML){$('run-list').innerHTML=listHTML;listSignature=listHTML;}
     if (!selected && runs.length) selected = runs[0].id;
     if (selected && page==='runs') { const id=selected,current=await api('runs/' + id);if(page==='runs' && selected===id){run=current;renderRun();} }
@@ -71,45 +73,15 @@ function renderRun() {
   renderGraph();
   if (!['TEXTAREA','INPUT','SELECT'].includes(document.activeElement?.tagName) || !document.activeElement.closest('#inspect')) renderInspect();
   if (!settingsBase || settingsBase.runId !== run.id || (run.schema_version===2 && run.initialized && !settingsBase.initialized)) loadSettings();
+  if(typeof renderConversation==='function' && conversation?.run_id===run.id)renderConversation();
   $('settings-revision').textContent = 'rev ' + run.settings.revision + (settingsBase.revision !== run.settings.revision ? ' · 表单已过期' : '');
 }
 function renderGraph() {
-  const signature = pretty([run.id,filterNode,run.executions,Object.values(run.tasks || {}).map(w=>[w.id,w.status]),[],$('graph').clientWidth]);
+  const signature = pretty([run.id,filterNode,run.settings.bindings,run.executions,Object.values(run.tasks || {}).map(w=>[w.id,w.status]),[],$('graph').clientWidth]);
   if(graphSignature===signature)return;graphSignature=signature;
-  $('graph').innerHTML = Object.entries(run.loop_definition.nodes).map(([id,node]) => {
-    const executions = run.executions.filter(e=>e.node === id), live = executions.filter(e=>!['completed','cancelled'].includes(e.status));
-    const latest = executions.at(-1);
-    const implementation=chosenImplementation(run,id,run.settings.bindings || {}) || {};
-    const kind = implementation.kind || '未选用';
-    return `<button class="node ${live.length?'active-node':''} ${filterNode===id?'selected-node':''}" data-node="${esc(id)}"><div class="node-heading"><span class="node-icon">${kind==='agent'?'✧':kind==='event'?'◷':kind==='approval'?'✓':'▤'}</span>${esc(node.label || id)}</div><small>${esc(id)} · ${esc(kind)}${implementation.simulation ? ' / simulated' : ''}</small><div class="node-state">${latest?badge(latest.status):run.schema_version===2?(Object.values(run.tasks).some(w=>w.spec.node===id)?'已安排，尚未派发':'未安排 Task'):'尚未执行'} <span>${executions.length ? `${live.length} active / ${executions.length} total` : ''}</span></div></button>`;
-  }).join('');
-  let edges = loop_definitionEdges(run.loop_definition);
-  $('graph-caption').innerHTML = '<div class="edge-list">' + edges.map(e=>`<span title="${esc(pretty(e))}">${esc(e.from)} → ${esc(e.to)}${e.each?' · fan-out':e.join?' · join':''}${e.when?' · '+esc(e.when.path)+'='+esc(e.when.equals):''}</span>`).join('')+'</div>';
-  if(run.schema_version===2)$('graph-caption').insertAdjacentHTML('afterbegin','<p>图中是Loop 定义模板及其默认依赖，不代表本轮全部执行。实际安排与输入就绪状态请看 Tasks；Engine 不会补建省略的步骤。</p>');
-  if(run.schema_version===2)$('graph-caption').insertAdjacentHTML('beforeend',`<p>未覆盖状态：${run.settings.fallback_node?'进入兜底节点 '+esc(nodeLabel(run.settings.fallback_node)):'保留问题，未启用 Agent 兜底'}</p>`);
-  const cards = [...$('graph').querySelectorAll('.node')];
-  const columns = getComputedStyle($('graph')).gridTemplateColumns.split(' ').length;
-  cards.forEach((card,i)=>{card.style.gridRow=String(Math.floor(i/columns)+1);card.style.gridColumn=String(Math.floor(i/columns)%2 ? columns-i%columns : i%columns+1);});
-  requestAnimationFrame(()=>drawEdges(edges));
-}
-function drawEdges(edges) {
-  const graph=$('graph');if(!graph.offsetWidth)return;
-  graph.querySelector('svg')?.remove();
-  const ns='http://www.w3.org/2000/svg',svg=document.createElementNS(ns,'svg');
-  svg.classList.add('graph-edges');svg.setAttribute('width',graph.clientWidth);svg.setAttribute('height',graph.clientHeight);svg.setAttribute('aria-hidden','true');
-  svg.innerHTML='<defs><marker id="edge-arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6" fill="#9cadd0"/></marker></defs>';
-  const cards=new Map([...graph.querySelectorAll('.node')].map(c=>[c.dataset.node,c]));
-  for(const edge of edges){
-    const a=cards.get(edge.from),b=cards.get(edge.to);if(!a||!b)continue;
-    const ax=a.offsetLeft,ay=a.offsetTop,aw=a.offsetWidth,ah=a.offsetHeight,bx=b.offsetLeft,by=b.offsetTop,bw=b.offsetWidth,bh=b.offsetHeight;
-    let d;
-    if(a===b){d=`M ${ax+aw*.3} ${ay} C ${ax+aw*.3} ${ay-23}, ${ax+aw*.7} ${ay-23}, ${ax+aw*.7} ${ay}`;}
-    else if(ay===by){const forward=bx>ax,sx=forward?ax+aw:ax,tx=forward?bx:bx+bw;d=`M ${sx} ${ay+ah/2} L ${tx} ${by+bh/2}`;}
-    else if(ax===bx){const down=by>ay;d=`M ${ax+aw/2} ${down?ay+ah:ay} L ${bx+bw/2} ${down?by:by+bh}`;}
-    else {const down=by>ay,sy=down?ay+ah:ay,ty=down?by:by+bh,my=(sy+ty)/2;d=`M ${ax+aw/2} ${sy} L ${ax+aw/2} ${my} L ${bx+bw/2} ${my} L ${bx+bw/2} ${ty}`;}
-    const line=document.createElementNS(ns,'path');line.setAttribute('d',d);line.setAttribute('fill','none');line.setAttribute('stroke','#9cadd0');line.setAttribute('stroke-width','1.5');line.setAttribute('marker-end','url(#edge-arrow)');if(edge.join)line.setAttribute('stroke-dasharray','4 3');svg.appendChild(line);
-  }
-  graph.prepend(svg);
+  $('graph').innerHTML=loopGraphHTML(run,{bindings:run.settings.bindings || {},focus:filterNode || '',action:'run'});
+  if(filterNode)focusLoopMap($('graph').querySelector('.loop-map'),filterNode);
+  $('graph-caption').textContent='循环关系来自 Loop 定义；上方运行过程保留每一项实际任务、结果与历次执行。';
 }
 function loadSettings() {
   settingsBase = {runId:run.id,initialized:run.initialized,...structuredClone(run.settings)};
@@ -154,12 +126,12 @@ function details(id) {
   $('detail-content').innerHTML=`${badge(e.status)} <span class="mono">attempt ${e.attempt} · settings r${e.settings_revision}</span>${e.error?`<pre>${esc(e.error)}</pre>`:''}<div class="detail-section"><h3>创建原因</h3><p class="small">${esc(cause)} · ${esc(e.task_id || '')}</p></div><div class="detail-grid"><div><h3>Resolved inputs</h3><pre>${esc(pretty(e.inputs))}</pre></div><div><h3>Committed outputs</h3><pre>${esc(pretty(e.outputs || null))}</pre></div></div><div class="detail-section"><h3>Input provenance</h3><pre>${esc(pretty(e.sources))}</pre></div><div class="detail-section"><h3>Handler / external task</h3><pre>${esc(pretty({implementation:e.implementation,external_id:e.external_id,wake_at:e.wake_at?new Date(e.wake_at*1000).toLocaleString():undefined}))}</pre></div>${run.tasks?.[e.task_id]?.execution_id===e.id && ['fault','blocked'].includes(e.status)&&!e.routed?`<button data-retry="${esc(e.id)}">重试此执行</button><p class="field-note">先检查外部任务是否已经产生副作用，避免重复提交。</p>`:''}`;
   if(!$('detail-dialog').open)$('detail-dialog').showModal();
 }
-function openCreate(key) {
-  if(!catalog.length){navigateTo({type:'catalog'});toast('先导入一个 Loop，或新建 Loop。');return;}
-  $('create-loop_definition').innerHTML=catalog.map(c=>`<option value="${esc(c.key)}">${esc(c.loop_definition.name || c.key)} · ${esc(c.key)}</option>`).join('');
-  if(key)$('create-loop_definition').value=key;
-  createChanged(); $('create-dialog').showModal();
+async function openCreate(key) {
+  if(!catalog.length){await navigateTo({type:'catalog'});toast('先导入或新建一个 Loop。');return;}
+  if(!key){await navigateTo({type:'catalog'});return;}
+  await openPreparation(key);
 }
+
 function createChanged() {
   const item=catalog.find(c=>c.key===$('create-loop_definition').value); if(!item)return;
   $('create-description').textContent=item.loop_definition.description || '';
@@ -169,13 +141,13 @@ function createChanged() {
 }
 document.addEventListener('click',event=>safely(async()=>{
   const button=event.target.closest('button,[data-exec]'); if(!button)return;
-  if(button.classList.contains('close-dialog')){button.closest('dialog').close();return;}
+  if(button.classList.contains('close-dialog')){if(button.closest('#create-dialog')){await savePreparation();await openLoop(conversation.launch.key);}else button.closest('dialog').close();return;}
   const d=button.dataset;
   if(d.run){await selectRun(d.run);return;}
   if(d.node){filterNode=d.node;activeTab=run.schema_version===2?'task-history':'executions';inspectSignature='';renderGraph();renderInspect();return;}
   if(d.tab){activeTab=d.tab;renderInspect();return;}
   if(d.exec){if(run.schema_version===2){selectedTask=run.executions.find(e=>e.id===d.exec)?.task_id;selectedAttempt=d.exec;activeTab='task-history';inspectSignature='';renderInspect();}else details(d.exec);return;}
-  if(d.create){openCreate(d.create);return;}
+  if(d.create){await openCreate(d.create);return;}
   if(d.validate){const c=catalog.find(x=>x.key===d.validate);const r=await api('validate',c);toast(r.valid?'验证通过 · '+r.warnings.join('；'):r.errors.join('；'));return;}
   const runId=run?.id;
   if(d.retry){await api(`runs/${runId}/command`,{action:'retry',execution_id:d.retry});$('detail-dialog').close();await refresh();return;}
@@ -186,7 +158,7 @@ document.addEventListener('click',event=>safely(async()=>{
   }
   if(d.sendEvent){const e=run.executions.find(x=>x.id===d.sendEvent);await api(`runs/${runId}/event`,{event_id:crypto.randomUUID(),name:e.implementation.event,key:e.parameters?.event_key,payload:JSON.parse($('event-'+e.id).value)});toast('事件已持久化');await refresh();return;}
   switch(button.id){
-    case 'new-run':openCreate();break;
+    case 'new-run':await openCreate();break;
     case 'empty-create':await navigateTo({type:'catalog'});break;
     case 'loop_definitions-nav':await navigateTo({type:'catalog'});break;
     case 'clear-filter':filterNode=null;renderGraph();renderInspect();break;
@@ -214,6 +186,7 @@ async function loadCatalog(){
   catalog=await api('catalog');
   $('catalog-cards').innerHTML=catalog.map(libraryCard).join('') || '<p class="empty-inline">还没有 Loop。可以导入别人分享的 .loop.zip，或新建自己的Loop 定义。</p>';
   if(typeof loadDraftCards==='function')await loadDraftCards();
+  if(typeof loadPreparationCards==='function')await loadPreparationCards();
 }
 window.addEventListener('DOMContentLoaded',()=>safely(async()=>{
   await loadCatalog();
