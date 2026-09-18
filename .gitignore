@@ -1,0 +1,27 @@
+# Local runs and development history
+.loop-anything/
+.state-loop/
+.local-history/
+.semantic-alignment/
+
+# Generated distributions and build caches
+dist/
+artifacts/
+build/
+*.egg-info/
+__pycache__/
+*.py[cod]
+.venv/
+node_modules/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local configuration and OS metadata
+.env
+.env.*
+!.env.example
+.DS_Store
+
+# Local-only command path retained for already-published historical examples
+examples/simulated_tasks.py

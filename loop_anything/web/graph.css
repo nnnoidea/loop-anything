@@ -1,0 +1,4 @@
+#graph{position:relative;gap:36px 28px;padding:28px 24px;grid-auto-rows:minmax(112px,auto)}
+.graph-edges{position:absolute;inset:0;pointer-events:none;z-index:0}
+.node{z-index:1}
+.tabs { flex-wrap: wrap; }
