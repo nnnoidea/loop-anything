@@ -22,11 +22,11 @@ function parseRoute(hash){
 function rememberEditor(){
   if(page!=='editor' || !editor)return;
   collectAll();
-  editor.routeId ||= editor.id || 'session-'+crypto.randomUUID();
+  editor.routeId ||= editor.id || 'session-'+randomKey();
   editorSessions.set(editor.routeId,{editor,selection:editSelection});
 }
 function registerEditor(){
-  editor.routeId ||= editor.id || 'session-'+crypto.randomUUID();
+  editor.routeId ||= editor.id || 'session-'+randomKey();
   editor.returnTo ||= activeRoute.type==='editor'?{type:'catalog'}:structuredClone(activeRoute.type==='home'?{type:'catalog'}:activeRoute);
   editorSessions.set(editor.routeId,{editor,selection:null});
   return editor.routeId;

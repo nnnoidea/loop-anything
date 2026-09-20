@@ -25,6 +25,7 @@ class Store:
             db.executescript('''
             CREATE TABLE IF NOT EXISTS loop_definitions (key TEXT PRIMARY KEY, digest TEXT, document TEXT, implementations TEXT);
             CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, document TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS platform_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS timeline_parts (
               run_id TEXT NOT NULL, section TEXT NOT NULL, item TEXT NOT NULL,
               position INTEGER NOT NULL, document TEXT NOT NULL,
@@ -41,6 +42,16 @@ class Store:
             yield db
         finally:
             db.close()
+
+    def keep_awake(self, value=None, default=True):
+        with self.connection() as db:
+            if value is not None:
+                if type(value) is not bool:
+                    raise Invalid('keep_awake must be a boolean')
+                db.execute("INSERT INTO platform_settings VALUES ('keep_awake', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(value),))
+                db.commit()
+            row = db.execute("SELECT value FROM platform_settings WHERE key='keep_awake'").fetchone()
+            return json.loads(row[0]) if row else default
 
     def publish(self, loop_definition, implementations):
         from loop_anything.packaging.packages import make_archive, install

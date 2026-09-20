@@ -40,3 +40,27 @@ class InstallationTests(unittest.TestCase):
             install_skills(updated, directory, replace=True)
             self.assertEqual('http://127.0.0.1:9876', json.loads(connection.read_text())['url'])
             self.assertEqual('keep', extra.read_text())
+
+    def test_service_configuration_keeps_workspace_and_rejects_a_busy_port(self):
+        import plistlib
+        import socket
+        from loop_anything.runtime.service import definition, available, option
+        with tempfile.TemporaryDirectory() as folder:
+            database = Path(folder) / 'existing workspace.db'
+            store = Store(database)
+            with socket.socket() as listener:
+                listener.bind(('127.0.0.1', 0)); listener.listen()
+                port = listener.getsockname()[1]
+                with patch.dict(os.environ, {'LOOP_ANYTHING_EDIT_PASSWORD': 'shared'}):
+                    config = definition('/application with spaces/venv/bin/python', database, port, '127.0.0.1')
+                config = plistlib.loads(plistlib.dumps(config))
+                with patch.dict(os.environ, {}, clear=True):
+                    upgraded = definition('/application with spaces/venv/bin/python', previous=config)
+                self.assertEqual(str(database.resolve()), option(upgraded, '--db', None))
+                self.assertEqual(str(port), option(upgraded, '--port', None))
+                self.assertEqual('shared', upgraded['EnvironmentVariables']['LOOP_ANYTHING_EDIT_PASSWORD'])
+                before = database.read_bytes()
+                with self.assertRaises(Invalid):
+                    available(upgraded)
+                self.assertEqual(before, database.read_bytes())
+            available(upgraded)

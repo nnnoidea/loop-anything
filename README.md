@@ -35,8 +35,8 @@
 
 1. 检查是否已有可用平台，默认地址为 `http://127.0.0.1:8767`；已有实例就复用。连接失败先确认服务与地址，不新建 Run 或数据库来测试。
 2. 获取本仓库完整源码；已有发布附件时，也可获取其中的安装 ZIP。需要 Python 3.9 或以上及 pip/venv。源码安装还需要 Python 构建依赖；不要从同名第三方包代替安装。
-3. 在源码或安装 ZIP 解压目录执行 `python3 install.py`，Windows 可用 `py -3 install.py`。安装器创建独立环境并返回平台 Python 和启动文件路径。
-4. 用该 Python 执行 `-m loop_anything serve` 启动平台；需要界面时加 `--open`。使用当前 Agent 的进程管理能力保持服务运行，并确认任务结束后不会被自动清理；需要用户维持终端时如实说明。
+3. 在源码或安装 ZIP 解压目录执行 `python3 install.py`，Windows 可用 `py -3 install.py`。安装器创建独立环境并返回平台 Python 和启动文件路径。macOS 默认同时注册并启动系统用户后台服务；已有工作区请加 `--db 绝对路径`，已有非默认端口加 `--port 端口`。
+4. macOS 安装成功后用该 Python 执行 `-m loop_anything service status` 确认服务与实际工作区，或双击安装目录的 `Loop Anything.command` 打开页面。关闭 Agent 应用、终端和浏览器均不停止后台服务。Windows/Linux 当前仍使用 `-m loop_anything serve --open` 前台运行，需要独立终端保持运行；尚未提供其系统服务安装。
 5. 将完整[平台操作 Skill](skills/loop-anything-platform/SKILL.md)导出到当前 Agent 支持的 Skill 目录，写入实际平台地址。Skill 包含 Loop 构建、Timeline 操作说明及调用脚本，不包含平台安装手册：
 
 ```sh
@@ -58,13 +58,43 @@
 | Windows | `%LOCALAPPDATA%\Loop Anything\runs.sqlite3` |
 | Linux | `${XDG_DATA_HOME:-~/.local/share}/loop-anything/runs.sqlite3` |
 
+macOS 后台服务使用系统 launchd，登录时自动启动；注销或关机时停止。手动“停止”会保持停止，直到再次“启动”，不会立即被自动拉起。异常退出由 launchd 重启；平台自身的恢复规则仍会保留无法确认停止的旧 Agent 操作权。
+
+```sh
+"<平台 Python 路径>" -m loop_anything service start --open
+"<平台 Python 路径>" -m loop_anything service stop
+"<平台 Python 路径>" -m loop_anything service status
+"<平台 Python 路径>" -m loop_anything service remove
+```
+
+安装目录也提供 `Stop Loop Anything.command`。移除服务仅取消后台托管，不删除平台、Loop 包或数据库。开发调试可以用 `python3 install.py --no-service` 仅安装程序，再手动 `serve`；不要让前台预览与后台服务争用同一工作区或端口。安装时发现占用会报错，不擅自结束其他进程。
+
+原生配置位于 `~/Library/LaunchAgents/com.loop-anything.platform.plist`，日志位于用户数据目录的 `logs/`；没有第二套平台服务配置。安装时保存 PATH 和显式设置的 `LOOP_ANYTHING_EDIT_PASSWORD`，不会复制全部终端环境。其他必需环境变量可按需配置到该 plist 的 EnvironmentVariables，停止后修改，再启动。
+
 指定已有工作区时，将 `--db 绝对路径` 放在 `serve` 等子命令前；平台不自动搬迁或合并数据库。平台状态 `/api/platform` 返回实际路径。换端口时同步 Skill 的 `connection.json`，也可用 `--url` 覆盖。
 
-升级前确认没有在途操作，退出平台后用新源码或安装包执行原安装命令，保留原工作区。更新已安装的操作 Skill 时可使用导出命令的 `--replace`；已有内容不同会明确报告冲突。
+升级前确认没有在途操作，再用新源码或安装包执行原安装命令。macOS 安装器先停止自己管理的旧服务、更新程序，再按原工作区、端口和监听地址启动；不会重新建一个空工作区。其他系统先退出前台平台。更新已安装的操作 Skill 时可使用导出命令的 `--replace`；已有内容不同会明确报告冲突。
 
 0.2 以前的数据库使用旧字段，需要备份并转换；不要用新建空库代替原工作区。
 
 </details>
+
+## 内部共享访问
+
+在团队的一台机器上运行平台，其他人通过浏览器访问 `http://服务器地址:8767`。所有 Loop、Run、结果和对话都可查看；修改前点击右上角「解锁编辑」，输入统一口令。一次解锁固定 **24 小时**，刷新、切页、新标签页均保留；可随时「锁定编辑」。到期只影响新的修改，已有 Engine 和 Agent 继续运行。
+
+启动前设置环境变量 `LOOP_ANYTHING_EDIT_PASSWORD`，再开放内部监听（前台方式）：
+
+```sh
+export LOOP_ANYTHING_EDIT_PASSWORD='换成团队共享口令'
+python3 -m loop_anything --db /绝对路径/runs.sqlite3 serve --host 0.0.0.0
+```
+
+macOS 后台方式：设置同一环境变量后，首次安装使用 `python3 install.py --host 0.0.0.0`；已有后台服务先 `service stop`，再 `service install --host 0.0.0.0`。未指定的工作区和端口沿用已有配置。
+
+Windows PowerShell 使用 `$env:LOOP_ANYTHING_EDIT_PASSWORD = '团队共享口令'` 设置同一变量。默认仍仅监听本机；本机也可以设置该变量启用编辑保护。平台不保存明文口令到数据库，使用相同口令和工作区重启后，未到期的浏览器会话继续有效。更换口令并重启会使旧会话失效。
+
+Agent 和脚本在**平台所在机器**执行。远端 Agent 使用下载的 Skill 或在调用脚本时用 `--url` 指定平台地址；需要新建或取得编辑权时，在该 Agent 环境中设置相同的口令变量，客户端会随写入请求携带凭据。已有任务操作令牌仍按原范围有效。浏览器 Cookie 不写进 Loop 包，业务内容不做分享筛选；仅不向未解锁页面返回可直接写入的操作令牌。此模式面向可信内网。
 
 ## 本地预览
 
@@ -75,6 +105,9 @@ python3 -m loop_anything serve --demo --open
 ```
 
 工作台默认地址为 [http://127.0.0.1:8767](http://127.0.0.1:8767)。保持平台进程运行，它会持续推进各个 Run；关闭浏览器页面不会停止平台。
+
+页面顶部的「防休眠保护」开关作用于平台所在机器，无需重启；选择保存在当前工作区，服务重启后保留。关闭只释放平台的防休眠申请，Loop 仍继续运行，也不更改系统永久电源设置。实际保护失败时页面会显示原因。局域网模式下须先解锁编辑。本机未设置口令时可直接操作。`--allow-sleep` 作为没有保存网页选择时的初始值。
+
 
 在 Loop 库打开详情，点击「启动」进入启动准备页，选择节点实现并填写本次目标。需要网页对话时，展开「网页使用的 Agent」填写本机命令；不配置时仍可通过表单启动。准备内容与对话会保存到本机。
 

@@ -50,8 +50,13 @@ class HostRuntimeTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 with protection:
                     self.assertTrue(protection.status()['active'])
+                    protection.set_enabled(False)
+                    self.assertFalse(protection.status()['active'])
+                    self.assertFalse(protection.status()['requested'])
+                    protection.set_enabled(True)
+                    self.assertTrue(protection.status()['active'])
                     raise RuntimeError('server stopped')
-            self.assertEqual([0x80000001, 0x80000000], [c.args[0] for c in call.call_args_list])
+            self.assertEqual([0x80000001, 0x80000000, 0x80000001, 0x80000000], [c.args[0] for c in call.call_args_list])
             self.assertFalse(protection.status()['active'])
         with patch('loop_anything.runtime.host_runtime.sys.platform', 'win32'), patch('loop_anything.runtime.host_runtime.windows_execution_state', side_effect=OSError('denied')):
             with KeepAwake() as protection:

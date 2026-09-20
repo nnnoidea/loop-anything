@@ -46,7 +46,7 @@ python3 /平台Skill/scripts/call.py read_task --arguments '{"run_id":"RUN_ID","
 
 在 Loop 库卡片或详情选择「启动」，进入启动准备页。准备页立即列在左侧，可在多个准备页与已有 Run 间切换；刷新后仍保留，启动后转到对应 Run。节点卡片显示当前实现；点击节点在图旁查看候选的执行方式、命令配置与共用节点 Skill，直接选用、恢复默认或暂不选用。选择自动保存，只用于本次运行；「编辑 Loop 定义」继续编辑同一个 Loop，草稿自动保存；“保存并使用”统一校验和处理版本，随后进入该版本的启动准备。另建 Loop 使用单独的“复制为另一个 Loop”。准备内容与对话保存在本地平台数据库，刷新后可继续；正式启动前没有业务 Run。节点关系图区分模板依赖和作者声明可安排的工作，标出返回已有节点的循环关系；默认按依赖链合并重复安排线，可展开全部连线或选中节点查看完整声明。它不把动态决定画成必然执行路线。
 
-「网页使用的 Agent」可沿用已有 Agent 候选，或填写用户自己的命令、工作目录与可选超时。命令按参数逐项填写，例如三行 `codex`、`exec`、`-`；模型、权限和其他参数仍由用户选择。网页命令与节点实现独立，不随 Loop 包分享。保持平台运行后，可直接在网页讨论、明确要求初始化并启动，随后查看同一 Run 的过程、回复和通知。
+「网页使用的 Agent」可沿用已有 Agent 候选，或填写用户自己的命令、工作目录、可选超时与唤醒提示词。命令按参数逐项填写，例如三行 `codex`、`exec`、`-`；模型、权限和其他参数仍由用户选择。网页命令与节点实现独立，不随 Loop 包分享。保持平台运行后，可直接在网页讨论、明确要求初始化并启动，随后查看同一 Run 的过程、回复和通知。
 
 每条消息调用一次配置的本机命令，prompt 携带本页对话与限定到当前准备页／Run 的工具地址。沿用 Skill 的调用脚本和既有 Timeline 工具；读取不取得操作权，修改时按页面选择的范围取得操作权并检查版本，最后 finish。创建 Run、绑定准备页和取得初始化操作权在同一次事务中完成。具体操作见 [平台运行 Skill](../skills/loop-anything-platform/references/run.md#在网页对话中操作)。
 
@@ -56,7 +56,15 @@ python3 /平台Skill/scripts/call.py read_task --arguments '{"run_id":"RUN_ID","
 
 ## 后台 Agent：命令与 prompt
 
-平台原样执行用户提供的 argv，按需使用其 cwd/timeout；Agent 未配置 timeout 时不限时；把本次任务的简短 prompt 传入标准输入。prompt 提供运行身份、任务 ID、操作令牌、实际平台地址和平台操作说明位置，作者说明、完整状态及节点 Skill 按需通过工具读取。
+平台原样执行用户提供的 argv，按需使用其 cwd/timeout；Agent 未配置 timeout 时不限时。提示词通过标准输入传入。Agent 候选的可选 `prompt` 字符串完整替换默认内容；只有 `{{context}}` 展开成 JSON，不拼接额外指令。缺少该字段时使用平台默认，显式空字符串则发送空内容。
+
+后台上下文提供 run_id、execution_id、task_id、token、scope_task、platform_url、platform_client、platform_guide、loop_key、handbook，以及当前节点的 node_id、instructions、skills。安装包中绑定的 Skill 包含实际 resolved_path，可按其目录找到 references 和封装脚本；完整业务状态仍通过作者脚本或平台工具读取。
+
+网页的「唤醒提示词」可编辑、恢复默认、预览。节点候选的提示词随 Loop 分享，修改只影响新版本；既有 Run 及执行保留原配置。网页对话的提示词另存在本机，选用候选命令不会把节点任务提示词带进网页讨论。网页上下文以 tool_url 代替后台身份参数，还包含 preparation、run_id、scope_task、start_requested、messages 和作者 handbook；需要节点 Skill 时可 read_loop/read_task。
+
+预览不唤醒 Agent，不创建 Run 或取得操作权；尚未生成的运行身份和令牌用占位文字标注。实际唤醒记录保存发送内容，网页在执行尝试或 Agent 回复下可展开查看，平台令牌已遮蔽。以后改提示词不改写旧记录；旧执行没有记录时不从当前模板补造历史。
+
+默认提示词不强制读取平台手册。作者可用随包脚本封装 Timeline 工具，由节点 Skill 说明业务入口；Agent 只需理解作者接口。封装沿用原权限、版本、输出与 finish 校验，没有另一份状态或独立工具注册。
 
 例如，用户选择从标准输入接收 prompt 的 Codex 命令：
 
