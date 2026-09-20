@@ -265,10 +265,21 @@ assert [n for n in z.namelist() if n.endswith('/SKILL.md')]==['platform/loop-any
     await page.locator('#add-author-candidate').click();
     await page.locator('[data-candidate-id]').fill('chosen');
     await page.locator('#author-default').selectOption('chosen');
+    await page.locator('[data-candidate-prompt] summary').click();
+    await page.locator('[data-candidate-prompt] [data-agent-prompt]').fill('作者脚本入口\n{{context}}');
+    await page.locator('[data-candidate-prompt] [data-prompt-preview]').click();
+    await page.locator('#prompt-preview').waitFor({state:'visible'});
+    const nodeContext=JSON.parse((await page.locator('#prompt-preview pre').innerText()).split('作者脚本入口\n')[1]);
+    assert.equal(nodeContext.node_id,'fallback');
+    await page.locator('#prompt-preview button').click();
+
     await page.locator('.guide-author > summary').filter({hasText:'Loop 操作手册'}).click();
     await page.locator('#handbook-instructions').fill('Read current issues and use the selected fallback Agent.');
     await page.locator('#editor-publish').click();await page.locator('#launch-page').waitFor({state:'visible'});
     assert.equal(await page.locator('#launch-fallback').inputValue(),'fallback');
+    const promptCatalog=await (await page.request.get(url+'/api/catalog')).json();
+    assert(promptCatalog.some(item=>item.implementations.fallback?.options?.chosen?.prompt==='作者脚本入口\n{{context}}'));
+
     await page.locator('#launch-fallback').selectOption('');
     await page.locator('#preparation-flow [data-map-node="fallback"]').click();
     await page.locator('#preparation-flow [data-map-details="fallback"] [data-candidate="chosen"] [data-map-choice]').click();

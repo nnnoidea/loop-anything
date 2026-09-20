@@ -3,7 +3,7 @@ import copy
 import json
 import time
 from contextlib import contextmanager
-from loop_anything.paths import platform_skill_directory
+from loop_anything.runtime.agent_prompt import author_context, render_prompt, mask_prompt
 from loop_anything.runtime.model import Conflict, Invalid, contract
 from loop_anything.runtime.store import uid
 from loop_anything.runtime.implementations import choose, validate_bindings, validate_implementation
@@ -114,7 +114,7 @@ class WebAgent:
                 doc['launch'] = candidate
             if agent is not None:
                 contract(agent, object_schema({'command': {'type': 'array', 'items': {'type': 'string'}},
-                    'cwd': {'type': 'string'}, 'timeout': {'type': 'number'}}, []), 'agent')
+                    'cwd': {'type': 'string'}, 'timeout': {'type': 'number'}, 'prompt': {'type': 'string'}}, []), 'agent')
                 if agent:
                     validate_implementation(dict(agent, kind='agent'))
                 doc['agent'] = agent
@@ -213,26 +213,28 @@ class WebAgent:
         except (ValueError, KeyError, TypeError, StopIteration) as exc:
             return {'ok': False, 'error': {'code': 'conflict' if isinstance(exc, Conflict) else 'invalid_request', 'message': str(exc)}}
 
+    def prompt_context(self, doc, token, scope_task=None, start=False, message=None):
+        bp = (self.store.get(doc['run_id'])['loop_definition'] if doc.get('run_id')
+              else PlatformTools(self.store)._installed(doc['launch']['key'])['loop_definition'])
+        context = author_context(self.store, doc['launch']['key'], bp)
+        # ponytail: replay local chat text; add compaction when real context limits require it.
+        messages = [{'role': m['role'], 'text': m['text']} for m in doc['messages']]
+        if message is not None:
+            messages.append({'role': 'user', 'text': message})
+        context.update(tool_url=self.engine.platform_url + '/web/' + doc['id'] + '/' + token,
+                       preparation=doc['launch'] if not doc.get('run_id') else None,
+                       run_id=doc.get('run_id'), scope_task=scope_task, start_requested=start, messages=messages)
+        return context
+
     def execute(self, ident, token):
         doc = self.turn(ident, token)
-        skill = platform_skill_directory()
-        # ponytail: replay local chat text; add compaction only when real context limits require it.
-        context = {'tool_url': self.engine.platform_url + '/web/' + ident + '/' + token,
-                   'preparation': doc['launch'] if not doc.get('run_id') else None, 'run_id': doc.get('run_id'),
-                   'scope_task': doc['turn'].get('scope_task'), 'start_requested': doc['turn']['start_requested'],
-                   'messages': [{'role': m['role'], 'text': m['text']} for m in doc['messages'][:-1]]}
-        prompt = ('You are the user Agent in the Loop Anything webpage. Read ' + str(skill / 'references/run.md') + '.\n'
-                  'Use the webpage tool URL below with the SAME client: python3 "' + str(skill / 'scripts/call.py') + '" TOOL --url TOOL_URL --arguments JSON. '
-                  'Call list first; this scoped endpoint already supplies run_id/token, so do not pass them. '
-                  'Before startup, read_loop and read_preparation; write agreed inputs and candidate selections using change_preparation. '
-                  'Do not start business work during discussion. Call start_prepared_run only when start_requested is true or the user explicitly requests startup. '
-                  'After startup, call list again to discover Run tools. Read_task for entry_task_id; if its implementation is agent, submit the required initial settings/outputs. Script entries run through Engine. Finish after arranging the agreed work. '
-                  'For an existing Run, read live Timeline first; acquire_run only for edits. Respect scope conflicts. '
-                  'Write confirmed decisions into preparation or Timeline, not just chat. After acquiring rights, finish before exit. '
-                  'Replies are for the user; they are not business results. Reply in the user language. Never create another Run to bypass a conflict.\n'
-                  'Web context:\n' + json.dumps(context, ensure_ascii=False))
         error, uncertain, text = None, False, ''
         try:
+            prompt_doc = dict(doc, messages=doc['messages'][:-1])
+            context = self.prompt_context(prompt_doc, token, doc['turn'].get('scope_task'), doc['turn']['start_requested'])
+            prompt = render_prompt(doc['agent'], 'web', context)
+            with self.edit(ident) as (current, _):
+                current['messages'][-1]['prompt_text'] = mask_prompt(prompt, token, doc['turn'].get('operator_token'))
             result = run_command(doc['agent']['command'], prompt, doc['agent'].get('timeout'), doc['agent'].get('cwd'), self.engine.stopping)
             text = result.stdout.strip()
             if result.returncode:

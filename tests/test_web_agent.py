@@ -49,9 +49,13 @@ class WebAgentTests(unittest.TestCase):
             def log_message(self, *_):
                 pass
             def do_POST(self):
-                _, _, ident, token, *_ = self.path.split('/')
                 body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-                data = web.tool(ident, token, body['tool'], body.get('arguments', {}))
+                if self.path == '/api/tools':
+                    from loop_anything.interfaces.platform_tools import PlatformTools
+                    data = PlatformTools(web.store).respond(body['tool'], body.get('arguments', {}))
+                else:
+                    _, _, ident, token, *_ = self.path.split('/')
+                    data = web.tool(ident, token, body['tool'], body.get('arguments', {}))
                 self.send_response(200); self.end_headers(); self.wfile.write(json.dumps(data).encode())
         self.http = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         self.thread = threading.Thread(target=self.http.serve_forever, daemon=True); self.thread.start()
@@ -127,3 +131,67 @@ class WebAgentTests(unittest.TestCase):
         self.assertFalse(self.store.get(run_id)['agent_sessions'])
         self.assertFalse(self.web.tool(ident,'test-turn','start_prepared_run',{'revision':doc['revision']})['ok'])
         self.assertEqual(1,len(self.store.list()))
+
+    def test_custom_web_prompt_is_exact_and_history_survives_config_change(self):
+        for template in ('literal {{not_a_variable}}', ''):
+            doc = self.web.view(self.web.read(self.doc['id']))
+            doc = self.web.update(doc['id'], doc['revision'], agent={
+                'command': [sys.executable, '-c', 'import sys;sys.stdout.write(sys.stdin.read())'], 'prompt': template})
+            self.web.send(doc['id'], doc['revision'], 'inspect prompt')
+            for f in list(self.engine.futures): f.result(timeout=8)
+            message = self.web.read(doc['id'])['messages'][-1]
+            self.assertEqual(template, message['text'])
+            self.assertEqual(template, message['prompt_text'])
+            self.assertEqual('completed', message['status'])
+        self.assertEqual('literal {{not_a_variable}}', self.web.read(doc['id'])['messages'][1]['prompt_text'])
+        self.assertEqual([], self.store.list())
+
+    def test_packaged_author_wrapper_completes_background_task_with_custom_prompt(self):
+        from loop_anything.interfaces.platform_tools import PlatformTools
+        from loop_anything.packaging.packages import make_archive, install
+        bp, impl = definition()
+        bp['id'] = 'author-wrapper'
+        bp['nodes']['init']['skills'] = [{'name': 'author', 'path': 'author/SKILL.md'}]
+        # This command stands in for an Agent that reads its author's Skill and runs the wrapper.
+        agent = """import json,sys,subprocess
+from pathlib import Path
+c=json.load(sys.stdin)
+p=Path(c['skills'][0]['resolved_path']).parent
+assert (p/'references/contract.md').read_text()=='author interface'
+subprocess.run([sys.executable,str(p/'scripts/submit.py')],input=json.dumps(c),text=True,check=True)
+"""
+        wrapper = """import json,sys,subprocess
+c=json.load(sys.stdin)
+def call(tool,**args):
+ args.update(run_id=c['run_id'],token=c['token'])
+ result=subprocess.run([sys.executable,c['platform_client'],tool,'--url',c['platform_url'],'--arguments',json.dumps(args)],capture_output=True,text=True,check=True)
+ r=json.loads(result.stdout);assert r['ok'],r
+ return r
+i=call('read_task',task_id=c['task_id'])
+call('complete_task',task_id=c['task_id'],task_version=i['task_version'],envelope={'settings':{'objective':'wrapped'},'outputs':{'result':'author-result'}})
+assert call('finish')['finished']
+"""
+        impl['init'] = {'kind': 'agent', 'command': [sys.executable, '-c', agent], 'prompt': '{{context}}'}
+        assets = {name: (content.encode(), False) for name, content in {
+            'author/SKILL.md': 'Use scripts/submit.py; interface in references/contract.md.',
+            'author/references/contract.md': 'author interface', 'author/scripts/submit.py': wrapper}.items()}
+        key = install(self.store, make_archive({'loop_definition': bp, 'implementations': impl}, assets))['key']
+        run = self.store.create(key, 'Wrapper')
+        self.engine.tick(run['id'])
+        for f in list(self.engine.futures): f.result(timeout=10)
+        run = self.store.get(run['id']); attempt = run['executions'][0]
+        self.assertEqual('completed', attempt['status'], attempt)
+        self.assertEqual({'result': 'author-result'}, attempt['outputs'])
+        self.assertEqual([], run['agent_sessions'])
+        sent = json.loads(attempt['prompt_text'])
+        self.assertEqual('[REDACTED]', sent['token'])
+        self.assertNotIn(attempt['token'], attempt['prompt_text'])
+        self.assertEqual(impl['init']['prompt'], attempt['implementation']['prompt'])
+        tools = PlatformTools(self.store)
+        draft = tools.call('copy_loop', {'key': key, 'new_version': True})
+        changed = tools.call('set_implementation', dict(draft_id=draft['draft_id'],revision=draft['revision'],node_id='init',prompt=''))
+        candidate = tools.call('read_loop', {'draft_id': draft['draft_id']})['loop']['implementations']['init']['options']['default']
+        self.assertEqual(impl['init']['command'], candidate['command'])
+        self.assertEqual('', candidate['prompt'])
+        tools.call('publish_loop', dict(draft_id=draft['draft_id'],revision=changed['revision']))
+        self.assertEqual(attempt, self.store.get(run['id'])['executions'][0])

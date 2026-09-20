@@ -32,6 +32,23 @@
 
 安装后 `read_loop` 返回 Loop 和节点 Skill 的 `resolved_path`；运行中 `read_timeline` 返回 Loop Skill 的该路径，`read_task` 返回对应节点 Skill 的该路径。Agent直接读取文件，以其所在目录解析 references/、scripts/ 等相对引用。`path` 是包内绑定，`resolved_path` 是读取结果，不写回 Loop 定义。
 
+## 给运行时 Agent 提供简洁入口
+
+作者可以把常用 Timeline 操作封装为随包脚本，例如 `submit_experiment`、`arrange_next_round`。用已有 `put_asset` 添加脚本及其说明，通过节点 `skills[].path` 绑定说明入口；不需要注册新工具。Skill 内写清命令、参数、回执和出错后的处理，业务规则由作者负责。
+
+封装调用同一个平台 HTTP 接口或 Skill 中的 `scripts/call.py`。从本次唤醒上下文取得实际地址、Run、Task 和令牌，不写死本机路径或另存一份 Timeline。后台节点使用 `platform_url` 并传 run_id/token；网页 Agent 使用 `tool_url`，其接口已绑定身份，参数中不再传 run_id/token。Skill 的 `resolved_path` 可直接读取，其 references、scripts 路径相对该文件所在目录解析。
+
+封装负责重新读取所需版本、检查每步回执，并返回实际提交结果。多次工具调用不是一个事务：中途失败时应报告已完成的操作，继续前先读取当前状态，避免重复安排。完成任务仍需提交必需输出，最后释放操作权；封装可以把这些步骤包在一个业务命令里。权限范围、版本冲突和输出校验由平台照常执行。
+
+Agent 候选支持 `prompt` 字符串，与 command 一起保存、分享；已有候选可用 `set_implementation` 单独修改 prompt，无需重填命令。网页在节点候选中可编辑、恢复默认和预览。例如：
+
+```text
+读取本次上下文中 skills 的作者说明，按说明使用随包脚本完成工作。
+{{context}}
+```
+
+只有 `{{context}}` 会替换为 JSON；其他文本原样发送，没有隐藏追加指令。不填写 prompt 时使用平台默认；显式空字符串就是空提示词。默认内容引导使用作者入口，平台手册仅在直接操作通用工具时按需读取。后台上下文含 run_id、execution_id、task_id、token、scope_task、platform_url、platform_client、platform_guide、loop_key、handbook、node_id、instructions 和 skills。网页上下文使用 tool_url，并提供 preparation、run_id、scope_task、start_requested 和 messages；网页 prompt 与节点候选单独配置。
+
 ## 结果的通用展示
 
 界面按结果结构展示文本、字段和表格。可在输入输出 schema 中提供 `title`、`description` 解释字段，平台不识别业务字段名称。轮次由运行时 `round` 明确提供，没有轮次的 Loop 无需填写。

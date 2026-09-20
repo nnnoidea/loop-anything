@@ -164,6 +164,7 @@ async function saveEditor(){
   clearTimeout(dirty.timer);const target=editor;
   if(editorSave)await editorSave;
   if(editor!==target)throw new Error('编辑页面已切换，请重新读取当前草稿。');
+  if(target.id&&!target.dirty)return;
   collectAll();const edits=target.edits||0;
   const payload=structuredClone({id:target.id,revision:target.revision,loop_definition:target.loop_definition,implementations:target.implementations,assets:target.assets||[],checks:target.checks||{}});
   editorSave=api('drafts',payload);

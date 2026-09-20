@@ -2,13 +2,17 @@
 import argparse
 import base64
 import json
+import os
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
 def fetch(url, data=None):
-    request = Request(url, data=data, headers={'Content-Type': 'application/json', 'X-Loop-Anything': 'workspace'})
+    headers = {'Content-Type': 'application/json', 'X-Loop-Anything': 'workspace'}
+    if data is not None and os.environ.get('LOOP_ANYTHING_EDIT_PASSWORD'):
+        headers['Authorization'] = 'Basic ' + base64.b64encode((':' + os.environ['LOOP_ANYTHING_EDIT_PASSWORD']).encode('utf-8')).decode('ascii')
+    request = Request(url, data=data, headers=headers)
     try:
         with urlopen(request, timeout=10) as response:
             return json.load(response)

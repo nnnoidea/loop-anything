@@ -11,7 +11,7 @@ $('create-dialog').querySelector('h2').textContent='本次运行设置';
 $('create-dialog').querySelector('.close-dialog').textContent='返回';
 $('create-loop_definition').parentElement.hidden=true;
 const chat=document.createElement('aside');chat.id='web-chat';chat.className='panel web-chat';
-chat.innerHTML=`<div class="panel-heading"><div><h2>与 Agent 协作</h2><p class="small muted">在这里讨论、查看回复和调整后续工作。</p></div></div><details id="web-agent-config"><summary>网页使用的 Agent</summary><p class="small muted">命令在平台所在机器执行，配置保存在本机，不随 Loop 分享。</p><label>沿用已有候选<select id="web-agent-choice"><option value="">自定义命令</option></select></label><label>命令及参数（每行一项）<textarea id="web-agent-command" rows="3" placeholder="codex&#10;exec&#10;-"></textarea></label><label>工作目录（可选）<input id="web-agent-cwd"></label><label>超时秒数（留空不限时）<input id="web-agent-timeout" type="number" min="1"></label><button id="save-web-agent" type="button">保存配置</button></details><div id="web-chat-messages" class="web-chat-messages" aria-live="polite"></div><div id="web-chat-status" role="status"></div><button id="recover-web-agent" hidden>已确认旧命令停止，恢复对话</button><div id="web-chat-notices"></div><form id="web-chat-form"><label id="web-chat-scope-label">本次修改范围<select id="web-chat-scope"><option value="">整个 Run</option></select></label><label for="web-chat-input" class="sr-only">给 Agent 的消息</label><textarea id="web-chat-input" rows="3" placeholder="告诉 Agent 你的目标，或询问当前进度…" required></textarea><div class="chat-compose-actions"><small>改动以工具提交结果为准</small><button class="primary" id="web-chat-send">发送</button></div></form>`;
+chat.innerHTML=`<div class="panel-heading"><div><h2>与 Agent 协作</h2><p class="small muted">在这里讨论、查看回复和调整后续工作。</p></div></div><details id="web-agent-config"><summary>网页使用的 Agent</summary><p class="small muted">命令在平台所在机器执行，配置保存在该平台，不随 Loop 分享。</p><label>沿用候选命令（保留网页提示词）<select id="web-agent-choice"><option value="">自定义命令</option></select></label><label>命令及参数（每行一项）<textarea id="web-agent-command" rows="3" placeholder="codex&#10;exec&#10;-"></textarea></label><label>工作目录（可选）<input id="web-agent-cwd"></label><label>超时秒数（留空不限时）<input id="web-agent-timeout" type="number" min="1"></label><div id="web-agent-prompt"></div><button id="save-web-agent" type="button">保存配置</button></details><div id="web-chat-messages" class="web-chat-messages" aria-live="polite"></div><div id="web-chat-status" role="status"></div><button id="recover-web-agent" hidden>已确认旧命令停止，恢复对话</button><div id="web-chat-notices"></div><form id="web-chat-form"><label id="web-chat-scope-label">本次修改范围<select id="web-chat-scope"><option value="">整个 Run</option></select></label><label for="web-chat-input" class="sr-only">给 Agent 的消息</label><textarea id="web-chat-input" rows="3" placeholder="告诉 Agent 你的目标，或询问当前进度…" required></textarea><div class="chat-compose-actions"><small>改动以工具提交结果为准</small><button class="primary" id="web-chat-send">发送</button></div></form>`;
 $('preparation-chat').append(chat);
 const runChat=document.createElement('div');runChat.id='run-chat-host';
 const runColumns=document.createElement('div');runColumns.className='run-with-chat';
@@ -21,7 +21,7 @@ $('draft-cards').insertAdjacentHTML('afterend','<div id="preparation-cards"></di
 function launchItem(){return catalog.find(c=>c.key===conversation?.launch.key);}
 function agentConfig(){
   const command=$('web-agent-command').value.split('\n').filter(x=>x.length),cwd=$('web-agent-cwd').value.trim(),timeout=$('web-agent-timeout').value;
-  return {...(command.length?{command}:{}),...(cwd?{cwd}:{}),...(timeout?{timeout:Number(timeout)}:{})};
+  return {...readPrompt($('web-agent-prompt'),'web'),...(command.length?{command}:{}),...(cwd?{cwd}:{}),...(timeout?{timeout:Number(timeout)}:{})};
 }
 function launchValues(){return {title:$('create-title').value,inputs:collectLaunchInputs(false),authorization:$('create-authorization').value,bindings:structuredClone(launchBindings),fallback_node:$('launch-fallback').value,global_agent_node:$('launch-global-agent').value};}
 async function ensureRunConversation(){
@@ -51,6 +51,7 @@ function populateAgent(){
   $('web-agent-choice').innerHTML='<option value="">自定义命令</option>'+options.map((o,i)=>`<option value="${i}">${esc(item.loop_definition.nodes[o.node]?.label || o.node)} · ${esc(o.id)}</option>`).join('');
   $('web-agent-choice')._options=options;
   $('web-agent-command').value=(c.command || []).join('\n');$('web-agent-cwd').value=c.cwd || '';$('web-agent-timeout').value=c.timeout || '';
+  $('web-agent-prompt').innerHTML=promptEditor('web',c);
   $('web-agent-config').open=!c.command?.length;
   $('web-chat-input').value=conversationDrafts.get(conversation.id || conversation.run_id) || '';
   $('web-chat-scope').value='';
@@ -94,7 +95,7 @@ async function enterRunChat(id){
 }
 function renderConversation(){
   if(!conversation)return;
-  const messages=conversation.messages || [],html=messages.map(m=>`<article class="chat-message ${m.role}"><strong>${m.role==='user'?'你':'Agent'}</strong><div>${esc(m.text || (m.status==='running'?'正在处理…':''))}</div>${m.error?`<p class="chat-error">${esc(m.error)}</p>`:''}</article>`).join('') || '<p class="chat-empty">先选好节点的执行方式，再与 Agent 讨论。你也可以直接使用表单启动。</p>';
+  const messages=conversation.messages || [],html=messages.map(m=>`<article class="chat-message ${m.role}"><strong>${m.role==='user'?'你':'Agent'}</strong><div>${esc(m.text || (m.status==='running'?'正在处理…':''))}</div>${promptHistory(m)}${m.error?`<p class="chat-error">${esc(m.error)}</p>`:''}</article>`).join('') || '<p class="chat-empty">先选好节点的执行方式，再与 Agent 讨论。你也可以直接使用表单启动。</p>';
   if($('web-chat-messages').innerHTML!==html){$('web-chat-messages').innerHTML=html;$('web-chat-messages').scrollTop=$('web-chat-messages').scrollHeight;}
   const busy=conversation.busy;$('web-chat-status').textContent=conversation.recovery_required?'旧命令状态待核实':busy?'Agent 正在处理；可以继续查看运行过程。':'';
   $('web-chat-send').disabled=busy;$('recover-web-agent').hidden=!conversation.recovery_required;

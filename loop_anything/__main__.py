@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 if __package__ in (None, ''):
@@ -18,8 +19,13 @@ def read(filename):
 
 def main():
     parser = argparse.ArgumentParser(description='Loop Anything local engine and workspace')
-    parser.add_argument('--db', default=str(default_database()), help='Workspace database (default: %(default)s); use an absolute path for an existing workspace')
+    parser.add_argument('--db', help='Workspace database (defaults to the user data directory); use an absolute path for an existing workspace')
     commands = parser.add_subparsers(dest='command', required=True)
+    service = commands.add_parser('service', help='Manage the macOS background platform')
+    service.add_argument('action', choices=['install', 'start', 'stop', 'status', 'remove'])
+    service.add_argument('--port', type=int)
+    service.add_argument('--host')
+    service.add_argument('--open', action='store_true')
     start = commands.add_parser('serve')
     start.add_argument('--port', type=int, default=DEFAULT_PORT)
     start.add_argument('--demo', action='store_true', help='Register simulated example implementations')
@@ -62,9 +68,15 @@ def main():
         cmd.add_argument('--bindings', help='Optional JSON file mapping node IDs to candidate implementation IDs')
     run.add_argument('--port', type=int, default=DEFAULT_PORT)
     for cmd in (start, run):
-        cmd.add_argument('--allow-sleep', action='store_true', help='Explicitly allow idle sleep while the platform runs')
+        cmd.add_argument('--host', default='127.0.0.1', help='Bind address; use 0.0.0.0 for internal sharing with LOOP_ANYTHING_EDIT_PASSWORD set')
+        cmd.add_argument('--allow-sleep', action='store_true', help='Initial sleep preference; a saved webpage choice takes precedence')
         cmd.add_argument('--open', action='store_true', help='Open the workspace in the default browser')
     args = parser.parse_args(sys.argv[1:] or ['serve', '--open'])
+    if args.command == 'service':
+        from loop_anything.runtime.service import manage
+        print(json.dumps(manage(args.action, args.db, args.port, args.host, args.open), ensure_ascii=False, indent=2))
+        return
+    args.db = args.db or str(default_database())
     if args.command == 'check':
         import subprocess
         client = platform_skill_directory() / 'scripts/call.py'
@@ -100,6 +112,8 @@ def main():
             target.write(data)
         print(json.dumps({'file': str(Path(args.output).resolve())}))
         return
+    if args.command in ('serve', 'run') and args.host not in ('127.0.0.1', 'localhost') and not os.environ.get('LOOP_ANYTHING_EDIT_PASSWORD'):
+        parser.error('Internal sharing requires LOOP_ANYTHING_EDIT_PASSWORD')
     store = Store(args.db)
     if args.command == 'tool':
         from loop_anything.interfaces.platform_tools import PlatformTools
@@ -139,12 +153,18 @@ def main():
     engine = Engine(store)
     engine.recover()
     from loop_anything.interfaces.server import serve
+    import signal
+    def stop_service(signum, frame):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        raise KeyboardInterrupt
+    previous_term = signal.signal(signal.SIGTERM, stop_service)
     try:
-        with KeepAwake(not args.allow_sleep) as protection:
-            serve(store, engine, args.port, initial_run=initial_run, protection=protection, open_browser=args.open)
+        with KeepAwake(store.keep_awake(default=not args.allow_sleep)) as protection:
+            serve(store, engine, args.port, initial_run=initial_run, protection=protection, open_browser=args.open, host=args.host)
     except KeyboardInterrupt:
         pass
     finally:
+        signal.signal(signal.SIGTERM, previous_term)
         lock.close()
 
 

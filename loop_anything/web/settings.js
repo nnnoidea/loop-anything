@@ -54,7 +54,7 @@ document.addEventListener('submit',event=>{
   if(event.target.id!=='hook-form')return;event.preventDefault();
   safely(async()=>{
     const action=$('hook-action').value;
-    const hook={id:crypto.randomUUID(),action:action==='pause'?'pause':'notify',phase:action==='notify-after'?'after':'before',frequency:$('hook-frequency').value,target:{node:$('hook-node').value},message:$('hook-message').value,route:$('hook-route').value};
+    const hook={id:randomKey(),action:action==='pause'?'pause':'notify',phase:action==='notify-after'?'after':'before',frequency:$('hook-frequency').value,target:{node:$('hook-node').value},message:$('hook-message').value,route:$('hook-route').value};
     await api(`runs/${run.id}/settings`,{revision:run.settings.revision,change:{hooks:[...run.settings.hooks,hook]}});settingsBase=null;await refresh();toast('Hook 已添加');
   });
 });

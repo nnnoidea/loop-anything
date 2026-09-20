@@ -19,6 +19,8 @@ def default_id(entry):
 def validate_implementation(implementation):
     if not isinstance(implementation, dict) or implementation.get('kind') not in ('agent', 'command', 'external', 'event', 'approval'):
         raise Invalid('Invalid execution implementation')
+    if 'prompt' in implementation and (implementation['kind'] != 'agent' or not isinstance(implementation['prompt'], str)):
+        raise Invalid('prompt is a string for Agent implementations only')
     for cmd in ('command', 'observe'):
         if cmd in implementation and (not isinstance(implementation[cmd], list) or not implementation[cmd] or not all(isinstance(x, str) and x and '\x00' not in x for x in implementation[cmd])):
             raise Invalid(cmd + ' must be nonempty argv')

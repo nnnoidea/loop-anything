@@ -3,7 +3,7 @@
 The module contains no application names, simulated outcomes or domain policies.
 """
 import copy
-from loop_anything.paths import platform_skill_directory
+from loop_anything.runtime.agent_prompt import task_context, render_prompt, mask_prompt
 import json
 import time
 from loop_anything.runtime.timeline_model import (SEMANTIC_FIELDS, ENDING_FIELDS, check_task, settings_defaults,
@@ -467,39 +467,27 @@ class TimelineRuntime:
 
     def execute(self, run_id, e, snapshot, observe=False):
         implementation = e['implementation']
-        if implementation['kind'] == 'agent':
-            context = {'run_id': run_id, 'execution_id': e['id'], 'task_id': e['task_id'], 'token': e['token'],
-                       'scope_task': owner_for(snapshot, e['token']).get('scope_task')}
-            if getattr(self.engine, 'platform_url', None):
-                context['platform_url'] = self.engine.platform_url
-            guide = platform_skill_directory() / 'references/run.md'
-            request_text = (
-                f"Loop Anything has work for you. Read the platform operation guide: {guide}\n"
-                "Use read_task to read the wake-up task, its inputs and author Skills. "
-                "Use read_timeline to confirm scope_task: null grants global scope; otherwise modify only that Task and its descendants. Reading other branches does not grant write rights. "
-                "Submit every declared output with complete_task using the latest read_task task_version. "
-                "Creating future tasks does not complete the current task. Check ok=true after each tool call; "
-                "on errors, fix the rejected operation instead of creating duplicate tasks. "
-                "After completing or deferring your wake-up task and handling in-scope issues, call finish. Ready descendants may remain for Engine dispatch; do not wait for them while holding their ancestor scope. Exit only after finish returns ok=true and finished=true. "
-                f"Call platform tools with python3 \"{platform_skill_directory() / 'scripts/call.py'}\" TOOL --arguments JSON. "
-                "When platform_url is supplied below, pass it as --url. "
-                "Your existing Agent configuration remains in effect.\n"
-                "Run context:\n" + json.dumps(context, ensure_ascii=False, indent=2))
-        else:
-            node = node_for(snapshot, e['node'])
-            request = {'run_id': run_id, 'execution_id': e['id'], 'task_id': e['task_id'], 'token': e['token'],
-                       'inputs': e['inputs'], 'parameters': e['parameters'], 'external_id': e.get('external_id'),
-                       'timeline': snapshot, 'handbook': snapshot['loop_definition']['handbook'],
-                       'node_instructions': node['instructions'], 'output_contract': node['outputs']}
-            request_text = json.dumps(request)
         exit_error = None
         try:
+            if implementation['kind'] == 'agent':
+                context = task_context(self.store, snapshot, e, getattr(self.engine, 'platform_url', None),
+                                       owner_for(snapshot, e['token']).get('scope_task'))
+                request_text = render_prompt(implementation, 'task', context)
+            else:
+                node = node_for(snapshot, e['node'])
+                request = {'run_id': run_id, 'execution_id': e['id'], 'task_id': e['task_id'], 'token': e['token'],
+                           'inputs': e['inputs'], 'parameters': e['parameters'], 'external_id': e.get('external_id'),
+                           'timeline': snapshot, 'handbook': snapshot['loop_definition']['handbook'],
+                           'node_instructions': node['instructions'], 'output_contract': node['outputs']}
+                request_text = json.dumps(request)
             # A queued worker must recheck its ownership before launching a command.
             with self.store.edit(run_id) as current_run:
                 current = self.engine.execution(current_run, e['id'])
                 self.check_owner(current_run, current, e['token'])
                 if current.get('started_at') is None:
                     current['started_at'] = time.time()
+                if implementation['kind'] == 'agent':
+                    current['prompt_text'] = mask_prompt(request_text, e['token'])
             result = run_command(implementation['observe'] if observe else implementation['command'], request_text,
                                  implementation.get('timeout', None if implementation['kind'] == 'agent' else 60), implementation.get('cwd'),
                                  stop=self.engine.stopping if implementation['kind'] == 'agent' else None)

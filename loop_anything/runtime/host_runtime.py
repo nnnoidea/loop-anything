@@ -111,6 +111,7 @@ class KeepAwake:
     """Acquire for the server lifetime; no persistent power-plan changes."""
     def __init__(self, enabled=True):
         self.enabled = enabled
+        self.changing = False
         self.active = False
         self.backend = None
         self.error = None
@@ -161,11 +162,28 @@ class KeepAwake:
             self._close_process()
         return self
 
+    def set_enabled(self, enabled):
+        """Called by the same server thread that acquired the OS assertion."""
+        if type(enabled) is not bool:
+            raise Invalid('keep_awake must be a boolean')
+        if enabled != self.enabled:
+            self.enabled, self.changing = enabled, True
+            try:
+                self.__exit__()
+                self.backend, self.error, self.reader = None, None, None
+                self.__enter__()
+            except (OSError, subprocess.SubprocessError) as exc:
+                self.error = str(exc)
+            finally:
+                self.changing = False
+        return self.status()
+
     def status(self):
-        if self.active and self.process is not None and self.process.poll() is not None:
+        process = self.process
+        if self.active and process is not None and process.poll() is not None:
             self.active = False
             self.error = 'The sleep-protection helper exited; protection is no longer active'
-        return {'requested': self.enabled, 'active': self.active, 'backend': self.backend, 'error': self.error}
+        return {'requested': self.enabled, 'active': self.active, 'backend': self.backend, 'error': self.error, 'updating': self.changing}
 
     def _close_process(self):
         if self.process is None:

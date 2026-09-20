@@ -23,6 +23,8 @@ pyproject.toml       包元数据与 CLI 入口
 
 `.local-history/` 保存本地历史资料，`.semantic-alignment/` 保存研发语义记录；它们均不提交。`.loop-anything/`、旧 `.state-loop/` 和用户数据目录中的运行数据不属于源码发布内容。
 
+macOS 安装器默认使用 launchd 用户服务；测试或临时环境安装加 `--no-service`，避免注册真实登录项。`service` 命令只调用系统服务管理器；配置使用原生 plist。收到 SIGTERM 与 Ctrl+C 一样走平台退出清理。Windows/Linux 当前仍为前台启动。
+
 平台安装将同一 Skill 资源放在环境的 `share/loop-anything/skills/` 下，供导出及唤醒引用；源码直接使用根目录 `skills/`。
 
 Skill 客户端只在 `skills/loop-anything-platform/scripts/call.py` 维护；导出直接收集 Skill 目录，不另复制一套不同命名的源码。根目录旧 `examples/simulated_tasks.py` 仅为既有本地运行保留命令路径，不纳入发布。
@@ -42,6 +44,7 @@ node --test tests/library.test.js tests/task-history.test.js
 node tests/library-browser.cjs
 node tests/visual-browser.cjs
 node tests/web-agent-browser.cjs
+node tests/edit-access-browser.cjs
 ```
 
 它使用隔离的临时数据库。普通测试使用模拟结果或本地命令，不调用真实模型。真实 Agent 场景需另外明确模型、环境和业务边界。

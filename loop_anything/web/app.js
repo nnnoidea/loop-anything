@@ -2,16 +2,74 @@
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pretty = value => JSON.stringify(value, null, 2);
+// getRandomValues also works on ordinary HTTP inside the team network.
+const randomKey = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('');
 const labels = {skipped:'已跳过',running:'运行中',ready:'待执行',executing:'执行中',waiting:'等待外部',completed:'已完成',paused:'已暂停',terminated:'已终止',cancelled:'已取消',fault:'执行失败',blocked:'输入未就绪',decision:'等待 Agent',approval:'等待确认',unresolved:'转移待决策'};
 const badge = status => `<span class="badge ${esc(status)}">${esc(labels[status] || status)}</span>`;
 let catalog = [], runs = [], run = null, selected = null, filterNode = null, activeTab = 'task-history', page = 'runs', settingsBase = null, pendingChange = null, loading = false;
 const drafts = {};
+let powerPending=false,lastPower=null;
+function renderPower(power){
+  lastPower=power;
+  $('platform-power').className='platform-power '+(power.active?'protected':'unprotected');
+  $('platform-power-status').textContent=power.updating?(power.requested?'正在启用防休眠保护…':'正在关闭防休眠保护…'):power.error?'防休眠设置未生效 · '+power.error:power.active?'平台运行中 · 已启用防休眠保护':'平台运行中 · 当前允许系统休眠';
+  $('platform-power-switch').checked=power.requested;
+  $('platform-power-switch').disabled=powerPending||power.updating||!power.controllable||!editAccess.unlocked;
+  $('platform-power-switch').title=editAccess.unlocked?'作用于平台所在机器；选择会保留，重启后仍有效':'请先解锁编辑';
+}
+$('platform-power-switch').onchange=()=>safely(async()=>{
+  const enabled=$('platform-power-switch').checked;powerPending=true;$('platform-power-switch').disabled=true;
+  try{renderPower(await api('platform/keep-awake',{enabled}));}
+  finally{powerPending=false;await refresh();}
+});
+let editAccess={protected:false,unlocked:true,expires_at:null};
+function showEditAccess(status){
+  editAccess=status;$('edit-access').hidden=!status.protected;
+  if(lastPower)renderPower(lastPower);
+  $('edit-access-state').textContent=status.unlocked?'可编辑 · '+new Date(status.expires_at*1000).toLocaleString()+' 到期':'只读';
+  $('edit-access-button').textContent=status.unlocked?'锁定编辑':'解锁编辑';
+  clearTimeout(showEditAccess.timer);
+  if(status.expires_at)showEditAccess.timer=setTimeout(()=>showEditAccess({...status,unlocked:false,expires_at:null}),Math.max(0,status.expires_at*1000-Date.now()));
+}
+async function readEditAccess(){showEditAccess(await api('edit-access'));}
+const unlockDialog=document.createElement('dialog');unlockDialog.id='edit-unlock-dialog';
+unlockDialog.innerHTML='<form id="edit-unlock-form"><h2>解锁编辑</h2><p>输入共享口令，24 小时内可持续编辑。刷新和切换页面无需再次输入。</p><label>编辑口令<input id="edit-password" type="password" autocomplete="current-password" required></label><p id="edit-unlock-error" role="alert"></p><div class="dialog-tasks"><button type="button" id="edit-unlock-cancel">取消</button><button class="primary" type="submit">解锁 24 小时</button></div></form>';
+document.body.append(unlockDialog);
+$('edit-access-button').onclick=()=>safely(async()=>{
+  if(editAccess.unlocked){showEditAccess(await api('edit-access',{action:'lock'}));await refresh();}
+  else{$('edit-unlock-error').textContent='';unlockDialog.showModal();$('edit-password').focus();}
+});
+$('edit-unlock-cancel').onclick=()=>unlockDialog.close();
+unlockDialog.addEventListener('close',()=>{$('edit-password').value='';});
+$('edit-unlock-form').onsubmit=async event=>{
+  event.preventDefault();
+  try{showEditAccess(await api('edit-access',{action:'unlock',password:$('edit-password').value}));unlockDialog.close();await refresh();}
+  catch(error){$('edit-unlock-error').textContent=error.message;}
+};
+window.addEventListener('focus',()=>readEditAccess().catch(()=>{}));
+let promptDefaults={};
+function promptEditor(mode,config){return `<details class="agent-prompt-editor" data-prompt-mode="${mode}"><summary>唤醒提示词</summary><p class="small muted">可以直接修改，或改用作者脚本。{{context}} 展开本次上下文；自定义内容完整替换默认提示词；清空会发送空内容。</p><label>发送给 Agent 的内容<textarea data-agent-prompt rows="8">${esc(config.prompt??promptDefaults[mode]??'')}</textarea></label><div class="prompt-actions"><button type="button" data-prompt-reset>恢复默认</button><button type="button" data-prompt-preview>预览发送内容</button></div></details>`;}
+function readPrompt(root,mode){const text=root.querySelector('[data-agent-prompt]').value;return text===promptDefaults[mode]?{}:{prompt:text};}
+function promptHistory(record){return record&&Object.hasOwn(record,'prompt_text')?`<details class="prompt-history"><summary>本次唤醒提示词</summary><p class="small muted">实际发送记录 · 平台令牌已遮蔽</p><pre>${esc(record.prompt_text)}</pre></details>`:'';}
+document.addEventListener('click',event=>safely(async()=>{
+  const button=event.target.closest('[data-prompt-reset],[data-prompt-preview]');if(!button)return;
+  const root=button.closest('[data-prompt-mode]'),field=root.querySelector('[data-agent-prompt]'),mode=root.dataset.promptMode;
+  if(button.hasAttribute('data-prompt-reset')){field.value=promptDefaults[mode];field.dispatchEvent(new Event('input',{bubbles:true}));return;}
+  let data;
+  if(mode==='task'){collectAll();data={loop_definition:editor.loop_definition,node_id:editSelection.node};}
+  else data={conversation_id:conversation.id,run_id:conversation.run_id,message:$('web-chat-input').value,launch:page==='launch'?launchValues():undefined,scope_task:$('web-chat-scope').value||null};
+  const preview=await api('agent-prompts/preview',{...data,prompt:field.value});
+  let dialog=$('prompt-preview');if(!dialog){dialog=document.createElement('dialog');dialog.id='prompt-preview';document.body.append(dialog);}
+  dialog.innerHTML=`<h2>提示词预览</h2><p class="small muted">${esc(preview.notice)}</p><pre>${esc(preview.text)}</pre><button type="button">关闭</button>`;
+  dialog.querySelector('button').onclick=()=>dialog.close();dialog.showModal();
+}));
 let listSignature = '', graphSignature = '', inspectSignature = '';
 const time = t => new Date(t * 1000).toLocaleTimeString('zh-CN', {hour12:false});
 const nodeLabel = id => run?.loop_definition.nodes[id]?.label || id;
 async function api(url, data) {
   const response = await fetch('/api/' + url, data === undefined ? {} : {method:'POST',headers:{'Content-Type':'application/json','X-Loop-Anything':'workspace'},body:JSON.stringify(data)});
   const result = await response.json();
+  if(result.code==='edit_locked')showEditAccess({protected:true,unlocked:false,expires_at:null});
   if (!response.ok) throw new Error(result.error || '请求失败');
   return result;
 }
@@ -40,10 +98,9 @@ async function refresh() {
     if (!selected && runs.length) selected = runs[0].id;
     if (selected && page==='runs') { const id=selected,current=await api('runs/' + id);if(page==='runs' && selected===id){run=current;renderRun();} }
     const platform=await api('platform'),power=platform.keep_awake;
-    $('platform-power').className='platform-power '+(power.active?'protected':'unprotected');
-    $('platform-power').textContent=power.active?'平台运行中 · 已启用防休眠保护':power.requested?'防休眠保护未生效 · '+(power.error || '请检查系统支持'):'平台运行中 · 当前允许系统休眠';
+    renderPower(power);
     showPage();
-  } catch (error) { $('engine-status').textContent = '连接中断 · 自动重连';$('platform-power').className='platform-power unprotected';$('platform-power').textContent='与平台连接中断 · 无法确认运行及防休眠状态'; }
+  } catch (error) { $('engine-status').textContent = '连接中断 · 自动重连';$('platform-power').className='platform-power unprotected';$('platform-power-status').textContent='与平台连接中断 · 无法确认运行及防休眠状态';$('platform-power-switch').disabled=true; }
   finally { loading = false; }
 }
 async function selectRun(id) {
@@ -123,7 +180,7 @@ function details(id) {
   $('detail-title').textContent=nodeLabel(e.node)+' · '+e.id;
   const origin=run.tasks?.[e.task_id]?.origin;
   const cause=origin?.fallback?'进入兜底节点':origin?.entry?'入口任务':origin?.agent?'Agent 安排':origin?.execution?'脚本安排':origin?.user?'用户安排':'历史记录';
-  $('detail-content').innerHTML=`${badge(e.status)} <span class="mono">attempt ${e.attempt} · settings r${e.settings_revision}</span>${e.error?`<pre>${esc(e.error)}</pre>`:''}<div class="detail-section"><h3>创建原因</h3><p class="small">${esc(cause)} · ${esc(e.task_id || '')}</p></div><div class="detail-grid"><div><h3>Resolved inputs</h3><pre>${esc(pretty(e.inputs))}</pre></div><div><h3>Committed outputs</h3><pre>${esc(pretty(e.outputs || null))}</pre></div></div><div class="detail-section"><h3>Input provenance</h3><pre>${esc(pretty(e.sources))}</pre></div><div class="detail-section"><h3>Handler / external task</h3><pre>${esc(pretty({implementation:e.implementation,external_id:e.external_id,wake_at:e.wake_at?new Date(e.wake_at*1000).toLocaleString():undefined}))}</pre></div>${run.tasks?.[e.task_id]?.execution_id===e.id && ['fault','blocked'].includes(e.status)&&!e.routed?`<button data-retry="${esc(e.id)}">重试此执行</button><p class="field-note">先检查外部任务是否已经产生副作用，避免重复提交。</p>`:''}`;
+  $('detail-content').innerHTML=`${badge(e.status)} <span class="mono">attempt ${e.attempt} · settings r${e.settings_revision}</span>${e.error?`<pre>${esc(e.error)}</pre>`:''}${promptHistory(e)}<div class="detail-section"><h3>创建原因</h3><p class="small">${esc(cause)} · ${esc(e.task_id || '')}</p></div><div class="detail-grid"><div><h3>Resolved inputs</h3><pre>${esc(pretty(e.inputs))}</pre></div><div><h3>Committed outputs</h3><pre>${esc(pretty(e.outputs || null))}</pre></div></div><div class="detail-section"><h3>Input provenance</h3><pre>${esc(pretty(e.sources))}</pre></div><div class="detail-section"><h3>Handler / external task</h3><pre>${esc(pretty({implementation:e.implementation,external_id:e.external_id,wake_at:e.wake_at?new Date(e.wake_at*1000).toLocaleString():undefined}))}</pre></div>${run.tasks?.[e.task_id]?.execution_id===e.id && ['fault','blocked'].includes(e.status)&&!e.routed?`<button data-retry="${esc(e.id)}">重试此执行</button><p class="field-note">先检查外部任务是否已经产生副作用，避免重复提交。</p>`:''}`;
   if(!$('detail-dialog').open)$('detail-dialog').showModal();
 }
 async function openCreate(key) {
@@ -156,7 +213,7 @@ document.addEventListener('click',event=>safely(async()=>{
     const payload={execution_id:e.id,token:e.token,envelope:JSON.parse($('result-'+e.id).value)};
     await api(`runs/${runId}/submit`,payload);toast('结果已提交');await refresh();return;
   }
-  if(d.sendEvent){const e=run.executions.find(x=>x.id===d.sendEvent);await api(`runs/${runId}/event`,{event_id:crypto.randomUUID(),name:e.implementation.event,key:e.parameters?.event_key,payload:JSON.parse($('event-'+e.id).value)});toast('事件已持久化');await refresh();return;}
+  if(d.sendEvent){const e=run.executions.find(x=>x.id===d.sendEvent);await api(`runs/${runId}/event`,{event_id:randomKey(),name:e.implementation.event,key:e.parameters?.event_key,payload:JSON.parse($('event-'+e.id).value)});toast('事件已持久化');await refresh();return;}
   switch(button.id){
     case 'new-run':await openCreate();break;
     case 'empty-create':await navigateTo({type:'catalog'});break;
@@ -183,12 +240,13 @@ $('settings-form').addEventListener('submit',e=>{e.preventDefault();safely(async
   $('review-dialog').showModal();
 });});
 async function loadCatalog(){
-  catalog=await api('catalog');
+  [catalog,promptDefaults]=await Promise.all([api('catalog'),api('agent-prompts')]);
   $('catalog-cards').innerHTML=catalog.map(libraryCard).join('') || '<p class="empty-inline">还没有 Loop。可以导入别人分享的 .loop.zip，或新建自己的Loop 定义。</p>';
   if(typeof loadDraftCards==='function')await loadDraftCards();
   if(typeof loadPreparationCards==='function')await loadPreparationCards();
 }
 window.addEventListener('DOMContentLoaded',()=>safely(async()=>{
+  await readEditAccess();
   await loadCatalog();
   await navigateTo(parseRoute(location.hash),{replace:true});
   await refresh();setInterval(refresh,1500);
