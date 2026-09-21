@@ -153,7 +153,7 @@ def task_list(run, runtime, owner=None):
             e = next((x for x in run['executions'] if x['id'] == tasks.get('execution_id')), {})
             add({'id': 'fault:' + tasks['id'] + ':' + str(tasks.get('attempts', 0)), 'kind': 'unexpected',
                  'task_id': tasks['id'], 'reason': e.get('error') or tasks.get('budget_error') or 'Task failed'})
-        elif tasks['status'] not in PENDING | ENDED | {'executing', 'decision', 'waiting', 'approval', 'waiting_user'}:
+        elif tasks['status'] not in PENDING | ENDED | {'executing', 'decision', 'waiting', 'approval', 'waiting_user', 'retrying'}:
             add({'id': 'state:' + tasks['id'] + ':' + tasks['status'], 'kind': 'unexpected', 'task_id': tasks['id'], 'reason': 'Unknown Task state'})
         elif implementation.get('kind') == 'agent' and (tasks['status'] in ('decision', 'executing') or (tasks['status'] == 'ready' and run['status'] == 'running')):
             add({'id': 'task:' + tasks['id'], 'kind': 'task', 'task_id': tasks['id'],
@@ -191,11 +191,13 @@ def execution(run, execution_id):
     return next(e for e in run['executions'] if e['id'] == execution_id)
 
 
-def change_task_in_run(run, arguments):
+def change_task_in_run(run, arguments, actor=None):
     tasks = run['tasks'].get(arguments['task_id'])
     if not tasks:
         raise Invalid('Unknown business Task')
     before = copy.deepcopy(tasks['spec'])
+    before_revision = tasks.get('revision')
+    actor = {k: v for k, v in (actor or {'kind': 'user'}).items() if k in ('kind', 'execution_id', 'task_id', 'scope_task')}
     op = arguments['operation']
     if not arguments['reason'].strip():
         raise Invalid('A reason is required')
@@ -209,7 +211,7 @@ def change_task_in_run(run, arguments):
         current.pop('error', None)
         current.update(status='waiting', wake_at=time.time(), token=uid('attempt'))
         tasks['status'] = 'waiting'
-        Store.log(run, 'monitor_retry', arguments['reason'], current['id'], {'external_id': current['external_id']})
+        Store.log(run, 'monitor_retry', arguments['reason'], current['id'], {'external_id': current['external_id'], 'task_revision': before_revision, 'actor': actor})
         return
     active_script = tasks['status'] in ('executing', 'waiting', 'decision')
     if active_script or (tasks['status'] == 'approval' and op != 'cancel') or tasks['status'] == 'completed':
@@ -227,24 +229,30 @@ def change_task_in_run(run, arguments):
         check_selection(run, spec)
         tasks.update(spec=spec, status='planned')
     elif op == 'retry':
-        if tasks['status'] not in ('fault', 'stale', 'waiting_user', 'cancelled') or tasks.get('budget_error'):
+        if tasks['status'] not in ('fault', 'stale', 'waiting_user', 'cancelled', 'retrying') or tasks.get('budget_error'):
             raise Conflict('Only failed/stale tasks can retry; budgets remain enforced')
-        if tasks.get('execution_id'):
-            execution(run, tasks['execution_id'])['token'] = None
         from loop_anything.runtime.timeline_model import check_task
+        spec = copy.deepcopy(tasks['spec'])
         for field in ('inputs', 'parameters', 'implementation', 'after'):
             if field in arguments:
-                tasks['spec'][field] = (None if field == 'implementation' and arguments[field] == '' else copy.deepcopy(arguments[field]))
-        tasks['spec'].pop('policy', None)
-        check_task(run['loop_definition'], tasks['spec'])
-        check_selection(run, tasks['spec'])
-        tasks.update(status='planned', execution_id=None, settings_revision=run['settings']['revision'])
+                spec[field] = (None if field == 'implementation' and arguments[field] == '' else copy.deepcopy(arguments[field]))
+        spec.pop('policy', None)
+        check_task(run['loop_definition'], spec)
+        check_selection(run, spec)
+        if current:
+            current['token'] = None
+        tasks.update(spec=spec, status='planned', execution_id=None, settings_revision=run['settings']['revision'])
     else:
         tasks['status'] = 'cancelled'
         if tasks.get('execution_id'):
             execution(run, tasks['execution_id']).update(status='cancelled', token=None)
+    if current and current.get('retry', {}).get('status') == 'pending' and actor.get('kind') != 'engine':
+        current['retry']['status'] = 'superseded'
+    if any(before.get(k, default) != tasks['spec'].get(k, default) for k, default in
+           [('inputs', {}), ('parameters', {}), ('implementation', None), ('after', [])]):
+        tasks['revision'] = (before_revision or 0) + 1
     run.get('task_dispositions', {}).pop('task:' + tasks['id'], None)
-    Store.log(run, 'agent_action_change', arguments['reason'], detail={'tasks': tasks['id'], 'operation': op, 'before': before, 'after': copy.deepcopy(tasks['spec'])})
+    Store.log(run, 'agent_action_change', arguments['reason'], detail={'tasks': tasks['id'], 'operation': op, 'before_revision': before_revision, 'after_revision': tasks.get('revision'), 'actor': actor, 'before': before, 'after': copy.deepcopy(tasks['spec'])})
 
 
 def apply_task_edit(run, tool, arguments, origin, owner=None):
@@ -255,8 +263,8 @@ def apply_task_edit(run, tool, arguments, origin, owner=None):
         raise Conflict('Run ended')
     if tool == 'change_task':
         guard_write(run, owner['token'] if owner else None, arguments['task_id'])
-        change_task_in_run(run, arguments)
-        return {'updated': True}
+        change_task_in_run(run, arguments, owner)
+        return {'updated': True, 'task_id': arguments['task_id'], 'task_revision': run['tasks'][arguments['task_id']].get('revision')}
     if tool == 'build_plan':
         specs = build_plan(run['loop_definition'], arguments['name'], 'operator:' + ((owner['scope_task'] + ':') if owner and owner.get('scope_task') else '') + arguments['key'],
                            arguments['values'], arguments.get('steps'), arguments.get('round'))
@@ -402,7 +410,7 @@ class RunTools:
                 values, sources, missing = self.runtime.resolve_inputs(run, tasks)
                 if missing or gated(run, tasks):
                     raise Conflict('Task inputs or gate are not ready')
-                if arguments.get('task_version') != digest([tasks['spec'], values, sources, selected(run, tasks)]):
+                if arguments.get('task_version') != digest([tasks.get('revision'), tasks['spec'], values, sources, selected(run, tasks)]):
                     raise Conflict('Task inputs changed; read_task again and reconsider this result')
                 self.runtime.apply_hooks(run, tasks, 'before')
                 if tasks.get('execution_id'):
@@ -445,7 +453,11 @@ class RunTools:
                 request['status'] = 'completed'
             elif name == 'finish':
                 tasks = task_list(run, self.runtime, owner)
-                unresolved = [i for i in tasks['items'] if i['kind'] != 'task' or i.get('task_id') == owner.get('task_id')]
+                primary = run['tasks'].get(owner.get('task_id'), {})
+                attempt = execution(run, primary['execution_id']) if primary.get('execution_id') else {}
+                handed_off = attempt.get('lifecycle_state') == 'agent'
+                unresolved = [i for i in tasks['items'] if (i['kind'] != 'task' or i.get('task_id') == owner.get('task_id'))
+                              and not (handed_off and i.get('task_id') == owner.get('task_id'))]
                 if unresolved and not run['settings'].get('termination_signal', '').strip():
                     raise Conflict('Run still has actionable tasks: ' + ', '.join(t['id'] for t in tasks['items']))
                 release_in_run(run, self.token)
@@ -477,10 +489,11 @@ class RunTools:
             config = selected(run, tasks)[1]
             lifecycle = definition(config) if config else None
             attempt = execution(run, tasks['execution_id']) if tasks.get('execution_id') else {}
-            execution_state = {k: attempt[k] for k in ('id', 'lifecycle_state', 'external_id', 'wake_at', 'observation_error') if k in attempt}
+            execution_state = {k: attempt[k] for k in ('id', 'task_revision', 'task_spec', 'lifecycle_state', 'external_id', 'wake_at', 'observation_error', 'retry') if k in attempt}
             last_transition = next((h for h in reversed(run['history']) if h['kind'] == 'transition' and h['execution'] == attempt.get('id')), None)
-            return {'lifecycle': lifecycle, 'execution_state': execution_state, 'last_transition': last_transition, 'task': tasks, 'inputs': values, 'sources': sources, 'missing': missing,
-                    'task_version': digest([tasks['spec'], values, sources, selected(run, tasks)]),
+            return {'lifecycle': lifecycle, 'execution_state': execution_state, 'last_transition': last_transition, 'task': tasks, 'task_revision': tasks.get('revision'), 'inputs': values, 'sources': sources, 'missing': missing,
+                    'task_version': digest([tasks.get('revision'), tasks['spec'], values, sources, selected(run, tasks)]),
+                    'parameter_schema': node.get('parameter_schema'),
                     'implementation_id': selected(run, tasks)[0], 'implementation': selected(run, tasks)[1],
                     'implementation_options': options(run['implementations'].get(tasks['spec']['node'])),
                     'instructions': node['instructions'], 'skills': [resolve_skill(self.store.filename, run['loop_key'], skill) for skill in node.get('skills', [])],

@@ -16,9 +16,9 @@ from loop_anything.runtime.model import Conflict, Invalid, contract, path
 from loop_anything.runtime.store import Store, uid
 from loop_anything.runtime.host_runtime import run_command, CommandNotStopped
 from loop_anything.runtime.checks import check_assertions, evaluate
-from loop_anything.runtime.implementations import selected, choose, validate_bindings
+from loop_anything.runtime.implementations import selected, choose, validate_bindings, check_parameters, check_selection
 from loop_anything.runtime.timeline_plan import add_task
-from loop_anything.runtime.task_scope import owner_for, scope_for, scope_available, require_scope, attach_tasks
+from loop_anything.runtime.task_scope import owner_for, scope_for, scope_available, require_scope, attach_tasks, contains
 from loop_anything.interfaces.agent_tasks import (node_for, acquire_in_run, require_owner,
                           guard_write, release_in_run, task_list, agent_calls)
 
@@ -27,11 +27,13 @@ IN_FLIGHT = {'executing', 'decision', 'approval', 'waiting'}
 END = {'completed', 'cancelled', 'stale', 'skipped'}
 
 
-def initialize_run(run):
+def initialize_run(run, bindings=None):
     run.update(schema_version=2, operator_protocol=1, agent_sessions=[], task_dispositions={}, user_requests=[], settings=settings_defaults(run['title']), records={}, tasks={},
                notifications=[], hook_firings=[], diagnostics=[], initialized=False, agent_failures=0)
     run['settings']['fallback_node'] = run['loop_definition'].get('fallback_node')
     run['settings']['global_agent_node'] = run['loop_definition'].get('global_agent_node')
+    validate_bindings(run['loop_definition'], run['implementations'], {} if bindings is None else bindings)
+    run['settings']['bindings'] = copy.deepcopy({} if bindings is None else bindings)
     # Run creation is a Timeline write, not a scheduler responsibility.
     add_task(run, run['loop_definition']['seed'], {'entry': True})
 
@@ -80,7 +82,7 @@ def agent_exited(run, runtime, error=None, scope_task=None):
         return
     counter = run if scope_task is None else run['tasks'][scope_task]
     work = task_list(run, runtime, {'scope_task': scope_task})
-    abnormal = work['state'] == 'unexpected' or (scope_task is None and bool(run.get('attention_error')))
+    abnormal = work['state'] == 'unexpected' or (scope_task is None and bool(run.get('attention_error'))) or (error is not None and any(w['status'] == 'retrying' and contains(run, scope_task, w['id']) for w in run['tasks'].values()))
     if not abnormal:
         counter['agent_failures'] = 0
         return
@@ -137,8 +139,13 @@ class TimelineRuntime:
                 values[name], sources[name] = copy.deepcopy(value), provenance
             except (KeyError, IndexError, TypeError, ValueError) as exc:
                 missing.append({'input': name, 'reason': 'invalid_input', 'detail': str(exc)})
-        if not missing and selected(run, tasks)[1] is None:
+        ident, implementation = selected(run, tasks)
+        if not missing and implementation is None:
             missing.append({'reason': 'missing_implementation', 'node': tasks['spec']['node']})
+        try:
+            check_parameters(implementation, tasks['spec'].get('parameters', {}), 'Implementation ' + str(ident) + ' parameters')
+        except Invalid as exc:
+            missing.append({'reason': 'invalid_parameters', 'implementation': ident, 'detail': str(exc)})
         return values, sources, missing
 
     def apply_hooks(self, run, tasks, phase):
@@ -239,6 +246,7 @@ class TimelineRuntime:
                 if reason:
                     self.end_run(run, reason)
             if run['status'] == 'running':
+                self.apply_retries(run)
                 # Observe/consume existing tasks before admitting new tasks.
                 for e in run['executions']:
                     tasks = run['tasks'][e['task_id']]
@@ -320,7 +328,7 @@ class TimelineRuntime:
                         task.pop('agent_failures', None)
                 if run.get('attention_error') or any(t['kind'] in ('unexpected', 'request') for t in tasks['items']):
                     fallback = run['settings'].get('fallback_node')
-                    pending = any(w['origin'].get('fallback') and w['status'] in PENDING | IN_FLIGHT for w in run['tasks'].values())
+                    pending = any(w['origin'].get('fallback') and w['status'] in PENDING | IN_FLIGHT | {'retrying'} for w in run['tasks'].values())
                     if fallback and not pending:
                         node = node_for(run, fallback)
                         previous = next((w for w in reversed(list(run['tasks'].values()))
@@ -332,7 +340,7 @@ class TimelineRuntime:
                             if previous and run.get('agent_failures', 0):
                                 from loop_anything.interfaces.agent_tasks import change_task_in_run
                                 change_task_in_run(run, {'task_id': previous['id'], 'operation': 'retry',
-                                                        'reason': 'Retry configured fallback after confirmed Agent failure'})
+                                                        'reason': 'Retry configured fallback after confirmed Agent failure'}, {'kind': 'engine'})
                             else:
                                 ident = uid('fallback')
                                 spec = {'id': ident, 'node': fallback, 'inputs': {},
@@ -364,6 +372,9 @@ class TimelineRuntime:
     def end_run(self, run, reason):
         run['status'] = 'completed'
         run['completion'] = {'reason': reason, 'at': time.time(), 'settings_revision': run['settings']['revision']}
+        for e in run['executions']:
+            if e.get('retry', {}).get('status') == 'pending':
+                e['retry']['status'] = 'superseded'
         for tasks in run['tasks'].values():
             if tasks['status'] not in END:
                 tasks['status'] = 'cancelled'
@@ -382,7 +393,9 @@ class TimelineRuntime:
             raise Invalid('Declared attempt budget prevents dispatch')
 
     def new_execution(self, run, tasks, implementation, values, sources):
+        tasks.setdefault('revision', 1)
         e = dict(id=uid('exec'), task_id=tasks['id'], node=tasks['spec']['node'], inputs=values, sources=sources,
+                 task_revision=tasks['revision'], task_spec=copy.deepcopy(tasks['spec']),
                  parameters=copy.deepcopy(tasks['spec'].get('parameters', {})), status='executing', token=uid('attempt'),
                  settings_revision=run['settings']['revision'],
                  implementation_id=selected(run, tasks)[0], implementation=copy.deepcopy(implementation), created_at=time.time(), started_at=None, attempt=tasks.get('attempts', 0) + 1)
@@ -505,16 +518,30 @@ class TimelineRuntime:
             raise Invalid('Only completed reports may commit outputs or arrange tasks')
         state = e.get('lifecycle_state', lifecycle_definition(e['implementation'])['initial'])
         rules = lifecycle_definition(e['implementation'])['transitions']
-        rule = next((r for r in rules if r['from'] == state and r['event'] == event), None)
+        candidates = [r for r in rules if r['from'] == state and r['event'] == event]
         context = {'inputs': e['inputs'], 'parameters': e['parameters'], 'settings': run['settings'],
+                   'attempt': e['attempt'], 'task_revision': e.get('task_revision'),
                    'detail': report.get('detail', {}), 'outputs': report.get('envelope', {}).get('outputs', {})}
-        matched = rule is not None
-        if rule and 'when' in rule:
-            try:
-                matched = evaluate(rule['when'], context) is True
-            except (KeyError, IndexError, TypeError, ValueError):
-                matched = False
+        matches, issue = [], None
+        try:
+            matches = [r for r in candidates if 'when' not in r or evaluate(r['when'], context) is True]
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            issue = 'Invalid transition condition: ' + str(exc)
+        if len(matches) != 1 and issue is None:
+            issue = ('Ambiguous transitions' if len(matches) > 1 else 'No matching transition' if candidates else 'Uncovered transition') + ': ' + state + ' + ' + event
+        rule = matches[0] if len(matches) == 1 and issue is None else None
         task = run['tasks'][e['task_id']]
+        parameters = copy.deepcopy(task['spec'].get('parameters', {}))
+        if rule and rule['to'] == 'retry':
+            try:
+                from loop_anything.runtime.timeline_model import expand
+                parameters.update(expand(rule.get('parameters', {}), context))
+                candidate = dict(task['spec'], parameters=parameters)
+                check_task(run['loop_definition'], candidate)
+                check_selection(run, candidate)
+            except (KeyError, IndexError, TypeError, ValueError) as exc:
+                issue = 'Invalid retry parameters: ' + str(exc)
+        matched = rule is not None and issue is None
         if event == 'check_error':
             e['observation_error'] = str(report.get('detail', {}).get('message') or 'Observation failed; external state is unknown')
         if matched:
@@ -523,9 +550,12 @@ class TimelineRuntime:
             target = rule['to']
             if target == 'completed':
                 self.commit_in_run(run, e, report.get('envelope', {}))
-            elif target == 'fault':
+            elif target in ('fault', 'retry', 'agent'):
                 e.update(status='fault', error=str(report.get('detail', {}).get('message') or event))
-                task['status'] = 'fault'
+                task['status'] = 'retrying' if target == 'retry' else 'fault'
+                if target == 'retry':
+                    e['retry'] = {'status': 'pending', 'report_id': report['report_id'], 'parameters': parameters}
+                    task['wait_reasons'] = [{'reason': 'retry_pending', 'detail': 'Waiting for process exit and operation scope before retry'}]
             else:
                 if kind == 'external' and external_id:
                     e.update(external_id=external_id, poll_after=delay, wake_at=time.time() + delay)
@@ -533,11 +563,12 @@ class TimelineRuntime:
             e['lifecycle_state'] = target
         else:
             target = state
-            e.update(status='fault', error=('Transition condition not met: ' if rule else 'Uncovered transition: ') + state + ' + ' + event)
+            e.update(status='fault', error=issue or 'Transition did not match')
             task['status'] = 'fault'
         detail = {'from': state, 'event': event, 'to': target, 'source': source, 'accepted': matched,
                   'report_id': report['report_id'], 'detail': copy.deepcopy(report.get('detail', {})),
-                  'rule': copy.deepcopy(rule)}
+                  'rule': copy.deepcopy(rule), 'attempt': e['attempt'], 'task_revision': e.get('task_revision'),
+                  'matching_rules': copy.deepcopy(matches)}
         if external_id:
             detail['external_id'] = external_id
         Store.log(run, 'transition', event if matched else e['error'], e['id'], detail)
@@ -551,6 +582,37 @@ class TimelineRuntime:
         if e.get('worker_active'):
             e['call_reported'] = True
         return receipt
+
+    def block_retry(self, run, e, message):
+        retry = e.get('retry', {})
+        if retry.get('status') == 'pending':
+            retry.update(status='blocked', error=message)
+            e['error'] = message
+            run['tasks'][e['task_id']]['status'] = 'fault'
+            Store.log(run, 'retry_blocked', message, e['id'], {'report_id': retry['report_id']})
+
+    def apply_retries(self, run):
+        from loop_anything.interfaces.agent_tasks import change_task_in_run
+        for e in run['executions']:
+            retry = e.get('retry', {})
+            if retry.get('status') != 'pending':
+                continue
+            task = run['tasks'][e['task_id']]
+            if task.get('execution_id') != e['id'] or task['status'] != 'retrying':
+                retry['status'] = 'superseded'
+                continue
+            if e.get('worker_active') or not scope_available(run, task['id']):
+                continue
+            try:
+                self.check_budget(run, task)
+                change_task_in_run(run, {'task_id': task['id'], 'operation': 'retry',
+                    'parameters': retry['parameters'], 'reason': 'Lifecycle transition: ' + retry['report_id']}, {'kind': 'engine'})
+            except Invalid as exc:
+                self.block_retry(run, e, str(exc))
+                continue
+            retry.update(status='applied', applied_at=time.time(), task_revision=task.get('revision'))
+            Store.log(run, 'retry_applied', 'Same Task scheduled for another attempt', e['id'],
+                      {'report_id': retry['report_id'], 'task_id': task['id'], 'task_revision': task.get('revision')})
 
     def submit(self, run_id, execution_id, token, envelope):
         with self.store.edit(run_id) as run:
@@ -572,6 +634,7 @@ class TimelineRuntime:
             else:
                 node = node_for(snapshot, e['node'])
                 request = {'run_id': run_id, 'execution_id': e['id'], 'task_id': e['task_id'], 'token': e['token'],
+                           'attempt': e['attempt'], 'task_revision': e.get('task_revision'),
                            'inputs': e['inputs'], 'parameters': e['parameters'], 'external_id': e.get('external_id'),
                            'timeline': snapshot, 'handbook': snapshot['loop_definition']['handbook'],
                            'node_instructions': node['instructions'], 'output_contract': node['outputs'],
@@ -636,14 +699,18 @@ class TimelineRuntime:
         except Exception as exc:
             exit_error = exc
             with self.store.edit(run_id) as run:
+                current = self.engine.execution(run, e['id'])
+                if isinstance(exc, CommandNotStopped):
+                    self.block_retry(run, current, 'Process stop is unconfirmed; inspect before retry: ' + str(exc))
                 if implementation['kind'] == 'agent' and not owner_for(run, e['token']):
                     Store.log(run, 'agent_exit_error', str(exc), e['id'])
                     return
-                current = self.engine.execution(run, e['id'])
                 if current.get('token') == e['token'] and current['status'] not in ('cancelled', 'stale'):
                     if current['status'] not in ('completed', 'fault') and not (current.get('external_id') and not observe):
                         self.report_in_run(run, current, {'event': 'check_error' if observe else 'process_error',
                             'report_id': invocation + ':error', 'detail': {'message': str(exc)}}, 'engine')
+                    if isinstance(exc, CommandNotStopped):
+                        self.block_retry(run, current, 'Process stop is unconfirmed; inspect before retry: ' + str(exc))
                     Store.log(run, 'process_error', str(exc), e['id'], {'observing': observe, 'result_preserved': current['status'] == 'completed'})
                     if implementation['kind'] == 'agent':
                         if isinstance(exc, CommandNotStopped):
@@ -773,6 +840,9 @@ class TimelineRuntime:
                 for task in run['tasks'].values():
                     task.pop('agent_failures', None)
             if action == 'terminate':
+                for e in run['executions']:
+                    if e.get('retry', {}).get('status') == 'pending':
+                        e['retry']['status'] = 'superseded'
                 for tasks in run['tasks'].values():
                     if tasks['status'] not in END:
                         tasks['status'] = 'cancelled'
@@ -788,7 +858,7 @@ class TimelineRuntime:
             if run['tasks'][e['task_id']].get('execution_id') != execution_id:
                 raise Conflict('Only the current execution can be retried')
             from loop_anything.interfaces.agent_tasks import change_task_in_run
-            change_task_in_run(run, {'task_id': e['task_id'], 'operation': 'retry', 'reason': 'User requested retry after checking side effects'})
+            change_task_in_run(run, {'task_id': e['task_id'], 'operation': 'retry', 'reason': 'User requested retry after checking side effects'}, owner_for(run, operator_token))
         else:
             raise Invalid('Unknown command')
         Store.log(run, action, 'Timeline command: ' + action, execution_id, {'gate': hook_firing})
@@ -797,6 +867,8 @@ class TimelineRuntime:
         if not run.get('operator_protocol'):
             return
         for attempt in run['executions']:
+            if attempt.get('worker_active'):
+                self.block_retry(run, attempt, 'Engine interrupted while process was active; verify stopped before retry')
             attempt.pop('worker_active', None)
             attempt.pop('call_reported', None)
         for owner in run.get('agent_sessions', []):
@@ -816,6 +888,7 @@ class TimelineRuntime:
                 else:
                     self.report_in_run(run, e, {'event': 'process_error', 'report_id': uid('recovery'),
                         'detail': {'message': 'Engine interrupted; inspect external effects before retry'}}, 'engine')
+                    self.block_retry(run, e, 'Interrupted execution has unknown external effects; inspect before retry')
                     e['token'] = None
                 Store.log(run, 'recovery', 'Recovered ' + e['task_id'], e['id'])
         for notification in run['notifications']:

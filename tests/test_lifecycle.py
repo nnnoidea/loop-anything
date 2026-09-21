@@ -1,6 +1,7 @@
 """Transition contract through real task ownership/transactions; no business-specific rules."""
 import json
 import subprocess
+import sys
 import time
 import unittest
 from unittest.mock import patch
@@ -139,6 +140,8 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(calls, ['submit', 'check', 'check'])
         self.assertEqual(self.base.read()['records']['out'][0]['value'], 'done')
         self.assertEqual(len([e for e in self.base.read()['executions'] if e['task_id']=='job']), 1)
+        self.assertEqual(self.base.read()['tasks']['job']['revision'],1)
+        self.assertEqual(next(e for e in self.base.read()['executions'] if e['task_id']=='job')['task_revision'],1)
 
     def test_custom_matrix_uncovered_event_enters_only_configured_fallback(self):
         self.base.bp['nodes']['recover'] = node()
@@ -195,6 +198,166 @@ print('ordinary script logs')
                 self.assertTrue(any(h['kind']=='transition' and h['detail']['event']=='completed' for h in run['history']))
             finally:
                 server.terminate();server.wait(timeout=10)
+
+    def retry_matrix(self, kind, event='failed', parameters=None):
+        matrix=template(kind);state='waiting' if kind=='external' else 'executing'
+        matrix['transitions']=[r for r in matrix['transitions'] if (r['from'],r['event'])!=(state,event)]
+        matrix['transitions'] += [
+            {'from':state,'event':event,'when':{'op':'le','args':[{'path':'attempt'},2]},'to':'retry',**({'parameters':parameters} if parameters is not None else {})},
+            {'from':state,'event':event,'when':{'op':'ge','args':[{'path':'attempt'},3]},'to':'agent'}]
+        return matrix
+
+    def advance(self, predicate):
+        for _ in range(100):
+            self.engine.tick(self.base.id);self.settle();run=self.base.read()
+            if predicate(run):return run
+            time.sleep(.01)
+        self.fail(str(run['history'][-8:]))
+
+    def test_real_command_retries_same_task_once_per_report_across_restart(self):
+        from loop_anything.runtime.engine import Engine
+        matrix=self.retry_matrix('command')
+        matrix['transitions'][-2]['when']={'op':'eq','args':[{'path':'attempt'},1]}
+        matrix['transitions'].append({'from':'executing','event':'failed','to':'retry',
+            'when':{'op':'eq','args':[{'path':'attempt'},2]},'parameters':{'batch':8}})
+        script="import json,sys;c=json.load(sys.stdin);print(json.dumps({'event':'failed','report_id':'failed','detail':{'message':'retryable'}} if c['attempt']<3 else {'outputs':{'text':str(c['parameters'])}}))"
+        self.base.implementations['produce']={'kind':'command','command':[sys.executable,'-c',script],'lifecycle':matrix}
+        self.base.initialize([task_spec('work','produce',{'source':{'record':'a'}},{'text':'out'},parameters={'batch':16,'keep':42}),
+            task_spec('downstream','join',{'a':{'record':'out'},'b':{'record':'b'}},{'ok':'done'},after=['work'])]);self.settle()
+        run=self.base.read();first=next(e for e in run['executions'] if e['task_id']=='work')
+        downstream=run['tasks']['downstream']['spec']
+        tools=RunTools(self.store,self.base.id,first['token'])
+        replay=tools.call('report_task',{'task_id':'work','execution_id':first['id'],'event':'failed','report_id':'failed','detail':{'message':'retryable'}})
+        self.assertTrue(replay['duplicate']);self.assertEqual(run['tasks']['work']['status'],'retrying')
+        self.engine.close();self.base.engine=self.engine=Engine(self.store)
+        self.engine.recover();self.engine.recover()
+        run=self.advance(lambda r:r['tasks']['work']['status']=='completed')
+        attempts=[e for e in run['executions'] if e['task_id']=='work']
+        self.assertEqual([(e['attempt'],e['task_revision']) for e in attempts],[(1,1),(2,1),(3,2)])
+        self.assertEqual(attempts[-1]['parameters'],{'batch':8,'keep':42})
+        self.assertEqual(run['tasks']['downstream']['spec'],downstream)
+        self.assertEqual(set(run['tasks']),{'init','work','downstream'})
+        self.assertEqual(len([h for h in run['history'] if h['kind']=='retry_applied']),2)
+        self.engine.recover();self.engine.tick(self.base.id)
+        self.assertEqual(len([e for e in self.base.read()['executions'] if e['task_id']=='work']),3)
+
+    def test_external_failures_retry_then_agent_repairs_original_task(self):
+        self.base.bp['nodes']['recover']=node();self.base.bp['fallback_node']='recover';self.base.implementations['recover']={'kind':'agent'}
+        submit="import json,sys;c=json.load(sys.stdin);print(json.dumps({'status':'waiting','external_id':'job-'+str(c['attempt']),'poll_after':.001}))"
+        observe="import json,sys;c=json.load(sys.stdin);print(json.dumps({'event':'failed','report_id':'failed'} if not c['parameters'].get('fixed') else {'outputs':{'text':'repaired'}}))"
+        self.base.implementations['produce']={'kind':'external','command':[sys.executable,'-c',submit],'observe':[sys.executable,'-c',observe],'lifecycle':self.retry_matrix('external')}
+        self.base.initialize([task_spec('work','produce',{'source':{'record':'a'}},{'text':'out'})])
+        run=self.advance(lambda r:any(e['node']=='recover' for e in r['executions']))
+        attempts=[e for e in run['executions'] if e['task_id']=='work']
+        self.assertEqual([e['external_id'] for e in attempts],['job-1','job-2','job-3'])
+        self.assertEqual(attempts[-1]['lifecycle_state'],'agent')
+        fallback=next(e for e in run['executions'] if e['node']=='recover');tools=RunTools(self.store,self.base.id,fallback['token'])
+        tools.call('change_task',{'task_id':'work','operation':'retry','parameters':{'fixed':True},'reason':'Repair original task'})
+        info=tools.call('read_task',{'task_id':fallback['task_id']})
+        tools.call('complete_task',{'task_id':fallback['task_id'],'task_version':info['task_version'],'envelope':{'outputs':{}}});tools.call('finish',{})
+        run=self.advance(lambda r:r['tasks']['work']['status']=='completed')
+        self.assertEqual(run['tasks']['work']['revision'],2)
+        self.assertEqual(len([t for t in run['tasks'].values() if t['spec']['node']=='produce']),1)
+        self.assertEqual(run['records']['out'][0]['value'],'repaired')
+
+    def test_overlapping_conditions_and_bad_retry_parameters_are_visible_failures(self):
+        for bad_parameters in (False,True):
+            with self.subTest(bad_parameters=bad_parameters):
+                matrix=self.retry_matrix('external',parameters={'batch':0} if bad_parameters else None)
+                if not bad_parameters:matrix['transitions'][-1]['when']={'op':'ge','args':[{'path':'attempt'},1]}
+                validate(matrix)
+                self.base.implementations['produce']={'kind':'external','command':['submit'],'observe':['observe'],'lifecycle':matrix,
+                    'parameter_schema':{'type':'object','properties':{'batch':{'type':'integer','minimum':1}}}}
+                self.base.bp['version']=str(bad_parameters)
+                with patch('loop_anything.runtime.timeline_runtime.run_command',return_value=subprocess.CompletedProcess([],0,json.dumps({'status':'waiting','external_id':'job','poll_after':10}),'')):
+                    self.base.initialize([task_spec('work','produce',{'source':{'record':'a'}},{'text':'out'},parameters={'batch':16})]);self.settle()
+                run=self.base.read();e=next(e for e in run['executions'] if e['task_id']=='work')
+                result=RunTools(self.store,self.base.id,e['token']).call('report_task',{'task_id':'work','execution_id':e['id'],'event':'failed','report_id':'failed'})
+                self.assertFalse(result['accepted']);self.assertIn('Invalid retry parameters' if bad_parameters else 'Ambiguous',result['issue'])
+                run=self.base.read();self.assertEqual(run['tasks']['work']['spec']['parameters'],{'batch':16});self.assertEqual(run['tasks']['work']['revision'],1)
+                self.assertNotIn('retry',next(x for x in run['executions'] if x['id']==e['id']))
+
+    def test_pending_retry_waits_for_scope_and_unconfirmed_exit_blocks_restart(self):
+        matrix=self.retry_matrix('command')
+        self.base.implementations['produce']={'kind':'command','command':['work'],'lifecycle':matrix}
+        with patch('loop_anything.runtime.timeline_runtime.run_command',return_value=subprocess.CompletedProcess([],0,json.dumps({'event':'failed','report_id':'failed'}),'')):
+            self.base.initialize([task_spec('work','produce',{'source':{'record':'a'}},{'text':'out'})]);self.settle()
+        from loop_anything.interfaces.agent_tasks import acquire
+        owner=acquire(self.store,self.base.id)
+        self.engine.tick(self.base.id);self.assertEqual(self.base.read()['tasks']['work']['attempts'],1)
+        RunTools(self.store,self.base.id,owner['token']).call('finish',{})
+        # Simulate restart with an invocation that had not durably confirmed exit.
+        with self.store.edit(self.base.id) as run:
+            e=next(e for e in run['executions'] if e['task_id']=='work');e['worker_active']=True
+        self.engine.recover();self.engine.tick(self.base.id)
+        run=self.base.read();e=next(e for e in run['executions'] if e['task_id']=='work')
+        self.assertEqual(e['retry']['status'],'blocked');self.assertEqual(run['tasks']['work']['attempts'],1)
+        self.assertIn('verify stopped',e['retry']['error'])
+
+    def test_pending_fallback_retry_does_not_create_another_fallback_task(self):
+        self.base.bp['nodes']['recover']=node();self.base.bp['fallback_node']='recover'
+        matrix=template('agent')
+        next(r for r in matrix['transitions'] if r['event']=='failed')['to']='retry'
+        self.base.implementations['recover']={'kind':'agent','lifecycle':matrix}
+        self.base.implementations['produce']={'kind':'command','command':[sys.executable,'-c','raise SystemExit(1)']}
+        self.base.initialize([task_spec('work','produce',{'source':{'record':'a'}},{'text':'out'})])
+        run=self.advance(lambda r:any(e['node']=='recover' for e in r['executions']))
+        fallback=next(e for e in run['executions'] if e['node']=='recover')
+        tools=RunTools(self.store,self.base.id,fallback['token'])
+        info=tools.call('read_task',{'task_id':fallback['task_id']})
+        tools.call('report_task',{'task_id':fallback['task_id'],'task_version':info['task_version'],'event':'failed','report_id':'retry'})
+        for _ in range(3):self.engine.tick(self.base.id)
+        run=self.base.read()
+        self.assertEqual(run['tasks'][fallback['task_id']]['status'],'retrying')
+        self.assertEqual([t['id'] for t in run['tasks'].values() if t['origin'].get('fallback')],[fallback['task_id']])
+
+    def test_agent_process_retry_does_not_bypass_three_failure_pause(self):
+        matrix=template('agent')
+        next(r for r in matrix['transitions'] if r['event']=='process_error')['to']='retry'
+        self.base.implementations['produce']={'kind':'agent','command':[sys.executable,'-c','raise SystemExit(1)'],'lifecycle':matrix}
+        self.base.initialize([task_spec('work','produce',{'source':{'record':'a'}},{'text':'out'})])
+        owner=self.base.read()['agent_sessions'][0]
+        RunTools(self.store,self.base.id,owner['token']).call('finish',{})
+        run=self.advance(lambda r:r['status']=='paused')
+        self.assertEqual(run['tasks']['work']['attempts'],3)
+        self.engine.tick(self.base.id);self.assertEqual(self.base.read()['tasks']['work']['attempts'],3)
+
+    def test_finish_does_not_allow_retry_when_the_process_cannot_be_stopped(self):
+        from loop_anything.runtime.host_runtime import CommandNotStopped
+        matrix=template('agent')
+        for row in matrix['transitions']:
+            if row['event'] in ('failed','process_error'):row['to']='retry'
+        self.base.implementations['produce']={'kind':'agent','command':['agent'],'lifecycle':matrix}
+        ids=('with_finish','without_finish')
+        self.base.initialize([task_spec(id,'produce',{'source':{'record':'a'}},{'text':id}) for id in ids])
+        owner=self.base.read()['agent_sessions'][0];RunTools(self.store,self.base.id,owner['token']).call('finish',{})
+        def handler(command,request,*args,**kwargs):
+            context=json.loads(request.split('Run context:\n',1)[1]);tools=RunTools(self.store,self.base.id,context['token'])
+            if context['task_id']=='with_finish':
+                info=tools.call('read_task',{'task_id':context['task_id']})
+                tools.call('report_task',{'task_id':context['task_id'],'task_version':info['task_version'],'event':'failed','report_id':'failed'})
+                tools.call('finish',{})
+            raise CommandNotStopped('Test: process still exists')
+        with patch('loop_anything.runtime.timeline_runtime.run_command',side_effect=handler):
+            self.engine.tick(self.base.id);self.settle()
+        self.engine.tick(self.base.id);run=self.base.read()
+        for id in ids:
+            e=next(e for e in run['executions'] if e['task_id']==id)
+            self.assertEqual(e['retry']['status'],'blocked');self.assertEqual(run['tasks'][id]['attempts'],1)
+
+    def test_agent_can_release_its_scope_after_explicit_handoff(self):
+        self.base.bp['nodes']['recover']=node();self.base.bp['fallback_node']='recover';self.base.implementations['recover']={'kind':'agent'}
+        matrix=template('agent');next(r for r in matrix['transitions'] if r['event']=='failed')['to']='agent'
+        self.base.implementations['produce']={'kind':'agent','lifecycle':matrix}
+        self.base.initialize([task_spec('work','produce',{'source':{'record':'a'}},{'text':'out'})])
+        owner=self.base.read()['agent_sessions'][0];RunTools(self.store,self.base.id,owner['token']).call('finish',{})
+        self.engine.tick(self.base.id);run=self.base.read();e=next(e for e in run['executions'] if e['task_id']=='work')
+        tools=RunTools(self.store,self.base.id,e['token']);info=tools.call('read_task',{'task_id':'work'})
+        tools.call('report_task',{'task_id':'work','task_version':info['task_version'],'event':'failed','report_id':'handoff'})
+        self.assertTrue(tools.call('finish',{})['finished'])
+        run=self.advance(lambda r:any(e['node']=='recover' for e in r['executions']))
+        self.assertEqual(run['tasks']['work']['status'],'fault')
+        self.assertEqual(len([t for t in run['tasks'].values() if t['spec']['node']=='produce']),1)
 
     def test_matrix_cannot_bypass_completion_or_define_ambiguous_transition(self):
         incomplete = {'a': None, 'b': {'options': None}, 'c': {'options': {'draft': None}}}

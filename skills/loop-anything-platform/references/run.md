@@ -56,7 +56,7 @@ python3 scripts/call.py read_task --arguments '{"run_id":"RUN_ID","token":"TOKEN
 例如 `read_task` 的 outputs 只有一个名为 result 的字符串端口时，提交参数形如：
 
 ```json
-{"run_id":"RUN_ID","token":"TOKEN","task_id":"TASK_ID","task_version":"读取到的版本","envelope":{"outputs":{"result":"实际工作结果"}}}
+{"run_id":"RUN_ID","token":"TOKEN","task_id":"TASK_ID","task_version":"读取到的版本","event":"completed","report_id":"本次交付的稳定ID","envelope":{"outputs":{"result":"实际工作结果"}}}
 ```
 
 端口名和数据类型必须使用实际契约；初始化任务还需要按 `settings_schema` 提交已讨论的 `envelope.settings`。无输出端口时提交空对象 `{}`。不要照抄示例创建业务字段。
@@ -200,3 +200,19 @@ client.report(context, "completed", report_id="final", envelope={"outputs": {"re
 矩阵判断“当前状态＋事件”能否转移；同一次执行中的 report_id 识别是否为同一个逻辑事件。相同 ID、相同内容的并发或重试只确认一次，状态检查、结果写入、报告回执及完成 Hook 在同一事务中处理。相同 ID 却改变内容会被拒绝。程序重试一次发送时必须沿用原 ID；若每次生成新 ID，平台会将其视为新事件。
 
 不要把矩阵行理解为整个 Run 只能命中一次：进度可以合法自循环；离开 A 后又进入 A，也可以再次使用 A 的出边。已离开 A 时，新事件只能匹配当前状态的规则，不能再次执行 A 的旧出边；已完成的任务拒绝新的状态报告。当前矩阵没有任意“状态进入动作”或通知配置，已有通知 Hook 按 Hook/Task 去重；如果业务需要每次重新进入都通知，不能靠持续观察“当前处于 A”反复发送。
+
+
+### Task 修订与执行尝试
+
+新 Task 的 revision 从 1 开始；修改其 inputs、parameters、implementation 或 after 才递增，原配置重试、恢复监控和无实际配置变化不递增。change_task 回执和 read_task 返回 task_revision；并发提交仍使用刚读取的 task_version，不能用整数修订号替代。
+
+每次执行保存 task_revision、task_spec 及实际输入、参数和实现快照。原参数重试可以是修订 1 的第 2 次执行；改参后重试则是修订 2 的第 3 次执行。历史修改保留前后修订、配置、原因与可识别的操作者，不记录操作令牌。下游继续引用同一个 Task ID 和输出位置，不自动重建。
+
+Run 默认实现或输入记录的变化不直接改写 Task 声明，因此不自动增加 Task 修订；执行记录另存实际选用的实现、运行设置修订及消费的记录版本。旧历史没有修订号时标为未记录，只从后续修改或新执行开始记录，不推算已有历史。
+
+
+### 状态机安排的恢复
+
+报告返回 state=retry 时，表示重试转移已记录，Task 处于 retrying，需等待进程结束及操作范围可写后才能应用。read_task 的 execution_state.retry 可查看 pending/applied/blocked/superseded 和已确定的参数。Agent 报告后仍需 finish 释放操作权；本任务明确转入 agent 时也可 finish，将该问题交还给已配置兜底，其他未处理问题仍须遵守原范围规则。
+
+不要重复 add_task 代替重试。报告重放沿用同一 report_id 和内容，已应用的转移不会再次改参或重提。服务重启后若标明旧进程结局未知，先核实它已停止及外部副作用，再用 change_task retry；平台不会自动冒险重提。自动恢复与手动操作共用 Task 修订、参数契约和操作范围。

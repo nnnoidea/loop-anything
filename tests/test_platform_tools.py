@@ -33,7 +33,54 @@ class PlatformToolTests(unittest.TestCase):
         self.draft = self.tools.call(name, dict(draft_id=self.draft['draft_id'], revision=self.draft['revision'], **arguments))
         return self.draft
 
+    def test_conversation_entry_needs_no_form_or_artificial_result(self):
+        draft=self.tools.call('read_loop',{'draft_id':self.draft['draft_id']})['loop']
+        self.assertEqual(draft['loop_definition']['nodes']['initialize']['inputs'],{})
+        self.assertEqual(draft['loop_definition']['records'],{})
+        self.edit('set_loop',handbook='Discuss the objective, then initialize settings.')
+        key=self.tools.call('publish_loop',{'draft_id':self.draft['draft_id'],'revision':self.draft['revision']})['key']
+        started=self.tools.call('start_run',{'key':key,'title':'Agreed goal','authorization':'Initialize only'})
+        args={'run_id':started['run_id'],'token':started['token']}
+        info=self.tools.call('read_task',dict(args,task_id=started['entry_task_id']))
+        self.tools.call('complete_task',dict(args,task_id=started['entry_task_id'],task_version=info['task_version'],envelope={'settings':{'objective':'Goal from conversation'},'outputs':{}}))
+        self.tools.call('finish',args)
+        run=self.store.get(started['run_id'])
+        self.assertTrue(run['initialized']);self.assertEqual(run['settings']['objective'],'Goal from conversation')
+        self.assertEqual(run['records'],{});self.assertFalse(run['agent_sessions'])
+
+    def test_removal_cleans_generated_types_and_protects_shared_and_published_types(self):
+        self.edit('set_loop',handbook='A draft with shared output types.')
+        for node in ('a','b'):
+            self.edit('put_node',node_id=node,instructions='Work',outputs=[{'name':'result','type':'string'}])
+        draft=self.tools.call('read_loop',{'draft_id':self.draft['draft_id']})['loop']
+        bp=draft['loop_definition'];bp['nodes']['b']['outputs']['result']['record_type']='a.result'
+        bp['records']['spare']={'type':'string'}
+        saved=self.store.save_draft(bp,draft['implementations'],draft['id'],draft['revision'])
+        self.draft.update(revision=saved['revision'])
+        key=self.tools.call('publish_loop',{'draft_id':saved['id'],'revision':saved['revision']})['key']
+        original=next(c for c in self.store.catalog() if c['key']==key)
+        old_run=self.store.create(key,'Original')
+        self.edit('remove_node',node_id='a')
+        doc=self.tools.call('read_loop',{'draft_id':saved['id']})['loop']
+        self.assertIn('a.result',doc['loop_definition']['records'])
+        denied=self.tools.respond('set_loop',dict(draft_id=saved['id'],revision=doc['revision'],remove_records=['a.result','spare']))
+        self.assertFalse(denied['ok'])
+        # b.result was cleaned when its generated output changed; deleting b leaves a shared type for explicit cleanup.
+        self.assertNotIn('b.result',doc['loop_definition']['records'])
+        self.edit('put_node',node_id='c',instructions='Work',outputs=[{'name':'out','type':'string'}])
+        self.edit('put_node',node_id='c',outputs=[])
+        doc=self.tools.call('read_loop',{'draft_id':saved['id']})['loop']
+        self.assertNotIn('c.out',doc['loop_definition']['records'])
+        self.edit('remove_node',node_id='b')
+        report=self.tools.call('validate_loop',{'draft_id':saved['id']})
+        self.assertEqual(report['unused_records'],['a.result','spare'])
+        self.edit('set_loop',remove_records=report['unused_records'])
+        self.assertEqual(self.tools.call('read_loop',{'draft_id':saved['id']})['loop']['loop_definition']['records'],{})
+        self.assertEqual(original,next(c for c in self.store.catalog() if c['key']==key))
+        self.assertEqual(old_run,self.store.get(old_run['id']))
+
     def build(self):
+        self.edit('put_node', node_id='initialize', inputs=[{'name':'request','type':'string'}], outputs=[{'name':'result','type':'string'}])
         self.edit('set_loop', handbook='AUTHOR BUSINESS INSTRUCTIONS: transform the given text and report it.')
         for id, terminal in [('convert', False), ('finish', True)]:
             self.edit('put_node', node_id=id, instructions='Complete the author task.', inputs=[{'name': 'value', 'type': 'string'}],
@@ -77,6 +124,15 @@ class PlatformToolTests(unittest.TestCase):
         self.edit('set_implementation',node_id='initialize',command=['patched-default'])
         self.assertEqual(self.tools.call('read_loop',{'draft_id':self.draft['draft_id'],'node_id':'initialize'})['value']['implementations']['default'],'chosen')
 
+        schema={'type':'object','properties':{'queue':{'type':'string'}},'required':['queue']}
+        self.edit('set_implementation',node_id='initialize',implementation_id='chosen',parameter_schema=schema)
+        self.edit('set_implementation',node_id='initialize',implementation_id='chosen',command=['preserve-contract'])
+        self.assertEqual(self.tools.call('read_loop',selected)['value']['parameter_schema'],schema)
+        invalid=self.tools.respond('set_implementation',dict(selected,revision=self.draft['revision'],parameter_schema={'type':'string'}))
+        self.assertFalse(invalid['ok']);self.assertEqual(invalid['error']['path'][-1],'parameter_schema')
+        self.edit('set_implementation',node_id='initialize',implementation_id='chosen',clear=['parameter_schema'])
+        self.assertNotIn('parameter_schema',self.tools.call('read_loop',selected)['value'])
+
     def test_targeted_reads_and_files_support_edit_publish_and_delete(self):
         key=self.build()
         draft_id=self.draft['draft_id']
@@ -114,7 +170,7 @@ class PlatformToolTests(unittest.TestCase):
         self.assertEqual(before,self.tools.call('read_loop',{'draft_id':draft_id}))
         edited=self.edit('put_step',plan='round',step='finish',node_id='finish',inputs={})
         self.assertFalse(edited['validation']['valid'])
-        self.assertEqual(edited['validation']['issues'][0]['path'],['plans','round','steps','finish','inputs'])
+        self.assertEqual(edited['validation']['issues'][0]['path'],['plans','round','steps','finish','inputs','value'])
         # An unfinished draft remains editable and reports the precise missing input.
         self.edit('connect_steps',plan='round',from_step='convert',output='result',to_step='finish',input='value')
         self.assertTrue(self.tools.call('validate_loop',{'draft_id':draft_id})['valid'])

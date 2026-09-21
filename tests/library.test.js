@@ -88,3 +88,12 @@ test('recovery relationships use explicit fallback and respect disabled override
  assert(!get('').some(e=>e.repeats));
  assert.equal(JSON.stringify(bp),before);
 });
+
+test('declared input sources distinguish unbound ports, upstream outputs and intentional literals',()=>{
+ const bp={"entry": "init", "seed": {"inputs": {}}, "nodes": {"init": {"inputs": {}}, "data": {"inputs": {}, "outputs": {"dataset": {}}}, "predict": {"inputs": {"dataset": {}, "checkpoint": {}, "zero": {}, "flag": {}}, "outputs": {}}}, "plans": {"experiment": {"steps": {"data": {"node": "data"}, "predict": {"node": "predict", "inputs": {"dataset": {"from": "data", "port": "dataset"}, "zero": {"literal": 0}, "flag": {"literal": false}}}}}}};
+ const rows=JSON.parse(run(`JSON.stringify(nodeInputRows(${JSON.stringify(bp)},'predict'))`));
+ assert.deepEqual(rows.filter(r=>r.missing).map(r=>r.port),['checkpoint']);
+ assert.equal(rows[0].text,'data / dataset');
+ delete bp.plans.experiment.steps.data;
+ assert(JSON.parse(run(`JSON.stringify(nodeInputRows(${JSON.stringify(bp)},'predict'))`)).find(r=>r.port==='dataset').missing);
+});

@@ -71,7 +71,9 @@ function sourceText(source){
   if(Object.hasOwn(source,'settings'))return 'Programmable Timeline：'+source.settings;
   if(Object.hasOwn(source,'record'))return '共享记录：'+source.record;
   if(Object.hasOwn(source,'records'))return '共享记录集合：'+pretty(source.records);
-  if(Object.hasOwn(source,'from'))return '节点输出：'+pretty(source.from);
+  if(Object.hasOwn(source,'from'))return '上游输出：'+source.from+' / '+source.port;
+  if(Object.hasOwn(source,'$'))return '参数化来源：'+source.$;
+  if(source.literal&&typeof source.literal==='object'&&Object.hasOwn(source.literal,'$'))return '本批参数：'+source.literal.$;
   if(Object.hasOwn(source,'literal'))return '固定值：'+pretty(source.literal);
   return '由具体 Task 指定来源';
 }

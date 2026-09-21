@@ -13,12 +13,12 @@ def add_task(run, spec, origin):
     parent_id = spec.pop('parent_id', None)
     check_task(run['loop_definition'], spec)
     from loop_anything.runtime.implementations import check_selection
-    check_selection(run, spec)
     old = run['tasks'].get(spec['id'])
     if old:
         if old['spec'] != spec or old.get('parent_id') != parent_id:
             raise Conflict('Task id already names a different plan: ' + spec['id'])
         return old
+    check_selection(run, spec)
     if len(run['tasks']) >= run['loop_definition'].get('limits', {}).get('max_tasks', float('inf')):
         raise Invalid('Timeline Task budget exhausted')
     for destination in spec['outputs'].values():
@@ -28,11 +28,11 @@ def add_task(run, spec, origin):
             if any(d['id'] == destination['id'] and d.get('expected_revision', 0) == destination.get('expected_revision', 0)
                    for d in tasks['spec']['outputs'].values()):
                 raise Conflict('Two tasks items would write the same record version: ' + destination['id'])
-    item = dict(id=spec['id'], spec=copy.deepcopy(spec), parent_id=parent_id, origin=origin, status='planned',
+    item = dict(id=spec['id'], revision=1, spec=copy.deepcopy(spec), parent_id=parent_id, origin=origin, status='planned',
                 settings_revision=run['settings']['revision'],
                 created_at=time.time(), execution_id=None, wait_reasons=[])
     run['tasks'][item['id']] = item
-    Store.log(run, 'planned', 'Timeline Task created: ' + item['id'], detail={'tasks': spec['id'], 'template': spec['node'], 'origin': origin, 'after': copy.deepcopy(spec)})
+    Store.log(run, 'planned', 'Timeline Task created: ' + item['id'], detail={'tasks': spec['id'], 'template': spec['node'], 'origin': origin, 'after_revision': 1, 'after': copy.deepcopy(spec)})
     return item
 
 
@@ -61,14 +61,20 @@ def validate_plans(bp):
                 raise Invalid('A batch cannot recreate the initializer', path=[name, 'steps', key, 'node'])
             if not isinstance(step.get('inputs', {}), dict):
                 raise Invalid('Step inputs must be an object', path=[name, 'steps', key, 'inputs'])
-            if set(step.get('inputs', {})) != set(bp['nodes'][step['node']]['inputs']):
-                raise Invalid('Step inputs must match node ports: ' + key, path=[name, 'steps', key, 'inputs'])
+            declared = bp['nodes'][step['node']]['inputs']
+            missing = [port for port in declared if port not in step.get('inputs', {})]
+            extra = [port for port in step.get('inputs', {}) if port not in declared]
+            if missing or extra:
+                port = (missing or extra)[0]
+                raise Invalid(('Input source is missing: ' if missing else 'Unknown input port: ') + key + '.' + port, path=[name, 'steps', key, 'inputs', port])
             if 'each' in step and (not isinstance(step['each'], str) or not step['each']):
                 raise Invalid('each must be a path in plan values', path=[name, 'steps', key, 'each'])
             after = step.get('after', [])
             if not isinstance(after, list) or any(x not in steps or x == key for x in after):
                 raise Invalid('Step after must name other steps in this plan', path=[name, 'steps', key, 'after'])
             for port, source in step.get('inputs', {}).items():
+                if not isinstance(source, dict) or len(set(source) & {'from', 'record', 'records', 'run', 'settings', 'literal', '$'}) != 1:
+                    raise Invalid('Input needs one explicit source: ' + key + '.' + port, path=[name, 'steps', key, 'inputs', port])
                 if isinstance(source, dict) and 'from' in source:
                     upstream = steps.get(source['from'])
                     if not upstream or source.get('port') not in bp['nodes'][upstream['node']]['outputs']:

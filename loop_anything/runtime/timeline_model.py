@@ -27,6 +27,22 @@ def expand(value, context):
     return value
 
 
+def unused_records(bp):
+    if not isinstance(bp, dict) or not isinstance(bp.get('records', {}), dict) or not isinstance(bp.get('nodes'), dict):
+        return []
+    used = {s.get('record_type') for n in bp['nodes'].values() if isinstance(n, dict) and isinstance(n.get('outputs', {}), dict)
+            for s in (n.get('outputs') or {}).values() if isinstance(s, dict) and isinstance(s.get('record_type'), str)}
+    return sorted(set(bp.get('records', {})) - used)
+
+
+def prune_removed_records(before, after):
+    """Remove only generated types that lost their last output reference in this edit."""
+    generated = {node + '.' + port for node, n in before.get('nodes', {}).items() if isinstance(n, dict) and isinstance(n.get('outputs', {}), dict)
+                 for port, s in (n.get('outputs') or {}).items() if isinstance(s, dict) and s.get('record_type') == node + '.' + port}
+    for name in generated.intersection(unused_records(after)):
+        after['records'].pop(name, None)
+
+
 def validate_v2(bp, implementations):
     errors, warnings, issues, location = [], [], [], []
     try:
@@ -137,7 +153,7 @@ def validate_v2(bp, implementations):
         issues.append({'path': location + (getattr(exc, 'path', None) or []), 'message': str(exc)})
     from loop_anything.runtime.implementations import choose
     missing = sorted(n for n in bp.get('nodes', {}) if choose(implementations, n)[1] is None) if not errors and isinstance(bp, dict) and isinstance(bp.get('nodes'), dict) and isinstance(implementations, dict) else []
-    return {'valid': not errors, 'errors': errors, 'warnings': warnings, 'unbound_nodes': missing, 'issues': issues}
+    return {'valid': not errors, 'errors': errors, 'warnings': warnings, 'unbound_nodes': missing, 'issues': issues, 'unused_records': unused_records(bp)}
 
 
 def validate_fallback(bp, implementations, node_id):
@@ -150,9 +166,11 @@ def validate_fallback(bp, implementations, node_id):
         raise Invalid('Fallback reads current issues through Run tools; its input ports must be empty')
     if 'parameter_schema' in node:
         contract({}, node['parameter_schema'], 'Fallback parameters')
-    from loop_anything.runtime.implementations import options
-    if any(config.get('kind') != 'agent' for config in options(implementations.get(node_id)).values()):
-        raise Invalid('Fallback node implementations must be Agents')
+    from loop_anything.runtime.implementations import options, check_parameters
+    for ident, config in options(implementations.get(node_id)).items():
+        if config.get('kind') != 'agent':
+            raise Invalid('Fallback node implementations must be Agents')
+        check_parameters(config, {}, 'Fallback ' + ident + ' parameters')
 
 
 def check_task(bp, tasks):

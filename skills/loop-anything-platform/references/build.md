@@ -20,6 +20,8 @@
 - **初始或复用输入**：在 `put_step.inputs` 中使用 `{"record":"initial.result"}` 等明确来源。入口的真实输出位置由 `read_loop` 返回，不猜名字。普通参数值用 `literal`；运行时替换值可以写 `{"literal":{"$":"values.参数名"}}`。列表元素对应 `item`。
 - **检查与交付**：`validate_loop` 检查结构并单列缺失实现。修正错误后 `publish_loop` 安装为一个版本，不启动；日常迭代可传 auto_version:true，在版本已存在时自动选用新版本，返回最新 draft_id/revision 和实际 version，原版本不被覆盖；`export_loop` 导出包含附件的包，客户端 `--output 文件.loop.zip` 保存它。
 
+新建 Loop 默认提供无输入、无强制输出的 Agent 入口。用户与 Agent 讨论后，Agent 通过 start_run 接管入口，将目标、要求和约束写入完成报告的 settings，再按需安排任务并 finish。无需把对话复制到 request 表单，也不需要人为生成一条初始化结果；业务确需输入或共享初始结果时，用 put_node 明确添加端口。没有 command 的 Agent 候选由当前用户 Agent 操作；网页若需自动唤醒，仍需配置用户选择的 Agent 命令。
+
 每次编辑带上 `draft_id` 和刚返回的 `revision`。出现版本冲突，重新 `read_loop` 后再决定修改，不盲目覆盖。工具返回当前验证结果；未完整连接的草稿可保存，但必须修正结构错误才能发布。
 
 ## 作者 Skill 的文件与引用
@@ -82,11 +84,19 @@ Agent 候选支持 `prompt` 字符串，与 command 一起保存、分享；已�
 
 `set_implementation` 只修改传入字段。即使重复传 kind，也保留未传的 prompt、cwd、timeout、lifecycle 等字段；编辑既有候选不暗中改变默认选择，切换默认用 default:true。清除可选配置用 `clear:["timeout","prompt"]`，不能同时清除和设置同一个字段；空 prompt 表示发送空提示词，clear prompt 才表示恢复平台默认提示词。
 
+候选实现可声明可选的 `parameter_schema`（type 为 object），约束该实现接收的 Task parameters；节点的 parameter_schema 继续表达公共要求，同一份参数必须同时满足两者。read_loop 定向读取候选可查看契约，网页在候选的“此实现的任务参数”中编辑。set_implementation 未传则保留，clear:["parameter_schema"] 明确清除。只做校验，不在服务端补参数默认值。
+
+新增、批量安排、修改与重试任务按有效实现校验参数，选择优先级仍是 Task 指定、Run 默认、Loop 默认。后续切换 Run 默认实现时，未执行且不满足新契约的任务会等待修正，不会带错参数启动；已派发执行保留原契约。没有选定实现时仍允许安排任务，选定后再检查。兜底候选由平台以空参数创建，因此不能要求必填的私有参数，应通过 Timeline 工具读取上下文。
+
 更改 kind 时明确提供新 lifecycle，或 `clear:["lifecycle"]` 使用该方式的初始模板。旧配置中不适用于新方式的字段也要明确清除，工具不会偷偷删除作者内容。例如 Agent 改同步脚本时，可清除 prompt 并设置真实 command。
 
 集合字段约定保持简单：未传则保留，传入则替换该字段整体。put_node 的端口/Skill 列表、put_step 的 inputs/after、set_implementation 的 lifecycle 都遵循这一约定；先定向读取再修改，不把只提供一个元素误当作追加。单条连接可用 connect_steps 修改，不用重写其他输入。
 
 包文件用 read_loop 的 asset_path 读取，再用 put_asset 的 content 写回；未传 executable 会保留已有权限。删除用 `put_asset(..., path="包内路径", remove=true)`，不同时传 content 或 executable。删除不级联删除节点和 Skill，草稿可暂时存在缺失引用，修正后再发布；检查 references 及作者脚本中的实际使用位置。
+
+删除节点或输出时，保存草稿会清理本次失去最后一个输出引用的自动生成记录类型（节点ID.端口名）；共享类型保留，已发布版本和已有 Run 不变。validate_loop 的 unused_records 列出其他未引用类型；核对后可用 set_loop 的 remove_records 数组删除，工具拒绝删除仍被引用的类型。网页在模板下列出这些类型并提供清理按钮。
+
+模板输入未指定时保持缺失，不自动填空值。节点输入可查看每个模板步骤的实际来源；缺失或已删除的上游以提示色标出，点击输入或校验结果的“定位修正”直接编辑对应端口。校验只检查已声明的契约，业务是否还需要其他数据由作者判断。
 
 `remove_step` 要求先处理消费者，`remove_node` 要求先移除引用它的步骤。网页删除会列出引用，可定位修改或明确确认断开。网页编辑自动保存草稿，“保存并使用”统一校验、安装版本并进入准备页，不直接执行任务。
 
@@ -104,10 +114,58 @@ Agent 候选支持 `prompt` 字符串，与 command 一起保存、分享；已�
 
 同步/异步由候选实现决定，同一节点可切换实现。`set_implementation` 保存候选时会填入明确的 `lifecycle: {initial, transitions}` 初始模板；`read_loop` 可查看，网页候选中可查看图示、编辑转移矩阵。模板不是业务决策。没有 lifecycle 的旧包保留原文；查看时展示对应初始模板，派发时将实际规则保存到执行快照。
 
-转移行是 `{from, event, to}`，同一状态/事件只能有一行；可选 `when` 使用现有确定性表达式，读取 inputs、parameters、settings、detail、outputs。状态和事件 ID 使用字母、数字、下划线或连字符。`initial` 指定执行开始时的阶段；completed、fault 是终态，不能再向外转移。进入 completed 只能报告 completed 并一次提交全部输出，通过节点的输出和 assertions 校验。生命周期状态表示这次执行的阶段；任务仍可能在执行之前等待输入、权限或暂停点。
+转移行是 `{from, event, to}`，同一状态/事件可以有多行，但每行必须声明不同的 `when` 条件，运行时必须恰好命中一行；不按行顺序选择。`when` 使用现有确定性表达式，读取 inputs、parameters、settings、detail、outputs、attempt（执行次数，从 1 开始）和 task_revision。状态和事件 ID 使用字母、数字、下划线或连字符。`initial` 指定执行开始时的阶段；completed、fault、retry、agent 是本次执行的出口，不能作为普通阶段继续向外转移。retry 会让同一 Task 开始下一次执行；agent 交给运行已配置的兜底 Agent，未配置时保留异常。进入 completed 只能报告 completed 并一次提交全部输出，通过节点的输出和 assertions 校验。生命周期状态表示这次执行的阶段；任务仍可能在执行之前等待输入、权限或暂停点。
 
 同步脚本一般使用 executing → completed/fault。external 将提交与检查绑定在一个候选里：command 提交工作，observe 是它的附属监控，接收同一 external_id；每次检查沿用同一任务和执行记录。用 report_task 报告 submitted、progress、completed 或 failed。监控进程失败由平台报告 check_error，默认保留最后的外部状态并停止检查、暴露异常；处理后恢复监控，不重复提交外部工作。作者可添加业务阶段和事件，但平台不会猜测缺失的转移；未覆盖的报告保留原状态及事件，进入明确的异常处理路径。
 
 `process_error` 来自平台检测的未完成交付、非零退出、超时等。已成功提交的结果不会因后续进程退出而撤回。权限、版本、输出校验和进程存活保护始终有效，不能通过编辑矩阵绕过。正常等待不自动判为失败。未启用 fallback_node 时只展示问题；启用后仍按既有范围和三次失败规则处理。
 
 脚本接入工具的用法见 [run.md](run.md#统一报告事件与结果)。作者可封装调用；业务事实与结果仍需真实验证。历史记录用于分析失败原因和后续优化建议，不会自动改写 Loop。
+
+
+### 在矩阵中声明恢复
+
+`to: "retry"` 使用原 Task 重试，不新建业务任务。可选 `parameters` 对象覆盖列出的顶层参数字段，其余参数保留；嵌套字段值整体替换，沿用模板已有的 `$` 路径引用。平台先按节点和有效候选校验完整参数，再记录匹配结果；真正重试时再检查当前契约和运行限额，在同一事务中应用参数、Task 修订与重试记录。原参重试不增加修订。
+
+次数条件使用已有表达式，例如 `{"op":"le","args":[{"path":"attempt"},2]}` 表示前两次执行；其余分支可用 ge 3。未设置条件的既有 failed → fault 不会自行变成自动重试；要加分支时，应修改该事件原有行，避免与无条件行重叠。retry 与 agent 在候选矩阵和运行详情中直接显示。
+
+下面是修改**已有同步脚本候选**的完整参数示例：第 1 次执行报告 failed 时原参重试，第 2 次将 batch 改为 8 后重试，第 3 次及以后交给已配置的兜底 Agent。batch 只是示例参数，须替换成作者实际允许修改且满足参数契约的字段和值；不默认启用这套策略。
+
+先用 `read_loop` 传 draft_id、node_id、implementation_id 读取候选，确认 kind 为 command，并取得最新 revision。将以下 JSON 保存为 `recovery.json`，替换草稿 ID、revision、节点与候选 ID；已有 command 等未传字段保持不变。
+
+```json
+{
+  "draft_id": "实际草稿ID",
+  "revision": 12,
+  "node_id": "train",
+  "implementation_id": "local",
+  "lifecycle": {
+    "initial": "executing",
+    "transitions": [
+      {"from": "executing", "event": "progress", "to": "executing"},
+      {"from": "executing", "event": "completed", "to": "completed"},
+      {"from": "executing", "event": "process_error", "to": "fault"},
+      {"from": "executing", "event": "failed", "to": "retry", "when": {"op": "eq", "args": [{"path": "attempt"}, 1]}},
+      {"from": "executing", "event": "failed", "to": "retry", "when": {"op": "eq", "args": [{"path": "attempt"}, 2]}, "parameters": {"batch": 8}},
+      {"from": "executing", "event": "failed", "to": "agent", "when": {"op": "ge", "args": [{"path": "attempt"}, 3]}}
+    ]
+  }
+}
+```
+
+在 Skill 根目录调用；其他目录使用 scripts/call.py 的绝对路径：
+
+```sh
+python3 scripts/call.py set_implementation --arguments @recovery.json
+python3 scripts/call.py validate_loop --arguments '{"draft_id":"实际草稿ID"}'
+```
+
+确认修改回执 `ok: true`、校验 `valid: true`，再定向 read_loop 核对保存的 lifecycle；下一次编辑使用修改回执中的新 revision。此操作只保存草稿，不会发布、启动或改变已有 Run。
+
+`attempt` 是同一 Task 的总执行次数，不是连续失败计数；改参重试保留 Task ID 和下游引用，参数确实变化时增加 Task 修订。`agent` 需要作者显式配置 fallback_node 及可用的 Agent 候选，否则保留异常等待处理。示例只对主动报告的 failed 分支重试；漏报、非零退出等 process_error 保留 fault，仍按原有兜底设置处理，不应被误认为已命中上述次数分支。
+
+注意 lifecycle 是整体替换。修改已有矩阵时保留其他业务阶段和转移，只替换相关的 failed 行；异步 external 不直接套用上述 executing 矩阵，应在读到的 submitting/waiting 矩阵上修改实际业务失败所在状态，保留 submitted 和 check_error 等行。
+
+同一事件零条命中、多条命中、条件求值失败或重试参数不合法，均保留为明确异常，不擅自选择分支。`process_error` 可进入 fault/retry/agent，但进程未确认停止时禁止自动重试。`check_error` 只代表监控查询失败，不允许借此重提外部工作；恢复监控仍沿用原 external_id。
+
+重试等待上一进程退出和操作范围可写，暂停期间不执行。等待期间可由持权操作者明确接管重试或取消；原待应用转移随之失效。进程已确认结束的待重试动作会在重启后继续；重启时进程结局未知则标明原因，核实后通过已有 retry 工具恢复。调度复用现有限额，Agent 异常退出的三次暂停与通知机制继续有效。
