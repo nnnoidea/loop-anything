@@ -28,23 +28,31 @@ def expand(value, context):
 
 
 def validate_v2(bp, implementations):
-    errors, warnings = [], []
+    errors, warnings, issues, location = [], [], [], []
     try:
         if not isinstance(bp, dict) or not isinstance(implementations, dict):
             raise Invalid('LoopDefinition and implementations must be objects')
+        location = ['guide']
         validate_guide(bp)
+        location = ['schema_version']
         if bp.get('schema_version') != VERSION:
             raise Invalid('Expected Programmable Timeline schema_version=2')
         for key in ('id', 'version', 'entry'):
+            location = [key]
             if not isinstance(bp.get(key), str) or not bp[key]:
                 raise Invalid('Missing ' + key)
+        location = ['nodes']
         nodes = bp['nodes']
         if not isinstance(nodes, dict) or bp['entry'] not in nodes:
             raise Invalid('Entry must reference a declared node')
+        location = ['fallback_node']
         validate_fallback(bp, implementations, bp.get('fallback_node'))
+        location = ['global_agent_node']
         validate_global_agent(bp, implementations, bp.get('global_agent_node'))
+        location = ['implementations']
         if set(implementations) - set(nodes) - {'$notifications'}:
             raise Invalid('Implementation references an unknown node')
+        location = ['limits']
         limits = bp.get('limits', {})
         if not isinstance(limits, dict) or set(limits) - {'max_tasks', 'max_attempts', 'max_agent_calls', 'attempts_by_node'}:
             raise Invalid('Unknown runtime limit')
@@ -56,14 +64,18 @@ def validate_v2(bp, implementations):
             raise Invalid('Attempt budget references unknown node')
         if not isinstance(nodes, dict) or bp['entry'] not in nodes:
             raise Invalid('Entry must reference a declared node')
+        location = ['handbook']
         if not isinstance(bp.get('handbook'), dict) or not (bp['handbook'].get('instructions') or bp['handbook'].get('path')):
             raise Invalid('A Loop operation handbook with instructions or a Skill path is required')
+        location = ['records']
         records = bp.get('records', {})
         if not isinstance(records, dict):
             raise Invalid('records must map record types to schemas')
-        for schema in records.values():
+        for record, schema in records.items():
+            location = ['records', record]
             check_schema(schema)
         for name, node in nodes.items():
+            location = ['nodes', name]
             if 'completion_checks' in node:
                 raise Invalid('Use assertions with eq for node completion checks')
             if 'terminal' in node:
@@ -71,13 +83,17 @@ def validate_v2(bp, implementations):
             if 'allow_skip' in node:
                 raise Invalid('allow_skip is obsolete; omit steps through build_plan')
             if 'agent_settings_schema' in node:
+                location = ['nodes', name, 'agent_settings_schema']
                 check_schema(node['agent_settings_schema'])
             if 'parameter_schema' in node:
+                location = ['nodes', name, 'parameter_schema']
                 check_schema(node['parameter_schema'])
-            for check in node.get('assertions', []):
+            for index, check in enumerate(node.get('assertions', [])):
+                location = ['nodes', name, 'assertions', index]
                 if set(check) != {'message', 'test'} or not isinstance(check['message'], str):
                     raise Invalid('Assertions need message and test')
                 validate_expression(check['test'])
+            location = ['nodes', name]
             if not re.fullmatch(r'[a-zA-Z0-9_-]+', name):
                 raise Invalid('Invalid node id')
             if not node.get('instructions'):
@@ -86,33 +102,42 @@ def validate_v2(bp, implementations):
                 raise Invalid('Node inputs and outputs must be explicit objects: ' + name)
             if not isinstance(node.get('plan_nodes', []), list):
                 raise Invalid('plan_nodes must be an array')
-            for schema in node.get('inputs', {}).values():
+            for port, schema in node.get('inputs', {}).items():
+                location = ['nodes', name, 'inputs', port]
                 check_schema(schema)
             for output, spec in node.get('outputs', {}).items():
+                location = ['nodes', name, 'outputs', output]
                 if spec.get('record_type') not in records:
                     raise Invalid('Unknown output record type: ' + name + '.' + output)
             from loop_anything.runtime.implementations import validate_candidates
             if name in implementations:
+                location = ['implementations', name]
                 validate_candidates(implementations[name])
+            location = ['nodes', name]
             if node.get('initialize_timeline') and name != bp['entry']:
                 raise Invalid('Only entry may initialize user semantics')
             if any(target not in nodes for target in node.get('plan_nodes', [])):
                 raise Invalid('plan_nodes must name declared capabilities')
+        location = ['entry']
         if not nodes[bp['entry']].get('initialize_timeline'):
             raise Invalid('Entry must initialize structured Programmable Timeline')
+        location = ['rules']
         if bp.get('rules'):
             raise Invalid('LoopDefinition rules are retired; use plans for tasks construction and Timeline completion_rule for terminal transitions')
         from loop_anything.runtime.timeline_plan import validate_plans
+        location = ['plans']
         validate_plans(bp)
+        location = ['seed']
         check_task(bp, bp['seed'])
         if bp['seed']['node'] != bp['entry']:
             raise Invalid('Seed must use entry node')
         warnings.append('Domain judgments and external side effects require handler acceptance; schema validation does not prove semantic correctness.')
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         errors.append(str(exc))
+        issues.append({'path': location + (getattr(exc, 'path', None) or []), 'message': str(exc)})
     from loop_anything.runtime.implementations import choose
     missing = sorted(n for n in bp.get('nodes', {}) if choose(implementations, n)[1] is None) if not errors and isinstance(bp, dict) and isinstance(bp.get('nodes'), dict) and isinstance(implementations, dict) else []
-    return {'valid': not errors, 'errors': errors, 'warnings': warnings, 'unbound_nodes': missing}
+    return {'valid': not errors, 'errors': errors, 'warnings': warnings, 'unbound_nodes': missing, 'issues': issues}
 
 
 def validate_fallback(bp, implementations, node_id):

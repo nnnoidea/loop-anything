@@ -57,13 +57,40 @@ Agent 候选支持 `prompt` 字符串，与 command 一起保存、分享；已�
 
 ## 修改既有设计
 
-先查看是否已有该 Loop 的未发布草稿并继续编辑，避免每次小改都复制一份。读取后只修改相关节点或步骤，不重写整个Loop 定义。`remove_step` 要求先处理消费者，`remove_node` 要求先移除引用它的步骤。新发布版本不迁移既有 Run。
+1. 用 `list_loops` 的 loop_id 对照已有版本和草稿；普通修改继续现有草稿。revision 和 updated_at 帮助判断哪份是当前工作，不因重开会话就复制新 Loop。
+2. 定向读取需要修改的对象，带回执里的最新 revision 修改。没有筛选参数的 `read_loop` 仍返回完整定义，适合第一次了解整体结构。
+3. 看修改回执的 `changes`：每项包含字段路径和实际 before/after；新增没有 before，删除没有 after。文件回执只列大小、执行权限及 content_changed，不重复输出整份正文。`validation.valid=false` 表示草稿尚未可发布，不代表本次草稿保存失败。
+4. 修正 `validation.issues` 指出的路径，继续校验。errors 保留原文本；issues 定位当前首先遇到的结构问题，不声称一次列出所有错误。明确需要时才 publish_loop，原有 Run 不迁移。
 
-网页编辑会自动保存草稿，“保存并使用”统一校验、安装版本并进入启动准备，不直接执行任务。循环安排通过节点的 plan_nodes 声明；它表示可安排后续的新任务，不是把同一批任务连成依赖环。脚本依此声明安排任务，Agent 仍按原授权与 Task 范围操作。删除节点或步骤时网页会列出引用，可定位修改，或显式确认一并断开；缺失输入必须修正后才可发布。
+定向查询在同一个 `read_loop` 中完成，传 draft_id 或已安装 key 二选一：
 
-可缺实现地构建、分享、安装和创建 Run；实际需要执行任务时才检查实现选择。切换已有候选只需在 Run 或任务中指定 ID，不需要复制 Loop。平台不自动修复命令、路径或依赖。业务脚本怎样实现仍由作者及其 Agent 决定。
+| 想读取什么 | 附加参数 |
+| --- | --- |
+| 一个节点及其实现、输出记录类型 | node_id |
+| 一个候选实现（包括生命周期） | node_id、implementation_id |
+| 一个任务构建模板 | plan |
+| 模板中的一个步骤 | plan、step |
+| 包内脚本或 Skill 正文 | asset_path |
 
-构建完成后，按 [run.md](run.md) 操作 Run，结合 Loop 作者说明和任务所属节点的 Skill。不要把编辑Loop 定义当作修改正在运行的 Timeline。
+返回 value 和 references，以及草稿的 draft_id/revision 或已安装 key。references 列出声明中可确定的引用位置，例如节点被哪些步骤使用、某步骤输出被哪些输入使用、Skill 入口和命令参数引用了哪个包内文件；它不解析脚本逻辑或 Markdown 内的间接引用。读取普通包文件使用 UTF-8 正文；二进制文件明确返回 encoding=base64。安装版本只读，修改通过其草稿进行。
+
+例如只改已有实现的命令：
+
+```json
+{"draft_id":"草稿ID","revision":12,"node_id":"train","implementation_id":"local","command":["python3","scripts/train_v2.py"]}
+```
+
+`set_implementation` 只修改传入字段。即使重复传 kind，也保留未传的 prompt、cwd、timeout、lifecycle 等字段；编辑既有候选不暗中改变默认选择，切换默认用 default:true。清除可选配置用 `clear:["timeout","prompt"]`，不能同时清除和设置同一个字段；空 prompt 表示发送空提示词，clear prompt 才表示恢复平台默认提示词。
+
+更改 kind 时明确提供新 lifecycle，或 `clear:["lifecycle"]` 使用该方式的初始模板。旧配置中不适用于新方式的字段也要明确清除，工具不会偷偷删除作者内容。例如 Agent 改同步脚本时，可清除 prompt 并设置真实 command。
+
+集合字段约定保持简单：未传则保留，传入则替换该字段整体。put_node 的端口/Skill 列表、put_step 的 inputs/after、set_implementation 的 lifecycle 都遵循这一约定；先定向读取再修改，不把只提供一个元素误当作追加。单条连接可用 connect_steps 修改，不用重写其他输入。
+
+包文件用 read_loop 的 asset_path 读取，再用 put_asset 的 content 写回；未传 executable 会保留已有权限。删除用 `put_asset(..., path="包内路径", remove=true)`，不同时传 content 或 executable。删除不级联删除节点和 Skill，草稿可暂时存在缺失引用，修正后再发布；检查 references 及作者脚本中的实际使用位置。
+
+`remove_step` 要求先处理消费者，`remove_node` 要求先移除引用它的步骤。网页删除会列出引用，可定位修改或明确确认断开。网页编辑自动保存草稿，“保存并使用”统一校验、安装版本并进入准备页，不直接执行任务。
+
+循环安排通过节点的 plan_nodes 声明，运行任务依赖仍不能成环。可缺实现地构建、分享、安装和创建 Run；实际执行时才检查实现选择。业务脚本和环境配置由作者提供，不自动修复路径或依赖。构建完成后按 [run.md](run.md) 操作 Run；编辑 Loop 定义与修改正在运行的 Timeline 是不同操作。
 
 
 ## 并行支线与全局决策
@@ -71,3 +98,16 @@ Agent 候选支持 `prompt` 字符串，与 command 一起保存、分享；已�
 运行时 Agent 默认在自己的 Task 支线内规划后续工作；相同节点模板可以用于多个并行 Task。归属由 parent_id 表达，输入/after 只表达数据与执行依赖。公共汇总任务由共同上层安排，后续业务步骤仍使用已有节点和批次模板。
 
 需要某个正常决策节点处理整个 Run 时，通过 set_loop 的 global_agent_node 指定该节点，并提供 Agent 候选实现；初始化与兜底任务也具有全局范围。不要让普通节点靠改写同一全局记录协同，应输出各自结果再明确汇总。
+
+
+## 生命周期与附属监控
+
+同步/异步由候选实现决定，同一节点可切换实现。`set_implementation` 保存候选时会填入明确的 `lifecycle: {initial, transitions}` 初始模板；`read_loop` 可查看，网页候选中可查看图示、编辑转移矩阵。模板不是业务决策。没有 lifecycle 的旧包保留原文；查看时展示对应初始模板，派发时将实际规则保存到执行快照。
+
+转移行是 `{from, event, to}`，同一状态/事件只能有一行；可选 `when` 使用现有确定性表达式，读取 inputs、parameters、settings、detail、outputs。状态和事件 ID 使用字母、数字、下划线或连字符。`initial` 指定执行开始时的阶段；completed、fault 是终态，不能再向外转移。进入 completed 只能报告 completed 并一次提交全部输出，通过节点的输出和 assertions 校验。生命周期状态表示这次执行的阶段；任务仍可能在执行之前等待输入、权限或暂停点。
+
+同步脚本一般使用 executing → completed/fault。external 将提交与检查绑定在一个候选里：command 提交工作，observe 是它的附属监控，接收同一 external_id；每次检查沿用同一任务和执行记录。用 report_task 报告 submitted、progress、completed 或 failed。监控进程失败由平台报告 check_error，默认保留最后的外部状态并停止检查、暴露异常；处理后恢复监控，不重复提交外部工作。作者可添加业务阶段和事件，但平台不会猜测缺失的转移；未覆盖的报告保留原状态及事件，进入明确的异常处理路径。
+
+`process_error` 来自平台检测的未完成交付、非零退出、超时等。已成功提交的结果不会因后续进程退出而撤回。权限、版本、输出校验和进程存活保护始终有效，不能通过编辑矩阵绕过。正常等待不自动判为失败。未启用 fallback_node 时只展示问题；启用后仍按既有范围和三次失败规则处理。
+
+脚本接入工具的用法见 [run.md](run.md#统一报告事件与结果)。作者可封装调用；业务事实与结果仍需真实验证。历史记录用于分析失败原因和后续优化建议，不会自动改写 Loop。

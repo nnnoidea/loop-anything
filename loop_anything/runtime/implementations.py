@@ -18,23 +18,29 @@ def default_id(entry):
 
 def validate_implementation(implementation):
     if not isinstance(implementation, dict) or implementation.get('kind') not in ('agent', 'command', 'external', 'event', 'approval'):
-        raise Invalid('Invalid execution implementation')
+        raise Invalid('Invalid execution implementation', path=['kind'])
     if 'prompt' in implementation and (implementation['kind'] != 'agent' or not isinstance(implementation['prompt'], str)):
-        raise Invalid('prompt is a string for Agent implementations only')
+        raise Invalid('prompt is a string for Agent implementations only', path=['prompt'])
     for cmd in ('command', 'observe'):
         if cmd in implementation and (not isinstance(implementation[cmd], list) or not implementation[cmd] or not all(isinstance(x, str) and x and '\x00' not in x for x in implementation[cmd])):
-            raise Invalid(cmd + ' must be nonempty argv')
+            raise Invalid(cmd + ' must be nonempty argv', path=[cmd])
     if implementation['kind'] in ('command', 'external') and not implementation.get('command'):
-        raise Invalid('Command implementation needs command')
+        raise Invalid('Command implementation needs command', path=['command'])
     if implementation['kind'] == 'external' and not implementation.get('observe'):
-        raise Invalid('External implementation needs observe')
+        raise Invalid('External implementation needs observe', path=['observe'])
+    if 'lifecycle' in implementation:
+        from loop_anything.runtime.lifecycle import validate
+        try:
+            validate(implementation['lifecycle'])
+        except Invalid as exc:
+            raise Invalid(str(exc), path=['lifecycle'] + (exc.path or [])) from None
     timeout = implementation.get('timeout')
     if 'timeout' in implementation and (type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0):
-        raise Invalid('Timeout must be positive')
+        raise Invalid('Timeout must be positive', path=['timeout'])
     if 'cwd' in implementation and (not isinstance(implementation['cwd'], str) or not implementation['cwd'] or '\x00' in implementation['cwd']):
-        raise Invalid('cwd must be a nonempty path')
+        raise Invalid('cwd must be a nonempty path', path=['cwd'])
     if implementation['kind'] == 'event' and not implementation.get('event'):
-        raise Invalid('Event implementation needs event name')
+        raise Invalid('Event implementation needs event name', path=['event'])
 
 
 def validate_candidates(entry):
@@ -48,7 +54,10 @@ def validate_candidates(entry):
     for ident, implementation in options(entry).items():
         if not isinstance(ident, str) or not re.fullmatch(r'[a-zA-Z0-9_-]+', ident):
             raise Invalid('Implementation IDs use letters, digits, underscores and hyphens')
-        validate_implementation(implementation)
+        try:
+            validate_implementation(implementation)
+        except Invalid as exc:
+            raise Invalid(str(exc), path=([] if 'kind' in entry else ['options', ident]) + (exc.path or [])) from None
 
 
 def validate_bindings(bp, catalog, bindings):

@@ -73,6 +73,8 @@ class Store:
         # Drafts may be incomplete. Strict graph validation belongs to publish.
         if not isinstance(loop_definition, dict) or not isinstance(loop_definition.get('nodes', {}), dict) or not isinstance(implementations, dict):
             raise Invalid('Draft loop_definition, nodes and implementations must be objects')
+        from loop_anything.runtime.lifecycle import materialize
+        implementations = materialize(implementations)
         extra = {}
         if assets is not None:
             from loop_anything.packaging.packages import decode_assets

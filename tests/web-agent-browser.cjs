@@ -32,7 +32,7 @@ print(Store(sys.argv[1]).publish(bp,impl)['key'])`;
   await page.locator('#preparation-flow [data-map-node="script"]').click();
   const picker=page.locator('#preparation-flow [data-map-details="script"]');
   assert.equal(await picker.locator('[data-candidate]').count(),2);
-  await picker.locator('[data-candidate="remote"] summary').click();
+  await picker.locator('[data-candidate="remote"] summary').filter({hasText:'查看命令与配置'}).click();
   assert((await picker.locator('[data-candidate="remote"] pre').innerText()).includes('remote'));
   await picker.locator('[data-candidate="remote"] [data-map-choice]').click();
   assert((await page.locator('#preparation-flow [data-map-node="script"]').innerText()).includes('remote'));

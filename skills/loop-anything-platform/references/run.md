@@ -19,7 +19,7 @@ python3 scripts/call.py acquire_run --arguments '{"run_id":"RUN_ID"}'
 
 `read_timeline` 返回 `read_only: true` 时只是查看，不授予写入权；此时 scope_task 的 null 不能理解为有全局权限。带有效 token 读取时，`read_only: false`，scope_task 才表示本次操作范围；写入仍受 Run 终态及已派发任务的保护。显式传入过期或错误令牌会报错，不会默默切成只读。
 
-把影响后续工作的已确认目标、约束和决定写入现有 settings、任务安排或任务结果，分别使用 change_settings、change_task/build_plan/add_task、complete_task；不要只在聊天里说“记住了”。无需另外维护一份跨入口摘要或复制全部聊天记录。通知接收位置独立于操作入口；换聊天不会自动更改它。
+把影响后续工作的已确认目标、约束和决定写入现有 settings、任务安排或任务结果，分别使用 change_settings、change_task/build_plan/add_task、report_task；不要只在聊天里说“记住了”。无需另外维护一份跨入口摘要或复制全部聊天记录。通知接收位置独立于操作入口；换聊天不会自动更改它。
 
 ## 在网页对话中操作
 
@@ -43,13 +43,13 @@ python3 scripts/call.py acquire_run --arguments '{"run_id":"RUN_ID"}'
 python3 scripts/call.py read_task --arguments '{"run_id":"RUN_ID","token":"TOKEN","task_id":"TASK_ID"}'
 ```
 
-命令名可换为下文列出的运行工具，`--arguments` 提供对应参数。读取任务时会返回作者 Skill 与输入输出要求；结果用 complete_task 提交，最后 finish 释放操作权。无需导入平台模块或直接访问数据库。
+命令名可换为下文列出的运行工具，`--arguments` 提供对应参数。读取任务时会返回作者 Skill 与输入输出要求；结果用 report_task（event=completed）提交，最后 finish 释放操作权。无需导入平台模块或直接访问数据库。
 
 ### 一次调用怎样才算完成
 
 1. 带本次操作令牌 `read_timeline`，确认 `read_only` 为 false；此时 `scope_task` 为 null 可操作全局，否则只可修改该 Task 及其后代。再 `read_task` 读取当前 `task_version`、`outputs` 中每个端口的契约、输入与作者 Skill。
 2. 按作者要求完成工作。用 `add_task` / `build_plan` 安排后续工作，只表示创建任务，不等于提交当前任务的结果。
-3. `complete_task`：带上刚读取的 `task_version`，一次提交当前任务的全部 `envelope.outputs`。只有工具返回 `ok: true` 才算写入成功；失败时按错误修正当前提交，不要重复创建后续任务。
+3. `report_task`（event=completed）：带上稳定的 `report_id` 和刚读取的 `task_version`，一次提交当前任务的全部 `envelope.outputs`。只有工具返回 `ok: true` 且 `accepted: true` 才算写入成功；失败时按错误修正当前提交，不要重复创建后续任务。
 4. `next_tasks`：检查自己范围内的任务和异常。完成本次任务、处理异常或用 `defer_task` 明确等待后，可将已安排的后续任务留给 Engine。不必清空任务列表；不要持有父任务范围等待子 Agent 启动，因为父子范围互斥。
 5. `finish`：确认返回 `ok: true` 和 `finished: true` 后退出。它释放本次操作权，不会替你提交结果，也不代表整个 Run 已达成目的。终态见下文。
 
@@ -76,7 +76,7 @@ python3 scripts/call.py finish --arguments '{"run_id":"RUN_ID","token":"TOKEN"}'
 1. 通过 `list_loops` 找到用户选择的 Loop，取得实际 key，显式传给 `read_loop`，了解所选 Loop 的作者说明、入口要求和节点实现，与用户讨论并确认目标和授权。
 2. 调用 `start_run`，提供 `key`、`title`、已讨论的 `inputs` 和自然语言 `authorization`。返回 `run_id`、`token`、`entry_task_id`。当前 Agent 已取得操作权，Engine 不会抢先重复初始化。
 3. 调用 `read_task`，带 run_id/token/task_id=entry_task_id，读取初始化要求和 `task_version`。
-4. 入口选择 Agent 实现时，用 `complete_task` 提交完整 `envelope.outputs` 和讨论确定的 `envelope.settings`。遵循 read_task 返回的契约，不能凭空添加字段。入口结果在界面保留。若入口选择脚本实现，则由 Engine 执行，读取其结果，不代写脚本输出。
+4. 入口选择 Agent 实现时，用 `report_task`（event=completed） 提交完整 `envelope.outputs` 和讨论确定的 `envelope.settings`。遵循 read_task 返回的契约，不能凭空添加字段。入口结果在界面保留。若入口选择脚本实现，则由 Engine 执行，读取其结果，不代写脚本输出。
 5. 使用后面的当前任务与问题/构建工具继续处理，最后 `finish`。
 
 已被 Engine 唤醒的 Agent 已有 Run 和令牌，跳过创建步骤；操作范围由 prompt 和 read_timeline 的 scope_task 确定。
@@ -95,7 +95,7 @@ python3 scripts/call.py finish --arguments '{"run_id":"RUN_ID","token":"TOKEN"}'
 ## 运行中的统一操作
 
 - `next_tasks` 和 `read_timeline` 读取当前节点任务与异常、用户授权及作者整体说明。read_timeline 的 records 列出记录 ID、类型和最新版本，需要正文时用 `read_record`。正常运行或等待的脚本不需要 Agent 接管。
-- 对每项可处理任务先 `read_task`，读取最新输入、输出契约及作者节点 Skill，再 `complete_task` 写入完整结果。结果当次生效；不能代写脚本、事件或审批结果。
+- 对每项可处理任务先 `read_task`，读取最新输入、输出契约及作者节点 Skill，再 `report_task`（event=completed） 写入完整结果。结果当次生效；不能代写脚本、事件或审批结果。
 - `read_plans` 查看模板，`build_plan` 提供 name、稳定 key、values。默认构建全部步骤；steps.<步骤>.skip=true 省略步骤，不产生假输出。显式提供被省略步骤的复用输入来源。
 - 若作者的 Loop 有轮次，build_plan 可传 `round`，例如作者确定的轮次名称。它只组织显示，不强制串行、不控制何时推进；不要给没有轮次的业务强加轮次。
 - `add_task` 从已声明的非入口节点安排单项工作：提供稳定 `key`、`node_id`、`inputs`，可选 `parameters`、`implementation`、`after` 和 `round`。返回任务 ID 与自动分配的输出记录 ID，供后续输入引用；不手写完整任务。
@@ -121,7 +121,7 @@ python3 scripts/call.py finish --arguments '{"run_id":"RUN_ID","token":"TOKEN"}'
 
 `read_loop` 返回 Loop 的 fallback_node。`start_run` 可传 fallback_node 覆盖，空字符串表示本次关闭；省略沿用 Loop。运行中用 change_settings 的 change.fallback_node 设节点 ID 或 null。兜底 Agent 通过该节点的 bindings 选择，不会隐式借用其他节点命令。
 
-兜底是普通的已声明节点：read_task 返回其 Skill、输出契约及 origin 中的进入原因。处理当前问题后，用 complete_task 完成兜底任务自身，再 finish；已有全局 Agent 可一并处理。全局范围与其他 Agent 支线互斥，正常脚本仍继续。
+兜底是普通的已声明节点：read_task 返回其 Skill、输出契约及 origin 中的进入原因。处理当前问题后，用 report_task（event=completed）完成兜底任务自身，再 finish；已有全局 Agent 可一并处理。全局范围与其他 Agent 支线互斥，正常脚本仍继续。
 
 ## 用户中途提出新要求
 
@@ -164,3 +164,39 @@ python3 scripts/call.py finish --arguments '{"run_id":"RUN_ID","token":"TOKEN"}'
 执行前通知与业务运行并行；执行前暂停拦住目标 Task，直到放行。普通通知默认调用用户发送命令；`route: workspace` 可明确选择仅在工作台留存。
 
 不同支线的失败计数分别保留，进入全局兜底后沿用未解决支线的最长失败链，不把并行支线的失败次数相加；恢复运行会清零这些计数；一个 Agent 退出不会释放其他 Agent 的操作权。无法确认旧进程停止时保留它的范围，重叠范围不得启动第二个 Agent。
+
+
+## 统一报告事件与结果
+
+`report_task` 参数包含 task_id、event、稳定 report_id。Agent 先 read_task，读取实际生命周期、当前执行阶段及 last_transition，附带最新 task_version；脚本/监控使用本次上下文的 execution_id。普通平台入口还要传 run_id/token；网页 scoped 入口自动提供身份。completed 报告的 envelope 包含全部 outputs，初始化时还包含 settings；progress 等报告只带 detail，不提前发布结果或安排任务。
+
+```json
+{"task_id":"任务ID","task_version":"read_task返回的版本","report_id":"这次交付的稳定ID","event":"completed","envelope":{"outputs":{"result":"实际结果"}}}
+```
+
+检查 `ok=true` 且 `accepted=true`。工具接收了格式正确但未覆盖的事件时会返回 accepted=false，并保存原状态、事件和异常原因；先检查当前任务及规则，不盲目重试。网络回执不确定时用相同 report_id 和相同内容重试，不生成新 ID。相同报告不会重复产生结果；改变报告内容须使用新 ID。失效的执行或操作令牌始终不能再写入。
+
+脚本从 stdin 读取 JSON 上下文，其中 report_client 是随平台 Skill 提供的 scripts/report.py 绝对路径。它可作为命令行工具调用，也可按该路径导入 `report`：
+
+```python
+import importlib.util, json, sys
+context = json.load(sys.stdin)
+spec = importlib.util.spec_from_file_location("loop_report", context["report_client"])
+client = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(client)
+# 在业务工作完成并验证后，最后提交；不要仅凭进程退出判断业务成功。
+client.report(context, "completed", report_id="final", envelope={"outputs": {"result": "实际结果"}})
+```
+
+也可调用 `python3 REPORT_CLIENT completed --context 上下文.json --data @报告.json`。作者可把接入封装进已有业务脚本，无需修改远端服务。
+
+异步提交用 `submitted` 携带 external_id 和可选 poll_after 秒数；监控使用上下文中的 external_id，报告 progress（detail 中放进度）或 completed（envelope 中放结果），业务明确失败才报告 failed。查询失败与业务失败不同；查询脚本可以抛出异常交给平台记录 check_error。查询失败后用 change_task retry 恢复原外部任务的监控；此操作不能同时改变输入或实现。确认原工作失败且需要重新提交时，走正常任务重试并核实外部副作用。
+
+旧 `complete_task` 仍作为 completed 报告的兼容入口；旧脚本的 JSON stdout 结果也汇入同一转移处理。直接调用工具后，stdout 可用于普通日志，回执以工具为准。完成任务不会自动释放 Agent 操作权，最后仍需 finish。
+
+
+### 转移与重复报告
+
+矩阵判断“当前状态＋事件”能否转移；同一次执行中的 report_id 识别是否为同一个逻辑事件。相同 ID、相同内容的并发或重试只确认一次，状态检查、结果写入、报告回执及完成 Hook 在同一事务中处理。相同 ID 却改变内容会被拒绝。程序重试一次发送时必须沿用原 ID；若每次生成新 ID，平台会将其视为新事件。
+
+不要把矩阵行理解为整个 Run 只能命中一次：进度可以合法自循环；离开 A 后又进入 A，也可以再次使用 A 的出边。已离开 A 时，新事件只能匹配当前状态的规则，不能再次执行 A 的旧出边；已完成的任务拒绝新的状态报告。当前矩阵没有任意“状态进入动作”或通知配置，已有通知 Hook 按 Hook/Task 去重；如果业务需要每次重新进入都通知，不能靠持续观察“当前处于 A”反复发送。

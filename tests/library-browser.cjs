@@ -261,10 +261,17 @@ assert [n for n in z.namelist() if n.endswith('/SKILL.md')]==['platform/loop-any
     await page.locator('#add-fallback-node').click();
     await page.locator('#property-title').filter({hasText:'fallback'}).waitFor();
     assert.equal(await page.locator('#bp-fallback').inputValue(),'fallback');
+    await page.locator('#editor-canvas .edge.recovery').first().waitFor({state:'attached'});
     const candidates={default:'first',options:{first:{kind:'agent'},chosen:{kind:'agent'}}};
     await page.locator('#add-author-candidate').click();
     await page.locator('[data-candidate-id]').fill('chosen');
     await page.locator('#author-default').selectOption('chosen');
+    await page.locator('.lifecycle-edit > summary').click();
+    await page.locator('[data-transition-add]').click();
+    const transition=page.locator('.transition-row').last();
+    await transition.locator('[data-transition-from]').fill('executing');
+    await transition.locator('[data-transition-event]').fill('reviewed');
+    await transition.locator('[data-transition-to]').fill('executing');
     await page.locator('[data-candidate-prompt] summary').click();
     await page.locator('[data-candidate-prompt] [data-agent-prompt]').fill('作者脚本入口\n{{context}}');
     await page.locator('[data-candidate-prompt] [data-prompt-preview]').click();
@@ -281,8 +288,13 @@ assert [n for n in z.namelist() if n.endswith('/SKILL.md')]==['platform/loop-any
     assert(promptCatalog.some(item=>item.implementations.fallback?.options?.chosen?.prompt==='作者脚本入口\n{{context}}'));
 
     await page.locator('#launch-fallback').selectOption('');
+    assert.equal(await page.locator('#preparation-flow .map-edge.recovery').count(),0);
+    assert((await page.locator('#preparation-flow .loop-progress').innerText()).includes('未启用自动兜底'));
     await page.locator('#preparation-flow [data-map-node="fallback"]').click();
     await page.locator('#preparation-flow [data-map-details="fallback"] [data-candidate="chosen"] [data-map-choice]').click();
+    const matrix=page.locator('#preparation-flow [data-map-details="fallback"] [data-candidate="chosen"] .lifecycle-matrix');
+    await matrix.locator('summary').click();assert((await matrix.innerText()).includes('reviewed'));
+    await page.screenshot({path:path.join(root,'lifecycle-matrix.png'),fullPage:true});
     await page.locator('#launch-field-0').fill('Explicit fallback browser test');
     await page.locator('#launch-review').click();await page.locator('#launch-confirm').waitFor({state:'visible'});
     await page.locator('#launch-ack').check();await page.locator('#launch-start').click();

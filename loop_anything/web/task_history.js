@@ -28,10 +28,22 @@
         round:w.spec.round || null,dependencies:(run.task_dependencies?.[w.id] || [...dependencies]).filter(id=>tasks[id]),index};
     }).sort((a,b)=>(a.started===null)-(b.started===null) || (a.started ?? a.tasks.created_at ?? 0)-(b.started ?? b.tasks.created_at ?? 0) || a.index-b.index);
   }
+  function links(run,items=rows(run)){
+    const result=[],seen=new Set(),byExecution=new Map((run.executions||[]).map(e=>[e.id,e.task_id]));
+    const add=(from,to,kind)=>{const key=JSON.stringify([from,to,kind]);if(from&&from!==to&&run.tasks[from]&&run.tasks[to]&&!seen.has(key)){seen.add(key);result.push({from,to,kind});}};
+    for(const item of items){
+      const task=item.tasks;
+      for(const id of item.dependencies)add(id,task.id,'dependency');
+      const creator=byExecution.get(task.origin?.execution||task.origin?.agent);
+      if(!item.dependencies.includes(creator))add(creator,task.id,'planning');
+      if(task.origin?.fallback)for(const issue of task.origin.issues||[])add(issue.task_id,task.id,'recovery');
+    }
+    return result;
+  }
   function groups(items){
     const result=new Map();
     for(const item of items){const key=item.round;if(!result.has(key))result.set(key,[]);result.get(key).push(item);}
     return [...result].map(([round,items])=>({round,items}));
   }
-  const api={rows,groups,startTime};if(typeof module!=='undefined' && module.exports)module.exports=api;else root.TaskHistory=api;
+  const api={rows,groups,startTime,links};if(typeof module!=='undefined' && module.exports)module.exports=api;else root.TaskHistory=api;
 })(typeof globalThis!=='undefined'?globalThis:this);

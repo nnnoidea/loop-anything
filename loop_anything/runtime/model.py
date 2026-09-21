@@ -6,7 +6,9 @@ import math
 
 
 class Invalid(ValueError):
-    pass
+    def __init__(self, message, path=None):
+        super().__init__(message)
+        self.path = path
 
 
 class Conflict(Invalid):

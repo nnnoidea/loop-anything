@@ -11,10 +11,10 @@ function loop_definitionEdges(bp){
     })
   ]));
 }
-function loopRelationships(bp){
+function loopRelationships(bp,fallback=bp.fallback_node){
   const edges=[];
   function add(from,to,kind,detail){
-    if(!bp.nodes[from]||!bp.nodes[to])return;
+    if(!Object.hasOwn(bp.nodes,from)||!Object.hasOwn(bp.nodes,to))return;
     let edge=edges.find(e=>e.from===from&&e.to===to&&e.kind===kind);
     if(!edge){edge={from,to,kind,details:[]};edges.push(edge);}
     if(!edge.details.includes(detail))edge.details.push(detail);
@@ -23,6 +23,7 @@ function loopRelationships(bp){
   for(const [id,n] of Object.entries(bp.nodes))for(const target of n.plan_nodes || [])add(id,target,'planning','作者声明可安排；实际是否创建由执行时决定');
   const reaches=(from,to,skip,seen=new Set())=>from===to||(!seen.has(from)&&(seen.add(from),edges.some(e=>e!==skip&&e.from===from&&reaches(e.to,to,skip,seen))));
   for(const e of edges)e.repeats=e.kind==='planning'&&reaches(e.to,e.from,e);
+  if(typeof fallback==='string'&&Object.hasOwn(bp.nodes,fallback))for(const id of Object.keys(bp.nodes))if(id!==fallback)add(id,fallback,'recovery','失败或未覆盖情况仍未解决时，按操作权与运行限制进入已配置兜底；正常等待不触发');
   return edges;
 }
 function mapImplementationLabel(item,id,bindings){
@@ -34,10 +35,10 @@ function mapImplementations(item,id,bindings,action){
   const entry=item.implementations[id],options=implementationOptions(entry),defaultId=defaultImplementation(entry);
   const inherited=!Object.hasOwn(bindings,id),selected=inherited?defaultId:bindings[id];
   const button=(value,text)=>action==='prepare'?`<button type="button" data-map-choice="${esc(id)}" data-choice="${esc(value)}">${text}</button>`:action==='detail'&&item.key?`<button type="button" data-prepare-choice="${esc(id)}" data-choice="${esc(value)}" data-loop-key="${esc(item.key)}">用此实现准备运行</button>`:'';
-  return `<section class="map-implementations"><h4>已有实现 · ${Object.keys(options).length}</h4><p class="small muted">${action==='prepare'?'选择仅用于本次运行，自动保存。':action==='run'?'这里是 Run 默认选择；已派发任务保留执行时的实现。':'这里展示 Loop 默认值；选择候选将进入本次运行准备。'}</p>${Object.entries(options).map(([key,b])=>`<article class="map-candidate ${key===selected?'chosen':''}" data-candidate="${esc(key)}"><div class="candidate-heading"><strong>${esc(b.label || key)}</strong>${key===selected?'<span class="badge completed">当前选用</span>':''}</div><p>${esc(executionLabel(b))}</p>${b.description?`<p>${esc(b.description)}</p>`:''}<small>${esc(key)}${key===defaultId?' · Loop 默认':''}</small><details><summary>查看命令与配置</summary><pre>${esc(pretty(b.kind==='agent'&&typeof promptDefaults!=='undefined'?{...b,prompt:b.prompt??promptDefaults.task}:b))}</pre></details>${button(JSON.stringify(key),key===selected?'保持此实现':'选用此实现')}</article>`).join('')||'<p class="muted">作者尚未提供实现。可在 Loop 定义中添加。</p>'}${action==='prepare'?`<div class="candidate-options">${button('',inherited?'✓ 沿用 Loop 默认':'恢复 Loop 默认')}${button('null',!inherited&&selected===null?'✓ 暂不选用':'暂不选用')}</div>`:''}${docView('节点 Skill（候选共用）',item.loop_definition.nodes[id].skills?.length?item.loop_definition.nodes[id].skills:null)}</section>`;
+  return `<section class="map-implementations"><h4>已有实现 · ${Object.keys(options).length}</h4><p class="small muted">${action==='prepare'?'选择仅用于本次运行，自动保存。':action==='run'?'这里是 Run 默认选择；已派发任务保留执行时的实现。':'这里展示 Loop 默认值；选择候选将进入本次运行准备。'}</p>${Object.entries(options).map(([key,b])=>`<article class="map-candidate ${key===selected?'chosen':''}" data-candidate="${esc(key)}"><div class="candidate-heading"><strong>${esc(b.label || key)}</strong>${key===selected?'<span class="badge completed">当前选用</span>':''}</div><p>${esc(executionLabel(b))}</p>${b.description?`<p>${esc(b.description)}</p>`:''}<small>${esc(key)}${key===defaultId?' · Loop 默认':''}</small>${lifecycleMatrix(b)}<details><summary>查看命令与配置</summary><pre>${esc(pretty(b.kind==='agent'&&typeof promptDefaults!=='undefined'?{...b,prompt:b.prompt??promptDefaults.task}:b))}</pre></details>${button(JSON.stringify(key),key===selected?'保持此实现':'选用此实现')}</article>`).join('')||'<p class="muted">作者尚未提供实现。可在 Loop 定义中添加。</p>'}${action==='prepare'?`<div class="candidate-options">${button('',inherited?'✓ 沿用 Loop 默认':'恢复 Loop 默认')}${button('null',!inherited&&selected===null?'✓ 暂不选用':'暂不选用')}</div>`:''}${docView('节点 Skill（候选共用）',item.loop_definition.nodes[id].skills?.length?item.loop_definition.nodes[id].skills:null)}</section>`;
 }
 function loopNodePositions(bp){
-  const ids=Object.keys(bp.nodes),edges=loopRelationships(bp),ordered=[],remaining=new Set(ids);
+  const ids=Object.keys(bp.nodes),edges=loopRelationships(bp).filter(e=>e.kind!=='recovery'),ordered=[],remaining=new Set(ids);
   while(remaining.size){
     const ready=[...remaining].filter(id=>!edges.some(e=>e.kind==='dependency'&&e.to===id&&e.from!==id&&remaining.has(e.from)));
     const priority=id=>(edges.some(e=>e.from===ordered.at(-1)&&e.to===id)?100:0)+edges.filter(e=>e.from===id&&remaining.has(e.to)).length;
@@ -56,15 +57,36 @@ function loopNodePositions(bp){
 }
 function loopEdgePath(e,a,b,i=0){
   let d,lx,ly;
-    if(e.from===e.to){d=`M ${a.x+40} ${a.y} C ${a.x+10} ${a.y-65},${a.x+185} ${a.y-65},${a.x+160} ${a.y}`;lx=a.x+100;ly=a.y-40;}
+    if(e.kind==='recovery'){const ay=a.y+(a.height||126),by=b.y+(b.height||126),lane=Math.max(ay,by)+39+(i%3)*10;d=`M ${a.x+160} ${ay} C ${a.x+160} ${lane},${b.x+160} ${lane},${b.x+160} ${by}`;lx=(a.x+b.x)/2+160;ly=lane-8;}
+    else if(e.from===e.to){d=`M ${a.x+40} ${a.y} C ${a.x+10} ${a.y-65},${a.x+185} ${a.y-65},${a.x+160} ${a.y}`;lx=a.x+100;ly=a.y-40;}
     else if(e.repeats){const lane=18+(i%3)*12;d=`M ${a.x} ${a.y+45} L ${lane} ${a.y+45} L ${lane} ${lane} L ${b.x+100} ${lane} L ${b.x+100} ${b.y}`;}
     else if(Math.abs(a.y-b.y)>160){const lane=24+(i%3)*12;d=`M ${a.x} ${a.y+45} C ${lane} ${a.y+45},${lane} ${b.y+45},${b.x} ${b.y+45}`;}
     else if(a.y===b.y){const forward=b.x>a.x,sx=forward?a.x+200:a.x,tx=forward?b.x:b.x+200;d=`M ${sx} ${a.y+45} C ${(sx+tx)/2} ${a.y+45},${(sx+tx)/2} ${b.y+45},${tx} ${b.y+45}`;}
     else {const down=b.y>a.y,sy=down?a.y+90:a.y,ty=down?b.y:b.y+90,mid=(sy+ty)/2+(e.kind==='planning'?12:0);d=`M ${a.x+100} ${sy} C ${a.x+100} ${mid},${b.x+100} ${mid},${b.x+100} ${ty}`;}
   return {d,lx,ly};
 }
-function loopGraphHTML(item,{bindings={},focus='',action='detail'}={}){
-  const bp=item.loop_definition,edges=loopRelationships(bp),ids=Object.keys(bp.nodes);
+function effectiveFallback(item,override){
+  if(override!==undefined)return override;
+  return item.settings&&Object.hasOwn(item.settings,'fallback_node')?item.settings.fallback_node:item.loop_definition.fallback_node;
+}
+function relationshipText(edge){
+  if(edge.kind==='recovery')return ['异常仍未解决','兜底任务待执行','需启用兜底、实现就绪，并等待操作范围可用'];
+  if(edge.kind==='planning')return ['按授权安排后续工作','新增任务 → 等待输入','表示可以安排，不会仅因上游完成而自动创建'];
+  return ['前置完成 / 所需结果已提交','已有下游任务 → 输入齐备后就绪','下游必须已安排，且全部输入、暂停点及执行条件满足'];
+}
+function nodeFlowHTML(bp,id,edges){
+  const related=edges.filter(e=>e.from===id||e.to===id),label=n=>bp.nodes[n]?.label||n;
+  return `<section class="node-flow"><h4>节点间如何推进</h4>${related.length?related.map(e=>{const [from,to,condition]=relationshipText(e);return `<div class="flow-relation ${e.kind}"><strong>${esc(label(e.from))} → ${esc(label(e.to))}</strong><span>${esc(from)} → ${esc(to)}</span><small>${esc(condition)}</small></div>`;}).join(''):'<p class="small muted">未声明固定关联；具体工作按运行中明确安排的任务推进。</p>'}</section>`;
+}
+function loopProgressHTML(item,fallbackOverride){
+  const bp=item.loop_definition,fallback=effectiveFallback(item,fallbackOverride),configured=typeof fallback==='string'&&Object.hasOwn(bp.nodes,fallback),edges=loopRelationships(bp,fallback),label=id=>bp.nodes[id]?.label||id;
+  const failures=Math.max(item.agent_failures||0,...Object.values(item.tasks||{}).map(t=>t.agent_failures||0));
+  const notice=(item.notifications||[]).filter(n=>n.id.startsWith('agent-failure')).at(-1),noticeLabel={pending:'待发送',sending:'发送中',delivered:'已送达',fault:'发送失败'};
+  const sender=item.settings?.notification_command?.length||item.implementations?.$notifications?.command?.length;
+  return `<section class="loop-progress"><h3>Loop 推进与异常处理</h3><div class="flow-track normal"><span>任务已安排</span><b>→</b><span>等待输入 / 前置任务</span><b>→</b><span>就绪，等待执行条件</span><b>→</b><span>执行并报告结果</span><b>→</b><span>已有下游任务重新检查就绪条件</span></div><p class="small muted">正常依赖尚未就绪则等待；缺失来源等无法推进的情况会列为异常。暂停点未放行、操作权冲突或并发名额不足时暂不派发。创建下一轮任务仍需 Agent 或脚本明确安排。</p><div class="flow-track recovery"><span>执行失败 / 未覆盖转移 / 监控异常</span><b>→</b><span>${configured?'兜底：'+esc(label(fallback)):'异常待处理 · 未启用自动兜底'}</span><b>→</b><span>问题处理后，恢复受影响的工作</span></div>${configured?`<div class="flow-track retry"><span>Agent 退出，异常仍存在</span><b>↻</b><span>按权限与限额再唤醒兜底</span><b>→</b><span>连续失败 3 次仍异常：暂停</span><b>→</b><span>尝试通知用户</span></div><p class="small muted">其他正常支线可继续推进。首次失败计入三次；支线交给兜底后沿用失败链。旧进程未确认停止或存在操作权冲突时等待处理，不并发接管。${item.tasks?` 当前失败计数：${failures}。`:''}</p>`:'<p class="small muted">问题保留在 Timeline，等待用户或已有授权 Agent 处理；不会自动选择其他 Agent。</p>'}<div class="flow-notice"><span>通知出口：${sender?'已配置':'未配置'}</span>${notice?`<strong class="${notice.status==='fault'?'issue':''}">最近失败暂停通知：${esc(noticeLabel[notice.status]||notice.status)}</strong>`:''}</div><details class="loop-transition-table"><summary>节点间推进规则 · ${edges.length} 条关系</summary><div class="matrix-scroll"><table><thead><tr><th>来源 → 目标</th><th>触发与目标状态</th><th>条件</th></tr></thead><tbody>${edges.map(e=>{const [from,to,condition]=relationshipText(e);return `<tr><td>${esc(label(e.from))} → ${esc(label(e.to))}</td><td>${esc(from)} → ${esc(to)}</td><td>${esc(condition)}<small>${esc(e.details.join('；'))}</small></td></tr>`;}).join('')||'<tr><td colspan="3">尚未声明节点关系。</td></tr>'}</tbody></table></div></details><p class="small muted">运行结束：Timeline 的完成条件成立，或收到终止信号，由 Engine 进入终态；没有待执行任务本身不代表完成。</p></section>`;
+}
+function loopGraphHTML(item,{bindings={},focus='',action='detail',fallbackNode}={}){
+  const bp=item.loop_definition,fallback=effectiveFallback(item,fallbackNode),edges=loopRelationships(bp,fallback),ids=Object.keys(bp.nodes);
   if(!ids.length)return '<p class="muted">还没有节点。</p>';
   const dependencyReach=(from,to,seen=new Set())=>from===to||(!seen.has(from)&&(seen.add(from),edges.some(e=>e.kind==='dependency'&&e.from===from&&dependencyReach(e.to,to,seen))));
   const redundant=e=>e.kind==='planning'&&edges.some(other=>other!==e&&other.kind==='planning'&&other.from===e.from&&other.to!==e.to&&dependencyReach(other.to,e.to)&&(!dependencyReach(e.to,other.to)||edges.indexOf(other)<edges.indexOf(e)));
@@ -73,13 +95,13 @@ function loopGraphHTML(item,{bindings={},focus='',action='detail'}={}){
   const uid='loop-map-'+(++loopGraphHTML.serial);
   const paths=edges.map((e,i)=>{
     const {d,lx,ly}=loopEdgePath(e,positions.get(e.from),positions.get(e.to),i);
-    return `<g data-map-edge data-redundant="${redundant(e)}" data-from="${esc(e.from)}" data-to="${esc(e.to)}" class="map-edge ${e.kind} ${e.repeats?'repeats':''}"><title>${esc(label(e.from)+' → '+label(e.to)+' · '+e.details.join('；'))}</title><path d="${d}" marker-end="url(#${uid}-${e.kind})"/>${e.from===e.to?`<text x="${lx}" y="${ly}" text-anchor="middle">再次安排</text>`:''}</g>`;
+    return `<g data-map-edge data-redundant="${redundant(e)}" data-from="${esc(e.from)}" data-to="${esc(e.to)}" class="map-edge ${e.kind} ${e.repeats?'repeats':''}"><title>${esc(label(e.from)+' → '+label(e.to)+' · '+e.details.join('；'))}</title><path d="${d}" marker-end="url(#${uid}-${e.kind})"/>${e.from===e.to?`<text x="${lx}" y="${ly}" text-anchor="middle">再次安排</text>`:e.kind==='recovery'?`<text class="edge-caption" x="${lx}" y="${ly}" text-anchor="middle">异常仍未解决</text>`:''}</g>`;
   }).join('');
   const cards=ordered.map(id=>{const p=positions.get(id),n=bp.nodes[id],tasks=Object.values(item.tasks || {}).filter(t=>t.spec.node===id),attempts=(item.executions || []).filter(e=>e.node===id),kind=chosenImplementation(item,id,bindings)?.kind,repeat=edges.some(e=>e.from===id&&e.repeats);
-    return `<button type="button" class="map-node" data-map-node="${esc(id)}" ${action==='run'?`data-node="${esc(id)}"`:''} style="left:${p.x}px;top:${p.y}px" aria-pressed="false"><small>${id===bp.entry?'入口':repeat?'↻ 可再次安排工作':kindNames[kind] || '待接入'}</small><strong>${esc(label(id))}</strong><span class="map-current-implementation" title="${esc(mapImplementationLabel(item,id,bindings))}">${esc(mapImplementationLabel(item,id,bindings))}</span>${action==='run'?`<span>${tasks.length?`${tasks.length} 项任务 · ${attempts.length} 次执行`:'未安排 Task'}</span>`:''}</button>`;
+    return `<button type="button" class="map-node" data-map-node="${esc(id)}" ${action==='run'?`data-node="${esc(id)}"`:''} style="left:${p.x}px;top:${p.y}px" aria-pressed="false"><small>${id===fallback?'异常兜底':id===bp.entry?'入口':repeat?'↻ 可再次安排工作':kindNames[kind] || '待接入'}</small><strong>${esc(label(id))}</strong><span class="map-current-implementation" title="${esc(mapImplementationLabel(item,id,bindings))}">${esc(mapImplementationLabel(item,id,bindings))}</span>${lifecycleStrip(chosenImplementation(item,id,bindings))}${action==='run'?`<span>${tasks.length?`${tasks.length} 项任务 · ${attempts.length} 次执行`:'未安排 Task'}</span>`:''}</button>`;
   }).join('');
-  const details=ordered.map(id=>`<div data-map-details="${esc(id)}" hidden><div class="map-inspector-heading"><strong>${esc(label(id))}</strong><button type="button" data-map-close aria-label="关闭节点详情">×</button></div>${mapImplementations(item,id,bindings,action)}<details class="map-node-relations"><summary>节点关系</summary><ul>${edges.filter(e=>e.from===id||e.to===id).map(e=>`<li><span class="relation-kind ${e.kind}">${e.kind==='planning'?(e.repeats?'循环安排':'可安排'):'依赖'}</span> ${esc(label(e.from))} → ${esc(label(e.to))}<small>${esc(e.details.join('；'))}</small></li>`).join('')||'<li>没有声明固定连接；具体任务仍可在运行时按授权安排。</li>'}</ul>${chosenImplementation(item,id,bindings)?.kind==='agent'?'<p class="small muted">Agent 还可按授权与 Task 范围安排其他已声明节点；图中列出的是作者显式声明的关系。</p>':''}</details></div>`).join('');
-  return `<section class="loop-map" data-map-focus="${esc(focus)}"><div class="loop-map-heading"><strong>Loop 节点关系</strong><label class="map-expand"><input type="checkbox" data-map-expand>全部安排连线</label></div><div class="map-legend"><span class="dependency">实线 · 数据 / 先后依赖</span><span class="planning">虚线 · 可安排新任务（按依赖链合并）</span><span class="repeat">↻ 回到已有节点，开启后续工作</span></div><div class="map-body"><div class="loop-map-scroll"><div class="loop-map-canvas" style="width:${width}px;height:${height}px"><svg width="${width}" height="${height}" aria-hidden="true"><defs>${['dependency','planning'].map(k=>`<marker id="${uid}-${k}" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7" fill="${k==='planning'?'#9564cf':'#7293bb'}"/></marker>`).join('')}</defs>${paths}</svg>${cards}</div></div><aside class="map-relations"><p data-map-help>选中节点查看完整声明并突出关联线。图中关系不保证每次都执行；每次循环会产生新的 Task，实际运行过程仍按任务展开。</p>${details}</aside></div></section>`;
+  const details=ordered.map(id=>`<div data-map-details="${esc(id)}" hidden><div class="map-inspector-heading"><strong>${esc(label(id))}</strong><button type="button" data-map-close aria-label="关闭节点详情">×</button></div>${nodeFlowHTML(bp,id,edges)}${mapImplementations(item,id,bindings,action)}<details class="map-node-relations"><summary>节点关系</summary><ul>${edges.filter(e=>e.from===id||e.to===id).map(e=>`<li><span class="relation-kind ${e.kind}">${e.kind==='recovery'?'异常处理':e.kind==='planning'?(e.repeats?'循环安排':'可安排'):'依赖'}</span> ${esc(label(e.from))} → ${esc(label(e.to))}<small>${esc(e.details.join('；'))}</small></li>`).join('')||'<li>没有声明固定连接；具体任务仍可在运行时按授权安排。</li>'}</ul>${chosenImplementation(item,id,bindings)?.kind==='agent'?'<p class="small muted">Agent 还可按授权与 Task 范围安排其他已声明节点；图中列出的是作者显式声明的关系。</p>':''}</details></div>`).join('');
+  return `<section class="loop-map" data-map-focus="${esc(focus)}"><div class="loop-map-heading"><strong>Loop 节点关系</strong><label class="map-expand"><input type="checkbox" data-map-expand>全部安排连线</label></div><div class="map-legend"><span class="dependency">实线 · 数据 / 先后依赖</span><span class="planning">虚线 · 可安排新任务（按依赖链合并）</span><span class="repeat">↻ 回到已有节点，开启后续工作</span><span class="recovery">红色虚线 · 未解决异常 → 已配置兜底</span></div><div class="map-body"><div class="loop-map-scroll"><div class="loop-map-canvas" style="width:${width}px;height:${height}px"><svg width="${width}" height="${height}" aria-hidden="true"><defs>${['dependency','planning','recovery'].map(k=>`<marker id="${uid}-${k}" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7" fill="${k==='recovery'?'#bd705f':k==='planning'?'#9564cf':'#7293bb'}"/></marker>`).join('')}</defs>${paths}</svg>${cards}</div></div><aside class="map-relations"><p data-map-help>选中节点查看完整声明并突出关联线。图中关系不保证每次都执行；每次循环会产生新的 Task，实际运行过程仍按任务展开。</p>${details}</aside></div>${loopProgressHTML(item,fallback)}</section>`;
 }
 loopGraphHTML.serial=0;
 function focusLoopMap(root,id){

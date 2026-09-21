@@ -48,6 +48,77 @@ class PlatformToolTests(unittest.TestCase):
         self.assertTrue(self.tools.call('validate_loop', {'draft_id': self.draft['draft_id']})['valid'])
         return self.tools.call('publish_loop', {'draft_id': self.draft['draft_id'], 'revision': self.draft['revision']})['key']
 
+    def test_candidate_partial_updates_preserve_fields_and_return_actual_changes(self):
+        from loop_anything.runtime.lifecycle import template
+        lifecycle = template('agent')
+        lifecycle['transitions'].append({'from':'executing','event':'reviewed','to':'executing'})
+        self.edit('set_implementation', node_id='initialize', implementation_id='chosen', kind='agent',
+                  command=['old'], cwd='/tmp', timeout=42, prompt='Author prompt', lifecycle=lifecycle)
+        selected = dict(draft_id=self.draft['draft_id'],node_id='initialize',implementation_id='chosen')
+        before = self.tools.call('read_loop', selected)['value']
+        change = self.edit('set_implementation', node_id='initialize', implementation_id='chosen', command=['new'])
+        self.assertEqual([c['path'] for c in change['changes']], [['implementations','initialize','options','chosen','command']])
+        after = self.tools.call('read_loop', selected)['value']
+        self.assertEqual(after, dict(before, command=['new']))
+        self.edit('set_implementation', node_id='initialize', implementation_id='chosen', kind='agent', command=['newer'])
+        self.assertEqual(self.tools.call('read_loop', selected)['value'], dict(before, command=['newer']))
+        self.edit('set_implementation', node_id='initialize', implementation_id='chosen', clear=['prompt','timeout'])
+        cleared=self.tools.call('read_loop',selected)['value']
+        self.assertNotIn('prompt',cleared);self.assertNotIn('timeout',cleared)
+        self.assertEqual(cleared['lifecycle'],lifecycle)
+        stale=self.tools.respond('set_implementation',dict(selected,revision=change['revision'],command=['stale']))
+        self.assertFalse(stale['ok']);self.assertEqual(self.tools.call('read_loop',selected)['value'],cleared)
+        self.edit('set_implementation',node_id='$notifications',kind='command',command=['old'],timeout=15)
+        self.edit('set_implementation',node_id='$notifications',command=['new'])
+        sender=self.tools.call('read_loop',dict(draft_id=self.draft['draft_id'],node_id='$notifications',implementation_id='default'))['value']
+        self.assertEqual(sender,{'kind':'command','command':['new'],'timeout':15})
+        self.edit('set_implementation',node_id='initialize',kind='agent',command=['default'])
+        self.edit('set_implementation',node_id='initialize',implementation_id='chosen',default=True)
+        self.edit('set_implementation',node_id='initialize',command=['patched-default'])
+        self.assertEqual(self.tools.call('read_loop',{'draft_id':self.draft['draft_id'],'node_id':'initialize'})['value']['implementations']['default'],'chosen')
+
+    def test_targeted_reads_and_files_support_edit_publish_and_delete(self):
+        key=self.build()
+        draft_id=self.draft['draft_id']
+        selected=self.tools.call('read_loop',{'draft_id':draft_id,'node_id':'convert'})
+        self.assertNotIn('loop',selected)
+        self.assertEqual(selected['value']['node']['outputs']['result']['record_type'],'convert.result')
+        self.assertTrue(any(ref['path'][-1]=='convert' for ref in selected['references']))
+        step=self.tools.call('read_loop',{'draft_id':draft_id,'plan':'round','step':'convert'})
+        self.assertTrue(any(ref['path'][-2:]==['inputs','value'] for ref in step['references']))
+        listed=self.tools.call('list_loops',{})
+        self.assertEqual(listed['drafts'][0]['loop_id'],listed['loops'][0]['loop_id'])
+        path='scripts/convert.py'
+        old=self.tools.call('read_loop',{'key':key,'asset_path':path})['value']['content']
+        self.edit('put_asset',path=path,content=old,executable=True)
+        change=self.edit('put_asset',path=path,content='# updated\n'+old)
+        file=self.tools.call('read_loop',{'draft_id':draft_id,'asset_path':path})
+        self.assertTrue(file['value']['executable']);self.assertTrue(file['value']['content'].startswith('# updated'))
+        self.assertTrue(file['references']);self.assertTrue(change['changes'][0]['content_changed'])
+        self.assertEqual(self.tools.call('read_loop',{'key':key,'asset_path':path})['value']['content'],old)
+        revision=self.draft['revision']
+        failed=self.tools.respond('put_asset',{'draft_id':draft_id,'revision':revision-1,'path':path,'remove':True})
+        self.assertFalse(failed['ok'])
+        self.assertFalse(self.tools.respond('read_loop',{'draft_id':draft_id,'asset_path':'../outside'})['ok'])
+        self.edit('put_asset',path=path,remove=True)
+        self.assertFalse(self.tools.respond('read_loop',{'draft_id':draft_id,'asset_path':path})['ok'])
+        self.assertEqual(self.tools.call('read_loop',{'key':key,'asset_path':path})['value']['content'],old)
+
+    def test_errors_locate_candidate_or_step_without_partial_writes(self):
+        self.build()
+        draft_id=self.draft['draft_id'];revision=self.draft['revision']
+        before=self.tools.call('read_loop',{'draft_id':draft_id})
+        error=self.tools.respond('set_implementation',{'draft_id':draft_id,'revision':revision,'node_id':'convert','timeout':-1})
+        self.assertFalse(error['ok'])
+        self.assertEqual(error['error']['path'],['implementations','convert','options','default','timeout'])
+        self.assertEqual(before,self.tools.call('read_loop',{'draft_id':draft_id}))
+        edited=self.edit('put_step',plan='round',step='finish',node_id='finish',inputs={})
+        self.assertFalse(edited['validation']['valid'])
+        self.assertEqual(edited['validation']['issues'][0]['path'],['plans','round','steps','finish','inputs'])
+        # An unfinished draft remains editable and reports the precise missing input.
+        self.edit('connect_steps',plan='round',from_step='convert',output='result',to_step='finish',input='value')
+        self.assertTrue(self.tools.call('validate_loop',{'draft_id':draft_id})['valid'])
+
     def test_frequent_edits_keep_identity_and_automatically_skip_installed_versions(self):
         key = self.build()
         before = self.store.catalog()

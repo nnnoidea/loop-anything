@@ -6,6 +6,10 @@ import copy
 from loop_anything.runtime.agent_prompt import task_context, render_prompt, mask_prompt
 import json
 import time
+import math
+from loop_anything.paths import platform_skill_directory
+from loop_anything.runtime.lifecycle import definition as lifecycle_definition
+from loop_anything.runtime.model import digest
 from loop_anything.runtime.timeline_model import (SEMANTIC_FIELDS, ENDING_FIELDS, check_task, settings_defaults,
                             validate_settings, validate_result, validate_fallback)
 from loop_anything.runtime.model import Conflict, Invalid, contract, path
@@ -170,6 +174,8 @@ class TimelineRuntime:
     def diagnose(self, run):
         diagnostics = [{'kind': 'budget_exhausted', 'tasks': w['id'], 'detail': w['budget_error']}
                        for w in run['tasks'].values() if w.get('budget_error')]
+        diagnostics.extend({'kind': 'observation_error', 'tasks': e['task_id'], 'detail': e['observation_error']}
+                           for e in run['executions'] if e.get('observation_error') and run['tasks'][e['task_id']].get('execution_id') == e['id'] and e['status'] not in END)
         producers = {}
         for tasks in run['tasks'].values():
             if tasks['status'] in ('stale', 'cancelled'):
@@ -236,7 +242,7 @@ class TimelineRuntime:
                 # Observe/consume existing tasks before admitting new tasks.
                 for e in run['executions']:
                     tasks = run['tasks'][e['task_id']]
-                    if e['status'] != 'waiting':
+                    if e['status'] != 'waiting' or e.get('worker_active') or e.get('observation_error'):
                         continue
                     implementation = e['implementation']
                     if implementation['kind'] == 'event':
@@ -244,7 +250,7 @@ class TimelineRuntime:
                             v['name'] == implementation['event'] and v.get('key') == tasks['spec'].get('parameters', {}).get('event_key')), None)
                         if event:
                             try:
-                                self.commit_in_run(run, e, {'outputs': event['payload']})
+                                self.report_in_run(run, e, {'event': 'completed', 'report_id': 'event:' + event['id'], 'envelope': {'outputs': event['payload']}}, 'event')
                                 event['consumed_by'] = e['id']
                             except Invalid as exc:
                                 event['consumed_by'] = 'rejected'
@@ -381,7 +387,11 @@ class TimelineRuntime:
                  settings_revision=run['settings']['revision'],
                  implementation_id=selected(run, tasks)[0], implementation=copy.deepcopy(implementation), created_at=time.time(), started_at=None, attempt=tasks.get('attempts', 0) + 1)
         tasks['execution_id'], tasks['attempts'] = e['id'], e['attempt']
+        e['implementation']['lifecycle'] = lifecycle_definition(implementation)
+        e['lifecycle_state'] = e['implementation']['lifecycle']['initial']
         run['executions'].append(e)
+        Store.log(run, 'transition', 'Execution entered initial state', e['id'],
+                  {'from': None, 'event': 'start', 'to': e['lifecycle_state'], 'source': 'engine', 'accepted': True})
         return e
 
     def check_owner(self, run, e, token):
@@ -456,18 +466,104 @@ class TimelineRuntime:
         Store.log(run, 'committed', tasks['id'] + ': shared records committed', e['id'], refs)
         self.apply_hooks(run, tasks, 'after')
 
+    def report_in_run(self, run, e, report, source):
+        """Ownership is checked by the caller; validate before changing shared records."""
+        if not isinstance(report, dict) or set(report) - {'event', 'report_id', 'envelope', 'detail', 'external_id', 'poll_after'}:
+            raise Invalid('Unsupported report fields')
+        if not all(isinstance(report.get(k), str) and report[k].strip() for k in ('event', 'report_id')):
+            raise Invalid('Report needs event and stable report_id')
+        if 'detail' in report and not isinstance(report['detail'], dict):
+            raise Invalid('Report detail must be an object')
+        if 'envelope' in report and not isinstance(report['envelope'], dict):
+            raise Invalid('Completion envelope must be an object')
+        reports = e.setdefault('reports', {})
+        previous = reports.get(report['report_id'])
+        fingerprint = digest(report)
+        if previous:
+            if previous['fingerprint'] != fingerprint:
+                raise Conflict('report_id already used for different contents')
+            if e.get('worker_active'):
+                e['call_reported'] = True
+            return dict(previous['receipt'], duplicate=True)
+        if run['status'] in ('completed', 'terminated') or e['status'] in END or e['status'] == 'fault':
+            raise Conflict('Execution has ended; cannot report another transition')
+        kind = e['implementation']['kind']
+        external_id = report.get('external_id', e.get('external_id'))
+        delay = report.get('poll_after', 10)
+        if type(delay) not in (int, float) or not math.isfinite(delay) or delay <= 0:
+            raise Invalid('poll_after must be positive and finite')
+        if 'external_id' in report and (kind != 'external' or not isinstance(external_id, str) or not external_id):
+            raise Invalid('external_id requires an external implementation and a nonempty ID')
+        if e.get('external_id') and external_id != e['external_id']:
+            raise Conflict('A monitor cannot replace the external task identity')
+        event = report['event']
+        if event == 'check_error' and (kind != 'external' or not external_id):
+            raise Invalid('check_error requires an external task already submitted')
+        if event == 'submitted' and (kind != 'external' or not external_id):
+            raise Invalid('submitted needs the external task ID')
+        if 'envelope' in report and event != 'completed':
+            raise Invalid('Only completed reports may commit outputs or arrange tasks')
+        state = e.get('lifecycle_state', lifecycle_definition(e['implementation'])['initial'])
+        rules = lifecycle_definition(e['implementation'])['transitions']
+        rule = next((r for r in rules if r['from'] == state and r['event'] == event), None)
+        context = {'inputs': e['inputs'], 'parameters': e['parameters'], 'settings': run['settings'],
+                   'detail': report.get('detail', {}), 'outputs': report.get('envelope', {}).get('outputs', {})}
+        matched = rule is not None
+        if rule and 'when' in rule:
+            try:
+                matched = evaluate(rule['when'], context) is True
+            except (KeyError, IndexError, TypeError, ValueError):
+                matched = False
+        task = run['tasks'][e['task_id']]
+        if event == 'check_error':
+            e['observation_error'] = str(report.get('detail', {}).get('message') or 'Observation failed; external state is unknown')
+        if matched:
+            if event != 'check_error':
+                e.pop('observation_error', None)
+            target = rule['to']
+            if target == 'completed':
+                self.commit_in_run(run, e, report.get('envelope', {}))
+            elif target == 'fault':
+                e.update(status='fault', error=str(report.get('detail', {}).get('message') or event))
+                task['status'] = 'fault'
+            else:
+                if kind == 'external' and external_id:
+                    e.update(external_id=external_id, poll_after=delay, wake_at=time.time() + delay)
+                    e['status'] = task['status'] = 'waiting'
+            e['lifecycle_state'] = target
+        else:
+            target = state
+            e.update(status='fault', error=('Transition condition not met: ' if rule else 'Uncovered transition: ') + state + ' + ' + event)
+            task['status'] = 'fault'
+        detail = {'from': state, 'event': event, 'to': target, 'source': source, 'accepted': matched,
+                  'report_id': report['report_id'], 'detail': copy.deepcopy(report.get('detail', {})),
+                  'rule': copy.deepcopy(rule)}
+        if external_id:
+            detail['external_id'] = external_id
+        Store.log(run, 'transition', event if matched else e['error'], e['id'], detail)
+        receipt = {'accepted': matched, 'task_id': task['id'], 'execution_id': e['id'], 'state': target,
+                   'report_id': report['report_id']}
+        if target == 'completed' and matched:
+            receipt['completed'] = task['id']
+        if not matched:
+            receipt['issue'] = e['error']
+        reports[report['report_id']] = {'fingerprint': fingerprint, 'receipt': receipt}
+        if e.get('worker_active'):
+            e['call_reported'] = True
+        return receipt
+
     def submit(self, run_id, execution_id, token, envelope):
         with self.store.edit(run_id) as run:
             e = self.engine.execution(run, execution_id)
             if e['implementation']['kind'] == 'agent':
-                raise Invalid('Agent results must use read_task and complete_task')
+                raise Invalid('Agent results must use read_task and report_task')
             self.check_owner(run, e, token)
-            self.commit_in_run(run, e, envelope)
-        return self.store.get(run_id)
+            self.report_in_run(run, e, {'event': 'completed', 'report_id': 'submit:' + digest(envelope), 'envelope': envelope}, 'submission')
 
     def execute(self, run_id, e, snapshot, observe=False):
         implementation = e['implementation']
         exit_error = None
+        invocation = uid('call')
         try:
             if implementation['kind'] == 'agent':
                 context = task_context(self.store, snapshot, e, getattr(self.engine, 'platform_url', None),
@@ -478,12 +574,20 @@ class TimelineRuntime:
                 request = {'run_id': run_id, 'execution_id': e['id'], 'task_id': e['task_id'], 'token': e['token'],
                            'inputs': e['inputs'], 'parameters': e['parameters'], 'external_id': e.get('external_id'),
                            'timeline': snapshot, 'handbook': snapshot['loop_definition']['handbook'],
-                           'node_instructions': node['instructions'], 'output_contract': node['outputs']}
+                           'node_instructions': node['instructions'], 'output_contract': node['outputs'],
+                           'platform_url': getattr(self.engine, 'platform_url', None),
+                           'report_client': str(platform_skill_directory() / 'scripts/report.py'),
+                           'lifecycle': lifecycle_definition(implementation), 'state': e.get('lifecycle_state'),
+                           'invocation_id': invocation, 'observing': observe}
                 request_text = json.dumps(request)
             # A queued worker must recheck its ownership before launching a command.
             with self.store.edit(run_id) as current_run:
                 current = self.engine.execution(current_run, e['id'])
                 self.check_owner(current_run, current, e['token'])
+                current['worker_active'] = True
+                current['call_reported'] = False
+                if observe:
+                    Store.log(current_run, 'observation', 'Checking external task', e['id'], {'external_id': current.get('external_id'), 'invocation_id': invocation})
                 if current.get('started_at') is None:
                     current['started_at'] = time.time()
                 if implementation['kind'] == 'agent':
@@ -493,22 +597,42 @@ class TimelineRuntime:
                                  stop=self.engine.stopping if implementation['kind'] == 'agent' else None)
             if result.returncode:
                 raise Invalid('Handler failed: ' + result.stderr[-1500:])
-            envelope = None if implementation['kind'] == 'agent' else json.loads(result.stdout)
+            envelope = None
             with self.store.edit(run_id) as run:
                 current = self.engine.execution(run, e['id'])
                 if implementation['kind'] == 'agent':
                     if owner_for(run, e['token']):
                         raise Invalid('Agent exited without calling finish')
                     return  # Tool writes already committed; stdout is not a business result.
+                # Direct tool reporting is authoritative; stdout is a compact adapter for old scripts.
+                if current.get('token') != e['token'] or current['status'] in END | {'fault'}:
+                    return
                 self.check_owner(run, current, e['token'])
-                if envelope.get('status') == 'waiting':
-                    if implementation['kind'] != 'external' or not envelope.get('external_id'):
-                        raise Invalid('Waiting requires external implementation and task identity')
-                    current.update(status='waiting', external_id=envelope['external_id'], wake_at=time.time() + max(0.1, float(envelope.get('poll_after', 10))))
+                reported = current.get('call_reported', False)
+                if not reported and result.stdout.strip():
+                    envelope = json.loads(result.stdout)
+                if envelope is not None:
+                    if not isinstance(envelope, dict):
+                        raise Invalid('Script response must be an object')
+                    if envelope.get('status') == 'waiting':
+                        report = {'event': 'progress' if current.get('external_id') else 'submitted',
+                                  'report_id': invocation, 'external_id': envelope.get('external_id'),
+                                  'poll_after': envelope.get('poll_after', 10), 'detail': envelope.get('detail', {})}
+                    elif 'event' in envelope:
+                        report = dict(envelope, report_id=envelope.get('report_id', invocation))
+                    else:
+                        report = {'event': 'completed', 'report_id': invocation, 'envelope': envelope}
+                    self.report_in_run(run, current, report, 'monitor' if observe else 'script')
+                elif not reported:
+                    raise Invalid('Program exited without reporting a result')
+                if observe and current['status'] == 'executing' and reported:
+                    # A replay acknowledges a prior report; checking is over but its business state stays unchanged.
+                    current.update(status='waiting', wake_at=time.time() + current.get('poll_after', 10))
                     run['tasks'][e['task_id']]['status'] = 'waiting'
-                    Store.log(run, 'waiting', 'External tasks accepted', e['id'], {'external_id': envelope['external_id']})
-                else:
-                    self.commit_in_run(run, current, envelope)
+                if implementation['kind'] == 'command' and current['status'] not in END | {'fault'}:
+                    raise Invalid('Program exited before completing its task')
+                if implementation['kind'] == 'external' and not current.get('external_id') and current['status'] not in END | {'fault'}:
+                    raise Invalid('Submitter exited without an external task ID or result')
         except Exception as exc:
             exit_error = exc
             with self.store.edit(run_id) as run:
@@ -516,17 +640,21 @@ class TimelineRuntime:
                     Store.log(run, 'agent_exit_error', str(exc), e['id'])
                     return
                 current = self.engine.execution(run, e['id'])
-                if current['status'] not in ('cancelled', 'stale'):
-                    if current['status'] != 'completed':
-                        current.update(status='fault', error=str(exc))
-                        run['tasks'][e['task_id']]['status'] = 'fault'
-                    Store.log(run, 'fault', str(exc), e['id'])
+                if current.get('token') == e['token'] and current['status'] not in ('cancelled', 'stale'):
+                    if current['status'] not in ('completed', 'fault') and not (current.get('external_id') and not observe):
+                        self.report_in_run(run, current, {'event': 'check_error' if observe else 'process_error',
+                            'report_id': invocation + ':error', 'detail': {'message': str(exc)}}, 'engine')
+                    Store.log(run, 'process_error', str(exc), e['id'], {'observing': observe, 'result_preserved': current['status'] == 'completed'})
                     if implementation['kind'] == 'agent':
                         if isinstance(exc, CommandNotStopped):
                             owner_for(run, e['token'])['recovery_required'] = True
                         if owner_for(run, e['token']).get('scope_task') is None:
                             run['attention_error'] = str(exc)
         finally:
+            with self.store.edit(run_id) as run:
+                current = self.engine.execution(run, e['id'])
+                current.pop('worker_active', None)
+                current.pop('call_reported', None)
             if e['implementation']['kind'] == 'agent':
                 with self.store.edit(run_id) as run:
                     owner = owner_for(run, e['token'])
@@ -666,19 +794,29 @@ class TimelineRuntime:
         Store.log(run, action, 'Timeline command: ' + action, execution_id, {'gate': hook_firing})
 
     def recover(self, run):
+        if not run.get('operator_protocol'):
+            return
+        for attempt in run['executions']:
+            attempt.pop('worker_active', None)
+            attempt.pop('call_reported', None)
         for owner in run.get('agent_sessions', []):
             if owner.get('execution_id'):
                 primary = self.engine.execution(run, owner['execution_id'])
                 if primary['implementation'].get('command'):
                     owner['recovery_required'] = True
         for e in run['executions']:
+            if e['status'] in IN_FLIGHT and 'lifecycle' not in e['implementation']:
+                # Adopt the explicit contract for active pre-lifecycle attempts, without rewriting history.
+                e['implementation']['lifecycle'] = lifecycle_definition(e['implementation'])
+                e.setdefault('lifecycle_state', 'waiting' if e['implementation']['kind'] == 'external' and e.get('external_id') else e['implementation']['lifecycle']['initial'])
             if e['status'] == 'executing':
                 if e['implementation']['kind'] == 'external' and e.get('external_id'):
                     e.update(status='waiting', wake_at=0)
                     run['tasks'][e['task_id']]['status'] = 'waiting'
                 else:
-                    e.update(status='fault', token=None, error='Engine interrupted; inspect external effects before retry')
-                    run['tasks'][e['task_id']]['status'] = 'fault'
+                    self.report_in_run(run, e, {'event': 'process_error', 'report_id': uid('recovery'),
+                        'detail': {'message': 'Engine interrupted; inspect external effects before retry'}}, 'engine')
+                    e['token'] = None
                 Store.log(run, 'recovery', 'Recovered ' + e['task_id'], e['id'])
         for notification in run['notifications']:
             if notification['status'] == 'sending':
