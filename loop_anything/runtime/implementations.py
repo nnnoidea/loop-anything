@@ -2,7 +2,7 @@
 import copy
 import math
 import re
-from loop_anything.runtime.model import Invalid
+from loop_anything.runtime.model import Invalid, contract, check_schema
 
 
 def options(entry):
@@ -28,6 +28,13 @@ def validate_implementation(implementation):
         raise Invalid('Command implementation needs command', path=['command'])
     if implementation['kind'] == 'external' and not implementation.get('observe'):
         raise Invalid('External implementation needs observe', path=['observe'])
+    if 'parameter_schema' in implementation:
+        try:
+            check_schema(implementation['parameter_schema'])
+            if implementation['parameter_schema']['type'] != 'object':
+                raise Invalid('Implementation parameters must be an object')
+        except (Invalid, TypeError, AttributeError) as exc:
+            raise Invalid(str(exc), path=['parameter_schema']) from None
     if 'lifecycle' in implementation:
         from loop_anything.runtime.lifecycle import validate
         try:
@@ -84,10 +91,17 @@ def selected(run, task):
     return choose(run['implementations'], spec['node'], run['settings'].get('bindings'), spec.get('implementation'))
 
 
+def check_parameters(implementation, parameters, label='Implementation parameters'):
+    if implementation and 'parameter_schema' in implementation:
+        contract(parameters, implementation['parameter_schema'], label)
+
+
 def check_selection(run, spec):
     ident = spec.get('implementation')
     if ident is not None:
         validate_bindings(run['loop_definition'], run['implementations'], {spec['node']: ident})
+    ident, implementation = choose(run['implementations'], spec['node'], run['settings'].get('bindings'), ident)
+    check_parameters(implementation, spec.get('parameters', {}), 'Task ' + spec['id'] + ' / ' + str(ident) + ' parameters')
 
 
 def catalog_copy(entry):

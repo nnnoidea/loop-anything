@@ -37,8 +37,8 @@ engine.close();print(json.dumps(runs))`;
    const file=page.locator('#task-detail a').filter({hasText:'report.md'});const res=await page.request.get(base+await file.getAttribute('href'));assert(res.ok());assert((await res.text()).includes('Ready'));
    const bad=page.locator('#task-detail a').filter({hasText:'not-authorized'});assert.equal((await page.request.get(base+await bad.getAttribute('href'))).status(),404);
    await page.locator('#add-run-task').click();await page.locator('#task-inputs [data-source-mode]').selectOption('record');await page.locator('#task-inputs [data-source-record]').selectOption('initial.result');await page.locator('#task-parameters input[type="number"]').fill('3');await page.locator('#new-task-round').fill('第一组');await apply();
-   let r=await getRun(id),task=Object.values(r.tasks).find(t=>t.spec.node==='review');assert(task);assert.equal(task.spec.parameters.limit,3);
-   await page.locator(`.process-task[data-task-focus="${task.id}"]`).click();await page.locator('[data-edit-task]').click();await page.locator('#task-parameters input[type="number"]').fill('5');await page.locator('#task-edit-reason').fill('调整后续参数');await apply();r=await getRun(id);assert.equal(r.tasks[task.id].spec.parameters.limit,5);assert.deepEqual(r.records,original.records);assert.deepEqual(r.executions,original.executions);
+   let r=await getRun(id),task=Object.values(r.tasks).find(t=>t.spec.node==='review');assert(task);assert.equal(task.spec.parameters.limit,3);assert.equal(task.revision,1);
+   await page.locator(`.process-task[data-task-focus="${task.id}"]`).click();await page.locator('[data-edit-task]').click();await page.locator('#task-parameters input[type="number"]').fill('5');await page.locator('#task-edit-reason').fill('调整后续参数');await apply();r=await getRun(id);assert.equal(r.tasks[task.id].spec.parameters.limit,5);assert.equal(r.tasks[task.id].revision,2);await page.locator('[data-task-revision]').filter({hasText:'修订 2'}).waitFor();assert.deepEqual(r.records,original.records);assert.deepEqual(r.executions,original.executions);
    await page.locator('[data-task-order="round"]').click();assert((await page.locator('.task-group').allTextContents()).some(t=>t.includes('第一组')));await page.locator('[data-task-order="graph"]').click();
    await page.screenshot({path:path.join(root,index===0?'research.png':'trip.png'),fullPage:true});
    const response=page.waitForResponse(r=>r.url().endsWith('/command'));await page.locator('#pause-run').click();assert((await response).ok());await waitRun(id,r=>r.tasks[task.id].status==='completed');
@@ -77,14 +77,28 @@ engine.close();print(json.dumps(runs))`;
   assert.deepEqual((await getRun(ids[0])).loop_definition,existing.loop_definition);
 
   // Author a Loop from native forms and connect actual output/input ports.
-  await page.locator('#loop_definitions-nav').click();await page.locator('#new-loop_definition').click();await page.locator('#add-node').click();await page.locator('#author-label').waitFor();await page.locator('#author-label').fill('通用处理');await page.locator('#author-instructions').fill('处理输入并保存结果');
+  await page.locator('#loop_definitions-nav').click();await page.locator('#new-loop_definition').click();
+  // The default entry has no forced inputs/outputs; this scenario explicitly needs an initial result.
+  await page.locator('[data-drag-node="initialize"]').click();
+  assert.equal(await page.locator('#author-inputs > details').count(),0);
+  assert.equal(await page.locator('#author-outputs > details').count(),0);
+  await page.locator('[data-add-author-port="outputs"]').click();await page.locator('#author-outputs > details > summary').click();await page.locator('#author-outputs [data-port-name]').fill('result');
+  await page.locator('.guide-author > summary').filter({hasText:'Loop 操作手册'}).click();await page.locator('#handbook-instructions').fill('Initialize from discussion and pass a result to the work steps.');
+  await page.locator('#add-node').click();await page.locator('#property-title').filter({hasText:'node_1'}).waitFor();await page.locator('#author-label').fill('通用处理');await page.locator('#author-instructions').fill('处理输入并保存结果');
   await page.locator('[data-add-author-port="inputs"]').click();await page.locator('#author-inputs > details > summary').click();await page.locator('#author-inputs [data-port-name]').fill('source');
   await page.locator('#add-author-skill').click();await page.locator('[data-skill-name]').fill('method');await page.locator('[data-skill-content]').fill('Read source and return a result.');
   await page.locator('#add-author-candidate').click();await page.locator('[data-candidate-id]').fill('local');await page.locator('[data-candidate-kind]').selectOption('command');await page.locator('[data-candidate-command]').fill('python3\n-c\nimport json;print(json.dumps({"outputs":{"result":"ok"}}))');await page.locator('#author-default').selectOption('local');
+  await page.locator('.candidate-parameters > summary').click();
+  await page.locator('[data-candidate-parameters-enabled]').check();
+  const candidateSchema=page.locator('[data-candidate-parameters]');
+  await candidateSchema.locator('[data-schema-add]').first().click();
+  await candidateSchema.locator('[data-schema-name]').fill('queue');
+  await candidateSchema.locator('[data-schema-required]').check();
+
   await page.locator('#editor-save-status').filter({hasText:'草稿已保存'}).waitFor();
   await page.locator('[data-port-node="initialize"][data-output-port="result"]').click();await page.locator('[data-port-node="node_1"][data-input-port="source"]').click();await page.waitForTimeout(500);
   await page.locator('#editor-save-status').filter({hasText:'已保存'}).waitFor();
-  let drafts=await (await page.request.get(base+'/api/drafts')).json();let d=drafts.find(d=>d.loop_definition.nodes.node_1);assert(d);assert.equal(d.loop_definition.plans.default.steps.node_1.inputs.source.record,d.loop_definition.seed.outputs.result.id);assert.equal(d.implementations.node_1.default,'local');assert.equal(d.loop_definition.nodes.node_1.skills[0].name,'method');
+  let drafts=await (await page.request.get(base+'/api/drafts')).json();let d=drafts.find(d=>d.loop_definition.nodes.node_1);assert(d);assert.equal(d.loop_definition.plans.default.steps.node_1.inputs.source.record,d.loop_definition.seed.outputs.result.id);assert.equal(d.implementations.node_1.default,'local');assert.deepEqual(d.implementations.node_1.options.local.parameter_schema.required,['queue']);assert.equal(d.implementations.node_1.options.local.parameter_schema.properties.queue.type,'string');assert.equal(d.loop_definition.nodes.node_1.skills[0].name,'method');
   await page.locator('#add-node').click();await page.locator('#property-title').filter({hasText:'node_2'}).waitFor();await page.locator('[data-add-author-port="inputs"]').click();await page.locator('#author-inputs > details > summary').click();await page.locator('#author-inputs [data-port-name]').fill('source');await page.locator('#editor-save-status').filter({hasText:'草稿已保存'}).waitFor();
   await page.locator('[data-port-node="node_1"][data-output-port="result"]').click();await page.locator('[data-port-node="node_2"][data-input-port="source"]').click();await page.locator('#connect-port-form button[type="submit"]').click();await page.locator('#connection-dialog').waitFor({state:'hidden'});
   await page.locator('#editor-save-status').filter({hasText:'已保存'}).waitFor();drafts=await (await page.request.get(base+'/api/drafts')).json();d=drafts.find(d=>d.loop_definition.nodes.node_2);assert.deepEqual(d.loop_definition.plans.default.steps.node_2.inputs.source,{from:'node_1',port:'result'});
@@ -96,9 +110,30 @@ engine.close();print(json.dumps(runs))`;
   await page.locator('#editor-save-status').filter({hasText:'草稿已保存'}).waitFor();
   drafts=await (await page.request.get(base+'/api/drafts')).json();d=drafts.find(d=>d.loop_definition.nodes.node_2);
   assert(!d.loop_definition.nodes.node_1);assert(!d.loop_definition.plans.default.steps.node_2.inputs.source);
+  assert(!Object.hasOwn(d.loop_definition.records,'node_1.result'));
+  await page.locator('[data-port-node="node_2"][data-input-port="source"].input-gap').waitFor();
   await page.locator('#editor-publish').click();await page.locator('#editor-report.failure').waitFor();
+  await page.locator('#editor-report [data-input-location]').first().click();
+  const missingField=page.locator('[data-step-key="node_2"] [data-source-name="source"]');
+  assert.equal(await missingField.locator('[data-source-mode]').inputValue(),'unset');
+  await page.screenshot({path:path.join(root,'missing-input.png'),fullPage:true});
+  // Viewing the missing field must not manufacture a literal when saving/navigating.
+  await page.locator('[data-drag-node="node_2"]').click();
+  const later=await (await page.request.get(base+'/api/drafts')).json();
+  assert(!later.find(x=>x.id===d.id).loop_definition.plans.default.steps.node_2.inputs.source);
   await page.locator('[data-port-node="initialize"][data-output-port="result"]').click();await page.locator('[data-port-node="node_2"][data-input-port="source"]').click();
   await page.locator('#editor-save-status').filter({hasText:'草稿已保存'}).waitFor();
+
+  // Existing orphan types are listed and removed explicitly through the same authoring tool.
+  await page.locator('#editor-json').first().click();
+  const imported=JSON.parse(await page.locator('#editor-json-value').inputValue());imported.loop_definition.records['old.result']={type:'string'};
+  await page.locator('#editor-json-value').fill(JSON.stringify(imported));await page.locator('#editor-import').click();await page.locator('#editor-json-dialog').waitFor({state:'hidden'});
+  await page.locator('#editor-save-status').filter({hasText:'草稿已保存'}).waitFor();
+  await page.reload();await page.locator('[data-prune-records]').waitFor();
+  await page.locator('[data-prune-records]').click();await page.locator('.unused-records').waitFor({state:'detached'});
+  const cleaned=(await (await page.request.get(base+'/api/drafts')).json()).find(x=>x.id===d.id);
+  assert(!Object.hasOwn(cleaned.loop_definition.records,'old.result'));
+  assert(Object.hasOwn(cleaned.loop_definition.records,'node_2.result'));
 
   await page.waitForFunction(()=>!document.getElementById('loop_definition-editor').inert);
   await page.setViewportSize({width:390,height:844});await page.goto(base+'/#run/'+ids[1]);await page.locator('[data-task-row]').first().waitFor();await page.screenshot({path:path.join(root,'mobile.png'),fullPage:true});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));

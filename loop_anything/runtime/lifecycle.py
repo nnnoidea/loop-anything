@@ -5,7 +5,7 @@ from loop_anything.runtime.model import Invalid
 from loop_anything.runtime.checks import validate_expression
 
 KINDS = ('command', 'external', 'agent', 'event', 'approval')
-TERMINAL = {'completed', 'fault'}
+TERMINAL = {'completed', 'fault', 'retry', 'agent'}
 
 
 def template(kind):
@@ -50,20 +50,23 @@ def validate(value):
     rows = value['transitions']
     if not isinstance(rows, list) or not rows:
         raise Invalid('Lifecycle transitions must be a nonempty array')
-    pairs = set()
+    pairs = {}
     for row in rows:
-        if not isinstance(row, dict) or not {'from', 'event', 'to'} <= set(row) or set(row) - {'from', 'event', 'to', 'when'}:
-            raise Invalid('Each transition needs from, event, to and optional when')
+        if not isinstance(row, dict) or not {'from', 'event', 'to'} <= set(row) or set(row) - {'from', 'event', 'to', 'when', 'parameters'}:
+            raise Invalid('Each transition needs from, event, to and optional when/parameters')
         if not all(name(row[k]) for k in ('from', 'event', 'to')) or row['from'] in TERMINAL:
             raise Invalid('Transition IDs must be valid; terminal states have no outgoing transitions')
         pair = (row['from'], row['event'])
-        if pair in pairs:
-            raise Invalid('Each state/event pair must have one transition')
-        pairs.add(pair)
+        previous = pairs.setdefault(pair, [])
+        if previous and ('when' not in row or any('when' not in old or old['when'] == row['when'] for old in previous)):
+            raise Invalid('Branches for one state/event need distinct explicit conditions')
+        previous.append(row)
+        if 'parameters' in row and (row['to'] != 'retry' or not isinstance(row['parameters'], dict)):
+            raise Invalid('Only retry transitions may declare parameter changes as an object')
         if row['event'] == 'completed' and row['to'] != 'completed' or row['to'] == 'completed' and row['event'] != 'completed':
             raise Invalid('Only a validated completed report enters completed')
-        if row['event'] == 'process_error' and row['to'] != 'fault':
-            raise Invalid('A stopped process cannot continue executing; process_error must enter fault')
+        if row['event'] == 'process_error' and row['to'] not in {'fault', 'retry', 'agent'}:
+            raise Invalid('A stopped process cannot continue executing; process_error must enter fault, retry or agent')
         if row['event'] == 'check_error' and row['to'] in TERMINAL:
             raise Invalid('A failed check cannot determine the external task outcome')
         if 'when' in row:

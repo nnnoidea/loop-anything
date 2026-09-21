@@ -173,6 +173,27 @@ assert [n for n in z.namelist() if n.endswith('/SKILL.md')]==['platform/loop-any
     await page.reload();await page.locator('#loop_definition-editor').waitFor({state:'visible'});
     assert.equal(await page.locator('[data-guide="purpose"]').inputValue(),'修改后的用户说明');
     assert.equal(drafts[0].loop_definition.handbook.instructions,'启动前：与用户讨论。节点执行：读写状态，安排后续任务。');
+    // A delayed validation of an earlier autosave must not replace the latest draft result.
+    await page.evaluate(()=>saveEditor());
+    let releaseValidation,validationCaptured;
+    const validationHeld=new Promise(resolve=>validationCaptured=resolve);
+    const releaseHeld=new Promise(resolve=>releaseValidation=resolve);
+    let held=false;
+    await page.route('**/api/tools',async route=>{
+      if(route.request().postDataJSON()?.tool!=='validate_loop'||held){await route.continue();return;}
+      held=true;const response=await route.fetch();validationCaptured();await releaseHeld;await route.fulfill({response});
+    });
+    await page.locator('.guide-author > summary').filter({hasText:'Loop 操作手册'}).click();
+    await page.locator('#handbook-instructions').fill('');
+    await page.evaluate(()=>{window.delayedSave=saveEditor();});
+    await validationHeld;
+    await page.locator('#handbook-instructions').fill('启动前：与用户讨论。节点执行：读写状态，安排后续任务。');
+    await page.evaluate(()=>saveEditor());
+    assert(await page.locator('#editor-report').evaluate(el=>el.classList.contains('success')));
+    releaseValidation();await page.evaluate(()=>window.delayedSave);
+    assert(await page.locator('#editor-report').evaluate(el=>el.classList.contains('success')),'Old validation replaced the current draft result');
+    await page.unroute('**/api/tools');
+
     assert.equal((await (await page.request.get(url+'/api/catalog')).json()).find(c=>c.key===keys[2]).loop_definition.guide.purpose,'<script>不可执行的作者说明</script>');
     // Import does not start; successful installation lands on preparation.
     await page.locator('#loop_definitions-nav').click();await page.locator('#import-loop-package').click();
@@ -295,7 +316,9 @@ assert [n for n in z.namelist() if n.endswith('/SKILL.md')]==['platform/loop-any
     const matrix=page.locator('#preparation-flow [data-map-details="fallback"] [data-candidate="chosen"] .lifecycle-matrix');
     await matrix.locator('summary').click();assert((await matrix.innerText()).includes('reviewed'));
     await page.screenshot({path:path.join(root,'lifecycle-matrix.png'),fullPage:true});
-    await page.locator('#launch-field-0').fill('Explicit fallback browser test');
+    assert.equal(await page.locator('#launch-field-0').count(),0);
+    await page.locator('#preparation-flow [data-map-node="initialize"]').click();
+    await page.locator('#preparation-flow [data-map-details="initialize"] [data-choice="null"]').click();
     await page.locator('#launch-review').click();await page.locator('#launch-confirm').waitFor({state:'visible'});
     await page.locator('#launch-ack').check();await page.locator('#launch-start').click();
     await page.locator('#workspace').waitFor({state:'visible'});

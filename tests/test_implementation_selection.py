@@ -54,6 +54,98 @@ class SelectionTests(unittest.TestCase):
             time.sleep(.02)
         self.fail(str(self.store.get(self.id)['diagnostics']))
 
+    def test_task_revisions_keep_retry_identity_history_and_downstream(self):
+        self.start()
+        self.add(task_spec('work','script',parameters={'fail':True}))
+        self.add(task_spec('downstream','finish',inputs={'value':{'record':'work.result'}},after=['work']))
+        downstream=copy.deepcopy(self.store.get(self.id)['tasks']['downstream'])
+        run=self.until(lambda r:r['tasks']['work']['status']=='fault')
+        self.assertEqual(run['tasks']['work']['revision'],1)
+        self.tools.call('change_task',{'task_id':'work','operation':'retry','reason':'Transient failure'})
+        run=self.until(lambda r:r['tasks']['work']['status']=='fault')
+        self.assertEqual(run['tasks']['work']['revision'],1)
+        result=self.tools.call('change_task',{'task_id':'work','operation':'retry','reason':'Correct the parameters','parameters':{'fail':False}})
+        self.assertEqual(result['task_revision'],2)
+        run=self.until(lambda r:r['tasks']['work']['status']=='completed')
+        attempts=[e for e in run['executions'] if e['task_id']=='work']
+        self.assertEqual([(e['attempt'],e['task_revision']) for e in attempts],[(1,1),(2,1),(3,2)])
+        self.assertEqual([e['task_spec']['parameters']['fail'] for e in attempts],[True,True,False])
+        self.assertEqual(run['tasks']['downstream']['spec'],downstream['spec'])
+        self.assertEqual(run['tasks']['downstream']['revision'],1)
+        self.assertEqual(set(run['tasks']),{'init','work','downstream'})
+        changes=[h['detail'] for h in run['history'] if h['kind']=='agent_action_change' and h['detail']['tasks']=='work']
+        self.assertEqual([(d['before_revision'],d['after_revision']) for d in changes],[(1,1),(1,2)])
+        self.assertEqual(changes[-1]['actor']['kind'],'interactive')
+        self.assertNotIn('token',changes[-1]['actor'])
+        # Returning to identical parameters must still invalidate an older read token.
+        self.add(task_spec('decision','reason',parameters={}))
+        info=self.tools.call('read_task',{'task_id':'decision'})
+        self.tools.call('change_task',{'task_id':'decision','operation':'update','reason':'No change','parameters':{}})
+        self.assertEqual(self.tools.call('read_task',{'task_id':'decision'})['task_revision'],1)
+        for params in ({'value':1},{}):self.tools.call('change_task',{'task_id':'decision','operation':'update','reason':'Reconsider','parameters':params})
+        with self.assertRaises(Conflict):self.tools.call('complete_task',{'task_id':'decision','task_version':info['task_version'],'envelope':{'outputs':{'result':'stale'}}})
+        self.assertEqual(self.tools.call('read_task',{'task_id':'decision'})['task_revision'],3)
+
+    def test_legacy_attempt_revisions_are_not_fabricated(self):
+        self.start();self.add(task_spec('old','script',parameters={'fail':True}))
+        run=self.until(lambda r:r['tasks']['old']['status']=='fault')
+        old_id=run['tasks']['old']['execution_id']
+        with self.store.edit(self.id) as run:
+            run['tasks']['old'].pop('revision')
+            attempt=next(e for e in run['executions'] if e['id']==old_id)
+            attempt.pop('task_revision');attempt.pop('task_spec')
+        self.assertIsNone(self.tools.call('read_task',{'task_id':'old'})['task_revision'])
+        self.tools.call('change_task',{'task_id':'old','operation':'retry','reason':'Retry same legacy task'})
+        run=self.until(lambda r:r['tasks']['old']['status']=='fault')
+        self.assertEqual(run['tasks']['old']['revision'],1)
+        self.assertNotIn('task_revision',next(e for e in run['executions'] if e['id']==old_id))
+        self.assertEqual(run['executions'][-1]['task_revision'],1)
+
+    def test_candidate_parameters_validate_writes_rebinding_and_retry(self):
+        common={'type':'object','properties':{'count':{'type':'integer','minimum':1}},'required':['count']}
+        local={'type':'object','properties':{'file':{'type':'string','nonempty':True}},'required':['file']}
+        remote={'type':'object','properties':{'queue':{'type':'string','enum':['gpu']}},'required':['queue']}
+        command=copy.deepcopy(self.impl['script'])
+        self.bp['nodes']['script']['parameter_schema']=common
+        self.impl['script']={'default':'local','options':{'local':dict(command,parameter_schema=local),'remote':dict(command,parameter_schema=remote)}}
+        self.bp['plans']={'pair':{'steps':{k:{'node':'script','inputs':{}} for k in ('a','b')}}}
+        self.start()
+        before=self.store.get(self.id)
+        with self.assertRaises(Invalid):self.tools.call('add_task',{'node_id':'script','key':'bad','inputs':{},'parameters':{'count':1}})
+        with self.assertRaises(Invalid):self.tools.call('build_plan',{'name':'pair','key':'bad','values':{},'steps':{'a':{'parameters':{'count':1,'file':'data'}},'b':{'parameters':{'count':1}}}})
+        self.assertEqual(before,self.store.get(self.id))
+        task=self.tools.call('add_task',{'node_id':'script','key':'work','inputs':{},'parameters':{'count':1,'file':'data'}})['tasks'][0]
+        self.settings(bindings={'script':'remote'})
+        self.engine.tick(self.id)
+        run=self.store.get(self.id);self.assertEqual(run['tasks'][task['id']]['status'],'blocked')
+        self.assertFalse(any(e['task_id']==task['id'] for e in run['executions']))
+        info=self.tools.call('read_task',{'task_id':task['id']})
+        self.assertEqual(info['implementation']['parameter_schema'],remote)
+        self.assertEqual(info['parameter_schema'],common)
+        self.assertTrue(any(m['reason']=='invalid_parameters' for m in info['missing']))
+        for params in ({'count':0,'queue':'gpu'},{'count':1,'queue':'cpu'}):
+            with self.assertRaises(Invalid):self.tools.call('change_task',{'task_id':task['id'],'operation':'update','reason':'Choose remote','parameters':params})
+        self.tools.call('change_task',{'task_id':task['id'],'operation':'update','reason':'Choose remote','parameters':{'count':1,'queue':'gpu','fail':True}})
+        run=self.until(lambda r:r['tasks'][task['id']]['status']=='fault')
+        attempt=copy.deepcopy(next(e for e in run['executions'] if e['task_id']==task['id']))
+        with self.assertRaises(Invalid):self.tools.call('change_task',{'task_id':task['id'],'operation':'retry','reason':'Use local','implementation':'local','parameters':{'count':1}})
+        self.assertEqual(run,self.store.get(self.id))
+        self.tools.call('change_task',{'task_id':task['id'],'operation':'retry','reason':'Use local','implementation':'local','parameters':{'count':1,'file':'data'}})
+        done=self.until(lambda r:r['tasks'][task['id']]['status']=='completed')
+        latest=next(e for e in done['executions'] if e['id']==done['tasks'][task['id']]['execution_id'])
+        self.assertEqual(latest['implementation_id'],'local');self.assertEqual(latest['implementation']['parameter_schema'],local)
+        self.assertEqual(next(e for e in done['executions'] if e['id']==attempt['id'])['implementation'],attempt['implementation'])
+
+    def test_entry_uses_selected_contract_before_creating_seed_and_fallback_needs_no_parameters(self):
+        self.impl['init']={'default':'needs_queue','options':{'needs_queue':{'kind':'agent','parameter_schema':{'type':'object','required':['queue']}},'interactive':{'kind':'agent'}}}
+        key=self.store.publish(self.bp,self.impl)['key']
+        with self.assertRaises(Invalid):self.store.create(key,'Missing parameters')
+        run=self.store.create(key,'Interactive entry',bindings={'init':'interactive'})
+        self.assertEqual(run['settings']['bindings']['init'],'interactive')
+        self.bp['fallback_node']='reason'
+        self.impl['reason']={'kind':'agent','parameter_schema':{'type':'object','required':['queue']}}
+        with self.assertRaises(Invalid):self.store.publish(self.bp,self.impl)
+
     def test_run_override_and_task_override_execute_without_new_loop(self):
         def command(value):
             return {'kind': 'command', 'command': [sys.executable, '-c', 'import json; print(json.dumps({"outputs":{"result":'+repr(value)+'}}))']}
@@ -105,6 +197,7 @@ class SelectionTests(unittest.TestCase):
         tools=PlatformTools(self.store)
         draft=tools.call('create_loop',{'id':'variants','name':'Variants'})
         draft=tools.call('set_loop',{'draft_id':draft['draft_id'],'revision':draft['revision'],'handbook':'Initialize from the agreed request.'})
+        draft=tools.call('set_implementation',dict(draft_id=draft['draft_id'],revision=draft['revision'],node_id='initialize',unbind=True))
         for ident,default in [('one',True),('two',False)]:
             draft=tools.call('set_implementation',dict(draft_id=draft['draft_id'],revision=draft['revision'],node_id='initialize',implementation_id=ident,kind='agent',default=default))
         document=tools.call('read_loop',{'draft_id':draft['draft_id']})['loop']

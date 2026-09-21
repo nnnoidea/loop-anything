@@ -27,12 +27,12 @@ class PlatformTools:
         defs = [
             ('list_loops', 'List installed Loops and editable drafts. Does not start anything.', {}, [], True),
             ('read_loop', 'Read a draft_id or installed key. Optional node_id (+ implementation_id), plan (+ step), or asset_path selects one part and its explicit references. Without selectors returns the complete Loop. Targeted reads include draft revision; asset text is decoded UTF-8.', {'draft_id': TEXT, 'key': TEXT, 'node_id': TEXT, 'implementation_id': TEXT, 'plan': TEXT, 'step': TEXT, 'asset_path': TEXT}, [], True),
-            ('create_loop', 'Create an editable Loop with a generic initialization node. Add the author business handbook, tasks and implementations before validation.', {'name': TEXT, 'id': TEXT}, ['name'], False),
+            ('create_loop', 'Create an editable Loop with a no-input Agent entry. The user Agent initializes Timeline settings from the conversation; add business ports only when needed. Add the author business handbook, tasks and implementations before validation.', {'name': TEXT, 'id': TEXT}, ['name'], False),
             ('copy_loop', 'Copy an installed Loop and its resources to an editable draft. Existing Runs stay on their original version.', {'key': TEXT, 'name': TEXT, 'new_version': BOOL}, ['key'], False),
-            ('set_loop', 'Update draft metadata and the AUTHOR business handbook; handbook_path binds a package-relative Skill entry (empty clears). Preserve unspecified fields. Defaults and limits are explicit author choices. fallback_node selects a declared non-entry Agent node with no input ports; empty disables automatic fallback.', dict(draft, name=TEXT, version=TEXT, description=TEXT, handbook=TEXT, handbook_path=TEXT, defaults=OBJ, limits=OBJ, guide=OBJ, checks=OBJ, fallback_node=TEXT, global_agent_node=TEXT), ['draft_id', 'revision'], False),
+            ('set_loop', 'Update draft metadata and the AUTHOR business handbook; handbook_path binds a package-relative Skill entry (empty clears). Preserve unspecified fields. remove_records explicitly deletes unused record types; referenced types are protected. Defaults and limits are explicit author choices. fallback_node selects a declared non-entry Agent node with no input ports; empty disables automatic fallback.', dict(draft, name=TEXT, version=TEXT, description=TEXT, handbook=TEXT, handbook_path=TEXT, defaults=OBJ, limits=OBJ, guide=OBJ, checks=OBJ, fallback_node=TEXT, global_agent_node=TEXT, remove_records=STRINGS), ['draft_id', 'revision'], False),
             ('put_node', 'Add or edit one node. Port lists use name plus type (string/number/object/array/etc.) or a full schema; output record types are generated. Entry ports automatically update its initial input/output locations. skills are author-provided methods, with content or a package-relative path to SKILL.md.', dict(draft, node_id=TEXT, instructions=TEXT, label=TEXT, inputs=PORTS, outputs=PORTS, skills={'type': 'array', 'items': object_schema({'name': TEXT, 'content': TEXT, 'path': TEXT}, ['name'])}, plan_nodes=STRINGS, parameter_schema=OBJ, agent_settings_schema=OBJ, assertions={'type': 'array', 'items': OBJ}), ['draft_id', 'revision', 'node_id'], False),
             ('remove_node', 'Remove a draft node only after removing steps that use it. The initialization node cannot be deleted.', dict(draft, node_id=TEXT), ['draft_id', 'revision', 'node_id'], False),
-            ('set_implementation', 'Add/update a named candidate with implementation_id; default=true selects the Loop default, default=false clears it. Omit implementation_id for the compact default candidate. Choose candidates per Run via settings.bindings or per Task via implementation. Execution kinds: agent, command, external, event or approval. command/observe are argv arrays, not shell strings. Optional agent prompt fully replaces the default; {{context}} expands runtime context. lifecycle holds the visible initial state and explicit from/event/to transitions with optional when. Only supplied fields change, including when kind is repeated. clear removes named optional fields; clear lifecycle explicitly restores the initial template for the selected kind. Changing kind requires lifecycle or clear lifecycle; incompatible fields must be explicitly cleared. Omitted collections are preserved; supplied lifecycle replaces the matrix. Use node_id=$notifications and kind=command for the user notification sender. Unbind explicitly to share an incomplete Loop.', dict(draft, node_id=TEXT, kind={'type': 'string', 'enum': ['agent', 'command', 'external', 'event', 'approval']}, command=STRINGS, observe=STRINGS, cwd=TEXT, timeout={'type': 'number'}, event=TEXT, prompt=TEXT, lifecycle=OBJ, label=TEXT, description=TEXT, clear=STRINGS, unbind=BOOL, implementation_id=TEXT, default=BOOL), ['draft_id', 'revision', 'node_id'], False),
+            ('set_implementation', 'Add/update a named candidate with implementation_id; default=true selects the Loop default, default=false clears it. Omit implementation_id for the compact default candidate. Choose candidates per Run via settings.bindings or per Task via implementation. Execution kinds: agent, command, external, event or approval. command/observe are argv arrays, not shell strings. Optional agent prompt fully replaces the default; {{context}} expands runtime context. parameter_schema optionally constrains the Task parameters for this candidate, in addition to the node contract. No defaults are injected. lifecycle holds the visible initial state and explicit from/event/to transitions with optional when and retry parameters. Conditions may read attempt; retry reuses the Task and agent hands off to the configured fallback. Only supplied fields change, including when kind is repeated. clear removes named optional fields; clear lifecycle explicitly restores the initial template for the selected kind. Changing kind requires lifecycle or clear lifecycle; incompatible fields must be explicitly cleared. Omitted collections are preserved; supplied lifecycle replaces the matrix. Use node_id=$notifications and kind=command for the user notification sender. Unbind explicitly to share an incomplete Loop.', dict(draft, node_id=TEXT, kind={'type': 'string', 'enum': ['agent', 'command', 'external', 'event', 'approval']}, command=STRINGS, observe=STRINGS, cwd=TEXT, timeout={'type': 'number'}, event=TEXT, prompt=TEXT, lifecycle=OBJ, parameter_schema=OBJ, label=TEXT, description=TEXT, clear=STRINGS, unbind=BOOL, implementation_id=TEXT, default=BOOL), ['draft_id', 'revision', 'node_id'], False),
             ('put_asset', 'Write or explicitly remove one package file. Supply content (UTF-8) to write, or remove=true to delete. Unspecified executable preserves its previous value. Paths are package-relative; removal does not delete referenced nodes or other resources.', dict(draft, path=TEXT, content=TEXT, executable=BOOL, remove=BOOL), ['draft_id', 'revision', 'path'], False),
             ('put_step', 'Add/edit a step in a named batch template. inputs map ports to literal, record, run, settings or from/port sources; each is a values array path; an empty string removes list expansion. Plan parameters describe arguments supplied to build_plan. No runtime tasks is created.', dict(draft, plan=TEXT, step=TEXT, node_id=TEXT, inputs=OBJ, parameters=OBJ, after=STRINGS, each=TEXT, plan_parameters=OBJ, implementation=TEXT), ['draft_id', 'revision', 'plan', 'step', 'node_id'], False),
             ('remove_step', 'Remove a batch step if no other step depends on it. Reconnect its consumers first.', dict(draft, plan=TEXT, step=TEXT), ['draft_id', 'revision', 'plan', 'step'], False),
@@ -269,13 +269,11 @@ class PlatformTools:
         if name == 'create_loop':
             bp = {'schema_version': 2, 'id': a.get('id') or uid('loop'), 'name': a['name'], 'version': '1',
                   'entry': 'initialize', 'handbook': {'instructions': ''}, 'defaults': {},
-                  'records': {'initial-result': {'type': 'string'}}, 'nodes': {
-                      'initialize': {'label': '初始状态', 'instructions': '按已确认的用户要求初始化 Timeline 并记录初始结果。',
-                          'initialize_timeline': True, 'inputs': {'request': {'type': 'string'}},
-                          'outputs': {'result': {'record_type': 'initial-result'}}}},
-                  'seed': {'id': 'initialize', 'node': 'initialize', 'inputs': {'request': {'run': 'request'}},
-                           'outputs': {'result': {'id': 'initial.result'}}}, 'plans': {}}
-            return self._summary(self.store.save_draft(bp, {}))
+                  'records': {}, 'nodes': {
+                      'initialize': {'label': '初始状态', 'instructions': '根据已确认的对话将目标、要求和约束写入 Timeline settings；按需安排后续任务，提交本节点后释放操作权。',
+                          'initialize_timeline': True, 'inputs': {}, 'outputs': {}}},
+                  'seed': {'id': 'initialize', 'node': 'initialize', 'inputs': {}, 'outputs': {}}, 'plans': {}}
+            return self._summary(self.store.save_draft(bp, {'initialize': {'kind': 'agent'}}))
         if name == 'copy_loop':
             source = self._installed(a['key'])
             assets, checks = [], {}
@@ -310,6 +308,13 @@ class PlatformTools:
                 return dict(install(self.store, raw), draft_id=draft['id'], revision=draft['revision'])
             return {'filename': bp['id'] + '.loop.zip', 'base64': base64.b64encode(raw).decode()}
         if name == 'set_loop':
+            if 'remove_records' in a:
+                from loop_anything.runtime.timeline_model import unused_records
+                removable = set(unused_records(bp))
+                if set(a['remove_records']) - removable:
+                    raise Invalid('Only existing unreferenced record types can be removed')
+                for record in set(a['remove_records']):
+                    del bp['records'][record]
             for field in ('name', 'version', 'description', 'defaults', 'limits', 'guide', 'fallback_node', 'global_agent_node'):
                 if field in a:
                     bp[field] = a[field]
@@ -371,7 +376,7 @@ class PlatformTools:
             if node not in bp['nodes'] and node != '$notifications':
                 raise Invalid('Unknown node_id')
             from loop_anything.runtime.implementations import catalog_copy, validate_candidates
-            fields = {'kind', 'command', 'observe', 'cwd', 'timeout', 'event', 'prompt', 'lifecycle', 'label', 'description'}
+            fields = {'kind', 'command', 'observe', 'cwd', 'timeout', 'event', 'prompt', 'lifecycle', 'parameter_schema', 'label', 'description'}
             clear = set(a.get('clear', []))
             if clear - (fields - {'kind'}) or clear & set(a):
                 raise Invalid('clear names optional implementation fields, supplied once and not also updated')

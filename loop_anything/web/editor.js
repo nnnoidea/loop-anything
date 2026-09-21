@@ -55,7 +55,7 @@ async function performEditorEdit(tool,values){
     const result=await platformCall(tool,{draft_id:editor.id,revision:editor.revision,...values});
     const loaded=(await platformCall('read_loop',{draft_id:result.draft_id})).loop;
     Object.assign(editor,loaded,{dirty:false});editor.loop_definition.layout ||= {};
-    populateMeta();renderEditor();renderProperties();saveState();
+    populateMeta();renderEditor();renderProperties();renderReport(result.validation);saveState();
   }finally{editorBusy=false;editorPage.inert=false;}
 }
 
@@ -120,7 +120,7 @@ function renderEditor(){
   }).join('') || '<div class="canvas-empty"><div class="empty-mark">◇</div><h2>从第一个业务步骤开始</h2><p>添加节点，声明输入与输出，再将它们连接起来。</p></div>';
   requestAnimationFrame(drawEditorEdges);
   if(b.schema_version===2){
-    $('editor-edges-list').innerHTML=loopProgressHTML(editor)+'<h3>本轮构建模板</h3>'+Object.entries(b.plans || {}).map(([name,p])=>`<div class="edge-row"><button data-edit-edge="${esc(name)}">${esc(name)} · ${Object.keys(p.steps).length} 步</button></div>`).join('')+'<button id="editor-json">编辑构建模板、Seed 与完整 JSON</button>';
+    $('editor-edges-list').innerHTML=loopProgressHTML(editor)+'<h3>本轮构建模板</h3>'+Object.entries(b.plans || {}).map(([name,p])=>`<div class="edge-row"><button data-edit-edge="${esc(name)}">${esc(name)} · ${Object.keys(p.steps).length} 步</button></div>`).join('')+'<button id="editor-json">编辑构建模板、Seed 与完整 JSON</button>'+'<div id="unused-record-types">'+unusedRecordsHTML()+'</div>';
     $('editor-edges-list').insertAdjacentHTML('afterbegin',`<label>当前构建模板<select id="author-plan-select">${Object.keys(b.plans || {}).map(k=>`<option ${k===authorPlan?'selected':''}>${esc(k)}</option>`).join('')}</select></label><div class="row"><input id="new-plan-name" placeholder="新模板名称"><button type="button" id="new-author-plan">＋ 模板</button></div>`);
     $('editor-hint').textContent='实线是依赖，紫色虚线是后续安排；点节点修改循环、Skill 与实现。';return;
   }
@@ -168,12 +168,13 @@ async function saveEditor(){
   if(target.id&&!target.dirty)return;
   collectAll();const edits=target.edits||0;
   const payload=structuredClone({id:target.id,revision:target.revision,loop_definition:target.loop_definition,implementations:target.implementations,assets:target.assets||[],checks:target.checks||{}});
-  editorSave=api('drafts',payload);
+  const saving=api('drafts',payload);editorSave=saving;
   try{
-    const result=await editorSave;Object.assign(target,{id:result.id,revision:result.revision,dirty:(target.edits||0)!==edits});
+    const result=await saving;Object.assign(target,{id:result.id,revision:result.revision,dirty:(target.edits||0)!==edits});
     if(editor===target&&page==='editor'){const route=parseRoute(location.hash);if(route.type==='editor'&&route.id===target.routeId)savedEditorRoute();saveState();}
+    if(!target.dirty){target.loop_definition.records=result.loop_definition.records;if(editor===target&&page==='editor'){const report=await platformCall('validate_loop',{draft_id:target.id});if(editor===target&&page==='editor'&&!target.dirty&&target.revision===result.revision){renderReport(report);$('unused-record-types').innerHTML=unusedRecordsHTML();}}}
     return result;
-  }finally{editorSave=null;}
+  }finally{if(editorSave===saving)editorSave=null;}
 }
 async function saveAndUseLoop(){
   if(editorBusy)return;editorBusy=true;editorPage.inert=true;
@@ -185,12 +186,26 @@ async function saveAndUseLoop(){
   }finally{editorBusy=false;editorPage.inert=false;}
 }
 
+function unusedRecordsHTML(){
+  const bp=editor.loop_definition,used=new Set(Object.values(bp.nodes).flatMap(n=>Object.values(n.outputs||{}).map(s=>s.record_type))),unused=Object.keys(bp.records||{}).filter(k=>!used.has(k));
+  return unused.length?`<section class="unused-records"><h3>未引用的记录类型</h3><p class="small muted">这些类型没有节点输出引用。清理只影响此草稿。</p><ul>${unused.map(k=>`<li>${esc(k)}</li>`).join('')}</ul><button type="button" data-prune-records="${esc(JSON.stringify(unused))}">清理列出的类型</button></section>`:'';
+}
+function locateEditorIssue(path){
+  if(path[0]==='plans'&&editor.loop_definition.plans[path[1]]){
+    authorPlan=path[1];selectEditor({edge:path[1]});const step=$('editor-properties').querySelector(`[data-step-key="${CSS.escape(path[3]||'')}"]`);if(step){step.open=true;const field=path[4]==='inputs'?step.querySelector(`[data-source-name="${CSS.escape(path[5]||'')}"]`):step;(field||step).scrollIntoView({block:'center'});(field||step).querySelector('select,input,textarea')?.focus();}return;
+  }
+  const id=path[0]==='seed'?editor.loop_definition.entry:path[1];
+  if(['nodes','implementations','seed'].includes(path[0])&&editor.loop_definition.nodes[id]){selectEditor({node:id});const field=[...$('editor-properties').querySelectorAll('[data-port-name]')].find(el=>el.value===path[3]);if(field){field.closest('details').open=true;field.scrollIntoView({block:'center'});field.focus();}else $('editor-properties').scrollIntoView({block:'start'});return;}
+  const target=path[0]==='handbook'?$('handbook-instructions'):path[0]==='records'?document.querySelector('.unused-records'):$('bp-name');if(target){for(let p=target.parentElement;p;p=p.parentElement)if(p.tagName==='DETAILS')p.open=true;target.scrollIntoView({block:'center'});target.focus();}
+}
 function renderReport(report){
   const r=$('editor-report');r.className='editor-report '+(report.valid?'success':'failure');
-  r.innerHTML=`<strong>${report.valid?'✓ 结构有效':'需要修正'}</strong>`+report.errors.map(x=>`<p>• ${esc(x)}</p>`).join('')+((report.unbound_nodes || []).length?`<p>待绑定：${report.unbound_nodes.map(esc).join('、')}。仍可导出、分享和安装；不表示已具备运行条件。</p>`:'')+report.warnings.map(x=>`<p class="small">${esc(x)}</p>`).join('');
+  r.innerHTML=`<strong>${report.valid?'✓ 结构有效':'需要修正'}</strong>`+(report.issues?.length?report.issues.map(issue=>`<p>${esc(issue.message)} <button type="button" data-input-location="${esc(JSON.stringify(issue.path))}">定位修正</button></p>`).join(''):report.errors.map(x=>`<p>• ${esc(x)}</p>`).join(''))+((report.unbound_nodes || []).length?`<p>待绑定：${report.unbound_nodes.map(esc).join('、')}。仍可导出、分享和安装；不表示已具备运行条件。</p>`:'')+report.warnings.map(x=>`<p class="small">${esc(x)}</p>`).join('');
 }
 document.addEventListener('click',event=>safely(async()=>{
   const el=event.target.closest('button,[data-edit-edge],[data-edit-planning]');if(!el)return;const d=el.dataset;
+  if(d.inputLocation){locateEditorIssue(JSON.parse(d.inputLocation));return;}
+  if(d.pruneRecords){await editWithTool('set_loop',{remove_records:JSON.parse(d.pruneRecords)});return;}
   if(d.copyLoopDefinition || d.versionLoopDefinition){await newLoopDefinition(catalog.find(c=>c.key===(d.copyLoopDefinition || d.versionLoopDefinition)),!!d.versionLoopDefinition);return;}
   if(d.openDraft){if(page==='editor')await saveEditor();editor={...structuredClone(savedDrafts.find(x=>x.id===d.openDraft)),dirty:false};openEditor();return;}
   if(d.editPlanning){selectEditor({node:d.editPlanning});$('author-plan-nodes')?.scrollIntoView({block:'nearest'});return;}

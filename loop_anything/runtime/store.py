@@ -82,19 +82,23 @@ class Store:
             extra['assets'] = assets
         if checks is not None:
             extra['checks'] = checks
-        document = json.dumps({'loop_definition': loop_definition, 'implementations': implementations, **extra}, allow_nan=False)
+        loop_definition = copy.deepcopy(loop_definition)
         now = time.time()
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             if draft_id:
-                row = db.execute('SELECT revision FROM loop_drafts WHERE id=?', (draft_id,)).fetchone()
+                row = db.execute('SELECT revision, document FROM loop_drafts WHERE id=?', (draft_id,)).fetchone()
                 if row is None or revision != row['revision']:
                     raise Conflict('Draft changed or no longer exists; reopen the saved draft')
+                from loop_anything.runtime.timeline_model import prune_removed_records
+                prune_removed_records(json.loads(row['document'])['loop_definition'], loop_definition)
                 revision += 1
+                document = json.dumps({'loop_definition': loop_definition, 'implementations': implementations, **extra}, allow_nan=False)
                 db.execute('UPDATE loop_drafts SET revision=?, updated_at=?, document=? WHERE id=?',
                            (revision, now, document, draft_id))
             else:
                 draft_id, revision = uid('draft'), 1
+                document = json.dumps({'loop_definition': loop_definition, 'implementations': implementations, **extra}, allow_nan=False)
                 db.execute('INSERT INTO loop_drafts VALUES (?,?,?,?)', (draft_id, revision, now, document))
             db.commit()
         return {'id': draft_id, 'revision': revision, 'updated_at': now, 'loop_definition': loop_definition, 'implementations': implementations, **extra}
@@ -128,7 +132,7 @@ class Store:
                'executions': [], 'events': [], 'history': []}
         if loop_definition.get('schema_version') == 2:
             from loop_anything.runtime.timeline_runtime import initialize_run
-            initialize_run(run)
+            initialize_run(run, bindings)
             if not isinstance(authorization, str):
                 raise Invalid('User authorization must be text')
             run['settings']['authorization'] = authorization
@@ -136,9 +140,6 @@ class Store:
                 from loop_anything.runtime.timeline_model import validate_settings
                 run['settings']['notification_command'] = copy.deepcopy(notification_command)
                 validate_settings(run['settings'])
-            from loop_anything.runtime.implementations import validate_bindings
-            validate_bindings(loop_definition, run['implementations'], {} if bindings is None else bindings)
-            run['settings']['bindings'] = copy.deepcopy({} if bindings is None else bindings)
             if fallback_node is not None:
                 run['settings']['fallback_node'] = fallback_node or None
             from loop_anything.runtime.timeline_model import validate_fallback

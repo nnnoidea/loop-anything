@@ -53,11 +53,12 @@ function resultView(value){
   return `<span class="result-text">${esc(typeof value==='boolean'?(value?'是':'否'):value)}</span>`;
 }
 function sourceField(name,source,schema,choices=[],plan=false){
-  const modes=['literal','record','records','run','settings',...(plan?['from','value','template']:[])],mode=plan&&source?.literal&&typeof source.literal==='object'&&Object.hasOwn(source.literal,'$')?'value':plan&&JSON.stringify(source||{}).includes('"$"')?'template':modes.find(k=>Object.hasOwn(source || {},k)) || 'literal';
-  const names={literal:'直接填写',record:'单个结果',records:'多个结果',run:'初始输入字段',settings:'运行设置字段',from:'本批次上游输出',value:'本批参数或当前列表项',template:'参数化来源（高级）'};
+  const modes=[...(plan?['unset']:[]),'literal','record','records','run','settings',...(plan?['from','value','template']:[])],mode=plan&&source?.literal&&typeof source.literal==='object'&&Object.hasOwn(source.literal,'$')?'value':plan&&JSON.stringify(source||{}).includes('"$"')?'template':modes.find(k=>Object.hasOwn(source || {},k)) || (plan?'unset':'literal');
+  const names={unset:'待指定来源',literal:'直接填写',record:'单个结果',records:'多个结果',run:'初始输入字段',settings:'运行设置字段',from:'本批次上游输出',value:'本批参数或当前列表项',template:'参数化来源（高级）'};
   return `<fieldset class="source-field" data-source-name="${esc(name)}" data-source-schema="${esc(pretty(schema))}" data-source-original="${esc(pretty(source || {}))}" data-source-choices="${esc(pretty(choices))}"><legend>${esc(schema.title || name)}</legend><select data-source-mode aria-label="${esc(name)} 来源">${modes.map(m=>`<option value="${m}" ${m===mode?'selected':''}>${names[m]}</option>`).join('')}</select><div data-source-body>${sourceBody(mode,source || {},schema,choices)}</div></fieldset>`;
 }
 function sourceBody(mode,s,schema,choices){
+  if(mode==='unset')return '<p class="input-gap">尚未指定输入来源；可先保存草稿。</p>';
   if(mode==='template')return valueField(s,{type:'object'},'参数化来源');
   if(mode==='value')return `<label>引用路径<input data-source-path value="${esc(s.literal?.$ || 'item')}" placeholder="item 或 values.字段"></label>`;
   if(mode==='literal')return valueField(Object.hasOwn(s,'literal')?s.literal:undefined,schema,'内容');
@@ -71,6 +72,7 @@ function sourceBody(mode,s,schema,choices){
 }
 function readSources(root){return Object.fromEntries([...root.querySelectorAll('.source-field')].map(el=>{
   const mode=el.querySelector('[data-source-mode]').value,body=el.querySelector('[data-source-body]');let source;
+  if(mode==='unset')return null;
   if(mode==='literal')source={literal:readValue(body.querySelector('[data-value-type]'))};
   else if(mode==='record'||mode==='records'){
     const values=mode==='records'?readValue(body.querySelector('[data-value-type]')):[body.querySelector('[data-source-record]').value];if(values.some(v=>typeof v!=='string'||!v))throw new Error('请选择 '+el.dataset.sourceName+' 的结果来源');
@@ -81,7 +83,7 @@ function readSources(root){return Object.fromEntries([...root.querySelectorAll('
   else if(mode==='value')source={literal:{$:body.querySelector('[data-source-path]').value}};
   else source={[mode]:body.querySelector('[data-source-path]').value};
   return [el.dataset.sourceName,source];
-}));}
+}).filter(Boolean));}
 document.addEventListener('change',e=>{if(!e.target.matches('[data-source-mode]'))return;const el=e.target.closest('.source-field');el.querySelector('[data-source-body]').innerHTML=sourceBody(e.target.value,JSON.parse(el.dataset.sourceOriginal),JSON.parse(el.dataset.sourceSchema),JSON.parse(el.dataset.sourceChoices));});
 
 document.addEventListener('input',e=>{const row=e.target.closest('[data-value-content]')?.parentElement;if(row){const include=row.querySelector(':scope > .value-row-head > label > [data-value-include]');if(include)include.checked=true;}});
