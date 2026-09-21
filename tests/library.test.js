@@ -75,3 +75,16 @@ test('definition relationships distinguish repeat planning from data dependencie
   assert(!edges.some(e=>e.from==='end'||e.from==='freeAgent'));
   assert.equal(JSON.stringify(bp),before);
 });
+
+test('recovery relationships use explicit fallback and respect disabled overrides',()=>{
+ const bp={schema_version:2,entry:'start',fallback_node:'recover',nodes:{start:{plan_nodes:['work']},work:{},recover:{}},plans:{}};
+ const before=JSON.stringify(bp),get=value=>JSON.parse(run(`JSON.stringify(loopRelationships(${before}${value}))`));
+ assert.deepEqual(get('').filter(e=>e.kind==='recovery').map(e=>[e.from,e.to]),[['start','recover'],['work','recover']]);
+ assert(!get(',null').some(e=>e.kind==='recovery'));
+ for(const fallback of [null,undefined,'toString']){
+  const disabled={...bp,fallback_node:fallback,nodes:{start:{},null:{},undefined:{}}};
+  assert(!JSON.parse(run(`JSON.stringify(loopRelationships(${JSON.stringify(disabled)}))`)).some(e=>e.kind==='recovery'));
+ }
+ assert(!get('').some(e=>e.repeats));
+ assert.equal(JSON.stringify(bp),before);
+});

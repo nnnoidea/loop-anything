@@ -33,7 +33,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
         state = protection.status() if protection else {'requested': False, 'active': False, 'backend': None, 'error': None}
         requested = store.keep_awake(default=state['requested'])
         return dict(state, requested=requested, controllable=protection is not None,
-                    updating=bool(state.get('updating') or protection and requested != protection.enabled))
+                    updating=bool(state.get('updating') or protection and requested != state['requested']))
 
     def scheduler():
         while not stop.wait(0.75):
@@ -97,7 +97,13 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             if not run_id or not token:
                 return False
             from loop_anything.runtime.task_scope import owner_for
-            return owner_for(store.get(run_id), token) is not None
+            run = store.get(run_id)
+            args = body.get('arguments', {})
+            if body.get('tool') == 'report_task' and args.get('execution_id'):
+                attempt = next((e for e in run['executions'] if e['id'] == args['execution_id']), None)
+                if attempt and attempt['implementation']['kind'] in ('command', 'external') and attempt.get('token') == token:
+                    return True
+            return owner_for(run, token) is not None
 
         def send(self, data, status=200, cookie=None):
             content = json.dumps(data, ensure_ascii=False).encode()
@@ -127,6 +133,10 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                     return
                 if parts[3:] == ['api', 'platform']:
                     parts = ['api', 'platform']
+            if parts == ['api', 'lifecycles']:
+                from loop_anything.runtime.lifecycle import template, KINDS
+                self.send({kind: template(kind) for kind in KINDS})
+                return
             if parts == ['api', 'agent-prompts']:
                 from loop_anything.runtime.agent_prompt import DEFAULTS
                 self.send(DEFAULTS)
@@ -228,7 +238,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.send({'snapshot': self.visible_run(run), 'execution_id': execution['id'], 'token': execution.get('token') if self.editing() else None,
                            'settings_revision': execution['settings_revision'], 'output_contract': node_for(run, execution['node'])['outputs']})
             else:
-                filename = {name: name for name in ('app.js', 'loop_graph.js', 'settings.js', 'forms.js', 'workspace.js', 'authoring.js', 'workspace.css', 'conversation.js', 'conversation.css', 'task_history.js', 'style.css', 'graph.css', 'editor.js', 'editor.css', 'packages.js', 'library.js', 'library.css', 'navigation.js')}.get('/'.join(parts))
+                filename = {name: name for name in ('app.js', 'lifecycle.js', 'loop_graph.js', 'settings.js', 'forms.js', 'workspace.js', 'authoring.js', 'workspace.css', 'conversation.js', 'conversation.css', 'task_history.js', 'style.css', 'graph.css', 'editor.js', 'editor.css', 'packages.js', 'library.js', 'library.css', 'navigation.js')}.get('/'.join(parts))
                 if parts == ['']:
                     filename = 'index.html'
                 if not filename:

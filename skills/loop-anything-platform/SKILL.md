@@ -11,7 +11,7 @@ metadata:
 
 ## 按当前任务读取
 
-- 创建、编辑、验证或分享 Loop：读取 [build.md](references/build.md)。
+- 创建、反复编辑、查询节点/包文件、验证或分享 Loop：读取 [build.md](references/build.md)。
 - 直接使用通用工具启动 Run 或修改 Timeline：按需读取 [run.md](references/run.md)。作者已提供封装脚本和说明时，运行时优先按作者入口操作，无需先读平台手册。已经有 Run 和令牌时，不重新创建 Run。
 
 - 配置通知出口或接入现有聊天桥接：读取 [notifications.md](references/notifications.md)。
@@ -38,6 +38,6 @@ python3 scripts/call.py TOOL --arguments @参数.json
 
 首次使用先检查连接，再读取工具目录。参数可用 JSON 或 `@UTF8文件`；沿用工具返回的 ID、修订号和令牌。具体 Loop 的 key 从 `list_loops` 取得。连接检查不调用模型或创建业务 Run。
 
-每次调用检查返回的 `ok`；失败时脚本退出码为 2。安排后续任务不等于完成当前任务，文字回复也不是提交回执。作者封装可代为提交与退出；直接调用工具时，按需查看 run.md 中对应操作。
+每次调用检查返回的 `ok`，报告状态还须检查 `accepted`；失败时脚本退出码为 2。脚本与监控接入统一报告工具时，见 [run.md 的报告说明](references/run.md#统一报告事件与结果)，调用脚本随 Skill 提供。安排后续任务不等于完成当前任务，文字回复也不是提交回执。作者封装可代为提交与退出；直接调用工具时，按需查看 run.md 中对应操作。
 
 继续工作先用 list_runs 找到已有运行，再只读 read_timeline；编辑时才 acquire_run。微信、飞书、终端共用同一平台和 Timeline，切换入口不会新建 Run 或改变通知目标。

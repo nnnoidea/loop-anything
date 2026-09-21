@@ -69,7 +69,7 @@ function populatePreparation(){
 }
 function renderPreparationGraph(){
   const item=launchItem(),old=$('preparation-flow').querySelector('.loop-map'),focus=old?.dataset.mapFocus || '',scroll=old?.querySelector('.loop-map-scroll'),position=scroll?{left:scroll.scrollLeft,top:scroll.scrollTop}:null;
-  $('preparation-flow').innerHTML=`<div class="preparation-heading"><div><h2>${esc(item.loop_definition.name || item.key)}</h2><p class="small muted">v${esc(item.loop_definition.version)} · 点击节点查看和选择本次实现</p></div><button id="edit-prepared-loop" type="button">编辑 Loop 定义</button></div>${loopGraphHTML(item,{bindings:launchBindings,action:'prepare'})}<details><summary>查看步骤关系与作者说明</summary>${flowHTML(item,false)}</details>`;
+  $('preparation-flow').innerHTML=`<div class="preparation-heading"><div><h2>${esc(item.loop_definition.name || item.key)}</h2><p class="small muted">v${esc(item.loop_definition.version)} · 点击节点查看和选择本次实现</p></div><button id="edit-prepared-loop" type="button">编辑 Loop 定义</button></div>${loopGraphHTML(item,{bindings:launchBindings,action:'prepare',fallbackNode:$('launch-fallback').value||null})}<details><summary>查看步骤关系与作者说明</summary>${flowHTML(item,false)}</details>`;
   const root=$('preparation-flow').querySelector('.loop-map');if(item.loop_definition.nodes[focus])focusLoopMap(root,focus);
   if(old?.classList.contains('expanded')){root.classList.add('expanded');root.querySelector('[data-map-expand]').checked=true;}
   if(position)root.querySelector('.loop-map-scroll').scrollTo(position);
@@ -166,3 +166,5 @@ document.addEventListener('click',e=>safely(async()=>{
 }));
 window.addEventListener('beforeunload',e=>{if(preparationDirty){e.preventDefault();e.returnValue='';}});
 setInterval(pollConversation,1000);
+
+document.addEventListener('change',event=>{if(event.target.id==='launch-fallback'&&page==='launch')renderPreparationGraph();});

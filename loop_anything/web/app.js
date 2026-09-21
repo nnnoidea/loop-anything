@@ -240,7 +240,7 @@ $('settings-form').addEventListener('submit',e=>{e.preventDefault();safely(async
   $('review-dialog').showModal();
 });});
 async function loadCatalog(){
-  [catalog,promptDefaults]=await Promise.all([api('catalog'),api('agent-prompts')]);
+  [catalog,promptDefaults,lifecycleTemplates]=await Promise.all([api('catalog'),api('agent-prompts'),api('lifecycles')]);
   $('catalog-cards').innerHTML=catalog.map(libraryCard).join('') || '<p class="empty-inline">还没有 Loop。可以导入别人分享的 .loop.zip，或新建自己的Loop 定义。</p>';
   if(typeof loadDraftCards==='function')await loadDraftCards();
   if(typeof loadPreparationCards==='function')await loadPreparationCards();

@@ -43,41 +43,41 @@ def validate_plans(bp):
     from loop_anything.runtime.model import check_schema
     for name, plan in plans.items():
         if not isinstance(name, str) or not name or not isinstance(plan, dict):
-            raise Invalid('Invalid plan name or template')
+            raise Invalid('Invalid plan name or template', path=[name])
         if set(plan) - {'parameters', 'steps', 'description'}:
-            raise Invalid('Plan accepts parameters, steps and description only')
+            raise Invalid('Plan accepts parameters, steps and description only', path=[name])
         check_schema(plan.get('parameters', {'type': 'object'}))
         steps = plan.get('steps')
         if not isinstance(steps, dict) or not steps:
-            raise Invalid('Plan steps must be a nonempty object: ' + name)
+            raise Invalid('Plan steps must be a nonempty object: ' + name, path=[name, 'steps'])
         for key, step in steps.items():
             if not isinstance(key, str) or not key or not isinstance(step, dict) or step.get('node') not in bp['nodes']:
-                raise Invalid('Plan step must name a declared node')
+                raise Invalid('Plan step must name a declared node', path=[name, 'steps', key, 'node'])
             if set(step) - {'node', 'inputs', 'parameters', 'after', 'each', 'implementation'}:
-                raise Invalid('Unknown batch step field: ' + key)
+                raise Invalid('Unknown batch step field: ' + key, path=[name, 'steps', key])
             if 'implementation' in step and step['implementation'] is not None and not isinstance(step['implementation'], str):
-                raise Invalid('Step implementation must be an ID or null')
+                raise Invalid('Step implementation must be an ID or null', path=[name, 'steps', key, 'implementation'])
             if bp['nodes'][step['node']].get('initialize_timeline'):
-                raise Invalid('A batch cannot recreate the initializer')
+                raise Invalid('A batch cannot recreate the initializer', path=[name, 'steps', key, 'node'])
             if not isinstance(step.get('inputs', {}), dict):
-                raise Invalid('Step inputs must be an object')
+                raise Invalid('Step inputs must be an object', path=[name, 'steps', key, 'inputs'])
             if set(step.get('inputs', {})) != set(bp['nodes'][step['node']]['inputs']):
-                raise Invalid('Step inputs must match node ports: ' + key)
+                raise Invalid('Step inputs must match node ports: ' + key, path=[name, 'steps', key, 'inputs'])
             if 'each' in step and (not isinstance(step['each'], str) or not step['each']):
-                raise Invalid('each must be a path in plan values')
+                raise Invalid('each must be a path in plan values', path=[name, 'steps', key, 'each'])
             after = step.get('after', [])
             if not isinstance(after, list) or any(x not in steps or x == key for x in after):
-                raise Invalid('Step after must name other steps in this plan')
-            for source in step.get('inputs', {}).values():
+                raise Invalid('Step after must name other steps in this plan', path=[name, 'steps', key, 'after'])
+            for port, source in step.get('inputs', {}).items():
                 if isinstance(source, dict) and 'from' in source:
                     upstream = steps.get(source['from'])
                     if not upstream or source.get('port') not in bp['nodes'][upstream['node']]['outputs']:
-                        raise Invalid('Step input references an unknown step output')
+                        raise Invalid('Step input references an unknown step output', path=[name, 'steps', key, 'inputs', port])
 
         visiting, visited = set(), set()
         def visit(key):
             if key in visiting:
-                raise Invalid('Plan contains a step dependency cycle: ' + name)
+                raise Invalid('Plan contains a step dependency cycle: ' + name, path=[name, 'steps', key])
             if key in visited:
                 return
             visiting.add(key)

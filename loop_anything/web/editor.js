@@ -116,11 +116,11 @@ function renderEditor(){
   canvas.style.height=Math.max(500,...positions.map(p=>(Number(p.y)||0)+185))+'px';
   canvas.innerHTML=Object.entries(b.nodes).map(([id,n])=>{
     const p=b.layout[id],kind=chosenImplementation(editor,id)?.kind || '未选用';
-    return `<article class="editor-node ${editSelection?.node===id?'picked':''} ${connectFrom?'connect-target':''}" data-editor-card="${esc(id)}" style="left:${p.x}px;top:${p.y}px"><div class="editor-node-head" data-drag-node="${esc(id)}" role="button" tabindex="0" aria-label="编辑节点 ${esc(n.label || id)}"><span class="node-icon">${kind==='agent'?'✧':kind==='event'?'◷':'▤'}</span>${esc(n.label || id)}</div><div class="editor-node-id">${esc(id)}</div>${authorPortButtons(id,n)}<div class="editor-node-footer"><span>${b.entry===id?'入口 · ':b.fallback_node===id?'兜底 · ':''}${esc(mapImplementationLabel(editor,id,{}))}</span><button data-connect-node="${esc(id)}" title="选择此节点后再点击目标节点">连线 ＋</button></div></article>`;
+    return `<article class="editor-node ${editSelection?.node===id?'picked':''} ${connectFrom?'connect-target':''}" data-editor-card="${esc(id)}" style="left:${p.x}px;top:${p.y}px"><div class="editor-node-head" data-drag-node="${esc(id)}" role="button" tabindex="0" aria-label="编辑节点 ${esc(n.label || id)}"><span class="node-icon">${kind==='agent'?'✧':kind==='event'?'◷':'▤'}</span>${esc(n.label || id)}</div><div class="editor-node-id">${esc(id)}</div>${lifecycleStrip(chosenImplementation(editor,id,{}))}${authorPortButtons(id,n)}<div class="editor-node-footer"><span>${b.entry===id?'入口 · ':b.fallback_node===id?'兜底 · ':''}${esc(mapImplementationLabel(editor,id,{}))}</span><button data-connect-node="${esc(id)}" title="选择此节点后再点击目标节点">连线 ＋</button></div></article>`;
   }).join('') || '<div class="canvas-empty"><div class="empty-mark">◇</div><h2>从第一个业务步骤开始</h2><p>添加节点，声明输入与输出，再将它们连接起来。</p></div>';
   requestAnimationFrame(drawEditorEdges);
   if(b.schema_version===2){
-    $('editor-edges-list').innerHTML='<h3>本轮构建模板</h3>'+Object.entries(b.plans || {}).map(([name,p])=>`<div class="edge-row"><button data-edit-edge="${esc(name)}">${esc(name)} · ${Object.keys(p.steps).length} 步</button></div>`).join('')+'<button id="editor-json">编辑构建模板、Seed 与完整 JSON</button>';
+    $('editor-edges-list').innerHTML=loopProgressHTML(editor)+'<h3>本轮构建模板</h3>'+Object.entries(b.plans || {}).map(([name,p])=>`<div class="edge-row"><button data-edit-edge="${esc(name)}">${esc(name)} · ${Object.keys(p.steps).length} 步</button></div>`).join('')+'<button id="editor-json">编辑构建模板、Seed 与完整 JSON</button>';
     $('editor-edges-list').insertAdjacentHTML('afterbegin',`<label>当前构建模板<select id="author-plan-select">${Object.keys(b.plans || {}).map(k=>`<option ${k===authorPlan?'selected':''}>${esc(k)}</option>`).join('')}</select></label><div class="row"><input id="new-plan-name" placeholder="新模板名称"><button type="button" id="new-author-plan">＋ 模板</button></div>`);
     $('editor-hint').textContent='实线是依赖，紫色虚线是后续安排；点节点修改循环、Skill 与实现。';return;
   }
@@ -128,18 +128,19 @@ function renderEditor(){
 
 function drawEditorEdges(){
   const canvas=$('editor-canvas');canvas.querySelector('svg')?.remove();
+  canvas.style.height=Math.max(500,...[...canvas.querySelectorAll('.editor-node')].map(card=>card.offsetTop+card.offsetHeight+70))+'px';
   const ns='http://www.w3.org/2000/svg',svg=document.createElementNS(ns,'svg');svg.classList.add('editor-edges');
   svg.setAttribute('width',canvas.style.width);svg.setAttribute('height',canvas.style.height);
-  svg.innerHTML='<defs><marker id="studio-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7" fill="#849bcc"/></marker><marker id="studio-plan-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7" fill="#9564cf"/></marker></defs>';
-  for(const e of [...loop_definitionEdges(editor.loop_definition),...loopRelationships(editor.loop_definition).filter(e=>e.kind==='planning')]){
+  svg.innerHTML='<defs><marker id="studio-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7" fill="#849bcc"/></marker><marker id="studio-plan-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7" fill="#9564cf"/></marker><marker id="studio-recovery-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7" fill="#bd705f"/></marker></defs>';
+  for(const e of [...loop_definitionEdges(editor.loop_definition),...loopRelationships(editor.loop_definition).filter(e=>e.kind!=='dependency')]){
     const a=editor.loop_definition.layout[e.from],b=editor.loop_definition.layout[e.to];if(!a||!b)continue;
     const out=canvas.querySelector(`[data-port-node="${CSS.escape(e.from)}"][data-output-port="${CSS.escape(e.output||'')}"]`),input=canvas.querySelector(`[data-port-node="${CSS.escape(e.to)}"][data-input-port="${CSS.escape(e.input||'')}"]`);
     const box=canvas.getBoundingClientRect(),ob=out?.getBoundingClientRect(),ib=input?.getBoundingClientRect();
     const sx=ob?ob.right-box.left:a.x+200,sy=ob?ob.top+ob.height/2-box.top:a.y+65,tx=ib?ib.left-box.left:b.x,ty=ib?ib.top+ib.height/2-box.top:b.y+65;
     const bend=Math.max(65,Math.abs(tx-sx)/2);
-    const d=e.kind==='planning'?loopEdgePath(e,a,b).d:e.from===e.to?`M ${sx} ${sy} C ${sx+90} ${sy-130}, ${a.x-90} ${sy-130}, ${tx} ${ty}`:`M ${sx} ${sy} C ${sx+bend} ${sy}, ${tx-bend} ${ty}, ${tx} ${ty}`;
-    const line=document.createElementNS(ns,'path');line.setAttribute('d',d);line.setAttribute('class','edge'+(e.kind==='planning'?' planning':'')+(e.id&&editSelection?.edge===e.id?' edge-picked':''));line.setAttribute('marker-end',e.kind==='planning'?'url(#studio-plan-arrow)':'url(#studio-arrow)');svg.appendChild(line);
-    const hit=document.createElementNS(ns,'path');hit.setAttribute('d',d);hit.setAttribute('class','edge-hit');if(e.kind==='planning')hit.dataset.editPlanning=e.from;else hit.dataset.editEdge=e.id;svg.appendChild(hit);
+    const d=e.kind==='recovery'?loopEdgePath(e,{...a,height:canvas.querySelector(`[data-editor-card="${CSS.escape(e.from)}"]`).offsetHeight},{...b,height:canvas.querySelector(`[data-editor-card="${CSS.escape(e.to)}"]`).offsetHeight}).d:e.kind==='planning'?loopEdgePath(e,a,b).d:e.from===e.to?`M ${sx} ${sy} C ${sx+90} ${sy-130}, ${a.x-90} ${sy-130}, ${tx} ${ty}`:`M ${sx} ${sy} C ${sx+bend} ${sy}, ${tx-bend} ${ty}, ${tx} ${ty}`;
+    const line=document.createElementNS(ns,'path');line.setAttribute('d',d);line.setAttribute('class','edge'+(e.kind==='planning'?' planning':e.kind==='recovery'?' recovery':'')+(e.id&&editSelection?.edge===e.id?' edge-picked':''));line.setAttribute('marker-end',e.kind==='recovery'?'url(#studio-recovery-arrow)':e.kind==='planning'?'url(#studio-plan-arrow)':'url(#studio-arrow)');svg.appendChild(line);
+    const hit=document.createElementNS(ns,'path');hit.setAttribute('d',d);hit.setAttribute('class','edge-hit');if(e.kind==='recovery'){const title=document.createElementNS(ns,'title');title.textContent='异常仍未解决时进入已配置兜底';line.appendChild(title);continue;}if(e.kind==='planning')hit.dataset.editPlanning=e.from;else hit.dataset.editEdge=e.id;svg.appendChild(hit);
   }
   canvas.prepend(svg);
 }
@@ -208,7 +209,7 @@ document.addEventListener('click',event=>safely(async()=>{
 }));
 editorPage.addEventListener('submit',e=>{e.preventDefault();safely(async()=>{await saveEditor();renderEditor();});});
 editorPage.addEventListener('input',()=>{if(editor)dirty();});
-editorPage.addEventListener('change',e=>{if(e.target.id==='bp-defaults')safely(async()=>{collectMeta();renderGuideAuthor();});if(editor)dirty();});
+editorPage.addEventListener('change',e=>{if(e.target.id==='bp-defaults')safely(async()=>{collectMeta();renderGuideAuthor();});if(e.target.id==='bp-fallback')safely(async()=>{collectAll();renderEditor();renderProperties();});if(editor)dirty();});
 editorPage.addEventListener('pointerdown',e=>{
   const head=e.target.closest('[data-drag-node]');if(!head || e.button!==0)return;
   const id=head.dataset.dragNode;

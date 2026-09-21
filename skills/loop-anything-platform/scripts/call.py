@@ -73,7 +73,7 @@ def main():
             output.write(base64.b64decode(result.pop('base64')))
         result['file'] = str(Path(args.output).resolve())
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    raise SystemExit(0 if result.get('ok', args.tool == 'list') else 2)
+    raise SystemExit(0 if result.get('ok', args.tool == 'list') and result.get('accepted', True) else 2)
 
 
 if __name__ == '__main__':

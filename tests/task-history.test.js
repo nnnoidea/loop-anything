@@ -12,3 +12,11 @@ test('history uses real start order, groups explicit rounds and follows actual r
   assert.deepEqual(history.groups(rows).map(g=>g.round),['第1轮','第2轮',null]);
   assert.equal(JSON.stringify(run),before);
 });
+
+test('runtime relationships follow recorded creation and fallback evidence, not inferred failure edges',()=>{
+ const run={tasks:{a:{id:'a',spec:{outputs:{}},origin:{},status:'fault'},b:{id:'b',spec:{outputs:{}},origin:{agent:'ea'},status:'planned'},f:{id:'f',spec:{outputs:{}},origin:{fallback:true,issues:[{task_id:'a'},{task_id:'a'},{task_id:'missing'}]},status:'ready'},other:{id:'other',spec:{outputs:{}},origin:{},status:'fault'}},executions:[{id:'ea',task_id:'a'}]};
+ const items=Object.values(run.tasks).map(tasks=>({tasks,dependencies:[]}));
+ const before=JSON.stringify(run),links=history.links(run,items);
+ assert.deepEqual(links,[{from:'a',to:'b',kind:'planning'},{from:'a',to:'f',kind:'recovery'}]);
+ assert.equal(JSON.stringify(run),before);
+});
