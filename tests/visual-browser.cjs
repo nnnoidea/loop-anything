@@ -46,6 +46,18 @@ engine.close();print(json.dumps(runs))`;
    // Add a whole batch through the same visible form and allow Engine to execute it.
    await page.locator('#add-run-batch').click();await page.locator('#batch-values input[type="number"]').fill('4');await page.locator('#batch-round').fill('第二组');await apply();await waitRun(id,r=>Object.values(r.tasks).filter(t=>t.status==='completed').length===3);
   }
+  // Updating the graph layout must preserve the selected node's detail layer.
+  await page.locator('.graph-panel > summary').click();
+  await page.locator('#graph [data-map-node="review"]').click();
+  await page.locator('#graph [data-map-details="review"] [data-node-view="relations"]').click();
+  await page.setViewportSize({width:1480,height:1000});
+  await page.waitForTimeout(150);
+  assert.equal(await page.locator('#graph [data-map-details="review"] [data-node-panel="relations"]').isVisible(),true,'Graph refresh lost the chosen detail layer');
+  await page.setViewportSize({width:1560,height:1000});
+  await page.locator('#graph [data-map-node="initial"]').click();
+  assert.equal(await page.locator('#graph [data-map-details="initial"] [data-node-panel="execution"]').isVisible(),true);
+  await page.goto(base+'/#run/'+ids[0]);await page.waitForFunction(id=>document.getElementById('run-id').textContent.includes(id),ids[0]);
+  assert.equal(await page.locator('#graph [data-map-details]:not([hidden])').count(),0,'A different Run inherited the prior graph selection');
   const order=await page.evaluate(()=>{
     const form=document.createElement('div');form.innerHTML=sourceField('values',{records:['b','a']},{type:'array'},[{id:'a'},{id:'b'}]);document.body.append(form);
     const original=readSources(form).values.records;

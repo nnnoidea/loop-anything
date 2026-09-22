@@ -52,6 +52,16 @@ print(json.dumps(keys))`;
     await page.locator('#loop-detail').waitFor({state:'visible'});
     assert((await page.locator('#loop-detail').innerText()).includes('<script>不可执行的作者说明</script>'));
     assert.equal(await page.locator('#loop-detail script').count(),0);
+    const relation=page.locator('#loop-detail .map-edge').first();
+    await relation.focus();await page.keyboard.press('Enter');
+    assert.equal(await page.locator('#loop-detail .selected-relation').count(),1);
+    await page.locator('#loop-detail [data-map-node="initialize"]').click();
+    const chosen=page.locator('#loop-detail [data-map-details="initialize"] [data-candidate="primary"]');
+    const pairs=await chosen.locator('[data-lifecycle-to]').evaluateAll(rows=>rows.map(el=>[el.closest('[data-lifecycle-from]').dataset.lifecycleFrom,el.dataset.lifecycleTo]));
+    assert.deepEqual(pairs,[['executing','executing'],['executing','completed'],['executing','fault']]);
+    assert.equal(await page.locator('#loop-detail .map-node .lifecycle-diagram').count(),0);
+    await page.locator('#loop-detail [data-map-details="initialize"] [data-map-close]').click();
+
     const downloadEvent=page.waitForEvent('download');await page.locator('#download-loop-package').click();
     const download=await downloadEvent;assert(download.suggestedFilename().endsWith('.loop.zip'));
     const chunks=[];for await(const chunk of await download.createReadStream())chunks.push(chunk);
@@ -310,6 +320,7 @@ assert [n for n in z.namelist() if n.endswith('/SKILL.md')]==['platform/loop-any
 
     await page.locator('#launch-fallback').selectOption('');
     assert.equal(await page.locator('#preparation-flow .map-edge.recovery').count(),0);
+    await page.locator('#preparation-flow .loop-progress > summary').click();
     assert((await page.locator('#preparation-flow .loop-progress').innerText()).includes('未启用自动兜底'));
     await page.locator('#preparation-flow [data-map-node="fallback"]').click();
     await page.locator('#preparation-flow [data-map-details="fallback"] [data-candidate="chosen"] [data-map-choice]').click();

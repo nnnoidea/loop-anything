@@ -8,16 +8,24 @@
 
 先与作者明确任务、每步输入输出、哪些工作由脚本或 Agent 完成。不要替作者增加未要求的业务步骤。
 
+按两层构建：先用 put_node 明确职责和端口，用 put_step/connect_steps 表达任务间关系，再用 set_implementation 选择实现及其执行生命周期。可先保留缺少实现的草稿。
+
+- **任务关系与推进**：输入引用和 after 表达依赖，plan_nodes 声明可安排的后续工作。无依赖的支线可在权限与并发条件满足时并行；上游提交结果后，已有下游任务重新检查就绪条件。连线不自动创建任务，下一轮由 Agent 或脚本明确安排。
+- **执行生命周期**：绑定在候选实现的 lifecycle 上，描述一次执行如何响应 report_task 的事件。同步脚本与异步提交/监控可以是同一节点的不同实现；先读取工具填入的可见初始模板，有特殊业务阶段或恢复要求时再编辑。
+
+两层共用真实定义：不另写一份任务间转移表。retry 是原 Task 的下一次执行；再次安排业务工作创建新 Task。网页总览查看关系，选中节点展开候选的执行生命周期；运行中按 Task 选择具体执行记录。
+
+
 - **开始或复用**：`list_loops` 找现有资产；`read_loop` 读它的实际定义。`create_loop` 建立草稿与通用入口；`copy_loop` 从已安装版本复制为草稿；普通修改传 new_version:true，保留 Loop ID 并自动选择后续版本，原有 Run 不变；只有用户要另建一个 Loop 时才使用普通复制。
 - **业务说明**：`set_loop` 写入作者提供的 `handbook`、用途说明、初始输入默认值或明确的运行限额。平台 Skill 不维护这些业务内容。
 - **节点**：`put_node` 写一个节点的职责、端口和可选作者 Skill。用 `skills: [{"name":"方法名","content":"作者提供的业务方法"}]` 直接绑定到该节点；Agent 读取节点任务时会获得这些内容。端口列表使用 `name` 加 `type`，嵌套契约使用 `schema`；工具生成输出记录类型。节点机械完成约束统一用 assertions 表达，例如 eq 比较字段值；不从约束自动填业务结果。入口端口变更会同步其初始位置。
+- **可复用批次**：`put_step` 将节点加入一个命名模板。可用 implementation 指定模板选用的候选 ID，通常留给 Run 或任务选择。用 `plan_parameters` 声明运行时参数；`each` 指向参数里的列表。`connect_steps` 把上游 output 连到下游 input，`collect:true` 表示收集全部展开结果。
+- **初始或复用输入**：在 `put_step.inputs` 中使用 `{"record":"initial.result"}` 等明确来源。入口的真实输出位置由 `read_loop` 返回，不猜名字。普通参数值用 `literal`；运行时替换值可以写 `{"literal":{"$":"values.参数名"}}`。列表元素对应 `item`。
 - **候选实现**：`set_implementation` 提供 node_id、implementation_id 和 agent、command、external、event 或 approval 配置。同一节点可多次添加不同 ID；default:true 选为 Loop 默认，default:false 取消该候选的默认地位，省略则不改默认。已存在的候选可只传 ID 与 default 调整默认。填写实际命令参数列表。外部任务还需 observe；删除指定候选时用 unbind:true，不能伪装成模拟实现。`put_asset` 把作者编写的脚本/文档附进包。
 - **可选兜底**：与用户明确是否需要 Agent 兜底。需要时用 `put_node` 添加一个非入口节点，`inputs: []`，编写处理未覆盖状态的职责并绑定作者 Skill；通过 `set_implementation` 提供 Agent 候选，再用 `set_loop` 的 `fallback_node` 指定节点 ID。不需要时传空字符串关闭。兜底通过 Run 工具读取问题，使用同一套节点提交；不要自动挑其他节点的 Agent。
 - **通知实现**：用 set_implementation，node_id="$notifications"、kind="command"，绑定用户提供的发送命令。平台调用并记录送达状态。用户聊天目的地通过启动 Run 时的 notification_command 设置，见 run.md，不写死在共享 Loop 中。
 - **结束条件**：作者说明完成目的与判定依据，运行时 Agent 把机械规则或终止信号写入 Timeline；不要给节点添加 terminal 标记。
 - **Agent 命令**：用 `set_implementation` 设置 kind="agent" 和用户提供的 command，例如 `["codex", "exec", "-"]`；cwd/timeout 按实际需要明确设置；Agent 留空 timeout 时不限时，脚本命令默认 60 秒。平台向标准输入传入任务 prompt，原样执行命令；模型、工具和权限沿用用户配置。无需专用启动器或工具注册。
-- **可复用批次**：`put_step` 将节点加入一个命名模板。可用 implementation 指定模板选用的候选 ID，通常留给 Run 或任务选择。用 `plan_parameters` 声明运行时参数；`each` 指向参数里的列表。`connect_steps` 把上游 output 连到下游 input，`collect:true` 表示收集全部展开结果。
-- **初始或复用输入**：在 `put_step.inputs` 中使用 `{"record":"initial.result"}` 等明确来源。入口的真实输出位置由 `read_loop` 返回，不猜名字。普通参数值用 `literal`；运行时替换值可以写 `{"literal":{"$":"values.参数名"}}`。列表元素对应 `item`。
 - **检查与交付**：`validate_loop` 检查结构并单列缺失实现。修正错误后 `publish_loop` 安装为一个版本，不启动；日常迭代可传 auto_version:true，在版本已存在时自动选用新版本，返回最新 draft_id/revision 和实际 version，原版本不被覆盖；`export_loop` 导出包含附件的包，客户端 `--output 文件.loop.zip` 保存它。
 
 新建 Loop 默认提供无输入、无强制输出的 Agent 入口。用户与 Agent 讨论后，Agent 通过 start_run 接管入口，将目标、要求和约束写入完成报告的 settings，再按需安排任务并 finish。无需把对话复制到 request 表单，也不需要人为生成一条初始化结果；业务确需输入或共享初始结果时，用 put_node 明确添加端口。没有 command 的 Agent 候选由当前用户 Agent 操作；网页若需自动唤醒，仍需配置用户选择的 Agent 命令。
@@ -110,7 +118,7 @@ Agent 候选支持 `prompt` 字符串，与 command 一起保存、分享；已�
 需要某个正常决策节点处理整个 Run 时，通过 set_loop 的 global_agent_node 指定该节点，并提供 Agent 候选实现；初始化与兜底任务也具有全局范围。不要让普通节点靠改写同一全局记录协同，应输出各自结果再明确汇总。
 
 
-## 生命周期与附属监控
+## 执行生命周期与附属监控
 
 同步/异步由候选实现决定，同一节点可切换实现。`set_implementation` 保存候选时会填入明确的 `lifecycle: {initial, transitions}` 初始模板；`read_loop` 可查看，网页候选中可查看图示、编辑转移矩阵。模板不是业务决策。没有 lifecycle 的旧包保留原文；查看时展示对应初始模板，派发时将实际规则保存到执行快照。
 
