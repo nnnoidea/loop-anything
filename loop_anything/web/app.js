@@ -136,8 +136,11 @@ function renderRun() {
 function renderGraph() {
   const signature = pretty([run.id,filterNode,run.settings.bindings,run.executions,Object.values(run.tasks || {}).map(w=>[w.id,w.status]),[],$('graph').clientWidth]);
   if(graphSignature===signature)return;graphSignature=signature;
-  $('graph').innerHTML=loopGraphHTML(run,{bindings:run.settings.bindings || {},focus:filterNode || '',action:'run'});
-  if(filterNode)focusLoopMap($('graph').querySelector('.loop-map'),filterNode);
+  const old=$('graph').querySelector('.loop-map'),keep=old?.dataset.runId===run.id&&old.dataset.filterNode===(filterNode||'');
+  const focus=keep?old.dataset.mapFocus:filterNode,view=keep?old.dataset.mapView:'execution';
+  $('graph').innerHTML=loopGraphHTML(run,{bindings:run.settings.bindings || {},focus:focus || '',action:'run'});
+  const root=$('graph').querySelector('.loop-map');
+  if(root){root.dataset.runId=run.id;root.dataset.filterNode=filterNode||'';if(focus&&Object.hasOwn(run.loop_definition.nodes,focus))focusLoopMap(root,focus,view);}
   $('graph-caption').textContent='循环关系来自 Loop 定义；上方运行过程保留每一项实际任务、结果与历次执行。';
 }
 function loadSettings() {
