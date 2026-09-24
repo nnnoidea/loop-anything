@@ -53,6 +53,20 @@ class Store:
             row = db.execute("SELECT value FROM platform_settings WHERE key='keep_awake'").fetchone()
             return json.loads(row[0]) if row else default
 
+    def notification_channels(self, channels=None, revision=None):
+        from loop_anything.runtime.notifications import validate_channels
+        if channels is not None:validate_channels(channels)
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE' if channels is not None else 'BEGIN')
+            row = db.execute("SELECT value FROM platform_settings WHERE key='notification_channels'").fetchone()
+            value = json.loads(row[0]) if row else {'revision':0,'channels':{}}
+            if channels is not None:
+                if type(revision) is not int or revision != value['revision']:raise Conflict('Notification outlets changed; reload before saving')
+                value = {'revision':revision+1,'channels':copy.deepcopy(channels)}
+                db.execute("INSERT INTO platform_settings VALUES ('notification_channels', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(value),))
+                db.commit()
+            return value
+
     def publish(self, loop_definition, implementations):
         from loop_anything.packaging.packages import make_archive, install
         return install(self, make_archive({'loop_definition': loop_definition, 'implementations': implementations}))
@@ -103,7 +117,7 @@ class Store:
             db.commit()
         return {'id': draft_id, 'revision': revision, 'updated_at': now, 'loop_definition': loop_definition, 'implementations': implementations, **extra}
 
-    def create(self, key, title, inputs=None, settings=None, authorization='', acquire=False, bindings=None, fallback_node=None, global_agent_node=None, notification_command=None, _db=None):
+    def create(self, key, title, inputs=None, settings=None, authorization='', acquire=False, bindings=None, fallback_node=None, global_agent_node=None, notification_command=None, notification_route=None, _db=None):
         if type(acquire) is not bool:
             raise Invalid('acquire must be boolean')
         item = next((c for c in self.catalog() if c['key'] == key), None)
@@ -136,6 +150,9 @@ class Store:
             if not isinstance(authorization, str):
                 raise Invalid('User authorization must be text')
             run['settings']['authorization'] = authorization
+            if notification_route is not None:
+                if not isinstance(notification_route,str) or not notification_route:raise Invalid('notification_route must be nonempty')
+                run['settings']['notification_route']=notification_route
             if notification_command is not None:
                 from loop_anything.runtime.timeline_model import validate_settings
                 run['settings']['notification_command'] = copy.deepcopy(notification_command)

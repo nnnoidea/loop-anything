@@ -85,6 +85,7 @@ class WebAgent:
                    'launch': {'key': key, 'title': run['title'] if run else bp.get('name', bp['id']),
                               'inputs': run['inputs'] if run else bp.get('defaults', {}), 'bindings': bindings,
                               'authorization': run['settings'].get('authorization', '') if run else '',
+                              'notification_route': run['settings'].get('notification_route', 'user' if run['settings'].get('notification_command') else 'workspace') if run else 'workspace',
                               'fallback_node': (run['settings'] if run else bp).get('fallback_node'),
                               'global_agent_node': (run['settings'] if run else bp).get('global_agent_node')}}
             self._save(db, doc)
@@ -103,7 +104,7 @@ class WebAgent:
                 if doc.get('run_id'):
                     raise Conflict('Run 已启动；请使用 Timeline 工具修改运行。')
                 contract(launch, object_schema({'title': {'type': 'string'}, 'inputs': {'type': 'object'},
-                    'authorization': {'type': 'string'}, 'bindings': {'type': 'object'},
+                    'notification_route': {'type':'string'}, 'authorization': {'type': 'string'}, 'bindings': {'type': 'object'},
                     'fallback_node': {'type': 'string'}, 'global_agent_node': {'type': 'string'}}, []), 'launch')
                 bp = PlatformTools(self.store)._installed(doc['launch']['key'])
                 candidate = dict(doc['launch'], **launch)

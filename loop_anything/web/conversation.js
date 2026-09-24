@@ -23,7 +23,7 @@ function agentConfig(){
   const command=$('web-agent-command').value.split('\n').filter(x=>x.length),cwd=$('web-agent-cwd').value.trim(),timeout=$('web-agent-timeout').value;
   return {...readPrompt($('web-agent-prompt'),'web'),...(command.length?{command}:{}),...(cwd?{cwd}:{}),...(timeout?{timeout:Number(timeout)}:{})};
 }
-function launchValues(){return {title:$('create-title').value,inputs:collectLaunchInputs(false),authorization:$('create-authorization').value,bindings:structuredClone(launchBindings),fallback_node:$('launch-fallback').value,global_agent_node:$('launch-global-agent').value};}
+function launchValues(){return {notification_route:$('launch-notification-route').value,title:$('create-title').value,inputs:collectLaunchInputs(false),authorization:$('create-authorization').value,bindings:structuredClone(launchBindings),fallback_node:$('launch-fallback').value,global_agent_node:$('launch-global-agent').value};}
 async function ensureRunConversation(){
   if(!conversation?.id){conversation=await api('conversations',{run_id:run.id});}
 }
@@ -60,6 +60,7 @@ function populatePreparation(){
   const item=launchItem();if(!item)throw new Error('找不到所选 Loop 版本');
   $('create-loop_definition').innerHTML=`<option value="${esc(item.key)}">${esc(item.loop_definition.name)}</option>`;
   createChanged();const l=conversation.launch;
+  renderOutletSelect('launch-notification-route',l.notification_route||'workspace');
   $('create-title').value=l.title;$('create-inputs').value=pretty(l.inputs);renderLaunchFields(item);
   $('create-authorization').value=l.authorization;launchBindings=structuredClone(l.bindings);
   $('launch-fallback').value=l.fallback_node || '';$('launch-global-agent').value=l.global_agent_node || '';
@@ -68,9 +69,9 @@ function populatePreparation(){
   $('preparation-saved').textContent='已保存到本机';
 }
 function renderPreparationGraph(){
-  const item=launchItem(),old=$('preparation-flow').querySelector('.loop-map'),focus=old?.dataset.mapFocus || '',view=old?.dataset.mapView || 'execution',scroll=old?.querySelector('.loop-map-scroll'),position=scroll?{left:scroll.scrollLeft,top:scroll.scrollTop}:null;
-  $('preparation-flow').innerHTML=`<div class="preparation-heading"><div><h2>${esc(item.loop_definition.name || item.key)}</h2><p class="small muted">v${esc(item.loop_definition.version)} · 点击节点查看和选择本次实现</p></div><button id="edit-prepared-loop" type="button">编辑 Loop 定义</button></div>${loopGraphHTML(item,{bindings:launchBindings,action:'prepare',fallbackNode:$('launch-fallback').value||null})}<details><summary>查看步骤关系与作者说明</summary>${flowHTML(item,false)}</details>`;
-  const root=$('preparation-flow').querySelector('.loop-map');if(item.loop_definition.nodes[focus])focusLoopMap(root,focus,view);
+  const item=launchItem();syncFallbackControl('launch-fallback',item,launchBindings);const old=$('preparation-flow').querySelector('.loop-map'),focus=old?.dataset.mapFocus || '',view=old?.dataset.mapView || 'execution',scroll=old?.querySelector('.loop-map-scroll'),position=scroll?{left:scroll.scrollLeft,top:scroll.scrollTop}:null;
+  $('preparation-flow').innerHTML=`<div class="preparation-heading"><div><h2>${esc(item.loop_definition.name || item.key)}</h2><p class="small muted">v${esc(item.loop_definition.version)} · 点击节点查看和选择本次实现</p><p class="preparation-outlet">通知出口：<strong>${esc(outletLabel($('launch-notification-route').value))}</strong> <button type="button" data-focus-outlet="launch">选择出口</button></p></div><button id="edit-prepared-loop" type="button">编辑 Loop 定义</button></div>${loopGraphHTML(item,{bindings:launchBindings,action:'prepare',fallbackNode:$('launch-fallback').value||null})}<details><summary>查看步骤关系与作者说明</summary>${flowHTML(item,false)}</details>`;
+  const root=$('preparation-flow').querySelector('.loop-map');setGraphLayer(root,old?.dataset.graphLayer||'relations');if(item.loop_definition.nodes[focus])focusLoopMap(root,focus,view);
   if(old?.classList.contains('expanded')){root.classList.add('expanded');root.querySelector('[data-map-expand]').checked=true;}
   if(position)root.querySelector('.loop-map-scroll').scrollTo(position);
   root.querySelectorAll('[data-map-choice]').forEach(b=>b.disabled=!!conversation.busy||launchBusy);
@@ -110,7 +111,7 @@ function renderConversation(){
     const options='<option value="">整个 Run</option>'+Object.values(run.tasks || {}).map(t=>`<option value="${esc(t.id)}">${esc(taskLabel(t))} · ${esc(t.id)}</option>`).join('');
     if($('web-chat-scope').innerHTML!==options){$('web-chat-scope').innerHTML=options;$('web-chat-scope').value=old;}
     const notices=(run.notifications || []).slice(-5).reverse();
-    $('web-chat-notices').innerHTML=(run.status==='completed'?`<div class="chat-notice"><strong>运行已完成</strong><p>${esc(run.completion?.reason || '')}</p></div>`:run.status==='paused'?'<div class="chat-notice">运行已暂停，可查看原因后继续讨论。</div>':'')+notices.map(n=>`<div class="chat-notice"><strong>${esc(n.message)}</strong><small>${n.route==='workspace'?'已记录到工作台':esc(labels[n.status] || n.status)}</small>${n.error?`<p class="chat-error">${esc(n.error)}</p>`:''}</div>`).join('');
+    $('web-chat-notices').innerHTML=(run.status==='completed'?`<div class="chat-notice"><strong>运行已完成</strong><p>${esc(run.completion?.reason || '')}</p></div>`:run.status==='paused'?'<div class="chat-notice">运行已暂停，可查看原因后继续讨论。</div>':'')+notices.map(n=>`<div class="chat-notice"><strong>${esc(n.message)}</strong><small>${n.route==='workspace'?'已记录到工作台':esc(labels[n.status] || n.status)}</small>${n.reply?`<button data-answer-notification="${esc(n.id)}">回复此询问</button>`:''}${n.error?`<p class="chat-error">${esc(n.error)}</p>`:''}</div>`).join('');
   }else $('web-chat-notices').innerHTML='';
 }
 async function sendWebMessage(message,start=false){
@@ -167,4 +168,4 @@ document.addEventListener('click',e=>safely(async()=>{
 window.addEventListener('beforeunload',e=>{if(preparationDirty){e.preventDefault();e.returnValue='';}});
 setInterval(pollConversation,1000);
 
-document.addEventListener('change',event=>{if(event.target.id==='launch-fallback'&&page==='launch')renderPreparationGraph();});
+document.addEventListener('change',event=>{if(['launch-fallback','launch-notification-route'].includes(event.target.id)&&page==='launch')renderPreparationGraph();});

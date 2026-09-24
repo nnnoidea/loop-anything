@@ -127,6 +127,8 @@ class SelectionTests(unittest.TestCase):
             with self.assertRaises(Invalid):self.tools.call('change_task',{'task_id':task['id'],'operation':'update','reason':'Choose remote','parameters':params})
         self.tools.call('change_task',{'task_id':task['id'],'operation':'update','reason':'Choose remote','parameters':{'count':1,'queue':'gpu','fail':True}})
         run=self.until(lambda r:r['tasks'][task['id']]['status']=='fault')
+        for future in list(self.engine.futures):future.result(timeout=5)
+        run=self.store.get(self.id)
         attempt=copy.deepcopy(next(e for e in run['executions'] if e['task_id']==task['id']))
         with self.assertRaises(Invalid):self.tools.call('change_task',{'task_id':task['id'],'operation':'retry','reason':'Use local','implementation':'local','parameters':{'count':1}})
         self.assertEqual(run,self.store.get(self.id))

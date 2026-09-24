@@ -5,10 +5,11 @@ const v2Fields=document.createElement('div');v2Fields.id='v2-fields';v2Fields.hi
 v2Fields.innerHTML='<label>用户授权<textarea id="authorization" rows="3" placeholder="允许 Agent 自行处理什么，哪些操作需要确认"></textarea></label><label>Objective<textarea id="objective" rows="2"></textarea></label><details><summary>Requirements · JSON</summary><textarea id="requirements" class="code" rows="3"></textarea></details>';
 v2Fields.insertAdjacentHTML('beforeend','<details><summary>终态规则与信号</summary><p class="small muted">Engine 按规则或信号进入终态；空任务列表不表示完成。</p><label>机械终态规则 · JSON<textarea id="completion-rule" class="code" rows="4"></textarea></label><label>终止信号 · 原因<textarea id="termination-signal" rows="2"></textarea></label></details>');
 v2Fields.insertAdjacentHTML('beforeend','<details><summary>Run 默认实现 · Binding</summary><p class="small muted">改选只影响后续尚未派发且未单独指定实现的任务。</p><div id="run-bindings"></div></details>');
-v2Fields.insertAdjacentHTML('beforeend','<label>Agent 兜底节点<select id="run-fallback"></select></label><p class="small muted">留空关闭自动兜底。已启动的 Agent 按原操作权结束。</p>');
+v2Fields.insertAdjacentHTML('beforeend',fallbackControl('run-fallback'));
 v2Fields.insertAdjacentHTML('beforeend','<label>全局 Agent 节点（留空默认兜底）<select id="run-global-agent"></select></label>');
+v2Fields.insertAdjacentHTML('beforeend','<label>本次通知出口<select id="run-notification-route" data-outlet-select="run"></select></label>');
 $('settings-form').prepend(v2Fields);
-for(const [id,label] of [['records','结果记录'],['task-history','运行过程'],['hooks','Hooks'],['tasks','任务与问题']]){
+for(const [id,label] of [['records','结果记录'],['task-history','运行过程'],['hooks','通知与控制'],['tasks','任务与问题']]){
   const button=document.createElement('button');button.dataset.tab=id;button.textContent=label;button.className='v2-tab';button.hidden=true;
   document.querySelector('.tabs').append(button);
 }
@@ -26,15 +27,15 @@ function renderV2Inspect(tab){
     `<details class="task-card"><summary>${esc(id)} · ${esc(versions.at(-1).type)} · v${versions.length}</summary>${versions.slice().reverse().map(r=>`<p>v${r.revision} · <button data-exec="${esc(r.producer)}">查看生产执行</button></p><pre>${esc(pretty(r))}</pre>`).join('')}</details>`).join('');
   if(tab==='task-history')return renderTaskHistory();
   const ended=!run.operator_protocol || ['completed','terminated'].includes(run.status);
-  return `<div class="task-card"><h2>Hooks</h2><p>不修改Loop 定义。暂停在派发前拦截，通知独立送达；已派发的执行不会被追溯暂停。</p>
+  return noticeScheduleHTML(run,run.settings.bindings||{})+`<div class="task-card"><h2>自动通知与暂停</h2><p>不修改Loop 定义。暂停在派发前拦截，通知独立送达；已派发的执行不会被追溯暂停。</p>
     <form id="hook-form"><label>目标节点<select id="hook-node">${Object.entries(run.loop_definition.nodes).map(([id,n])=>`<option value="${esc(id)}">${esc(n.label || id)}</option>`).join('')}</select></label>
-    <label>动作<select id="hook-action"><option value="pause">执行前暂停</option><option value="notify-before">执行前通知</option><option value="notify-after">完成后通知</option></select></label>
-    <label>频率<select id="hook-frequency"><option value="once">仅下一次</option><option value="always">后续每次</option></select></label>
-    <label>显示或发送<select id="hook-route"><option value="workspace">仅在网页显示</option><option value="user">通过已配置出口发送</option></select></label><label>通知内容<input id="hook-message" placeholder="通过用户配置的通知命令发送"></label><button class="primary" ${ended?'disabled':''}>添加 Hook</button></form></div>`+
+    <label>动作<select id="hook-action"><option value="pause">执行前暂停</option><option value="notify-before">执行前通知</option><option value="notify-after">完成后通知</option><option value="notify-transition">状态转移时通知</option></select></label>
+    <div id="hook-transition-fields" hidden><label>转移事件（可留空）<input id="hook-event" placeholder="例如 completed、failed、timeout"></label><label>转移后的状态（可留空）<input id="hook-state" placeholder="例如 agent、retry"></label></div><label>频率<select id="hook-frequency"><option value="once">仅下一次</option><option value="always">后续每次</option></select></label>
+    <label>显示或发送<select id="hook-route">${outletOptions('default')}</select></label><label>通知内容<input id="hook-message" placeholder="留空使用任务通知；默认发到本次出口"></label><button class="primary" ${ended?'disabled':''}>添加 Hook</button></form></div>`+
     run.settings.hooks.map(h=>`<div class="task-card"><strong>${esc(h.id)}</strong> · ${esc(h.action)} / ${esc(h.phase)} / ${esc(h.frequency)}<p>${esc(pretty(h.target))}</p><button data-toggle-hook="${esc(h.id)}" ${ended?'disabled':''}>${h.enabled===false?'启用':'停用'}</button></div>`).join('')+
     run.hook_firings.filter(f=>f.status==='held').map(f=>`<div class="task-card">${esc(f.tasks)} · 暂停中 <button class="primary" data-release-gate="${esc(f.id)}" ${ended?'disabled':''}>放行本次工作</button></div>`).join('')+
-    '<div class="task-card"><h2>通知收件箱 / 送达回执</h2><p>这里保留通知状态与回执；实际发送使用用户配置的命令，未配置或发送失败会明确显示。</p></div>'+
-    run.notifications.map(n=>`<details class="task-card"><summary>${esc(n.message)} ${badge(n.status)}</summary><pre>${esc(pretty(n))}</pre>${n.status==='fault'?`<button data-retry-notification="${esc(n.id)}">重试通知</button>`:''}</details>`).join('');
+    '<div class="task-card"><h2>通知与询问</h2><button id="send-run-notice" '+(ended?'disabled':'')+'>发送通知 / 询问</button></div>'+notificationCards();
+
 }
 function sampleSchema(schema){
   if(schema.enum)return schema.enum[0];
@@ -54,7 +55,8 @@ document.addEventListener('submit',event=>{
   if(event.target.id!=='hook-form')return;event.preventDefault();
   safely(async()=>{
     const action=$('hook-action').value;
-    const hook={id:randomKey(),action:action==='pause'?'pause':'notify',phase:action==='notify-after'?'after':'before',frequency:$('hook-frequency').value,target:{node:$('hook-node').value},message:$('hook-message').value,route:$('hook-route').value};
+    const hook={id:randomKey(),action:action==='pause'?'pause':'notify',phase:action==='notify-transition'?'transition':action==='notify-after'?'after':'before',frequency:$('hook-frequency').value,target:{node:$('hook-node').value},message:$('hook-message').value,route:$('hook-route').value};
+    if(action==='notify-transition'){if($('hook-event').value)hook.event=$('hook-event').value;if($('hook-state').value)hook.to=$('hook-state').value;}
     await api(`runs/${run.id}/settings`,{revision:run.settings.revision,change:{hooks:[...run.settings.hooks,hook]}});settingsBase=null;await refresh();toast('Hook 已添加');
   });
 });
@@ -97,3 +99,5 @@ document.addEventListener('click',event=>safely(async()=>{
   else if(d.completeAgentTask){const key=id+':'+d.completeAgentTask,info=manualAgentReads.get(key);await call('complete_task',{task_id:d.completeAgentTask,task_version:info.task_version,envelope:JSON.parse($('manual-'+d.completeAgentTask).value)});manualAgentReads.delete(key);delete drafts[key];await refresh();}
   else {await call('finish',{});await refresh();}
 }));
+
+document.addEventListener('change',e=>{if(e.target.id==='hook-action')$('hook-transition-fields').hidden=e.target.value!=='notify-transition';});

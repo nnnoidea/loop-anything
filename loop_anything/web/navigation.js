@@ -5,7 +5,7 @@ const editorSessions=new Map(),runReturns=new Map();
 function routeHash(route){
   if(route.type==='catalog')return '#loop_definitions';
   if(route.type==='loop')return '#loop/'+encodeURIComponent(route.key)+'/'+(route.tab || 'overview');
-  if(route.type==='editor')return '#edit/'+encodeURIComponent(route.id);
+  if(route.type==='editor')return '#edit/'+encodeURIComponent(route.id)+(route.node?'/node/'+encodeURIComponent(route.node)+(route.implementation?'/implementation/'+encodeURIComponent(route.implementation):''):'');
   if(route.type==='prepare')return '#prepare/'+encodeURIComponent(route.id);
   if(route.type==='run')return '#run/'+encodeURIComponent(route.id);
   return '#';
@@ -16,12 +16,13 @@ function parseRoute(hash){
   if(parts[0]==='loop_definitions')return {type:'catalog'};
   if(parts[0]==='loop')return {type:'loop',key:decodeURIComponent(parts[1] || ''),tab:['overview','flow','prepare'].includes(parts[2])?parts[2]:'overview'};
   if(parts[0]==='prepare')return {type:'prepare',id:decodeURIComponent(parts[1] || '')};
-  if(parts[0]==='edit')return {type:'editor',id:decodeURIComponent(parts[1] || '')};
+  if(parts[0]==='edit')return {type:'editor',id:decodeURIComponent(parts[1] || ''),...(parts[2]==='node'&&parts[3]?{node:decodeURIComponent(parts[3]),...(parts[4]==='implementation'&&parts[5]?{implementation:decodeURIComponent(parts[5])}:{})}:{})};
   return {type:'run',id:decodeURIComponent(parts[0]==='run'?parts[1]:parts[0])}; // old #run-... links
 }
 function rememberEditor(){
   if(page!=='editor' || !editor)return;
   collectAll();
+  if(!activeRoute.node){const pane=$('editor-canvas').parentElement;editor.canvasPosition={left:pane.scrollLeft,top:pane.scrollTop};}
   editor.routeId ||= editor.id || 'session-'+randomKey();
   editorSessions.set(editor.routeId,{editor,selection:editSelection});
 }
@@ -36,7 +37,11 @@ function savedEditorRoute(){
   const old=editor.routeId;editor.routeId=editor.id;
   editorSessions.set(editor.id,{editor,selection:editSelection});
   if(old)editorSessions.set(old,{editor,selection:editSelection});
-  activeRoute={type:'editor',id:editor.id};history.replaceState(null,'',routeHash(activeRoute));updateNavigationUI();
+  if(activeRoute.implementation){const current=$('author-candidates')?.querySelector('.author-candidate:not([hidden]) [data-candidate-id]')?.value.trim();if(current)activeRoute.implementation=current;}
+  let removed=false;
+  if(!editor.dirty&&activeRoute.node&&!Object.hasOwn(editor.loop_definition.nodes,activeRoute.node)){delete activeRoute.node;delete activeRoute.implementation;editSelection=null;removed=true;}
+  if(!editor.dirty&&activeRoute.implementation&&!Object.hasOwn(implementationOptions(editor.implementations[activeRoute.node]),activeRoute.implementation)){delete activeRoute.implementation;removed=true;}
+  activeRoute={...activeRoute,type:'editor',id:editor.id};history.replaceState(null,'',routeHash(activeRoute));updateNavigationUI();if(removed){editorSessions.get(editor.id).selection=editSelection;renderProperties();}
 }
 async function navigateTo(route,{replace=false,external=false,capture=true}={}){
   const previous=activeRoute,serial=++navigationSerial;
@@ -59,14 +64,16 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
     if(route.type==='loop' && !catalog.some(c=>c.key===route.key))throw new Error('找不到这个 Loop 版本，请返回 Loop 库。');
     const nextRun=route.type==='run'?await api('runs/'+route.id):null;
     if(serial!==navigationSerial)return false;
+    if(document.fullscreenElement===editorPage&&routeHash(route)!==routeHash(previous))await document.exitFullscreen();
     if(!external)history[replace?'replaceState':'pushState'](null,'',routeHash(route));
     activeRoute=structuredClone(route);
     if(route.type==='catalog'){page='catalog';await loadCatalog();}
     else if(route.type==='loop'){page='loop';loopKey=route.key;loopTab=route.tab || 'overview';renderLoop();}
     else if(route.type==='prepare'){if(await enterPreparation(route.id)===false)return true;}
     else if(route.type==='editor'){
-      editor=session.editor;editSelection=session.selection;connectFrom=null;page='editor';
+      editor=session.editor;if(route.node&&!Object.hasOwn(editor.loop_definition.nodes,route.node))throw new Error('节点已不存在，请返回草稿总览。');editSelection=route.node?{node:route.node}:session.selection;connectFrom=null;page='editor';
       editor.loop_definition.layout ||= {};populateMeta();renderEditor();renderProperties();saveState();
+      if(!route.node)requestAnimationFrame(()=>{$('editor-canvas').parentElement.scrollTo(editor.canvasPosition||{left:0,top:0});});
     }else if(route.type==='run'){
       if(previous.type!=='run' && previous.type!=='home')runReturns.set(route.id,structuredClone(previous));
       selected=route.id;run=nextRun;settingsBase=null;filterNode=null;page='runs';renderRun();await enterRunChat(route.id);
@@ -93,7 +100,9 @@ function updateNavigationUI(){
   }else if(page==='launch' && conversation){crumbs.push(navLink({type:'loop',key:conversation.launch.key},launchItem()?.loop_definition.name || 'Loop'));crumbs.push('启动准备');
   }else if(page==='editor' && editor){
     if(editor.returnTo?.type==='loop')crumbs.push(navLink(editor.returnTo,'来源 Loop'));
-    crumbs.push(esc(editor.loop_definition.name || '草稿')+' · 编辑');
+    crumbs.push(navLink({type:'editor',id:editor.routeId},(editor.loop_definition.name || '草稿')+' · 编辑'));
+    if(activeRoute.node)crumbs.push(navLink({type:'editor',id:editor.routeId,node:activeRoute.node},editor.loop_definition.nodes[activeRoute.node]?.label||activeRoute.node));
+    if(activeRoute.implementation)crumbs.push(esc(activeRoute.implementation));
     $('editor-back').textContent=editor.returnTo?.type==='loop'?'← 返回 Loop '+(editor.returnTo.tab==='prepare'?'使用准备':'详情'):editor.returnTo?.type==='prepare'?'← 返回启动准备':'← 返回 Loop 库';
   }else if(page==='runs' && run){
     const c=catalog.find(c=>c.key===run.loop_key);

@@ -75,3 +75,21 @@ document.addEventListener('click',event=>safely(async()=>{
       toast('已安装，未启动。请查看使用准备。');break;}
   }
 }));
+
+// Reuse draft assets and the revision-checked authoring tool; opening a file never executes it.
+const schemeFileDialog=document.createElement('dialog');schemeFileDialog.className='scheme-file-dialog';document.body.append(schemeFileDialog);
+document.addEventListener('click',event=>safely(async()=>{
+  const button=event.target.closest('[data-open-scheme-asset]');if(!button||!editor)return;
+  const draft=editor;await saveEditor();
+  const result=await platformCall('read_loop',{draft_id:draft.id,asset_path:button.dataset.openSchemeAsset});
+  if(editor!==draft||page!=='editor')return;
+  const file=result.value;
+  schemeFileDialog.innerHTML=`<form><div class="dialog-heading"><h2>${esc(file.path)}</h2><button type="button" class="close-dialog" aria-label="关闭">×</button></div><p class="small muted">包内共用文件 · 保存到当前草稿，引用它的方案都会读取修改后的内容。已有 Run 保持原样。</p><p class="small muted">${file.bytes} bytes · ${file.executable?'可执行':'普通文件'} · ${result.references.length} 处直接引用</p>${file.encoding==='utf-8'?`<textarea aria-label="包文件内容" spellcheck="false">${esc(file.content)}</textarea>`:'<p>二进制文件，请通过 Loop 包替换。</p>'}<p class="scheme-file-error" role="alert"></p><div class="dialog-tasks">${file.encoding==='utf-8'?'<button type="submit" class="primary">保存文件到草稿</button>':''}<button type="button" class="close-dialog">关闭</button></div></form>`;
+  schemeFileDialog.querySelector('form').onsubmit=async event=>{
+    event.preventDefault();const submit=schemeFileDialog.querySelector('[type=submit]');submit.disabled=true;
+    try{if(editor!==draft||page!=='editor')throw new Error('当前草稿已切换，请重新打开文件。');await editWithTool('put_asset',{path:file.path,content:schemeFileDialog.querySelector('textarea').value});schemeFileDialog.close();toast('文件已保存到草稿');}
+    catch(error){schemeFileDialog.querySelector('.scheme-file-error').textContent=error.message;}
+    finally{submit.disabled=false;}
+  };
+  schemeFileDialog.showModal();
+}));

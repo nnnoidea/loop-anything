@@ -51,18 +51,9 @@ class Engine:
 
     def event(self, run_id, event_id, name, payload, key=None):
         self.current(run_id)
-        if not isinstance(event_id, str) or not event_id or not isinstance(payload, dict):
-            raise Invalid('Event id and object payload required')
+        from loop_anything.runtime.notifications import receive_event
         with self.store.edit(run_id) as run:
-            if run['status'] in ('terminated', 'completed'):
-                raise Conflict('Run has ended')
-            old = next((x for x in run['events'] if x['id'] == event_id), None)
-            if old:
-                if old['name'] != name or old['payload'] != payload or old.get('key') != key:
-                    raise Conflict('Event id already used for different data')
-                return
-            run['events'].append({'id': event_id, 'name': name, 'key': key, 'payload': payload, 'at': time.time()})
-            Store.log(run, 'event', 'External event received: ' + name)
+            receive_event(run, event_id, name, payload, key)
 
     def recover(self):
         for summary in self.store.list():

@@ -133,8 +133,9 @@ class LifecycleTests(unittest.TestCase):
         old_token = e['token']
         with self.store.edit(self.base.id) as run:
             change_task_in_run(run, {'task_id': 'job', 'operation': 'retry', 'reason': 'Connection restored'})
-        with self.assertRaises(Conflict):
-            RunTools(self.store,self.base.id,old_token).call('report_task',dict(task_id='job',execution_id=e['id'],event='progress',report_id='stale'))
+        stale = RunTools(self.store,self.base.id,old_token).call('report_task',dict(task_id='job',execution_id=e['id'],event='progress',report_id='stale'))
+        self.assertTrue(stale['stale']);self.assertFalse(stale['accepted'])
+        self.assertEqual(self.base.read()['tasks']['job']['status'], 'waiting')
         with patch('loop_anything.runtime.timeline_runtime.run_command', side_effect=handler):
             self.engine.tick(self.base.id);self.settle()
         self.assertEqual(calls, ['submit', 'check', 'check'])
@@ -142,6 +143,85 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(len([e for e in self.base.read()['executions'] if e['task_id']=='job']), 1)
         self.assertEqual(self.base.read()['tasks']['job']['revision'],1)
         self.assertEqual(next(e for e in self.base.read()['executions'] if e['task_id']=='job')['task_revision'],1)
+
+    def test_monitor_terminal_reports_are_evidence_only_and_never_launch_again(self):
+        from loop_anything.runtime.lifecycle import revoke_execution_token
+        captured = {}
+        def submit(command, request, *args, **kwargs):
+            captured.update(json.loads(request))
+            return subprocess.CompletedProcess(command, 0, json.dumps({'status':'waiting','external_id':'remote-1','poll_after':100}), '')
+        attempt = self.external(submit)
+        for state in ('agent', 'fault', 'completed', 'retry'):
+            with self.subTest(state=state):
+                with self.store.edit(self.base.id) as run:
+                    e = next(e for e in run['executions'] if e['id'] == attempt['id'])
+                    e.update(status='completed' if state=='completed' else 'fault', lifecycle_state=state)
+                    run['tasks']['job']['status'] = 'completed' if state=='completed' else 'fault'
+                    snapshot = json.loads(json.dumps(run))
+                args = dict(event='progress', report_id='late-'+state, detail={'percent':99})
+                result = self.call(captured, **args)
+                self.assertTrue(result['stale']);self.assertFalse(result['accepted'])
+                self.assertTrue(self.call(captured, **args)['duplicate'])
+                self.assertEqual(self.base.read()['tasks'], snapshot['tasks'])
+                self.assertEqual(self.base.read()['agent_failures'], snapshot['agent_failures'])
+                with patch('loop_anything.runtime.timeline_runtime.run_command') as command:
+                    self.engine.timeline_runtime.execute(self.base.id, attempt, snapshot, True)
+                    command.assert_not_called()
+        with self.store.edit(self.base.id) as run:
+            e = next(e for e in run['executions'] if e['id'] == attempt['id']);revoke_execution_token(e)
+            run['tasks']['job'].update(status='planned',execution_id=None)
+        self.assertTrue(self.call(captured,'completed','old-attempt',envelope={'outputs':{'text':'must not commit'}})['stale'])
+        self.assertNotIn('out',self.base.read()['records'])
+        with self.assertRaises(Conflict):
+            self.call(dict(captured,token='wrong'), 'progress', 'wrong')
+        with self.assertRaises(Conflict):
+            RunTools(self.store,self.base.id,captured['token']).call('change_settings',{'revision':1,'change':{'objective':'forbidden'}})
+
+    def test_monitor_handoff_stops_polling_and_resumes_prior_state(self):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        self.base.bp['nodes']['recover']=node();self.base.bp['fallback_node']='recover'
+        self.base.implementations['recover']={'kind':'agent'}
+        matrix=template('external');next(r for r in matrix['transitions'] if r['event']=='check_error')['to']='agent';validate(matrix)
+        for target in ('fault','retry','completed'):
+            bad=json.loads(json.dumps(matrix));next(r for r in bad['transitions'] if r['event']=='check_error')['to']=target
+            with self.assertRaises(Invalid):validate(bad)
+        self.base.implementations['produce']={'kind':'external','command':['submit'],'observe':['check'],'lifecycle':matrix}
+        def submit(command,request,*args,**kwargs):return subprocess.CompletedProcess(command,0,json.dumps({'status':'waiting','external_id':'remote-1','poll_after':100}), '')
+        with patch('loop_anything.runtime.timeline_runtime.run_command',side_effect=submit):
+            self.base.initialize([task_spec('job','produce',{'source':{'record':'a'}},{'text':'out'})]);self.settle()
+        original=self.base.read();attempt=next(e for e in original['executions'] if e['task_id']=='job')
+        entered,release=threading.Event(),threading.Event();captured={}
+        def monitor(command,request,*args,**kwargs):
+            captured.update(json.loads(request));entered.set();release.wait(3)
+            return subprocess.CompletedProcess(command,1,'','late network failure')
+        with patch('loop_anything.runtime.timeline_runtime.run_command',side_effect=monitor),ThreadPoolExecutor() as pool:
+            future=pool.submit(self.engine.timeline_runtime.execute,self.base.id,attempt,original,True)
+            self.assertTrue(entered.wait(2))
+            self.assertTrue(self.call(captured,'check_error','handoff',detail={'message':'observer unhealthy'})['accepted'])
+            release.set();future.result(timeout=5)
+        run=self.base.read();e=next(e for e in run['executions'] if e['task_id']=='job')
+        self.assertEqual(e['lifecycle_state'],'agent');self.assertEqual(e['external_id'],'remote-1')
+        self.assertFalse(any(h['kind']=='process_error' and h.get('execution')==e['id'] for h in run['history']))
+        self.assertTrue(any(h['kind']=='stale_monitor_report' for h in run['history']))
+        for owner in run['agent_sessions']:RunTools(self.store,self.base.id,owner['token']).call('finish',{})
+        for _ in range(3):self.engine.tick(self.base.id)
+        run=self.base.read();self.assertEqual(len([e for e in run['executions'] if e['node']=='recover']),1)
+        with self.store.edit(self.base.id) as run:
+            change_task_in_run(run,{'task_id':'job','operation':'retry','reason':'Connection restored'})
+        run=self.base.read();e=next(e for e in run['executions'] if e['task_id']=='job')
+        self.assertEqual((e['lifecycle_state'],e['status'],e['external_id']),('waiting','waiting','remote-1'))
+        self.assertTrue(self.call(captured,'progress','retired-checker')['stale'])
+        self.assertEqual(len([e for e in run['executions'] if e['task_id']=='job']),1)
+
+    def test_agent_missing_cwd_is_classified_as_start_configuration_error(self):
+        self.base.implementations['produce']={'kind':'agent','command':[sys.executable,'-c','pass'],'cwd':str(self.store.filename)+'.missing'}
+        self.base.initialize([task_spec('job','produce',{'source':{'record':'a'}},{'text':'out'})])
+        run=self.base.read();owner=run['agent_sessions'][0];RunTools(self.store,self.base.id,owner['token']).call('finish',{})
+        self.engine.tick(self.base.id);self.settle()
+        run=self.base.read();attempt=next(e for e in run['executions'] if e['task_id']=='job')
+        self.assertEqual(attempt['failure_kind'],'command_start')
+        self.assertTrue(any(h['kind']=='command_start' and h.get('execution')==attempt['id'] for h in run['history']))
 
     def test_custom_matrix_uncovered_event_enters_only_configured_fallback(self):
         self.base.bp['nodes']['recover'] = node()
@@ -177,9 +257,19 @@ class LifecycleTests(unittest.TestCase):
 context=json.load(sys.stdin)
 spec=importlib.util.spec_from_file_location('reporter',context['report_client'])
 client=importlib.util.module_from_spec(spec);spec.loader.exec_module(client)
-client.report(context,'completed',report_id='init',envelope={'settings':{'objective':'HTTP report'},'outputs':{'a':'A','b':'B'}})
+client.notify(context,context['task_id']+':started','Starting',route='workspace')
+client.report(context,'completed',report_id='init',envelope={'settings':{'objective':'HTTP report'},'outputs':{'a':'A','b':'B'},'tasks':[{'id':'job','node':'produce','inputs':{'source':{'record':'a'}},'outputs':{'text':{'id':'out'}}}]})
 print('ordinary script logs')
 """)
+        monitor = Path(self.base.tmp.name) / 'monitor.py'
+        monitor.write_text('''import json,sys,importlib.util
+context=json.load(sys.stdin)
+spec=importlib.util.spec_from_file_location('reporter',context['report_client'])
+client=importlib.util.module_from_spec(spec);spec.loader.exec_module(client)
+client.report(context,'completed',report_id='done',envelope={'outputs':{'text':'done'}})
+assert client.report(context,'progress',report_id='late')['stale']
+''')
+        self.base.implementations['produce']={'kind':'external','command':[sys.executable,'-c','print(\'{"status":"waiting","external_id":"remote-http","poll_after":0.02}\')'],'observe':[sys.executable,str(monitor)]}
         self.base.implementations['init']={'kind':'command','command':[sys.executable,str(script)]}
         key=self.store.publish(self.base.bp,self.base.implementations)['key']
         ident=self.store.create(key,'HTTP')['id']
@@ -191,10 +281,25 @@ print('ordinary script logs')
             try:
                 for _ in range(100):
                     run=self.store.get(ident)
-                    if run['tasks']['init']['status'] in ('completed','fault'):break
+                    if run['tasks'].get('job',{}).get('status') in ('completed','fault'):break
                     time.sleep(.05)
                 self.assertEqual(run['tasks']['init']['status'],'completed',run['history'])
                 self.assertEqual(run['records']['a'][0]['value'],'A')
+                self.assertEqual(run['tasks']['job']['status'],'completed',run['history'])
+                self.assertEqual(run['records']['out'][0]['value'],'done')
+                from loop_anything.runtime.lifecycle import revoke_execution_token
+                from urllib.request import Request, urlopen
+                from urllib.error import HTTPError
+                attempt=next(e for e in run['executions'] if e['task_id']=='job')
+                with self.store.edit(ident) as saved:
+                    revoke_execution_token(next(e for e in saved['executions'] if e['id']==attempt['id']))
+                body={'tool':'report_task','arguments':{'run_id':ident,'task_id':'job','execution_id':attempt['id'],'token':attempt['token'],'event':'progress','report_id':'revoked-late'}}
+                def post():return urlopen(Request('http://127.0.0.1:'+str(port)+'/api/tools',data=json.dumps(body).encode(),headers={'Content-Type':'application/json','X-Loop-Anything':'workspace'}))
+                with post() as response:self.assertTrue(json.load(response)['stale'])
+                body['arguments']['token']='wrong'
+                with self.assertRaises(HTTPError) as rejected:post()
+                self.assertEqual(rejected.exception.code,403)
+
                 self.assertTrue(any(h['kind']=='transition' and h['detail']['event']=='completed' for h in run['history']))
             finally:
                 server.terminate();server.wait(timeout=10)

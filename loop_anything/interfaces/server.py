@@ -99,9 +99,10 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             from loop_anything.runtime.task_scope import owner_for
             run = store.get(run_id)
             args = body.get('arguments', {})
-            if body.get('tool') == 'report_task' and args.get('execution_id'):
+            if body.get('tool') in ('report_task','notify') and args.get('execution_id'):
                 attempt = next((e for e in run['executions'] if e['id'] == args['execution_id']), None)
-                if attempt and attempt['implementation']['kind'] in ('command', 'external') and attempt.get('token') == token:
+                from loop_anything.runtime.lifecycle import monitor_token_matches
+                if attempt and (body.get('tool')=='report_task' and monitor_token_matches(attempt, token) or attempt['implementation']['kind'] in ('command', 'external') and attempt.get('token') == token):
                     return True
             return owner_for(run, token) is not None
 
@@ -163,6 +164,10 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.send_header('Content-Length', str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
+                return
+            if parts == ['api','notification-channels']:
+                from loop_anything.interfaces.platform_tools import PlatformTools
+                self.send(PlatformTools(store).call('read_notification_channels',{}))
                 return
             if parts == ['api', 'platform']:
                 import platform
@@ -238,7 +243,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.send({'snapshot': self.visible_run(run), 'execution_id': execution['id'], 'token': execution.get('token') if self.editing() else None,
                            'settings_revision': execution['settings_revision'], 'output_contract': node_for(run, execution['node'])['outputs']})
             else:
-                filename = {name: name for name in ('app.js', 'lifecycle.js', 'loop_graph.js', 'settings.js', 'forms.js', 'workspace.js', 'authoring.js', 'workspace.css', 'conversation.js', 'conversation.css', 'task_history.js', 'style.css', 'graph.css', 'editor.js', 'editor.css', 'packages.js', 'library.js', 'library.css', 'navigation.js')}.get('/'.join(parts))
+                filename = {name: name for name in ('app.js', 'notifications.js', 'lifecycle.js', 'loop_graph.js', 'settings.js', 'forms.js', 'workspace.js', 'authoring.js', 'workspace.css', 'conversation.js', 'conversation.css', 'task_history.js', 'style.css', 'graph.css', 'editor.js', 'editor.css', 'packages.js', 'library.js', 'library.css', 'navigation.js')}.get('/'.join(parts))
                 if parts == ['']:
                     filename = 'index.html'
                 if not filename:
@@ -379,7 +384,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             elif parts == ['api', 'publish']:
                 self.send(store.publish(body['loop_definition'], body['implementations']))
             elif parts == ['api', 'runs']:
-                self.send(store.create(body['key'], body['title'], body.get('inputs'), authorization=body.get('authorization', ''), acquire=body.get('acquire', False), bindings=body.get('bindings'), fallback_node=body.get('fallback_node'), global_agent_node=body.get('global_agent_node'), notification_command=body.get('notification_command')), 201)
+                self.send(store.create(body['key'], body['title'], body.get('inputs'), authorization=body.get('authorization', ''), acquire=body.get('acquire', False), bindings=body.get('bindings'), fallback_node=body.get('fallback_node'), global_agent_node=body.get('global_agent_node'), notification_command=body.get('notification_command'),notification_route=body.get('notification_route')), 201)
             elif len(parts) == 4 and parts[:2] == ['api', 'runs']:
                 run_id, action = parts[2:]
                 if action == 'request':

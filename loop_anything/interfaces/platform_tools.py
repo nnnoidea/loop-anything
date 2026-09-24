@@ -25,6 +25,8 @@ class PlatformTools:
     def definitions(self):
         draft = {'draft_id': TEXT, 'revision': {'type': 'integer'}}
         defs = [
+            ('read_notification_channels', 'Read named notification outlets stored on this platform; not part of Loop packages.', {}, [], True),
+            ('set_notification_channels', 'Replace local notification outlets using the current revision. Commands use the existing notification adapter stdin/receipt contract. Does not send messages.', {'revision':{'type':'integer'},'channels':OBJ}, ['revision','channels'], False),
             ('list_loops', 'List installed Loops and editable drafts. Does not start anything.', {}, [], True),
             ('read_loop', 'Read a draft_id or installed key. Optional node_id (+ implementation_id), plan (+ step), or asset_path selects one part and its explicit references. Without selectors returns the complete Loop. Targeted reads include draft revision; asset text is decoded UTF-8.', {'draft_id': TEXT, 'key': TEXT, 'node_id': TEXT, 'implementation_id': TEXT, 'plan': TEXT, 'step': TEXT, 'asset_path': TEXT}, [], True),
             ('create_loop', 'Create an editable Loop with a no-input Agent entry. The user Agent initializes Timeline settings from the conversation; add business ports only when needed. Add the author business handbook, tasks and implementations before validation.', {'name': TEXT, 'id': TEXT}, ['name'], False),
@@ -32,15 +34,15 @@ class PlatformTools:
             ('set_loop', 'Update draft metadata and the AUTHOR business handbook; handbook_path binds a package-relative Skill entry (empty clears). Preserve unspecified fields. remove_records explicitly deletes unused record types; referenced types are protected. Defaults and limits are explicit author choices. fallback_node selects a declared non-entry Agent node with no input ports; empty disables automatic fallback.', dict(draft, name=TEXT, version=TEXT, description=TEXT, handbook=TEXT, handbook_path=TEXT, defaults=OBJ, limits=OBJ, guide=OBJ, checks=OBJ, fallback_node=TEXT, global_agent_node=TEXT, remove_records=STRINGS), ['draft_id', 'revision'], False),
             ('put_node', 'Add or edit one node. Port lists use name plus type (string/number/object/array/etc.) or a full schema; output record types are generated. Entry ports automatically update its initial input/output locations. skills are author-provided methods, with content or a package-relative path to SKILL.md.', dict(draft, node_id=TEXT, instructions=TEXT, label=TEXT, inputs=PORTS, outputs=PORTS, skills={'type': 'array', 'items': object_schema({'name': TEXT, 'content': TEXT, 'path': TEXT}, ['name'])}, plan_nodes=STRINGS, parameter_schema=OBJ, agent_settings_schema=OBJ, assertions={'type': 'array', 'items': OBJ}), ['draft_id', 'revision', 'node_id'], False),
             ('remove_node', 'Remove a draft node only after removing steps that use it. The initialization node cannot be deleted.', dict(draft, node_id=TEXT), ['draft_id', 'revision', 'node_id'], False),
-            ('set_implementation', 'Add/update a named candidate with implementation_id; default=true selects the Loop default, default=false clears it. Omit implementation_id for the compact default candidate. Choose candidates per Run via settings.bindings or per Task via implementation. Execution kinds: agent, command, external, event or approval. command/observe are argv arrays, not shell strings. Optional agent prompt fully replaces the default; {{context}} expands runtime context. parameter_schema optionally constrains the Task parameters for this candidate, in addition to the node contract. No defaults are injected. lifecycle holds the visible initial state and explicit from/event/to transitions with optional when and retry parameters. Conditions may read attempt; retry reuses the Task and agent hands off to the configured fallback. Only supplied fields change, including when kind is repeated. clear removes named optional fields; clear lifecycle explicitly restores the initial template for the selected kind. Changing kind requires lifecycle or clear lifecycle; incompatible fields must be explicitly cleared. Omitted collections are preserved; supplied lifecycle replaces the matrix. Use node_id=$notifications and kind=command for the user notification sender. Unbind explicitly to share an incomplete Loop.', dict(draft, node_id=TEXT, kind={'type': 'string', 'enum': ['agent', 'command', 'external', 'event', 'approval']}, command=STRINGS, observe=STRINGS, cwd=TEXT, timeout={'type': 'number'}, event=TEXT, prompt=TEXT, lifecycle=OBJ, parameter_schema=OBJ, label=TEXT, description=TEXT, clear=STRINGS, unbind=BOOL, implementation_id=TEXT, default=BOOL), ['draft_id', 'revision', 'node_id'], False),
+            ('set_implementation', 'Add/update a named candidate with implementation_id; default=true selects the Loop default, default=false clears it. Omit implementation_id for the compact default candidate. Choose candidates per Run via settings.bindings or per Task via implementation. Execution kinds: agent, command, external, event, timer or approval. timer wait requires seconds or timezone-aware until; event wait accepts key/timeout. wait values support existing {parameters.x} or $ references. Timeouts emit timeout in the same lifecycle. Transition notify lists queue messages/questions atomically. command/observe are argv arrays, not shell strings. Optional agent prompt fully replaces the default; {{context}} expands runtime context. parameter_schema optionally constrains the Task parameters for this candidate, in addition to the node contract. No defaults are injected. lifecycle holds the visible initial state and explicit from/event/to transitions with optional when and retry parameters. Conditions may read attempt; retry reuses the Task and agent hands off to the configured fallback. Only supplied fields change, including when kind is repeated. clear removes named optional fields; clear lifecycle explicitly restores the initial template for the selected kind. Changing kind requires lifecycle or clear lifecycle; incompatible fields must be explicitly cleared. Omitted collections are preserved; supplied lifecycle replaces the matrix. Configure notification outlets with set_notification_channels on the local platform. Unbind explicitly to share an incomplete Loop.', dict(draft, node_id=TEXT, kind={'type': 'string', 'enum': ['agent', 'command', 'external', 'event', 'approval', 'timer']}, command=STRINGS, observe=STRINGS, cwd=TEXT, timeout={'type': 'number'}, event=TEXT, wait=OBJ, prompt=TEXT, lifecycle=OBJ, parameter_schema=OBJ, label=TEXT, description=TEXT, clear=STRINGS, unbind=BOOL, implementation_id=TEXT, default=BOOL), ['draft_id', 'revision', 'node_id'], False),
             ('put_asset', 'Write or explicitly remove one package file. Supply content (UTF-8) to write, or remove=true to delete. Unspecified executable preserves its previous value. Paths are package-relative; removal does not delete referenced nodes or other resources.', dict(draft, path=TEXT, content=TEXT, executable=BOOL, remove=BOOL), ['draft_id', 'revision', 'path'], False),
-            ('put_step', 'Add/edit a step in a named batch template. inputs map ports to literal, record, run, settings or from/port sources; each is a values array path; an empty string removes list expansion. Plan parameters describe arguments supplied to build_plan. No runtime tasks is created.', dict(draft, plan=TEXT, step=TEXT, node_id=TEXT, inputs=OBJ, parameters=OBJ, after=STRINGS, each=TEXT, plan_parameters=OBJ, implementation=TEXT), ['draft_id', 'revision', 'plan', 'step', 'node_id'], False),
+            ('put_step', 'Add/edit a step in a named batch template. inputs map ports to literal, record, run, settings or from/port sources; each is a values array path; an empty string removes list expansion. Plan parameters describe build_plan values. Optional when uses the existing deterministic expression over values; false omits the entire step before each expansion. when={} removes the condition. No Task is created by editing a template.', dict(draft, plan=TEXT, step=TEXT, node_id=TEXT, inputs=OBJ, parameters=OBJ, after=STRINGS, each=TEXT, plan_parameters=OBJ, implementation=TEXT, when=OBJ), ['draft_id', 'revision', 'plan', 'step', 'node_id'], False),
             ('remove_step', 'Remove a batch step if no other step depends on it. Reconnect its consumers first.', dict(draft, plan=TEXT, step=TEXT), ['draft_id', 'revision', 'plan', 'step'], False),
             ('connect_steps', 'Connect an existing batch step output to another step input; collect=true aggregates all outputs of a list-expanded step. This records the source, not a new task.', dict(draft, plan=TEXT, from_step=TEXT, output=TEXT, to_step=TEXT, input=TEXT, collect=BOOL), ['draft_id', 'revision', 'plan', 'from_step', 'output', 'to_step', 'input'], False),
             ('validate_loop', 'Validate a draft and report missing implementations separately. Validation never runs handlers.', {'draft_id': TEXT}, ['draft_id'], True),
             ('publish_loop', 'Publish a validated draft through the existing Loop package installer. auto_version=true selects a new version if already installed, preserving the Loop ID and old Runs. Returns the current draft revision. Does not start a Run.', dict(draft, auto_version=BOOL), ['draft_id', 'revision'], False),
             ('export_loop', 'Export draft definition and attached resources as a Loop ZIP. The CLI client can save the returned base64 via --output.', {'draft_id': TEXT}, ['draft_id'], True),
-            ('start_run', 'After user discussion, create a Run and acquire operation rights atomically. Complete entry_task_id using read_task/report_task (event=completed, report_id and task_version required), arrange tasks and finish; no second initializer is launched. Optional bindings map node IDs to candidate IDs or null; missing implementations do not prevent Run creation. Optional fallback_node overrides the Loop choice; an empty string disables fallback. notification_command is this Run notification sender argv; persist an explicit chat destination rather than relying on the server environment.', {'key': TEXT, 'title': TEXT, 'inputs': OBJ, 'authorization': TEXT, 'bindings': OBJ, 'fallback_node': TEXT, 'global_agent_node': TEXT, 'notification_command': STRINGS}, ['key', 'title', 'authorization'], False),
+            ('start_run', 'After user discussion, create a Run and acquire operation rights atomically. Complete entry_task_id using read_task/report_task (event=completed, report_id and task_version required), arrange tasks and finish; no second initializer is launched. Optional bindings map node IDs to candidate IDs or null; missing implementations do not prevent Run creation. Optional fallback_node overrides the Loop choice; an empty string disables fallback. notification_command is this Run notification sender argv; persist an explicit chat destination rather than relying on the server environment.', {'key': TEXT, 'title': TEXT, 'inputs': OBJ, 'authorization': TEXT, 'bindings': OBJ, 'fallback_node': TEXT, 'global_agent_node': TEXT, 'notification_command': STRINGS, 'notification_route': TEXT}, ['key', 'title', 'authorization'], False),
             ('retry_notification', 'Retry one failed notification at its saved destination, including after the Run ends. Check whether an unknown delivery already arrived before retrying. Supply token if holding global operation rights; otherwise no overlapping Agent may be active.', {'run_id': TEXT, 'notification_id': TEXT, 'token': TEXT}, ['run_id', 'notification_id'], False),
             ('list_runs', 'Find existing Runs by title, Run ID, Loop name or objective, optionally filtering by status. Results are newest first. Continuing from another channel does not create a new Run.', {'query': TEXT, 'status': TEXT}, [], True),
             ('read_run', 'Read an existing Run and its current state/history without internal operation tokens. This does not acquire rights; use acquire_run for your own operation token.', {'run_id': TEXT}, ['run_id'], True),
@@ -51,7 +53,7 @@ class PlatformTools:
         for original in self.run_definitions:
             d = copy.deepcopy(original)
             d['inputSchema']['properties'].update(run_id=TEXT, token=TEXT)
-            d['inputSchema']['required'] += ['run_id'] + ([] if d['annotations']['readOnlyHint'] else ['token'])
+            d['inputSchema']['required'] += ['run_id'] + ([] if d['annotations']['readOnlyHint'] or d['name'] in ('notify','send_event') else ['token'])
             result.append(d)
         return result
 
@@ -179,7 +181,7 @@ class PlatformTools:
         response = {'loop_id': bp['id'], 'version': bp['version'],
                     **({'draft_id': loop['id'], 'revision': loop['revision']} if 'revision' in loop else {'key': loop['key']})}
         if node:
-            if node not in bp['nodes'] and node != '$notifications':
+            if node not in bp['nodes']:
                 raise Invalid('Unknown node_id')
             if 'implementation_id' in selection:
                 candidates = options(loop['implementations'].get(node))
@@ -225,6 +227,11 @@ class PlatformTools:
         a = copy.deepcopy(arguments)
         if name in {d['name'] for d in self.run_definitions}:
             return RunTools(self.store, a.pop('run_id'), a.pop('token', None)).call(name, a)
+        if name == 'read_notification_channels':
+            import sys
+            from loop_anything.paths import platform_skill_directory
+            return dict(self.store.notification_channels(),cc_connect_command=[sys.executable,str(platform_skill_directory()/'scripts/notify_cc_connect.py')])
+        if name == 'set_notification_channels':return self.store.notification_channels(a['channels'],a['revision'])
         if name == 'list_loops':
             return {'loops': [{'key': d['key'], 'loop_id': d['loop_definition']['id'], 'version': d['loop_definition']['version'], 'name': d['loop_definition'].get('name', d['loop_definition']['id'])} for d in self.store.catalog()],
                     'drafts': [{'draft_id': d['id'], 'revision': d['revision'], 'loop_id': d['loop_definition']['id'], 'version': d['loop_definition']['version'], 'updated_at': d['updated_at'], 'name': d['loop_definition'].get('name')} for d in self.store.drafts()]}
@@ -241,7 +248,7 @@ class PlatformTools:
                         node['skills'] = [resolve_skill(self.store.filename, a['key'], skill) for skill in node['skills']]
             return self._read_selection(loop, a) if any(k in a for k in ('node_id', 'implementation_id', 'plan', 'step', 'asset_path')) else {'loop': loop}
         if name == 'start_run':
-            run = self.store.create(a['key'], a['title'], a.get('inputs'), authorization=a['authorization'], acquire=True, bindings=a.get('bindings'), fallback_node=a.get('fallback_node'), global_agent_node=a.get('global_agent_node'), notification_command=a.get('notification_command'))
+            run = self.store.create(a['key'], a['title'], a.get('inputs'), authorization=a['authorization'], acquire=True, bindings=a.get('bindings'), fallback_node=a.get('fallback_node'), global_agent_node=a.get('global_agent_node'), notification_command=a.get('notification_command'),notification_route=a.get('notification_route'))
             return {'run_id': run['id'], 'token': run['agent_sessions'][0]['token'], 'entry_task_id': run['loop_definition']['seed']['id']}
         if name == 'retry_notification':
             if not self.store.get(a['run_id']).get('operator_protocol'):
@@ -373,54 +380,38 @@ class PlatformTools:
                 node['plan_nodes'] = [n for n in node.get('plan_nodes', []) if n != id]
         elif name == 'set_implementation':
             node, ident = a['node_id'], a.get('implementation_id', 'default')
-            if node not in bp['nodes'] and node != '$notifications':
+            if node not in bp['nodes']:
                 raise Invalid('Unknown node_id')
             from loop_anything.runtime.implementations import catalog_copy, validate_candidates
-            fields = {'kind', 'command', 'observe', 'cwd', 'timeout', 'event', 'prompt', 'lifecycle', 'parameter_schema', 'label', 'description'}
+            fields = {'kind', 'command', 'observe', 'cwd', 'timeout', 'event', 'wait', 'prompt', 'lifecycle', 'parameter_schema', 'label', 'description'}
             clear = set(a.get('clear', []))
             if clear - (fields - {'kind'}) or clear & set(a):
                 raise Invalid('clear names optional implementation fields, supplied once and not also updated')
             if a.get('unbind') and (clear or fields & set(a)):
                 raise Invalid('Unbind separately from updating configuration')
-            if node == '$notifications':
-                allowed = {'kind', 'command', 'cwd', 'timeout'}
-                if (fields & set(a)) - allowed or clear - (allowed - {'kind'}) or {'implementation_id', 'default'} & set(a):
-                    raise Invalid('Notification sender accepts only kind, command, cwd and timeout')
-                config = copy.deepcopy(implementations.get(node, {}))
-            else:
-                candidates = catalog_copy(implementations.get(node))
-                created = ident not in candidates['options']
-                config = copy.deepcopy(candidates['options'].get(ident, {}))
+            candidates = catalog_copy(implementations.get(node))
+            created = ident not in candidates['options']
+            config = copy.deepcopy(candidates['options'].get(ident, {}))
             if a.get('unbind'):
-                if node == '$notifications':
-                    implementations.pop(node, None)
-                else:
-                    candidates['options'].pop(ident, None)
-                    if candidates['default'] == ident:
-                        candidates['default'] = None
-                    implementations[node] = candidates
+                candidates['options'].pop(ident, None)
+                if candidates['default'] == ident:
+                    candidates['default'] = None
             else:
                 if config.get('kind') and 'kind' in a and a['kind'] != config['kind'] and 'lifecycle' in config and 'lifecycle' not in a and 'lifecycle' not in clear:
                     raise Invalid('Changing kind requires lifecycle or clear=["lifecycle"] to select a new template')
                 for key in clear:
                     config.pop(key, None)
                 config.update({key: a[key] for key in fields if key in a})
-                if node == '$notifications' and config.get('kind') != 'command':
-                    raise Invalid('Notification sender must be a command implementation')
                 try:
-                    # A different unfinished candidate must not prevent correcting this one.
                     validate_candidates({'options': {ident: config}, 'default': ident})
                 except Invalid as exc:
-                    raise Invalid(str(exc), path=['implementations', node] + ((exc.path or [])[2:] if node == '$notifications' else (exc.path or []))) from None
-                if node == '$notifications':
-                    implementations[node] = config
-                else:
-                    candidates['options'][ident] = config
-                    if a.get('default') is True or (created and 'implementation_id' not in a and 'default' not in a):
-                        candidates['default'] = ident
-                    elif a.get('default') is False and candidates['default'] == ident:
-                        candidates['default'] = None
-                    implementations[node] = candidates
+                    raise Invalid(str(exc), path=['implementations', node] + (exc.path or [])) from None
+                candidates['options'][ident] = config
+                if a.get('default') is True or (created and 'implementation_id' not in a and 'default' not in a):
+                    candidates['default'] = ident
+                elif a.get('default') is False and candidates['default'] == ident:
+                    candidates['default'] = None
+            implementations[node] = candidates
         elif name == 'put_asset':
             from loop_anything.packaging.packages import member_path
             path = member_path(a['path'])
@@ -449,6 +440,11 @@ class PlatformTools:
             for field in ('inputs', 'parameters', 'after', 'each', 'implementation'):
                 if field in a:
                     step[field] = a[field]
+            if 'when' in a:
+                if a['when']:
+                    step['when'] = copy.deepcopy(a['when'])
+                else:
+                    step.pop('when', None)
             if a.get('each') == '':
                 step.pop('each', None)
         elif name == 'remove_step':

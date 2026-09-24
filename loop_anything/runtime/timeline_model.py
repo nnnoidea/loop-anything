@@ -16,14 +16,19 @@ def is_v2(run):
 
 def expand(value, context):
     """Explicit data substitution, never eval or natural-language interpretation."""
+    def reference(key):
+        try:
+            return path(context, key)
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise Invalid('Invalid value reference ' + str(key) + ': ' + str(exc)) from None
     if isinstance(value, dict):
         if set(value) == {'$'}:
-            return copy.deepcopy(path(context, value['$']))
+            return copy.deepcopy(reference(value['$']))
         return {k: expand(v, context) for k, v in value.items()}
     if isinstance(value, list):
         return [expand(v, context) for v in value]
     if isinstance(value, str):
-        return re.sub(r'\{([\w.]+)\}', lambda m: str(path(context, m[1])), value)
+        return re.sub(r'\{([\w.]+)\}', lambda m: str(reference(m[1])), value)
     return value
 
 
@@ -66,7 +71,9 @@ def validate_v2(bp, implementations):
         location = ['global_agent_node']
         validate_global_agent(bp, implementations, bp.get('global_agent_node'))
         location = ['implementations']
-        if set(implementations) - set(nodes) - {'$notifications'}:
+        if '$notifications' in implementations:
+            raise Invalid('Loop notification senders are retired; configure local notification outlets and remove implementations.$notifications before sharing')
+        if set(implementations) - set(nodes):
             raise Invalid('Implementation references an unknown node')
         location = ['limits']
         limits = bp.get('limits', {})
@@ -129,6 +136,13 @@ def validate_v2(bp, implementations):
             if name in implementations:
                 location = ['implementations', name]
                 validate_candidates(implementations[name])
+                from loop_anything.runtime.implementations import options
+                for ident, config in options(implementations[name]).items():
+                    for i, rule in enumerate(config.get('lifecycle',{}).get('transitions',[])):
+                        for j, notice in enumerate(rule.get('notify',[])):
+                            location=['implementations',name,ident,'lifecycle','transitions',i,'notify',j,'route']
+                            if notice.get('route','default') not in ('default','workspace'):
+                                raise Invalid('Loop notifications use default or workspace; choose personal outlets on the Run')
             location = ['nodes', name]
             if node.get('initialize_timeline') and name != bp['entry']:
                 raise Invalid('Only entry may initialize user semantics')
@@ -186,7 +200,7 @@ def check_task(bp, tasks):
     after = tasks.get('after', [])
     if not isinstance(after, list) or any(not isinstance(x, str) or not x or x == tasks['id'] for x in after) or len(set(after)) != len(after):
         raise Invalid('after must list unique other Task IDs')
-    if 'skip' in tasks:
+    if 'skip' in tasks or tasks.get('status') == 'skipped':
         raise Invalid('Do not create skipped Tasks; omit the step in build_plan')
     if set(tasks.get('inputs', {})) != set(node.get('inputs', {})):
         raise Invalid('Task inputs must match node declarations: ' + tasks['id'])
@@ -218,6 +232,7 @@ def settings_defaults(title):
 
 
 def validate_settings(settings):
+    if not isinstance(settings.get('notification_route','user'),str) or not settings.get('notification_route','user'):raise Invalid('notification_route must be nonempty')
     command = settings.get('notification_command', [])
     if not isinstance(command, list):
         raise Invalid('notification_command must be an argv array')

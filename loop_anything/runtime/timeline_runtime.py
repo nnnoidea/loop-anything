@@ -8,19 +8,21 @@ import json
 import time
 import math
 from loop_anything.paths import platform_skill_directory
-from loop_anything.runtime.lifecycle import definition as lifecycle_definition
+from loop_anything.runtime.lifecycle import definition as lifecycle_definition, monitor_ended, revoke_execution_token, wait_values
 from loop_anything.runtime.model import digest
 from loop_anything.runtime.timeline_model import (SEMANTIC_FIELDS, ENDING_FIELDS, check_task, settings_defaults,
                             validate_settings, validate_result, validate_fallback)
 from loop_anything.runtime.model import Conflict, Invalid, contract, path
 from loop_anything.runtime.store import Store, uid
-from loop_anything.runtime.host_runtime import run_command, CommandNotStopped
+from loop_anything.runtime.host_runtime import run_command, CommandNotStopped, CommandStartError
 from loop_anything.runtime.checks import check_assertions, evaluate
 from loop_anything.runtime.implementations import selected, choose, validate_bindings, check_parameters, check_selection
 from loop_anything.runtime.timeline_plan import add_task
 from loop_anything.runtime.task_scope import owner_for, scope_for, scope_available, require_scope, attach_tasks, contains
 from loop_anything.interfaces.agent_tasks import (node_for, acquire_in_run, require_owner,
                           guard_write, release_in_run, task_list, agent_calls)
+
+from loop_anything.runtime.notifications import enqueue, sender_for, validate_notice
 
 PENDING = {'planned', 'ready', 'blocked', 'held'}
 IN_FLIGHT = {'executing', 'decision', 'approval', 'waiting'}
@@ -96,8 +98,7 @@ def agent_exited(run, runtime, error=None, scope_task=None):
     if counter['agent_failures'] >= 3:
         run['status'] = 'paused'
         message = 'Agent 连续失败三次，Loop 已暂停。请检查失败原因后恢复。'
-        run['notifications'].append({'id': uid('agent-failure'), 'tasks': scope_task, 'status': 'pending',
-            'message': message, 'route': 'user', 'attempt': 0, 'at': time.time(), 'reason': str(error)})
+        enqueue(runtime.store,run,uid('agent-failure'),{'message':message},scope_task)['reason']=str(error)
         Store.log(run, 'agent_failure_pause', message, detail={'failures': counter['agent_failures'], 'error': str(error)})
     else:
         Store.log(run, 'agent_retry', 'Agent exited; unresolved abnormal state will wake an Agent again',
@@ -148,7 +149,7 @@ class TimelineRuntime:
             missing.append({'reason': 'invalid_parameters', 'implementation': ident, 'detail': str(exc)})
         return values, sources, missing
 
-    def apply_hooks(self, run, tasks, phase):
+    def apply_hooks(self, run, tasks, phase, transition=None):
         held = False
         for hook in run['settings']['hooks']:
             if not hook.get('enabled', True) or hook['phase'] != phase:
@@ -158,7 +159,9 @@ class TimelineRuntime:
                 continue
             if target.get('tasks') and target['tasks'] != tasks['id']:
                 continue
-            key = hook['id'] + ':' + tasks['id']
+            if phase == 'transition' and any(hook.get(k) and hook[k] != transition.get(k) for k in ('event','from','to')):
+                continue
+            key = hook['id'] + ':' + tasks['id'] + (':' + tasks['execution_id'] + ':' + transition['report_id'] if transition else '')
             firing = next((f for f in run['hook_firings'] if f['id'] == key), None)
             if firing:
                 held |= firing['action'] == 'pause' and firing['status'] == 'held'
@@ -172,10 +175,16 @@ class TimelineRuntime:
                 held = True
                 Store.log(run, 'gate', 'Paused before ' + tasks['id'], detail=firing)
             else:
-                run['notifications'].append({'id': key, 'tasks': tasks['id'], 'status': 'pending',
-                    'message': hook.get('message') or (tasks['id'] + ': ' + phase),
-                    'route': hook.get('route', 'user'), 'attempt': 0, 'at': time.time()})
-                Store.log(run, 'notification', 'Notification queued for ' + tasks['id'])
+                context={'inputs': (self.resolve_inputs(run,tasks)[0] if phase=='before' else self.engine.execution(run,tasks['execution_id']).get('inputs',{}) if tasks.get('execution_id') else {}), 'parameters':tasks['spec'].get('parameters',{}), 'settings':run['settings'], 'transition':transition or {}, 'outputs':(self.engine.execution(run,tasks['execution_id']).get('outputs',{}) if tasks.get('execution_id') else {})}
+                from loop_anything.runtime.timeline_model import expand
+                try:
+                    message=expand(hook.get('message') or (tasks['id']+': '+phase),context)
+                    validate_notice({'message':message,'route':hook.get('route','default')})
+                    error=None
+                except (KeyError,TypeError,ValueError) as exc:message=hook.get('message') or 'Notification';error='Invalid notification template: '+str(exc)
+                notice=enqueue(self.store,run,key,{'message':message,'route':hook.get('route','default')},tasks['id'],tasks.get('execution_id'))
+                if error:notice.update(status='fault',error=error)
+
         return held
 
     def diagnose(self, run):
@@ -250,12 +259,12 @@ class TimelineRuntime:
                 # Observe/consume existing tasks before admitting new tasks.
                 for e in run['executions']:
                     tasks = run['tasks'][e['task_id']]
-                    if e['status'] != 'waiting' or e.get('worker_active') or e.get('observation_error'):
+                    if e['status'] != 'waiting' or e.get('worker_active') or e.get('observation_error') or monitor_ended(run, e):
                         continue
                     implementation = e['implementation']
                     if implementation['kind'] == 'event':
                         event = next((v for v in run['events'] if not v.get('consumed_by') and
-                            v['name'] == implementation['event'] and v.get('key') == tasks['spec'].get('parameters', {}).get('event_key')), None)
+                            (not v.get('task_id') or v['task_id']==tasks['id']) and v['name'] == implementation['event'] and v.get('key') == e.get('wait',{}).get('key',tasks['spec'].get('parameters', {}).get('event_key')) and (e.get('wait',{}).get('deadline') is None or v['at'] <= e['wait']['deadline'])), None)
                         if event:
                             try:
                                 self.report_in_run(run, e, {'event': 'completed', 'report_id': 'event:' + event['id'], 'envelope': {'outputs': event['payload']}}, 'event')
@@ -263,6 +272,12 @@ class TimelineRuntime:
                             except Invalid as exc:
                                 event['consumed_by'] = 'rejected'
                                 Store.log(run, 'event_rejected', str(exc))
+                        elif e.get('wait',{}).get('deadline',float('inf')) <= time.time():
+                            self.report_in_run(run,e,{'event':'timeout','report_id':'timeout:'+e['id'],'detail':{'message':'Waiting deadline reached'}},'engine')
+                    elif implementation['kind'] == 'timer':
+                        if e['wait']['until'] <= time.time():
+                            try:self.report_in_run(run,e,{'event':'completed','report_id':'timer:'+e['id'],'envelope':{'outputs':e['wait']['outputs']}},'engine')
+                            except Invalid as exc:self.report_in_run(run,e,{'event':'process_error','report_id':'timer-error:'+e['id'],'detail':{'message':str(exc)}},'engine')
                     elif e['wake_at'] <= time.time():
                         e['status'] = tasks['status'] = 'executing'
                         jobs.append((copy.deepcopy(e), copy.deepcopy(run), True))
@@ -300,13 +315,17 @@ class TimelineRuntime:
                         tasks.update(status='fault', budget_error=str(exc))
                         Store.log(run, 'budget_exhausted', tasks['id'])
                         continue
-                    if implementation['kind'] not in ('event', 'approval') and active >= run['settings']['max_parallel']:
+                    if implementation['kind'] not in ('event', 'approval', 'timer') and active >= run['settings']['max_parallel']:
                         continue
                     e = self.new_execution(run, tasks, implementation, values, sources)
                     if implementation['kind'] == 'agent':
                         acquire_in_run(run, 'background', e['token'], e['id'])
-                    if implementation['kind'] == 'event':
-                        e['status'] = 'waiting'
+                    if implementation['kind'] in ('event','timer'):
+                        try:
+                            e['wait']=wait_values(implementation,{'inputs':values,'parameters':e['parameters'],'settings':run['settings']})
+                            e['status']='waiting'
+                        except (Invalid,KeyError,TypeError) as exc:
+                            self.report_in_run(run,e,{'event':'process_error','report_id':'wait-config:'+e['id'],'detail':{'message':str(exc)}},'engine')
                     elif implementation['kind'] == 'approval':
                         e['status'] = 'approval'
                     elif implementation['kind'] == 'agent' and not implementation.get('command'):
@@ -356,10 +375,11 @@ class TimelineRuntime:
                 if notification['status'] != 'pending':
                     continue
                 if notification['route'] != 'workspace' and 'sender' not in notification:
-                    command = run['settings'].get('notification_command')
-                    sender = {'command': command} if command else run['implementations'].get('$notifications', {})
-                    if sender.get('command'):
-                        notification['sender'] = copy.deepcopy(sender)
+                    try:
+                        route=run['settings'].get('notification_route',notification['route']) if notification['route']=='user' and 'requested_route' not in notification else notification['route']
+                        notification['route'],notification['sender']=sender_for(self.store,run,route)
+                    except Invalid as exc:
+                        notification.update(status='fault',error=str(exc));continue
                 notification.update(status='sending', token=uid('delivery'), attempt=notification['attempt'] + 1)
                 deliveries.append((copy.deepcopy(notification), copy.deepcopy(run)))
             jobs = [(e, copy.deepcopy(run), observe) for e, _, observe in jobs]
@@ -379,11 +399,10 @@ class TimelineRuntime:
             if tasks['status'] not in END:
                 tasks['status'] = 'cancelled'
                 if tasks.get('execution_id'):
-                    self.engine.execution(run, tasks['execution_id']).update(status='cancelled', token=None)
+                    self.engine.execution(run, tasks['execution_id']).update(status='cancelled')
+                    revoke_execution_token(self.engine.execution(run, tasks['execution_id']))
         Store.log(run, 'completed', 'Engine entered terminal state: ' + reason)
-        if run['settings'].get('notification_command') or run['implementations'].get('$notifications', {}).get('command'):
-            run['notifications'].append({'id': 'completed:' + run['id'], 'tasks': None, 'status': 'pending',
-                'message': '运行已完成', 'reason': reason, 'route': 'user', 'attempt': 0, 'at': time.time()})
+        enqueue(self.store,run,'completed:'+run['id'],{'message':'运行已完成'})['reason']=reason
 
     def check_budget(self, run, tasks):
         limits = run['loop_definition'].get('limits', {})
@@ -479,7 +498,7 @@ class TimelineRuntime:
         Store.log(run, 'committed', tasks['id'] + ': shared records committed', e['id'], refs)
         self.apply_hooks(run, tasks, 'after')
 
-    def report_in_run(self, run, e, report, source):
+    def report_in_run(self, run, e, report, source, stale=False):
         """Ownership is checked by the caller; validate before changing shared records."""
         if not isinstance(report, dict) or set(report) - {'event', 'report_id', 'envelope', 'detail', 'external_id', 'poll_after'}:
             raise Invalid('Unsupported report fields')
@@ -495,9 +514,16 @@ class TimelineRuntime:
         if previous:
             if previous['fingerprint'] != fingerprint:
                 raise Conflict('report_id already used for different contents')
-            if e.get('worker_active'):
+            if e.get('worker_active') and not stale and not (source == 'monitor' and monitor_ended(run, e)):
                 e['call_reported'] = True
             return dict(previous['receipt'], duplicate=True)
+        if source == 'monitor' and (stale or monitor_ended(run, e)):
+            receipt = {'accepted': False, 'stale': True, 'reason': 'stale_monitor_report', 'task_id': e['task_id'],
+                       'execution_id': e['id'], 'state': e.get('lifecycle_state'), 'report_id': report['report_id']}
+            reports[report['report_id']] = {'fingerprint': fingerprint, 'receipt': receipt}
+            Store.log(run, 'stale_monitor_report', 'Late monitor report recorded without changing task state', e['id'],
+                      {'report_id': report['report_id'], 'event': report['event'], 'state': e.get('lifecycle_state'), 'detail': copy.deepcopy(report)})
+            return receipt
         if run['status'] in ('completed', 'terminated') or e['status'] in END or e['status'] == 'fault':
             raise Conflict('Execution has ended; cannot report another transition')
         kind = e['implementation']['kind']
@@ -541,6 +567,13 @@ class TimelineRuntime:
                 check_selection(run, candidate)
             except (KeyError, IndexError, TypeError, ValueError) as exc:
                 issue = 'Invalid retry parameters: ' + str(exc)
+        notices=[]
+        if rule and issue is None:
+            from loop_anything.runtime.timeline_model import expand
+            try:
+                notices=expand(rule.get('notify',[]),context)
+                for notice in notices:validate_notice(notice)
+            except (Invalid,KeyError,IndexError,TypeError,ValueError) as exc:issue='Invalid notification parameters: '+str(exc)
         matched = rule is not None and issue is None
         if event == 'check_error':
             e['observation_error'] = str(report.get('detail', {}).get('message') or 'Observation failed; external state is unknown')
@@ -572,6 +605,9 @@ class TimelineRuntime:
         if external_id:
             detail['external_id'] = external_id
         Store.log(run, 'transition', event if matched else e['error'], e['id'], detail)
+        if matched:
+            for index,notice in enumerate(notices):enqueue(self.store,run,'transition:'+e['id']+':'+report['report_id']+':'+str(index),notice,task['id'],e['id'])
+            self.apply_hooks(run,task,'transition',detail)
         receipt = {'accepted': matched, 'task_id': task['id'], 'execution_id': e['id'], 'state': target,
                    'report_id': report['report_id']}
         if target == 'completed' and matched:
@@ -646,8 +682,11 @@ class TimelineRuntime:
             # A queued worker must recheck its ownership before launching a command.
             with self.store.edit(run_id) as current_run:
                 current = self.engine.execution(current_run, e['id'])
+                if observe and (current.get('token') != e['token'] or monitor_ended(current_run, current) or current.get('observation_error')):
+                    Store.log(current_run, 'monitor_skipped', 'Queued monitor no longer applies', e['id'])
+                    return
                 self.check_owner(current_run, current, e['token'])
-                current['worker_active'] = True
+                current['worker_active'] = invocation
                 current['call_reported'] = False
                 if observe:
                     Store.log(current_run, 'observation', 'Checking external task', e['id'], {'external_id': current.get('external_id'), 'invocation_id': invocation})
@@ -658,6 +697,13 @@ class TimelineRuntime:
             result = run_command(implementation['observe'] if observe else implementation['command'], request_text,
                                  implementation.get('timeout', None if implementation['kind'] == 'agent' else 60), implementation.get('cwd'),
                                  stop=self.engine.stopping if implementation['kind'] == 'agent' else None)
+            if observe:
+                with self.store.edit(run_id) as run:
+                    current = self.engine.execution(run, e['id'])
+                    if current.get('token') != e['token'] or monitor_ended(run, current):
+                        self.report_in_run(run, current, {'event': 'monitor_return', 'report_id': invocation + ':return',
+                            'detail': {'returncode': result.returncode, 'stdout': result.stdout[-1500:], 'stderr': result.stderr[-1500:]}}, 'monitor', stale=True)
+                        return
             if result.returncode:
                 raise Invalid('Handler failed: ' + result.stderr[-1500:])
             envelope = None
@@ -700,8 +746,14 @@ class TimelineRuntime:
             exit_error = exc
             with self.store.edit(run_id) as run:
                 current = self.engine.execution(run, e['id'])
+                if observe and not isinstance(exc, CommandNotStopped) and (current.get('token') != e['token'] or monitor_ended(run, current)):
+                    self.report_in_run(run, current, {'event': 'check_error', 'report_id': invocation + ':error', 'detail': {'message': str(exc)}}, 'monitor', stale=True)
+                    return
                 if isinstance(exc, CommandNotStopped):
                     self.block_retry(run, current, 'Process stop is unconfirmed; inspect before retry: ' + str(exc))
+                if isinstance(exc, CommandStartError) or implementation['kind'] == 'agent':
+                    current['failure_kind'] = 'command_start' if isinstance(exc, CommandStartError) else 'agent_command'
+                    Store.log(run, current['failure_kind'], str(exc), e['id'], {'cwd': implementation.get('cwd'), 'command': implementation.get('command')})
                 if implementation['kind'] == 'agent' and not owner_for(run, e['token']):
                     Store.log(run, 'agent_exit_error', str(exc), e['id'])
                     return
@@ -720,8 +772,9 @@ class TimelineRuntime:
         finally:
             with self.store.edit(run_id) as run:
                 current = self.engine.execution(run, e['id'])
-                current.pop('worker_active', None)
-                current.pop('call_reported', None)
+                if current.get('worker_active') == invocation:
+                    current.pop('worker_active', None)
+                    current.pop('call_reported', None)
             if e['implementation']['kind'] == 'agent':
                 with self.store.edit(run_id) as run:
                     owner = owner_for(run, e['token'])
@@ -745,6 +798,7 @@ class TimelineRuntime:
                 payload.update(run_id=run_id, title=snapshot['title'], run_status=snapshot['status'],
                                task_label=snapshot['loop_definition']['nodes'].get(task.get('spec', {}).get('node'), {}).get('label', ''),
                                task_status=task.get('status', ''))
+                payload['outlet']={k:adapter[k] for k in ('channel','identity','destination') if k in adapter}
                 result = run_command(adapter['command'], json.dumps(payload), adapter.get('timeout', 30), adapter.get('cwd'))
                 if result.returncode:
                     try:
@@ -776,7 +830,7 @@ class TimelineRuntime:
         guard_write(run, operator_token)
         if 'authorization' in change and (owner_for(run, operator_token) or {}).get('kind') == 'background':
             raise Invalid('Only the user may change user authorization')
-        allowed = SEMANTIC_FIELDS | ENDING_FIELDS | {'max_parallel', 'hooks', 'bindings', 'fallback_node', 'global_agent_node', 'notification_command'}
+        allowed = SEMANTIC_FIELDS | ENDING_FIELDS | {'max_parallel', 'hooks', 'bindings', 'fallback_node', 'global_agent_node', 'notification_command', 'notification_route'}
         if set(change) - allowed:
             raise Invalid('Unknown Programmable Timeline field')
         if run['status'] in ('completed', 'terminated'):
@@ -796,8 +850,12 @@ class TimelineRuntime:
             if not hook.get('id') or hook['id'] in seen:
                 raise Invalid('Hook IDs must be unique')
             seen.add(hook['id'])
-            if hook.get('action') not in ('pause', 'notify') or hook.get('phase') not in ('before', 'after') or hook.get('frequency') not in ('once', 'always'):
+            if hook.get('action') not in ('pause', 'notify') or hook.get('phase') not in ('before', 'after', 'transition') or hook.get('frequency') not in ('once', 'always'):
                 raise Invalid('Invalid hook action/phase/frequency')
+            if hook['action'] == 'notify':
+                validate_notice({'message':hook.get('message') or 'Task notification','route':hook.get('route','default')})
+            for field in ('event','from','to'):
+                if field in hook and not isinstance(hook[field],str):raise Invalid('Hook transition selectors must be text')
             if hook['action'] == 'pause' and hook['phase'] != 'before':
                 raise Invalid('Pause gates run before dispatch; choose the downstream node')
             if not isinstance(hook.get('target'), dict) or set(hook['target']) - {'node', 'tasks'} or not hook['target']:
@@ -829,6 +887,7 @@ class TimelineRuntime:
             row = next(n for n in run['notifications'] if n['id'] == notification_id)
             if row['status'] != 'fault':
                 raise Conflict('Notification is not failed')
+            if not row.get('sender',{}).get('command') and row['route']!='workspace':row.pop('sender',None)
             row['status'] = 'pending'
             return
         if run['status'] in ('completed', 'terminated'):
@@ -847,7 +906,8 @@ class TimelineRuntime:
                     if tasks['status'] not in END:
                         tasks['status'] = 'cancelled'
                         if tasks['execution_id']:
-                            self.engine.execution(run, tasks['execution_id']).update(status='cancelled', token=None)
+                            self.engine.execution(run, tasks['execution_id']).update(status='cancelled')
+                            revoke_execution_token(self.engine.execution(run, tasks['execution_id']))
         elif action == 'release_gate':
             firing = next(f for f in run['hook_firings'] if f['id'] == hook_firing)
             if firing['status'] != 'held':
@@ -889,7 +949,7 @@ class TimelineRuntime:
                     self.report_in_run(run, e, {'event': 'process_error', 'report_id': uid('recovery'),
                         'detail': {'message': 'Engine interrupted; inspect external effects before retry'}}, 'engine')
                     self.block_retry(run, e, 'Interrupted execution has unknown external effects; inspect before retry')
-                    e['token'] = None
+                    revoke_execution_token(e)
                 Store.log(run, 'recovery', 'Recovered ' + e['task_id'], e['id'])
         for notification in run['notifications']:
             if notification['status'] == 'sending':

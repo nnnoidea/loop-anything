@@ -11,7 +11,7 @@ vm.runInContext(fs.readFileSync('loop_anything/web/loop_graph.js','utf8'),contex
 vm.runInContext(fs.readFileSync('loop_anything/web/navigation.js','utf8'),context);
 function run(code){return vm.runInContext(code,context);}
 test('routes round-trip versions, tabs, draft and Run identities with escaped keys',()=>{
-  for(const route of [{type:'catalog'},{type:'loop',key:'版本@1/a <b>',tab:'prepare'},{type:'editor',id:'draft-1'},{type:'run',id:'run-1'}]){
+  for(const route of [{type:'catalog'},{type:'loop',key:'版本@1/a <b>',tab:'prepare'},{type:'editor',id:'draft-1'},{type:'editor',id:'draft-1',node:'训练/一'},{type:'editor',id:'draft-1',node:'训练/一',implementation:'远端/a'},{type:'run',id:'run-1'}]){
     assert.deepEqual(JSON.parse(run(`JSON.stringify(parseRoute(routeHash(${JSON.stringify(route)})))`)),route);
   }
   assert.equal(run("parseRoute('#run-legacy').id"),'run-legacy');

@@ -21,9 +21,9 @@
 - **节点**：`put_node` 写一个节点的职责、端口和可选作者 Skill。用 `skills: [{"name":"方法名","content":"作者提供的业务方法"}]` 直接绑定到该节点；Agent 读取节点任务时会获得这些内容。端口列表使用 `name` 加 `type`，嵌套契约使用 `schema`；工具生成输出记录类型。节点机械完成约束统一用 assertions 表达，例如 eq 比较字段值；不从约束自动填业务结果。入口端口变更会同步其初始位置。
 - **可复用批次**：`put_step` 将节点加入一个命名模板。可用 implementation 指定模板选用的候选 ID，通常留给 Run 或任务选择。用 `plan_parameters` 声明运行时参数；`each` 指向参数里的列表。`connect_steps` 把上游 output 连到下游 input，`collect:true` 表示收集全部展开结果。
 - **初始或复用输入**：在 `put_step.inputs` 中使用 `{"record":"initial.result"}` 等明确来源。入口的真实输出位置由 `read_loop` 返回，不猜名字。普通参数值用 `literal`；运行时替换值可以写 `{"literal":{"$":"values.参数名"}}`。列表元素对应 `item`。
-- **候选实现**：`set_implementation` 提供 node_id、implementation_id 和 agent、command、external、event 或 approval 配置。同一节点可多次添加不同 ID；default:true 选为 Loop 默认，default:false 取消该候选的默认地位，省略则不改默认。已存在的候选可只传 ID 与 default 调整默认。填写实际命令参数列表。外部任务还需 observe；删除指定候选时用 unbind:true，不能伪装成模拟实现。`put_asset` 把作者编写的脚本/文档附进包。
+- **候选实现**：`set_implementation` 提供 node_id、implementation_id 和 agent、command、external、event、timer 或 approval 配置。同一节点可多次添加不同 ID；default:true 选为 Loop 默认，default:false 取消该候选的默认地位，省略则不改默认。已存在的候选可只传 ID 与 default 调整默认。填写实际命令参数列表。外部任务还需 observe；删除指定候选时用 unbind:true，不能伪装成模拟实现。`put_asset` 把作者编写的脚本/文档附进包。
 - **可选兜底**：与用户明确是否需要 Agent 兜底。需要时用 `put_node` 添加一个非入口节点，`inputs: []`，编写处理未覆盖状态的职责并绑定作者 Skill；通过 `set_implementation` 提供 Agent 候选，再用 `set_loop` 的 `fallback_node` 指定节点 ID。不需要时传空字符串关闭。兜底通过 Run 工具读取问题，使用同一套节点提交；不要自动挑其他节点的 Agent。
-- **通知实现**：用 set_implementation，node_id="$notifications"、kind="command"，绑定用户提供的发送命令。平台调用并记录送达状态。用户聊天目的地通过启动 Run 时的 notification_command 设置，见 run.md，不写死在共享 Loop 中。
+- **通知**：在生命周期转移的 notify 数组中配置消息/询问，或由脚本、Agent 调用 notify；使用 default 路由。使用者在平台配置实际出口并在 Run 中选择，详见 [notifications.md](notifications.md)。
 - **结束条件**：作者说明完成目的与判定依据，运行时 Agent 把机械规则或终止信号写入 Timeline；不要给节点添加 terminal 标记。
 - **Agent 命令**：用 `set_implementation` 设置 kind="agent" 和用户提供的 command，例如 `["codex", "exec", "-"]`；cwd/timeout 按实际需要明确设置；Agent 留空 timeout 时不限时，脚本命令默认 60 秒。平台向标准输入传入任务 prompt，原样执行命令；模型、工具和权限沿用用户配置。无需专用启动器或工具注册。
 - **检查与交付**：`validate_loop` 检查结构并单列缺失实现。修正错误后 `publish_loop` 安装为一个版本，不启动；日常迭代可传 auto_version:true，在版本已存在时自动选用新版本，返回最新 draft_id/revision 和实际 version，原版本不被覆盖；`export_loop` 导出包含附件的包，客户端 `--output 文件.loop.zip` 保存它。
@@ -41,6 +41,14 @@
 - 发布前 `validate_loop` 会检查绑定的入口文件已附入包。引用资源由作者完整附入，不自动扫描或改写 Markdown。
 
 安装后 `read_loop` 返回 Loop 和节点 Skill 的 `resolved_path`；运行中 `read_timeline` 返回 Loop Skill 的该路径，`read_task` 返回对应节点 Skill 的该路径。Agent直接读取文件，以其所在目录解析 references/、scripts/ 等相对引用。`path` 是包内绑定，`resolved_path` 是读取结果，不写回 Loop 定义。
+
+## 可选步骤：满足条件才安排
+
+`put_step` 可设置 `when`，使用已有确定性表达式，只读取本批 `values`。例如 `when={"path":"values.action.stages.prediction.enabled"}`：字段为 true 才安排，false 时不创建该步骤的任何 Task 或输出占位。`put_step` 省略 when 保留现值，传 `when={}` 清除条件；直接编辑定义时删除 when 字段即可。
+
+条件在 `build_plan` 时判断一次，作用于整个步骤，在 `each` 展开之前判断；不读取运行时结果或单个 item，不是运行过程中重新判断的分支。缺字段、非法表达式、非布尔结果会报错，不能当作 false。显式 `steps.<步骤>.skip=true` 优先表示本次不安排。
+
+若下游仍引用被省略步骤的输出，构建会拒绝，必须显式复用已有输入或同时不安排该下游。仅有先后依赖的步骤沿用原省略语义，不为省略项占位。网页模板步骤中的“何时安排”可填写布尔字段或自定义表达式；安排预览和工具回执列出未安排原因。业务输出中名为 status 的字段不会改变平台 Task 状态。
 
 ## 给运行时 Agent 提供简洁入口
 
@@ -174,6 +182,27 @@ python3 scripts/call.py validate_loop --arguments '{"draft_id":"实际草稿ID"}
 
 注意 lifecycle 是整体替换。修改已有矩阵时保留其他业务阶段和转移，只替换相关的 failed 行；异步 external 不直接套用上述 executing 矩阵，应在读到的 submitting/waiting 矩阵上修改实际业务失败所在状态，保留 submitted 和 check_error 等行。
 
-同一事件零条命中、多条命中、条件求值失败或重试参数不合法，均保留为明确异常，不擅自选择分支。`process_error` 可进入 fault/retry/agent，但进程未确认停止时禁止自动重试。`check_error` 只代表监控查询失败，不允许借此重提外部工作；恢复监控仍沿用原 external_id。
+同一事件零条命中、多条命中、条件求值失败或重试参数不合法，均保留为明确异常，不擅自选择分支。`process_error` 可进入 fault/retry/agent，但进程未确认停止时禁止自动重试。`check_error` 只代表监控查询失败，不允许借此进入 completed/fault/retry 或重提外部工作；可以显式转到 agent，让已启用的兜底 Agent 检查。恢复监控仍沿用原 external_id，并回到转交前的监控状态。
 
 重试等待上一进程退出和操作范围可写，暂停期间不执行。等待期间可由持权操作者明确接管重试或取消；原待应用转移随之失效。进程已确认结束的待重试动作会在重启后继续；重启时进程结局未知则标明原因，核实后通过已有 retry 工具恢复。调度复用现有限额，Agent 异常退出的三次暂停与通知机制继续有效。
+
+监控到达 completed、fault、retry 或 agent 后，本次监控停止。已经在途的报告可能收到 `stale: true, accepted: false`：平台只保留证据，不改变任务、结果或失败次数；不要为此安排新 Task 或重复提交外部工作。
+
+在界面的「Agent 兜底」启用开关并选择节点及候选实现。未配置命令的 Agent 只能等待外部接管，不能自动唤醒。运行前检查会列出实际工作目录、程序/脚本缺项及 Agent 信任/登录未验证项；作者应在该目录确认 Agent 可以非交互运行。平台不会自动切换 cwd 或修改信任设置。
+
+## 平台等待节点
+
+网页可直接添加「等时间」或「等事件 / 回复」。工具路径仍是 put_node + set_implementation，不需要守候脚本或常驻 Agent。
+
+- 时间等待：`kind="timer"`，wait 提供且只提供 seconds 或 until。seconds 是等待秒数，until 是带时区的 ISO 日期，例如 `2026-10-01T09:00:00+08:00`。相对时间从本次 Task 开始等待时计算，期限保存后重启不重算。一般没有业务输出；若节点声明输出，显式配置 wait.outputs。
+- 事件等待：`kind="event"`，event 为事件名称；wait.key 为关联标识，省略时沿用 Task parameters.event_key。可填 wait.timeout 作为最多等待秒数。收到匹配事件后，以 payload 作为节点全部输出，按原契约检查并提交。事件可先于等待到达；同一个事件只被一个等待执行消费。
+- wait 支持原有 `{parameters.name}` 或 `{"$":"parameters.name"}` 引用。回复事件名称、关联标识和输出结构需与询问一致。
+- 超时产生 timeout 事件，初始矩阵进入 fault；作者可在同一矩阵中改为重试或交给 Agent。取消等待不启动外部操作；下游是否改选输入仍由明确安排决定。暂停期间不推进，恢复时依据原期限处理。
+
+示例为通用工具参数，不包含业务方法：
+
+```json
+{"draft_id":"DRAFT_ID","revision":1,"node_id":"wait_reply","kind":"event","event":"reply","wait":{"key":"{parameters.question_id}","timeout":86400}}
+```
+
+使用真实的草稿 revision；先声明该节点的输出契约。需要完成后通知时，在它的 completed 转移行加入 notify；通知内容和具体输出字段由作者定义。
