@@ -2,7 +2,8 @@
 import copy
 import time
 from loop_anything.runtime.timeline_model import check_task, expand
-from loop_anything.runtime.model import Conflict, Invalid, contract, digest, path
+from loop_anything.runtime.model import Conflict, Invalid, contract, digest
+from loop_anything.runtime.checks import validate_expression, evaluate
 
 
 def add_task(run, spec, origin):
@@ -36,6 +37,22 @@ def add_task(run, spec, origin):
     return item
 
 
+def validate_plan_condition(condition):
+    if not isinstance(condition, dict) or not condition:
+        raise Invalid('Step when must be a deterministic expression')
+    validate_expression(condition)
+    def check_paths(expr):
+        if not isinstance(expr, dict):
+            return
+        if 'path' in expr:
+            parts = expr['path'].split('.') if isinstance(expr['path'], str) else expr['path']
+            if not parts or parts[0] != 'values':
+                raise Invalid('Step when may read batch values only')
+        for arg in expr.get('args', []):
+            check_paths(arg)
+    check_paths(condition)
+
+
 def validate_plans(bp):
     plans = bp.get('plans', {})
     if not isinstance(plans, dict):
@@ -53,8 +70,13 @@ def validate_plans(bp):
         for key, step in steps.items():
             if not isinstance(key, str) or not key or not isinstance(step, dict) or step.get('node') not in bp['nodes']:
                 raise Invalid('Plan step must name a declared node', path=[name, 'steps', key, 'node'])
-            if set(step) - {'node', 'inputs', 'parameters', 'after', 'each', 'implementation'}:
+            if set(step) - {'node', 'inputs', 'parameters', 'after', 'each', 'implementation', 'when'}:
                 raise Invalid('Unknown batch step field: ' + key, path=[name, 'steps', key])
+            if 'when' in step:
+                try:
+                    validate_plan_condition(step['when'])
+                except Invalid as exc:
+                    raise Invalid(str(exc), path=[name, 'steps', key, 'when']) from None
             if 'implementation' in step and step['implementation'] is not None and not isinstance(step['implementation'], str):
                 raise Invalid('Step implementation must be an ID or null', path=[name, 'steps', key, 'implementation'])
             if bp['nodes'][step['node']].get('initialize_timeline'):
@@ -96,7 +118,7 @@ def validate_plans(bp):
             visit(key)
 
 
-def build_plan(bp, name, key, values=None, steps=None, round_name=None):
+def build_plan(bp, name, key, values=None, steps=None, round_name=None, summary=None):
     """Expand one loop_definition batch, omitting skipped steps without placeholders.
 
     `each` expands a step over a values array. `from` binds the matching item;
@@ -123,14 +145,31 @@ def build_plan(bp, name, key, values=None, steps=None, round_name=None):
         if any(not isinstance(override[k], dict) for k in ('inputs', 'parameters') if k in override):
             raise Invalid('Step inputs/parameters overrides must be objects')
     prefix = 'batch-' + digest([name, key])[:16]
+    if summary is None:
+        summary = {}
+    summary.update(batch_id=prefix, omitted=[])
     groups, contexts = {}, {}
     for step_key, step in plan['steps'].items():
         groups[step_key] = []
         if overrides.get(step_key, {}).get('skip'):
+            summary['omitted'].append({'step': step_key, 'reason': 'not_selected'})
             continue
-        items = path(values, step['each']) if 'each' in step else [None]
+        if 'when' in step:
+            try:
+                validate_plan_condition(step['when'])
+                included = evaluate(step['when'], {'values': values})
+                if type(included) is not bool:
+                    raise Invalid('condition must return a boolean')
+            except (KeyError, IndexError, TypeError, ValueError) as exc:
+                raise Invalid('Cannot decide whether to arrange step ' + step_key + ': ' + str(exc), path=['plans', name, 'steps', step_key, 'when']) from None
+            if not included:
+                summary['omitted'].append({'step': step_key, 'reason': 'condition_false', 'when': copy.deepcopy(step['when'])})
+                continue
+        items = expand({'$': step['each']}, values) if 'each' in step else [None]
         if not isinstance(items, list):
             raise Invalid('Step each must resolve to an array: ' + step_key)
+        if not items:
+            summary['omitted'].append({'step': step_key, 'reason': 'empty_items'})
         for index, item in enumerate(items):
             explicit = overrides.get(step_key, {}).get('implementation', step.get('implementation')) or None
             task_id = prefix + '.' + step_key + '.' + str(index)

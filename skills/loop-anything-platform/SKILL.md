@@ -14,7 +14,7 @@ metadata:
 - 创建、反复编辑、查询节点/包文件、验证或分享 Loop：读取 [build.md](references/build.md)。
 - 直接使用通用工具启动 Run 或修改 Timeline：按需读取 [run.md](references/run.md)。作者已提供封装脚本和说明时，运行时优先按作者入口操作，无需先读平台手册。已经有 Run 和令牌时，不重新创建 Run。
 
-- 配置通知出口或接入现有聊天桥接：读取 [notifications.md](references/notifications.md)。
+- 配置通知出口、发送通知/询问、提交回复或接入现有聊天桥接：读取 [notifications.md](references/notifications.md)。
 
 只读取当前任务需要的操作说明。
 

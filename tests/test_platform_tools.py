@@ -10,7 +10,7 @@ import time
 import unittest
 import zipfile
 from loop_anything.runtime.engine import Engine
-from loop_anything.runtime.model import Conflict
+from loop_anything.runtime.model import Conflict, Invalid
 from loop_anything.packaging.packages import load_installed, install
 from loop_anything.interfaces.platform_tools import PlatformTools
 from loop_anything.packaging.skill_bundle import bundle
@@ -90,6 +90,14 @@ class PlatformToolTests(unittest.TestCase):
         self.edit('set_implementation', node_id='convert', kind='command', command=[sys.executable, 'scripts/convert.py'])
         self.edit('set_implementation', node_id='finish', kind='agent')
         self.edit('put_step', plan='round', step='convert', node_id='convert', inputs={'value': {'record': 'initial.result'}})
+        self.edit('put_step', plan='round', step='convert', node_id='convert', when={'path': 'values.enabled'})
+        self.edit('put_step', plan='round', step='convert', node_id='convert', parameters={})
+        current = self.tools.call('read_loop', {'draft_id': self.draft['draft_id']})['loop']
+        self.assertEqual(current['loop_definition']['plans']['round']['steps']['convert']['when'], {'path': 'values.enabled'})
+        self.edit('put_step', plan='round', step='convert', node_id='convert', when={})
+        current = self.tools.call('read_loop', {'draft_id': self.draft['draft_id']})['loop']
+        self.assertNotIn('when', current['loop_definition']['plans']['round']['steps']['convert'])
+
         self.edit('put_step', plan='round', step='finish', node_id='finish')
         self.edit('connect_steps', plan='round', from_step='convert', output='result', to_step='finish', input='value')
         self.assertTrue(self.tools.call('validate_loop', {'draft_id': self.draft['draft_id']})['valid'])
@@ -115,14 +123,9 @@ class PlatformToolTests(unittest.TestCase):
         self.assertEqual(cleared['lifecycle'],lifecycle)
         stale=self.tools.respond('set_implementation',dict(selected,revision=change['revision'],command=['stale']))
         self.assertFalse(stale['ok']);self.assertEqual(self.tools.call('read_loop',selected)['value'],cleared)
-        self.edit('set_implementation',node_id='$notifications',kind='command',command=['old'],timeout=15)
-        self.edit('set_implementation',node_id='$notifications',command=['new'])
-        sender=self.tools.call('read_loop',dict(draft_id=self.draft['draft_id'],node_id='$notifications',implementation_id='default'))['value']
-        self.assertEqual(sender,{'kind':'command','command':['new'],'timeout':15})
-        self.edit('set_implementation',node_id='initialize',kind='agent',command=['default'])
-        self.edit('set_implementation',node_id='initialize',implementation_id='chosen',default=True)
-        self.edit('set_implementation',node_id='initialize',command=['patched-default'])
-        self.assertEqual(self.tools.call('read_loop',{'draft_id':self.draft['draft_id'],'node_id':'initialize'})['value']['implementations']['default'],'chosen')
+        before=self.tools.call('read_loop',{'draft_id':self.draft['draft_id']})
+        with self.assertRaises(Invalid):self.edit('set_implementation',node_id='$notifications',kind='command',command=['sender'])
+        self.assertEqual(before,self.tools.call('read_loop',{'draft_id':self.draft['draft_id']}))
 
         schema={'type':'object','properties':{'queue':{'type':'string'}},'required':['queue']}
         self.edit('set_implementation',node_id='initialize',implementation_id='chosen',parameter_schema=schema)
@@ -309,6 +312,10 @@ class PlatformToolTests(unittest.TestCase):
         sent = json.loads(capture.read_text())
         self.assertEqual(['send','--project','project A','--session','feishu:original','--data-dir',str(root.resolve()),'--stdin'],sent['argv'])
         self.assertIn(payload['message'],sent['text'])
+        updated=dict(payload,outlet={'identity':'project B','destination':'weixin:next'})
+        switched=subprocess.run(command,input=json.dumps(updated),text=True,capture_output=True)
+        self.assertEqual(switched.returncode,0,switched.stdout)
+        self.assertEqual(json.loads(capture.read_text())['argv'],['send','--project','project B','--session','weixin:next','--data-dir',str(root.resolve()),'--stdin'])
         with patch.dict(os.environ,{'CC_PROJECT':'','CC_SESSION_KEY':''}):
             with self.assertRaises(ValueError): module.sender_command()
         executable.write_text('#!' + sys.executable + '\nimport sys;sys.stderr.write("bridge offline");sys.exit(1)\n')

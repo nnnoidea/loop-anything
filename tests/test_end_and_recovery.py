@@ -141,8 +141,9 @@ Path(sys.argv[1]).write_text(sys.argv[2])
         enable_fallback(self.bp, self.implementations, self.implementations['init'])
         delivered = self.root / 'notification.json'
         sender = "import json,sys;from pathlib import Path;r=json.load(sys.stdin);Path(sys.argv[1]).write_text(json.dumps(r));print(json.dumps({'delivered':True}))"
-        self.implementations['$notifications'] = {'kind': 'command', 'command': [sys.executable, '-c', sender, str(delivered)]}
+        self.store.notification_channels({'test-chat':{'command':[sys.executable,'-c',sender,str(delivered)]}},0)
         self.create(owned=False)
+        self.engine.change_settings(self.id,1,{'notification_route':'test-chat'})
         run = self.until(lambda r: r['status'] == 'paused' and r['notifications'] and r['notifications'][0]['status'] == 'delivered')
         self.assertEqual(3, run['agent_failures'])
         self.assertEqual(3, agent_calls(run))

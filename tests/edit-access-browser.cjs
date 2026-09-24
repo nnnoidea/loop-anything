@@ -28,6 +28,7 @@ bp,impl=definition();print(Store(sys.argv[1]).publish(bp,impl)['key'])`,db],{enc
    assert.equal((await raw(route,{})).status,403,route);
   }
   assert.equal((await raw('tools',{tool:'create_loop',arguments:{name:'blocked'}})).status,403);
+  for(const tool of ['notify','send_event','set_notification_channels'])assert.equal((await raw('tools',{tool,arguments:{}})).status,403);
   assert.equal((await raw('tools',{tool:'list_loops',arguments:{}})).status,200);
   assert.equal((await raw('edit-access',{action:'unlock',password:'wrong'})).status,403);
   assert.equal((await raw('edit-access',{action:'unlock',password},{Origin:'http://outside.invalid'})).status,400);

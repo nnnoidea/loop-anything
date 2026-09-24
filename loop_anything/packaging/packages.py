@@ -82,15 +82,6 @@ def validate_document(document):
     if not report['valid']:
         raise Invalid('; '.join(report['errors']))
     validate_skill_files(bp)
-    notifications = implementations.get('$notifications')
-    if '$notifications' in implementations:
-        if not isinstance(notifications, dict) or not isinstance(notifications.get('command'), list) or not notifications['command'] or not all(isinstance(x, str) and x and '\x00' not in x for x in notifications['command']):
-            raise Invalid('$notifications requires command argv')
-        if 'cwd' in notifications and (not isinstance(notifications['cwd'], str) or not notifications['cwd'] or '\x00' in notifications['cwd']):
-            raise Invalid('$notifications cwd must be a nonempty string')
-        timeout = notifications.get('timeout', 30)
-        if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
-            raise Invalid('$notifications timeout must be positive and finite')
     checks = document.get('checks', {})
     if not isinstance(checks, dict) or set(checks) - {'paths', 'env', 'programs'}:
         raise Invalid('checks supports paths, env and programs only')
@@ -217,7 +208,7 @@ def collect_assets(root, includes):
 def effective_implementations(document, root):
     """Resolve ONLY the package-defined cwd base. Never rewrite command arguments."""
     implementations = copy.deepcopy(document.get('implementations', {}))
-    for implementation in (v for node, entry in implementations.items() for v in ([entry] if node == '$notifications' else options(entry).values())):
+    for implementation in (v for entry in implementations.values() for v in options(entry).values()):
         if 'command' in implementation or 'observe' in implementation:
             directory = Path(implementation.get('cwd', '.'))
             implementation['cwd'] = str(directory if directory.is_absolute() else Path(root) / directory)
@@ -255,7 +246,7 @@ def smoke(document, root):
                                                 for i in range(1, len(PurePosixPath(name).parts) + 1))
         valid = safe and same_file(file, metadata['sha256'])
         add('asset', name, valid, 'Installed asset matches manifest.' if valid else 'Asset missing, changed or symlinked.')
-    candidates = [(node, ident, config) for node, entry in effective_implementations(document, root).items() for ident, config in ([('default', entry)] if node == '$notifications' else options(entry).items())]
+    candidates = [(node, ident, config) for node, entry in effective_implementations(document, root).items() for ident, config in options(entry).items()]
     for name, ident, implementation in candidates:
         directory = Path(implementation.get('cwd', str(root)))
         if 'command' in implementation or 'observe' in implementation:
@@ -271,6 +262,9 @@ def smoke(document, root):
             if len(argv) > 1 and not argv[1].startswith('-') and Path(argv[1]).suffix in ('.py', '.sh', '.js', '.mjs'):
                 script = Path(argv[1]) if Path(argv[1]).is_absolute() else directory / argv[1]
                 add('script', str(script), script.is_file() and os.access(script, os.R_OK), 'Script existence/readability only.', name, ident)
+        if implementation.get('kind') == 'agent' and implementation.get('command'):
+            checks.append({'kind': 'agent_access', 'target': str(directory), 'status': 'unknown', 'node': name, 'implementation': ident,
+                           'detail': 'Agent trust, login and model access are controlled by the user. Check this exact cwd with the configured Agent; the platform never changes trust settings or cwd.'})
         if implementation.get('kind') in ('event', 'approval') or implementation.get('kind') == 'agent' and not implementation.get('command'):
             checks.append({'kind': 'manual_or_event', 'target': name, 'status': 'unknown',
                            'detail': 'Explicit implementation waits for external input; no automatic executor is configured.'})

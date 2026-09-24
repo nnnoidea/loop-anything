@@ -17,8 +17,18 @@ def default_id(entry):
 
 
 def validate_implementation(implementation):
-    if not isinstance(implementation, dict) or implementation.get('kind') not in ('agent', 'command', 'external', 'event', 'approval'):
+    if not isinstance(implementation, dict) or implementation.get('kind') not in ('agent', 'command', 'external', 'event', 'approval', 'timer'):
         raise Invalid('Invalid execution implementation', path=['kind'])
+    if 'wait' in implementation or implementation['kind']=='timer':
+        wait=implementation.get('wait',{})
+        if implementation['kind'] not in ('event','timer') or not isinstance(wait,dict) or set(wait)-{'seconds','until','timeout','key','outputs'}:
+            raise Invalid('wait belongs to timer/event and accepts seconds, until, timeout, key, outputs')
+        if implementation['kind']=='timer' and sum(k in wait for k in ('seconds','until'))!=1:
+            raise Invalid('Timer needs exactly one of wait.seconds or wait.until')
+        if implementation['kind']=='timer' and set(wait)&{'key','timeout'}:
+            raise Invalid('Timer waits use seconds/until and optional outputs; key/timeout belong to event waits')
+        if implementation['kind']=='event' and set(wait)&{'seconds','until','outputs'}:
+            raise Invalid('Event waits use key/timeout; the received payload supplies outputs')
     if 'prompt' in implementation and (implementation['kind'] != 'agent' or not isinstance(implementation['prompt'], str)):
         raise Invalid('prompt is a string for Agent implementations only', path=['prompt'])
     for cmd in ('command', 'observe'):

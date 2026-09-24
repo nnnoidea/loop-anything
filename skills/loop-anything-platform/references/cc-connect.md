@@ -8,6 +8,12 @@
 
 实际渠道能力由桥接及其版本决定。飞书和微信的扫码、机器人配置、发送限制以桥接说明为准，不把接口适配完成当成真实渠道联调成功。
 
+## 平台命名出口
+
+平台「通知出口」选择 cc-connect，发送身份填已配置的 project，接收位置填 session。也可用 read_notification_channels 返回的 cc_connect_command 配合 set_notification_channels 保存同样配置。适配器从通知的 outlet.identity / destination 读取实际目标；命令中的旧 project/session 仅在未提供这些字段时使用。命令可追加 --executable 和 --data-dir 指定既有安装位置。
+
+消息中的询问可以在网页回复，或让当前聊天的 Agent 读取 Timeline 后调用 send_event；本适配器只负责发送，不另外接管聊天入口。
+
 ## 生成当前聊天的发送命令
 
 在目标聊天唤起的 Agent 中，从本 Skill 根目录执行：

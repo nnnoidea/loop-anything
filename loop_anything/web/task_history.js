@@ -7,7 +7,7 @@
     const tasks=run.tasks || {},producers=new Map();
     for(const w of Object.values(tasks))for(const destination of Object.values(w.spec.outputs || {})){
       const key=destination.id+'@'+((destination.expected_revision || 0)+1);
-      if(!['cancelled','stale'].includes(w.status))producers.set(key,w.id);
+      if(!['cancelled','stale','skipped'].includes(w.status))producers.set(key,w.id);
     }
     return Object.values(tasks).map((w,index)=>{
       const tries=[...(attempts.get(w.id) || [])].sort((a,b)=>a.created_at-b.created_at);

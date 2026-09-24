@@ -17,6 +17,10 @@ class CommandNotStopped(Invalid):
     """The caller must retain Agent ownership until the command is confirmed stopped."""
 
 
+class CommandStartError(Invalid):
+    """The configured program or working directory could not be opened."""
+
+
 def lock_database(filename):
     lock = open(str(Path(filename).resolve()) + '.engine.lock', 'a+b')
     try:
@@ -42,8 +46,10 @@ def run_command(command, request_text, timeout, cwd=None, stop=None):
     if stop is not None and stop.is_set():
         raise Invalid('Platform stopped before command started')
     options = {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session': True}
-    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               text=True, encoding='utf-8', errors='replace', cwd=cwd, **options)
+    try:
+        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', cwd=cwd, **options)
+    except OSError as exc:
+        raise CommandStartError('Cannot start command in cwd ' + str(cwd or Path.cwd()) + ': ' + str(exc)) from exc
     deadline = time.monotonic() + timeout if timeout is not None else None
     try:
         while True:

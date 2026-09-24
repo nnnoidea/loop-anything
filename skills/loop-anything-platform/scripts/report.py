@@ -8,23 +8,35 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
 
-def report(context, event, *, report_id=None, **fields):
+def _call(context, tool, fields):
     url = context.get('platform_url')
     if not url:
         raise RuntimeError('Reporting requires the running platform HTTP address from command context')
     arguments = {key: context[key] for key in ('run_id', 'task_id', 'execution_id', 'token')}
-    arguments.update(fields, event=event, report_id=report_id or str(uuid.uuid4()))
+    arguments.update(fields)
     request = Request(url.rstrip('/') + '/api/tools',
-                      data=json.dumps({'tool': 'report_task', 'arguments': arguments}).encode(),
+                      data=json.dumps({'tool': tool, 'arguments': arguments}).encode(),
                       headers={'Content-Type': 'application/json', 'X-Loop-Anything': 'workspace'})
     try:
         with urlopen(request, timeout=30) as response:
             result = json.load(response)
     except HTTPError as exc:
         raise RuntimeError(exc.read().decode('utf-8', errors='replace')) from None
-    if not result.get('ok') or not result.get('accepted'):
+    if not result.get('ok'):
         raise RuntimeError(json.dumps(result, ensure_ascii=False))
     return result
+
+
+def report(context, event, *, report_id=None, **fields):
+    result = _call(context, 'report_task', dict(fields,event=event,report_id=report_id or str(uuid.uuid4())))
+    if not (result.get('accepted') or result.get('stale')):
+        raise RuntimeError(json.dumps(result, ensure_ascii=False))
+    return result
+
+
+def notify(context, key, message, **fields):
+    """Queue a notification/question under this script's current execution identity."""
+    return _call(context, 'notify', dict(fields,key=key,message=message))
 
 
 def main():

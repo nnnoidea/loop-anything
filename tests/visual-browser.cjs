@@ -12,6 +12,9 @@ from loop_anything.packaging.packages import make_archive,install
 s=Store(sys.argv[1]);p=PlatformTools(s);engine=Engine(s);runs=[]
 for ident,title,result in [('research','研究流程 · 模拟验收',{'方案':'A','指标':[{'名称':'质量','数值':0.82}]}),('trip','差旅流程 · 模拟验收',{'目的地':'杭州','行程':[{'交通':'铁路','价格':580}]})]:
  b={'schema_version':2,'id':ident,'name':title,'version':'1','entry':'initial','defaults':{},'handbook':{'instructions':'Local browser scenario, simulated results.'},'records':{'result':{'type':'object'},'file':{'type':'string','format':'file'},'text':{'type':'string'}},'nodes':{'initial':{'label':'初始信息','initialize_timeline':True,'inputs':{},'outputs':{'result':{'record_type':'result'},'report':{'record_type':'file'},'outside':{'record_type':'file'}},'instructions':'Record input'},'review':{'label':'检查结果','inputs':{'source':{'type':'object'}},'outputs':{'result':{'record_type':'text'}},'parameter_schema':{'type':'object','properties':{'limit':{'type':'integer','minimum':1,'default':2}},'required':['limit']},'instructions':'Check supplied result'}},'seed':{'id':'initial','node':'initial','inputs':{},'outputs':{k:{'id':'initial.'+k} for k in ['result','report','outside']}},'plans':{'next':{'parameters':{'type':'object','properties':{'limit':{'type':'integer','minimum':1},'source':{'type':'string','default':'initial.result'}},'required':['limit','source']},'steps':{'review':{'node':'review','inputs':{'source':{'record':{'$':'values.source'}}},'parameters':{'limit':{'$':'values.limit'}}}}}}}
+ b['plans']['next']['parameters']['properties']['enabled']={'type':'boolean'}
+ b['plans']['next']['parameters']['required'].append('enabled')
+ b['plans']['next']['steps']['review']['when']={'path':'values.enabled'}
  command=['python3','-c','import json; print(json.dumps({"outputs":{"result":"Checked"}}))']
  key=install(s,make_archive({'loop_definition':b,'implementations':{'initial':{'kind':'agent'},'review':{'kind':'command','command':command}}},{'report.md':(('# '+title+'\\nReady').encode(),False)}))['key']
  a=p.call('start_run',{'key':key,'title':title,'authorization':'Simulated browser acceptance'})
@@ -44,7 +47,15 @@ engine.close();print(json.dumps(runs))`;
    const response=page.waitForResponse(r=>r.url().endsWith('/command'));await page.locator('#pause-run').click();assert((await response).ok());await waitRun(id,r=>r.tasks[task.id].status==='completed');
    await page.waitForTimeout(1600);await page.locator(`.process-task[data-task-focus="${task.id}"]`).click();assert((await page.locator('#task-detail').innerText()).includes('Checked'));await page.locator('[data-source-execution]').click();assert((await page.locator('#task-detail').innerText()).includes(index===0?'质量':'铁路'));
    // Add a whole batch through the same visible form and allow Engine to execute it.
-   await page.locator('#add-run-batch').click();await page.locator('#batch-values input[type="number"]').fill('4');await page.locator('#batch-round').fill('第二组');await apply();await waitRun(id,r=>Object.values(r.tasks).filter(t=>t.status==='completed').length===3);
+   const beforeOmission=await getRun(id);
+   await page.locator('#add-run-batch').click();await page.locator('#batch-values input[type="number"]').fill('4');
+   await page.locator('#task-edit-submit').click();await page.locator('#task-edit-review .omitted-summary').waitFor();
+   assert.deepEqual((await getRun(id)).tasks,beforeOmission.tasks,'Preview wrote a Task');
+   await page.locator('#task-edit-dialog').screenshot({path:path.join(root,'omission-preview.png')});
+   await page.locator('#task-edit-submit').click();await page.locator('#task-edit-dialog').waitFor({state:'hidden'});
+   const omittedRun=await getRun(id);assert.deepEqual(omittedRun.tasks,beforeOmission.tasks);assert(omittedRun.history.some(h=>h.kind==='plan_built'&&h.detail.omitted[0]?.reason==='condition_false'));
+   await page.locator('.omitted-steps > summary').click();await page.locator('.omitted-steps').screenshot({path:path.join(root,'omission-history.png')});
+   await page.locator('#add-run-batch').click();await page.locator('#batch-values input[type="number"]').fill('4');await page.locator('#batch-values select[data-value-type="boolean"]').selectOption('true');await page.locator('#batch-round').fill('第二组');await apply();await waitRun(id,r=>Object.values(r.tasks).filter(t=>t.status==='completed').length===3);
   }
   // Updating the graph layout must preserve the selected node's detail layer.
   await page.locator('.graph-panel > summary').click();
@@ -71,6 +82,19 @@ engine.close();print(json.dumps(runs))`;
   await page.locator(`[data-loop="${existing.loop_key}"]`).first().click();
   await page.locator('[data-version-loop-definition]').first().click();
   await page.locator('[data-edit-edge="next"]').click();
+  await page.locator('[data-step-key="review"] > summary').click();
+  const step=page.locator('[data-step-key="review"]');assert.equal(await step.locator('[data-step-condition]').inputValue(),'flag');
+  await step.locator('[data-step-condition]').selectOption('always');await page.locator('#editor-save-status').filter({hasText:'草稿已保存'}).waitFor();
+  const noCondition=(await (await page.request.get(base+'/api/drafts')).json()).find(x=>x.loop_definition.plans.next);assert(!Object.hasOwn(noCondition.loop_definition.plans.next.steps.review,'when'));
+  await step.locator('[data-step-condition]').selectOption('flag');await step.locator('[data-step-when-path]').fill('values.enabled');await page.locator('#editor-save-status').filter({hasText:'草稿已保存'}).waitFor();
+  await step.locator('[data-step-when-path]').fill('values.other_enabled');
+  await step.locator('[data-step-condition]').selectOption('expression');
+  assert.deepEqual(JSON.parse(await step.locator('[data-step-when]').inputValue()),{path:'values.other_enabled'});
+  await step.locator('[data-step-when]').fill('{"path":"values.enabled"}');
+  await step.locator('[data-step-condition]').selectOption('flag');assert.equal(await step.locator('[data-step-when-path]').inputValue(),'values.enabled');
+  await page.locator('#editor-save-status').filter({hasText:'草稿已保存'}).waitFor();
+  await step.locator('.step-condition').screenshot({path:path.join(root,'author-condition.png')});
+
   await page.locator('#editor-save-status').filter({hasText:'已保存'}).waitFor();
   const copied=(await (await page.request.get(base+'/api/drafts')).json()).find(d=>d.loop_definition.plans.next);
   assert.deepEqual(copied.loop_definition.plans.next.steps.review.inputs,existing.loop_definition.plans.next.steps.review.inputs);
@@ -81,7 +105,8 @@ engine.close();print(json.dumps(runs))`;
   await page.locator('#editor-save-status').filter({hasText:'草稿已保存'}).waitFor();
   await page.reload();await page.locator('[data-drag-node="review"]').click();
   assert.equal(await page.locator('#author-label').inputValue(),'持续检查');assert(await page.locator('[data-plan-node="review"]').isChecked());
-  await page.locator('.editor-edges .planning').first().waitFor({state:'attached'});
+  assert.equal(await page.locator('.editor-edges .planning').count(),0);
+  assert(await page.locator('[data-plan-node="review"]').isChecked());
   await page.locator('#editor-publish').click();await page.locator('#launch-page').waitFor({state:'visible'});
   const versions=await (await page.request.get(base+'/api/catalog')).json();
   assert.equal(versions.filter(c=>c.loop_definition.id===existing.loop_definition.id).length,2);
@@ -112,8 +137,68 @@ engine.close();print(json.dumps(runs))`;
   await page.locator('#editor-save-status').filter({hasText:'已保存'}).waitFor();
   let drafts=await (await page.request.get(base+'/api/drafts')).json();let d=drafts.find(d=>d.loop_definition.nodes.node_1);assert(d);assert.equal(d.loop_definition.plans.default.steps.node_1.inputs.source.record,d.loop_definition.seed.outputs.result.id);assert.equal(d.implementations.node_1.default,'local');assert.deepEqual(d.implementations.node_1.options.local.parameter_schema.required,['queue']);assert.equal(d.implementations.node_1.options.local.parameter_schema.properties.queue.type,'string');assert.equal(d.loop_definition.nodes.node_1.skills[0].name,'method');
   await page.locator('#add-node').click();await page.locator('#property-title').filter({hasText:'node_2'}).waitFor();await page.locator('[data-add-author-port="inputs"]').click();await page.locator('#author-inputs > details > summary').click();await page.locator('#author-inputs [data-port-name]').fill('source');await page.locator('#editor-save-status').filter({hasText:'草稿已保存'}).waitFor();
+  const beforeZoom=(await (await page.request.get(base+'/api/drafts')).json()).find(x=>x.id===d.id);
+  for(let i=0;i<5;i++)await page.locator('#canvas-zoom-out').click();
+  assert.equal(await page.locator('#canvas-zoom-reset').innerText(),'50%');
+  assert(Math.abs((await page.locator('[data-editor-card="node_1"]').boundingBox()).width-110)<1);
+  const afterZoom=(await (await page.request.get(base+'/api/drafts')).json()).find(x=>x.id===d.id);assert.deepEqual(afterZoom,beforeZoom,'Zoom changed the draft');
+  const edgeDelta=await page.evaluate(()=>{const line=document.querySelector('.editor-edges .edge'),point=line.getPointAtLength(0).matrixTransform(line.getScreenCTM()),port=document.querySelector('[data-port-node="initialize"][data-output-port="result"]').getBoundingClientRect();const card=document.querySelector('[data-editor-card="initialize"]').getBoundingClientRect();return Math.hypot(point.x-card.right,point.y-(port.top+port.height/2));});
+  assert(edgeDelta<2,'Scaled edge detached from output port');
+  const arrow=await page.evaluate(()=>{const line=document.querySelector('.editor-edges .edge'),end=line.getPointAtLength(line.getTotalLength()).matrixTransform(line.getScreenCTM()),card=document.querySelector('[data-editor-card="node_1"]').getBoundingClientRect(),port=document.querySelector('[data-port-node="node_1"][data-input-port="source"]').getBoundingClientRect(),marker=document.querySelector('#studio-arrow');return {gap:card.left-end.x,dy:end.y-port.top-port.height/2,width:Number(marker.getAttribute('markerWidth'))*editor.canvasZoom};});
+  assert(Math.abs(arrow.gap-6)<1&&Math.abs(arrow.dy)<1,'Arrow is hidden inside the target card');assert.equal(arrow.width,12);
+  // All four directions use facing card boundaries, without crossing either endpoint card.
+  const directions=await page.evaluate(()=>{
+    const saved=structuredClone(editor.loop_definition.layout),result=[];
+    for(const [name,target] of Object.entries({right:{x:1000,y:600},left:{x:100,y:600},down:{x:600,y:1200},up:{x:600,y:20}})){
+      editor.loop_definition.layout.initialize={x:600,y:600};editor.loop_definition.layout.node_1=target;renderEditor();drawEditorEdges();
+      const line=document.querySelector('.editor-edges .edge'),length=line.getTotalLength(),matrix=line.getScreenCTM(),end=line.getPointAtLength(length).matrixTransform(matrix),prior=line.getPointAtLength(length-1).matrixTransform(matrix),cards=['initialize','node_1'].map(id=>document.querySelector(`[data-editor-card="${id}"]`).getBoundingClientRect());
+      const crosses=Array.from({length:101},(_,i)=>line.getPointAtLength(length*i/100).matrixTransform(matrix)).some(p=>cards.some(c=>p.x>c.left+.5&&p.x<c.right-.5&&p.y>c.top+.5&&p.y<c.bottom-.5));
+      const b=cards[1],gap=name==='right'?b.left-end.x:name==='left'?end.x-b.right:name==='down'?b.top-end.y:end.y-b.bottom;
+      result.push({name,crosses,gap,dx:end.x-prior.x,dy:end.y-prior.y});
+    }
+    editor.loop_definition.layout=saved;renderEditor();return result;
+  });
+  for(const route of directions){assert.equal(route.crosses,false,route.name+' crosses endpoint card');assert(Math.abs(route.gap-6)<1);assert(route.name==='right'?route.dx>0:route.name==='left'?route.dx<0:route.name==='down'?route.dy>0:route.dy<0,'Wrong arrow direction: '+route.name);}
+
+
   await page.locator('[data-port-node="node_1"][data-output-port="result"]').click();await page.locator('[data-port-node="node_2"][data-input-port="source"]').click();await page.locator('#connect-port-form button[type="submit"]').click();await page.locator('#connection-dialog').waitFor({state:'hidden'});
   await page.locator('#editor-save-status').filter({hasText:'已保存'}).waitFor();drafts=await (await page.request.get(base+'/api/drafts')).json();d=drafts.find(d=>d.loop_definition.nodes.node_2);assert.deepEqual(d.loop_definition.plans.default.steps.node_2.inputs.source,{from:'node_1',port:'result'});
+  // Dragging onto another node must keep the dropped position.
+  await page.locator('[data-drag-node="node_2"]').scrollIntoViewIfNeeded();
+  const from=await page.locator('[data-drag-node="node_2"]').boundingBox(),onto=await page.locator('[data-drag-node="initialize"]').boundingBox();
+  await page.mouse.move(from.x+25,from.y+20);await page.mouse.down();await page.mouse.move(onto.x+25,onto.y+20,{steps:8});await page.mouse.up();
+  await page.locator('#editor-save-status').filter({hasText:'草稿已保存'}).waitFor();
+  const dropped=await page.locator('[data-editor-card="node_2"]').boundingBox(),under=await page.locator('[data-editor-card="initialize"]').boundingBox();
+  assert(Math.abs(dropped.x-under.x)<2&&Math.abs(dropped.y-under.y)<2,'Dropped node was automatically displaced');
+  // Manual overlaps survive rendering/reload; only explicit arrange changes geometry.
+  const beforeLayout=structuredClone(d.loop_definition);delete beforeLayout.layout;
+  await page.evaluate(()=>{for(const id of Object.keys(editor.loop_definition.nodes))editor.loop_definition.layout[id]={x:60,y:85};dirty();renderEditor();});
+  await page.locator('#editor-save-status').filter({hasText:'草稿已保存'}).waitFor();
+  const boxes=await page.locator('#editor-canvas .editor-node').evaluateAll(cards=>cards.map(c=>({x:c.offsetLeft,y:c.offsetTop,w:c.offsetWidth,h:c.offsetHeight})));
+  assert(boxes.every(b=>b.x===60&&b.y===85),'Manual overlaps were moved');
+  const savedLayout=(await (await page.request.get(base+'/api/drafts')).json()).find(x=>x.id===d.id).loop_definition;
+  const withoutLayout=structuredClone(savedLayout);delete withoutLayout.layout;assert.deepEqual(withoutLayout,beforeLayout);
+  await page.reload();await page.locator('#editor-canvas .editor-node').first().waitFor();
+  assert.deepEqual(await page.locator('#editor-canvas .editor-node').evaluateAll(cards=>cards.map(c=>({x:c.offsetLeft,y:c.offsetTop}))),boxes.map(({x,y})=>({x,y})));
+  assert.equal(await page.locator('#editor-json').count(),1);
+  assert((await page.locator('.canvas-scroll').boundingBox()).height>=640);
+  await page.locator('#arrange-editor-nodes').click();await page.locator('#editor-save-status').filter({hasText:'草稿已保存'}).waitFor();
+  const arranged=await page.locator('#editor-canvas .editor-node').evaluateAll(cards=>cards.map(c=>({x:c.offsetLeft,y:c.offsetTop,w:c.offsetWidth,h:c.offsetHeight})));
+  for(let i=0;i<arranged.length;i++)for(let j=i+1;j<arranged.length;j++){const a=arranged[i],b=arranged[j];assert(!(a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y),'Arrange left overlapping cards');}
+  const beforeView=(await (await page.request.get(base+'/api/drafts')).json()).find(x=>x.id===d.id);
+  await page.locator('#canvas-fit').click();
+  const allVisible=()=>page.evaluate(()=>{const pane=document.querySelector('.canvas-scroll').getBoundingClientRect();return [...document.querySelectorAll('#editor-canvas .editor-node')].every(c=>{const b=c.getBoundingClientRect();return b.left>=pane.left-1&&b.top>=pane.top-1&&b.right<=pane.right+1&&b.bottom<=pane.bottom+1});});
+  assert(await allVisible(),'Fit did not show every node');
+  await page.locator('#canvas-fullscreen').click();await page.waitForFunction(()=>document.fullscreenElement?.id==='loop_definition-editor');
+  await page.locator('#canvas-fit').click();assert(await allVisible());
+  await page.screenshot({path:path.join(root,'canvas-fullscreen.png')});
+  await page.keyboard.press('Escape');await page.waitForFunction(()=>!document.fullscreenElement);
+  await page.locator('#canvas-fullscreen').click();await page.waitForFunction(()=>!!document.fullscreenElement);
+  await page.locator('[data-editor-layer="states"]').click();await page.locator('#canvas-fullscreen').click();await page.waitForFunction(()=>!document.fullscreenElement);
+  await page.locator('[data-editor-layer="relations"]').click();
+  await page.locator('#canvas-zoom-reset').click();assert.equal(await page.locator('#canvas-zoom-reset').innerText(),'100%');
+  const afterView=(await (await page.request.get(base+'/api/drafts')).json()).find(x=>x.id===d.id);assert.deepEqual(afterView,beforeView,'Fit/fullscreen changed the draft');
+  await page.locator('.canvas-scroll').screenshot({path:path.join(root,'editor-canvas.png')});
   await page.screenshot({path:path.join(root,'authoring.png'),fullPage:true});
   await page.reload();await page.locator('[data-drag-node="node_1"]').click();assert.equal(await page.locator('#author-label').inputValue(),'通用处理');
   await page.locator('#remove-author-node').click();await page.locator('#author-removal').waitFor();
@@ -147,6 +232,51 @@ engine.close();print(json.dumps(runs))`;
   assert(!Object.hasOwn(cleaned.loop_definition.records,'old.result'));
   assert(Object.hasOwn(cleaned.loop_definition.records,'node_2.result'));
 
+  // Full-page details edit the same draft and survive reload without publishing.
+  const canvasURL=page.url();
+  const editDraft=async(tool,values)=>{
+    const draft=(await (await page.request.get(base+'/api/drafts')).json()).find(x=>x.id===d.id);
+    const res=await (await page.request.post(base+'/api/tools',{headers:{'X-Loop-Anything':'workspace'},data:{tool,arguments:{draft_id:d.id,revision:draft.revision,...values}}})).json();assert(res.ok,JSON.stringify(res));
+  };
+  await editDraft('put_asset',{path:'scripts/worker.py',content:'print("before")',executable:true});
+  await editDraft('set_implementation',{node_id:'initialize',implementation_id:'remote',kind:'agent',label:'远端方案',description:'使用独立的脚本入口',command:['python3','scripts/worker.py']});
+  await page.reload();await page.locator('[data-editor-card="initialize"]').waitFor();
+  await page.locator('[data-editor-card="initialize"] [data-editor-implementation="remote"]').click();
+  const remote=page.locator('.author-candidate:not([hidden])');
+  await remote.locator('[data-candidate-default]').click();await page.locator('#editor-save-status').filter({hasText:'草稿已保存'}).waitFor();
+  await remote.locator('[data-candidate-label]').fill('远端方案 · 已调整');
+  await remote.locator('[data-candidate-prompt] [data-agent-prompt]').fill('读取节点 Skill，调用脚本。{{context}}');
+  await remote.locator('[data-open-scheme-asset="scripts/worker.py"]').first().click();
+  await page.locator('.scheme-file-dialog textarea').fill('print("after")');await page.locator('.scheme-file-dialog [type=submit]').click();await page.locator('.scheme-file-dialog').waitFor({state:'hidden'});
+  await page.reload();await remote.locator('[data-candidate-label]').waitFor();
+  assert.equal(await remote.locator('[data-candidate-label]').inputValue(),'远端方案 · 已调整');
+  assert.equal(await remote.locator('[data-agent-prompt]').inputValue(),'读取节点 Skill，调用脚本。{{context}}');
+  const schemeDraft=(await (await page.request.get(base+'/api/drafts')).json()).find(x=>x.id===d.id);
+  assert.equal(schemeDraft.implementations.initialize.default,'remote');
+  const resource=schemeDraft.assets.find(a=>a.path==='scripts/worker.py');assert.equal(Buffer.from(resource.base64,'base64').toString(),'print("after")');assert(resource.executable);
+  await page.locator('#editor-detail-path [data-route-link]').nth(1).click();
+  const primary=page.locator('.author-candidate').filter({has:page.locator('[data-candidate-id][value="default"]')});
+  assert(await primary.locator('.candidate-card-overview').isVisible());
+  await primary.locator('[data-candidate-default]').click();await page.locator('#editor-save-status').filter({hasText:'草稿已保存'}).waitFor();
+  await page.locator('#editor-detail-path [data-route-link]').first().click();await page.waitForURL(canvasURL);
+
+  await page.locator('[data-editor-card="initialize"] [data-editor-implementation]').first().click();
+  await page.waitForURL(/\/node\/initialize\/implementation\/default$/);
+  const candidate=page.locator('.author-candidate:not([hidden])');
+  await candidate.locator('[data-candidate-command]').fill('codex\nexec\n-');
+  await page.locator('#editor-save-status').filter({hasText:'草稿已保存'}).waitFor();
+  await candidate.locator('.lifecycle-visual > summary').click();await candidate.locator('[data-lifecycle-to="completed"]').click();
+  assert.equal(await candidate.locator('.selected-transition [data-transition-event]').inputValue(),'completed');
+  assert(await page.locator('.editor-right #editor-report').isVisible());
+  await page.reload();await candidate.locator('[data-candidate-command]').waitFor();
+  assert.equal(await candidate.locator('[data-candidate-command]').inputValue(),'codex\nexec\n-');
+  await page.locator('#editor-detail-path [data-route-link]').nth(1).click();await page.waitForURL(/\/node\/initialize$/);
+  assert(await page.locator('#author-label').isVisible());
+  await page.locator('#editor-detail-path [data-route-link]').first().click();await page.waitForURL(canvasURL);
+  const detailed=(await (await page.request.get(base+'/api/drafts')).json()).find(x=>x.id===d.id);
+  assert.deepEqual(detailed.implementations.initialize.options.default.command,['codex','exec','-']);
+  assert(Object.hasOwn(detailed.loop_definition.nodes.node_2.inputs,'source'));
+  assert.deepEqual((await getRun(ids[0])).loop_definition,existing.loop_definition);
   await page.waitForFunction(()=>!document.getElementById('loop_definition-editor').inert);
   await page.setViewportSize({width:390,height:844});await page.goto(base+'/#run/'+ids[1]);await page.locator('[data-task-row]').first().waitFor();await page.screenshot({path:path.join(root,'mobile.png'),fullPage:true});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
   assert.deepEqual(errors,[]);console.log(JSON.stringify({passed:true,runs:ids,screenshots:root,cases:['two different Loop outputs','explicit file results and path boundary','add/edit with historical records preserved','round grouping','script execution and input provenance','batch creation','author ports/Skill/implementation without JSON','entry result connection','output to input connection','draft reload','mobile layout']},null,2));

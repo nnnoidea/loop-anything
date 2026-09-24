@@ -292,7 +292,8 @@ assert [n for n in z.namelist() if n.endswith('/SKILL.md')]==['platform/loop-any
     await page.locator('#add-fallback-node').click();
     await page.locator('#property-title').filter({hasText:'fallback'}).waitFor();
     assert.equal(await page.locator('#bp-fallback').inputValue(),'fallback');
-    await page.locator('#editor-canvas .edge.recovery').first().waitFor({state:'attached'});
+    assert(await page.locator('#bp-fallback-enabled').isChecked());
+    assert.equal(await page.locator('#editor-canvas .edge.recovery').count(),0);
     const candidates={default:'first',options:{first:{kind:'agent'},chosen:{kind:'agent'}}};
     await page.locator('#add-author-candidate').click();
     await page.locator('[data-candidate-id]').fill('chosen');
@@ -318,7 +319,8 @@ assert [n for n in z.namelist() if n.endswith('/SKILL.md')]==['platform/loop-any
     const promptCatalog=await (await page.request.get(url+'/api/catalog')).json();
     assert(promptCatalog.some(item=>item.implementations.fallback?.options?.chosen?.prompt==='作者脚本入口\n{{context}}'));
 
-    await page.locator('#launch-fallback').selectOption('');
+    await page.locator('#launch-fallback-enabled').uncheck();
+    assert.equal(await page.locator('#launch-fallback').inputValue(),'');
     assert.equal(await page.locator('#preparation-flow .map-edge.recovery').count(),0);
     await page.locator('#preparation-flow .loop-progress > summary').click();
     assert((await page.locator('#preparation-flow .loop-progress').innerText()).includes('未启用自动兜底'));
@@ -338,7 +340,10 @@ assert [n for n in z.namelist() if n.endswith('/SKILL.md')]==['platform/loop-any
     const disabled=await waitRun(fallbackRun.id,r=>r.tasks.initialize.status==='blocked');
     assert.equal(disabled.settings.fallback_node,null);assert.deepEqual(disabled.agent_sessions,[]);
     await page.locator('.settings-panel > summary').click();
+    await page.locator('#run-fallback-enabled').check();
     await page.locator('#run-fallback').selectOption('fallback');
+    await page.locator('#run-fallback-implementation').selectOption(JSON.stringify('chosen'));
+    await page.locator('[data-fallback-control="run-fallback"]').screenshot({path:path.join(root,'fallback-control.png')});
     await page.locator('#settings-form button[type="submit"]').click();await page.locator('#apply-change').click();
     const enabled=await waitRun(fallbackRun.id,r=>r.agent_sessions?.length && r.executions.some(e=>e.node==='fallback'));
     const fallbackExecution=enabled.executions.find(e=>e.node==='fallback');

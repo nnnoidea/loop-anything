@@ -96,6 +96,64 @@ class PlanTests(unittest.TestCase):
         self.engine.tick(self.run_id)
         self.assertEqual('completed', self.store.get(self.run_id)['status'])
 
+    def test_conditional_omission_is_atomic_visible_and_requires_explicit_reuse(self):
+        self.bp['plans']['round']['steps']['prepare']['when'] = {'path': 'values.enabled'}
+        self.start()
+        args = {'name': 'round', 'key': 'conditional', 'values': {'experiments': ['a', 'b'], 'enabled': False}}
+        before = self.store.get(self.run_id)
+        self.assertFalse(self.tools.respond('build_plan', args)['ok'])
+        self.assertEqual(self.store.get(self.run_id)['tasks'], before['tasks'])
+        args['steps'] = {'train': {'inputs': {'data': {'record': 'cached'}}}}
+        preview = edit_tasks(self.store, self.run_id, [{'tool': 'build_plan', 'arguments': args}], before['revision'], self.e['token'], preview=True)
+        self.assertEqual(preview['omitted'][0]['reason'], 'condition_false')
+        self.assertEqual(self.store.get(self.run_id), before)
+        result = self.tools.call('build_plan', args)
+        self.assertEqual(result['omitted'][0]['step'], 'prepare')
+        self.assertEqual(sorted(x['node'] for x in result['tasks']), ['judge', 'train', 'train'])
+        self.tools.call('build_plan', args)
+        run = self.store.get(self.run_id)
+        self.assertEqual(sum(h['kind'] == 'plan_built' for h in run['history']), 1)
+        self.assertFalse(any(t['status'] == 'skipped' for t in run['tasks'].values()))
+        for value in [None, 'false', 0, [], {}]:
+            bad = dict(args, key='invalid', values={'experiments': ['a'], 'enabled': value})
+            self.assertFalse(self.tools.respond('build_plan', bad)['ok'])
+        self.assertFalse(self.tools.respond('build_plan', dict(args, key='missing', values={'experiments': ['a']}))['ok'])
+        self.assertEqual(self.store.get(self.run_id)['tasks'], run['tasks'])
+        allowed = self.tools.call('build_plan', dict(args, key='included', values={'experiments': ['a'], 'enabled': True}))
+        self.assertEqual(allowed['omitted'], [])
+        self.assertIn('prepare', [t['node'] for t in allowed['tasks']])
+
+    def test_empty_conditional_batch_has_no_placeholders_and_stable_key(self):
+        for step in self.bp['plans']['round']['steps'].values():
+            step['when'] = {'path': 'values.enabled'}
+        self.start()
+        args = {'name': 'round', 'key': 'empty', 'values': {'experiments': ['a'], 'enabled': False}}
+        before = self.store.get(self.run_id)
+        with self.assertRaises(Conflict):
+            edit_tasks(self.store, self.run_id, [{'tool': 'build_plan', 'arguments': dict(args, parent_id='')}], before['revision'], preview=True)
+        self.assertEqual(self.store.get(self.run_id), before)
+        result = self.tools.call('build_plan', args)
+        self.assertEqual(result['tasks'], [])
+        self.assertEqual(len(result['omitted']), 3)
+        self.assertEqual(list(self.store.get(self.run_id)['tasks']), ['init'])
+        self.tools.call('build_plan', args)
+        changed = dict(args, values={'experiments': ['a'], 'enabled': True})
+        self.assertFalse(self.tools.respond('build_plan', changed)['ok'])
+        self.assertEqual(list(self.store.get(self.run_id)['tasks']), ['init'])
+        self.assertEqual(sum(h['kind'] == 'plan_built' for h in self.store.get(self.run_id)['history']), 1)
+
+    def test_bad_plan_references_are_structured_errors_without_partial_tasks(self):
+        self.bp['plans']['round']['steps']['train']['parameters']={'bad':{'$':['values','experiments',5]}}
+        self.start()
+        before=self.store.get(self.run_id)
+        result=self.tools.respond('build_plan',{'name':'round','key':'invalid','values':{'experiments':['x']}})
+        self.assertFalse(result['ok']);self.assertEqual(result['error']['code'],'invalid_request')
+        self.assertIn('experiments',result['error']['message'])
+        self.assertEqual(self.store.get(self.run_id),before)
+        self.bp['plans']['round']['steps']['train'].pop('parameters')
+        self.bp['plans']['round']['steps']['train']['each']='experiments.9'
+        with self.assertRaises(Invalid):build_plan(self.bp,'round','bad-each',{'experiments':['x']})
+
     def test_defaults_construct_all_steps_and_execute_prepare(self):
         self.start()
         self.tools.call('build_plan', {'name': 'round', 'key': 'default', 'values': {'experiments': ['a', 'b']}})

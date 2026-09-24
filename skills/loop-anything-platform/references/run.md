@@ -102,7 +102,7 @@ python3 scripts/call.py finish --arguments '{"run_id":"RUN_ID","token":"TOKEN"}'
 
 - `next_tasks` 和 `read_timeline` 读取当前节点任务与异常、用户授权及作者整体说明。read_timeline 的 records 列出记录 ID、类型和最新版本，需要正文时用 `read_record`。正常运行或等待的脚本不需要 Agent 接管。
 - 对每项可处理任务先 `read_task`，读取最新输入、输出契约及作者节点 Skill，再 `report_task`（event=completed） 写入完整结果。结果当次生效；不能代写脚本、事件或审批结果。
-- `read_plans` 查看模板，`build_plan` 提供 name、稳定 key、values。默认构建全部步骤；steps.<步骤>.skip=true 省略步骤，不产生假输出。显式提供被省略步骤的复用输入来源。
+- `read_plans` 查看模板，`build_plan` 提供 name、稳定 key、values。默认安排无条件或 when 为真的步骤；steps.<步骤>.skip=true 明确不安排。省略不会创建 Task、skipped 占位或假输出，回执 omitted 与安排记录说明原因。需要其输出的下游必须显式提供复用输入来源。相同 key 重试必须保持参数与安排不变；不要用重复 key 隐式撤回已安排任务。已存在的任务不再需要时，明确取消，保留事实。
 - 若作者的 Loop 有轮次，build_plan 可传 `round`，例如作者确定的轮次名称。它只组织显示，不强制串行、不控制何时推进；不要给没有轮次的业务强加轮次。
 - `add_task` 从已声明的非入口节点安排单项工作：提供稳定 `key`、`node_id`、`inputs`，可选 `parameters`、`implementation`、`after` 和 `round`。返回任务 ID 与自动分配的输出记录 ID，供后续输入引用；不手写完整任务。
 - `change_task` 修正尚未执行的 `inputs`、`parameters`、`implementation` 和 `after`（前置任务 ID 列表）；重试前先核实是否已经产生外部副作用。执行中的正常脚本不应被当成待修复问题。
@@ -157,9 +157,11 @@ python3 scripts/call.py finish --arguments '{"run_id":"RUN_ID","token":"TOKEN"}'
 
 ## 配置通知出口
 
-通知通过本 Run 的 `notification_command` 发送；它是通用命令数组，与聊天入口独立。省略或清空该覆盖时沿用 Loop 的 `$notifications` 命令。纯终端使用不需要聊天桥接，个人聊天目标不写进共享 Loop 包。
+使用 read_notification_channels 查看平台已配置出口，在 start_run.notification_route 或 change_settings.change.notification_route 中选择本 Run 的默认出口。workspace 表示平台通知区。终端、网页和聊天入口共用该设置，切换聊天不会自动更换接收位置。个人发送配置只保存在平台与 Run，不放在 Loop 定义中。
 
-配置方法与适配器契约见 [通知接口](notifications.md)。进度仍使用 notify Hooks，完成与连续失败暂停通知复用同一出口。用户主动终止不发送成功完成通知。更换聊天入口不会自动修改通知目标。
+通知、询问、回复和适配器参数见 [notifications.md](notifications.md)。Agent 调用 notify 时沿用当前操作权，支线关联自己的 task_id；不要为了发消息再安排一个业务 Task。重复请求保持 key 和内容一致。询问不会暂停其他工作，需要答案时安排等待节点，完成当前工作后 finish 释放 Agent，不持权守候。
+
+read_task.execution_state.wait 显示实际等待时刻、事件关联和截止时间。网页能回复询问，也能在等待详情提交事件；其他入口通过 send_event 提交。使用稳定 event_id，回复的 payload 必须符合等待节点输出契约；重复事件不重复推进。时间和事件等待可通过现有 change_task cancel 取消，已完成输出不会被撤回。
 
 ## Agent 异常退出与通知
 
@@ -167,7 +169,7 @@ python3 scripts/call.py finish --arguments '{"run_id":"RUN_ID","token":"TOKEN"}'
 用户明确暂停或等待用户输入不作为失败。旧命令不能确认已经停止时保留操作权，使用现有确认停止恢复入口；交互 Agent 同样须先确认旧进程停止，再通过该入口恢复。
 
 通知使用上述通用出口。非零退出、超时或未确认送达都会记录失败；未配置发送命令也会明确记录未送达，不假称已经通知成功。
-执行前通知与业务运行并行；执行前暂停拦住目标 Task，直到放行。普通通知默认调用用户发送命令；`route: workspace` 可明确选择仅在工作台留存。
+执行前通知与业务运行并行；执行前暂停拦住目标 Task，直到放行。普通通知使用本 Run 的默认出口；未选外部出口的新 Run 使用平台通知区。`route: workspace` 可明确选择仅在工作台留存。
 
 不同支线的失败计数分别保留，进入全局兜底后沿用未解决支线的最长失败链，不把并行支线的失败次数相加；恢复运行会清零这些计数；一个 Agent 退出不会释放其他 Agent 的操作权。无法确认旧进程停止时保留它的范围，重叠范围不得启动第二个 Agent。
 
@@ -196,7 +198,7 @@ client.report(context, "completed", report_id="final", envelope={"outputs": {"re
 
 也可调用 `python3 REPORT_CLIENT completed --context 上下文.json --data @报告.json`。作者可把接入封装进已有业务脚本，无需修改远端服务。
 
-异步提交用 `submitted` 携带 external_id 和可选 poll_after 秒数；监控使用上下文中的 external_id，报告 progress（detail 中放进度）或 completed（envelope 中放结果），业务明确失败才报告 failed。查询失败与业务失败不同；查询脚本可以抛出异常交给平台记录 check_error。查询失败后用 change_task retry 恢复原外部任务的监控；此操作不能同时改变输入或实现。确认原工作失败且需要重新提交时，走正常任务重试并核实外部副作用。
+异步提交用 `submitted` 携带 external_id 和可选 poll_after 秒数；监控使用上下文中的 external_id，报告 progress（detail 中放进度）或 completed（envelope 中放结果），业务明确失败才报告 failed。查询失败与业务失败不同；查询脚本可以抛出异常交给平台记录 check_error。作者可以将 check_error 明确转到 agent，由已启用的兜底节点处理；未启用时保留问题。查询失败后用 change_task retry 恢复原外部任务的监控，并回到转交前的监控状态；此操作不能同时改变输入或实现。确认原工作失败且需要重新提交时，走正常任务重试并核实外部副作用。
 
 旧 `complete_task` 仍作为 completed 报告的兼容入口；旧脚本的 JSON stdout 结果也汇入同一转移处理。直接调用工具后，stdout 可用于普通日志，回执以工具为准。完成任务不会自动释放 Agent 操作权，最后仍需 finish。
 
@@ -222,3 +224,7 @@ Run 默认实现或输入记录的变化不直接改写 Task 声明，因此不�
 报告返回 state=retry 时，表示重试转移已记录，Task 处于 retrying，需等待进程结束及操作范围可写后才能应用。read_task 的 execution_state.retry 可查看 pending/applied/blocked/superseded 和已确定的参数。Agent 报告后仍需 finish 释放操作权；本任务明确转入 agent 时也可 finish，将该问题交还给已配置兜底，其他未处理问题仍须遵守原范围规则。
 
 不要重复 add_task 代替重试。报告重放沿用同一 report_id 和内容，已应用的转移不会再次改参或重提。服务重启后若标明旧进程结局未知，先核实它已停止及外部副作用，再用 change_task retry；平台不会自动冒险重提。自动恢复与手动操作共用 Task 修订、参数契约和操作范围。
+
+监控报告返回 `stale: true` 表示旧检查已结束或凭证已被恢复/重试替换，报告只保留为证据。随 Skill 提供的 report.py 将其作为正常的过期回执返回；调用者应停止该旧检查，不再推进状态。错误凭证仍会被拒绝。
+
+执行记录的 `failure_kind=command_start` 表示命令/工作目录无法启动，`agent_command` 表示 Agent 命令异常；它们不证明外部训练等业务失败。读取原始错误和实际 cwd，检查命令及 Agent 信任/登录配置，不擅自修改信任范围或重提外部任务。

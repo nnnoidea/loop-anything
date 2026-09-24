@@ -1,7 +1,7 @@
 'use strict';
 // Read-only discovery and explicit launch. Author prose is escaped, never executed.
 const guideFields = {purpose:'它能帮你做什么',suitable_for:'适合什么情况',not_for:'不适合与能力边界',preparation:'你需要准备什么',results:'你会获得什么',lifecycle:'怎样持续运行、等待和结束',participation:'什么时候需要你参与',effects:'外部影响与注意事项'};
-const kindNames = {agent:'Agent 决策',command:'同步脚本',external:'异步任务',event:'等待外部事件',approval:'等待用户确认',mock:'平台内置模拟'};
+const kindNames = {agent:'Agent 决策',command:'同步脚本',external:'异步任务',event:'等待外部事件',approval:'等待用户确认',timer:'等待时间',mock:'平台内置模拟'};
 const objectValue = value => value && typeof value==='object' && !Array.isArray(value) ? value : {};
 function guideOf(bp){return objectValue(bp.guide);}
 function implementationOptions(entry){return entry?.kind?{default:entry}:(entry?.options || {});}
@@ -18,8 +18,40 @@ function bindingFields(item,bindings={}){
   }).join('');
 }
 function fallbackOptions(bp,value){
-  return '<option value="">不启用 Agent 兜底</option>'+Object.entries(bp.nodes).filter(([id,n])=>id!==bp.entry && !Object.keys(n.inputs || {}).length).map(([id,n])=>`<option value="${esc(id)}" ${value===id?'selected':''}>${esc(n.label || id)}</option>`).join('');
+  return '<option value="">请选择兜底节点</option>'+Object.entries(bp.nodes).filter(([id,n])=>id!==bp.entry && !Object.keys(n.inputs || {}).length).map(([id,n])=>`<option value="${esc(id)}" ${value===id?'selected':''}>${esc(n.label || id)}</option>`).join('');
 }
+function fallbackControl(id){return `<section class="fallback-control" data-fallback-control="${id}"><label class="inline-check"><input type="checkbox" id="${id}-enabled">启用 Agent 兜底</label><p class="small muted">处理未覆盖转移和监控异常；关闭时保留证据，等待用户处理。</p><div data-fallback-fields><label>兜底节点<select id="${id}"></select></label><label>使用的 Agent 实现<select id="${id}-implementation"></select></label></div><div id="${id}-summary" class="fallback-summary"></div></section>`;}
+function fallbackSummary(item,node,bindings={}){
+  if(!node)return '<strong>未启用自动兜底</strong><p>未覆盖转移会保留为异常，不自动唤醒 Agent。</p>';
+  const config=chosenImplementation(item,node,bindings),id=Object.hasOwn(bindings,node)?bindings[node]:defaultImplementation(item.implementations[node]),checks=preflightCache.get(item.key||item.loop_key)?.checks.filter(c=>c.node===node&&c.implementation===id)||[],cwd=checks.find(c=>c.kind==='cwd')?.target||config?.cwd||(item.package_key?'Loop 包目录（运行前检查可查看实际路径）':'平台进程工作目录');
+  return `<strong>异常交给：${esc(item.loop_definition.nodes[node]?.label||node)}${id?' · '+esc(config?.label||id):''}</strong><p>${!config?'尚未选择实现，无法自动唤醒。':config.kind!=='agent'?'所选实现不是 Agent，请修正。':!config.command?.length?'未配置 Agent 命令；只能等待外部 Agent 接管，不能自动唤醒。':'使用所选命令唤醒 Agent，遵守现有操作权和失败次数限制。'}</p>${config?.command?.length?`<p>工作目录：<code>${esc(cwd)}</code></p><details><summary>查看实际命令</summary><pre>${esc(pretty(config.command))}</pre></details><p class="small muted">Agent 的目录信任、登录和模型权限需自行确认；平台不会切换目录或修改信任配置。</p>`:''}${checks.filter(c=>c.status==='fail').map(c=>`<p class="task-error">启动配置需修正：${esc(checkNames[c.kind]||c.kind)} · ${esc(c.target)}</p>`).join('')}`;
+}
+function syncFallbackControl(id,item,bindings={},keepEnabled=false){
+  const field=$(id),root=field.closest('[data-fallback-control]');if(!root)return;
+  const enabled=!!field.value||keepEnabled;$(id+'-enabled').checked=enabled;root.querySelector('[data-fallback-fields]').hidden=!enabled;
+  const node=field.value,entry=item.implementations[node],defaultId=defaultImplementation(entry),selected=Object.hasOwn(bindings,node)?JSON.stringify(bindings[node]):'';
+  $(id+'-implementation').innerHTML=`<option value="">${defaultId?'沿用 Loop 默认 · '+esc(implementationOptions(entry)[defaultId]?.label||defaultId):'尚未选择默认实现'}</option>`+Object.entries(implementationOptions(entry)).filter(([,c])=>c.kind==='agent').map(([key,c])=>`<option value="${esc(JSON.stringify(key))}">${esc(c.label||key)}</option>`).join('');
+  $(id+'-implementation').value=selected;$(id+'-implementation').disabled=!node;
+  $(id+'-summary').innerHTML=enabled&&!node?'<p>请选择兜底节点；尚未选择时不会自动唤醒。</p>':fallbackSummary(item,node,bindings);
+}
+document.addEventListener('change',event=>safely(async()=>{
+  const root=event.target.closest('[data-fallback-control]');if(!root)return;
+  const id=root.dataset.fallbackControl,field=$(id),item=id==='bp-fallback'?editor:id==='run-fallback'?run:launchItem(),bindings=id==='bp-fallback'?{}:id==='run-fallback'?readBindingFields($('run-bindings')):launchBindings;
+  if(event.target.id===id+'-enabled'){
+    if(!event.target.checked){field.dataset.previous=field.value;field.value='';}
+    else field.value=field.dataset.previous||'';
+  }
+  if(event.target.id===id+'-implementation'&&field.value){
+    const value=event.target.value,node=field.value;
+    if(id==='bp-fallback'){collectAll();if(value){editor.implementations[node]={options:implementationOptions(editor.implementations[node]),default:JSON.parse(value)};if(editSelection?.node===node)$('author-default').value=JSON.parse(value);}}
+    else if(id==='run-fallback')$('run-bindings').querySelector(`[data-binding-node="${CSS.escape(node)}"]`).value=value;
+    else if(value)launchBindings[node]=JSON.parse(value);else delete launchBindings[node];
+  }
+  const keep=$(id+'-enabled').checked;
+  if(id==='bp-fallback'){collectAll();dirty();renderEditor();renderProperties();}
+  if(id==='launch-fallback'){renderPreparationGraph();field.dispatchEvent(new Event('input',{bubbles:true}));}
+  syncFallbackControl(id,item,id==='run-fallback'?readBindingFields($('run-bindings')):bindings,keep);
+}));
 function readBindingFields(container){return Object.fromEntries([...container.querySelectorAll('[data-binding-node]')].filter(e=>e.value!=='').map(e=>[e.dataset.bindingNode,JSON.parse(e.value)]));}
 function preventsStart(report){return report.checks.some(c=>c.status==='fail' && ['manifest','asset','structure'].includes(c.kind));}
 function implementationSummary(item){
@@ -82,7 +114,7 @@ function flowHTML(item,showGraph=true){
   const rules=bp.schema_version===2?Object.entries(bp.plans || {}).map(([name,p])=>`<li><strong>${esc(name)}</strong> · ${Object.entries(p.steps).map(([k,s])=>esc(k)+(s.each?'（按列表展开）':'')).join('、')}<details><summary>查看参数、输入绑定与聚合</summary><pre>${esc(pretty(p))}</pre></details></li>`):(bp.transitions || []).map(r=>`<li>${esc(r.from)} → ${esc(r.to)}</li>`);
   return `${showGraph?loopGraphHTML(item):''}<div class="loop-notice">这里展示可用步骤模板，不是一次运行的固定路线。Agent 可在授权范围内规划具体 Task；Timeline 工具按模板构建本轮 Tasks；Engine 只推进已安排且输入就绪的工作。没有画出的动态计划，不代表不会发生。</div><h3>从「${esc(bp.nodes[bp.entry]?.label || bp.entry)}」开始</h3><p class="muted">展开一个步骤，了解它的职责和交接信息。</p><div class="step-grid">${Object.entries(bp.nodes).map(([id,node])=>`<details class="step-card"><summary><span>${esc(node.label || id)}</span><small>${esc(executionLabel(item.implementations[id],bp.schema_version))}</small></summary><p>${esc(node.description || node.instructions || '作者尚未说明本步骤职责。')}</p><h4>需要哪些信息</h4><ul>${Object.entries(node.inputs || {}).map(([name,spec])=>`<li><strong>${esc(name)}</strong> · ${esc(spec.type || '按来源读取')}<br>${esc(sourceText(bp.schema_version===2?(id===bp.entry?bp.seed?.inputs?.[name]:null):spec))}</li>`).join('') || '<li>未声明输入</li>'}</ul><h4>会写入哪些结果</h4><ul>${Object.entries(node.outputs || {}).map(([name,spec])=>`<li>${esc(name)} · ${esc(spec.record_type?'共享记录 '+spec.record_type:spec.type)}</li>`).join('') || '<li>未声明输出</li>'}</ul>${chosenImplementation(item,id)?.kind!=='agent' && node.plan_nodes?.length?`<p>脚本可新增的声明任务：${node.plan_nodes.map(n=>esc(bp.nodes[n]?.label || n)).join('、')}。是否规划取决于运行时决策。</p>`:''}<p class="muted">可能等待：输入未就绪、运行暂停，或本步骤所需的外部事件 / 用户结果。</p>${docView('节点专业 Skill',node.skills?.length?node.skills:null)}<details><summary>高级 · 完整节点契约</summary><pre>${esc(pretty(node))}</pre></details></details>`).join('')}</div><h3>本轮构建模板</h3><ul class="rule-list">${rules.join('') || '<li>未声明构建模板。作者可使用构建工具补充模板；运行时按 Timeline 规则或终止信号结束。</li>'}</ul>`;
 }
-const checkNames={implementation:'节点实现',manifest:'包定义完整性',asset:'随包资源',cwd:'工作目录',executable:'执行程序',script:'入口脚本',path:'作者要求的路径',program:'作者要求的程序',env:'环境变量',manual_or_event:'外部输入',runtime:'运行时行为',structure:'Loop 定义结构',environment:'本机环境'};
+const checkNames={implementation:'节点实现',manifest:'包定义完整性',asset:'随包资源',cwd:'工作目录',executable:'执行程序',script:'入口脚本',path:'作者要求的路径',program:'作者要求的程序',env:'环境变量',manual_or_event:'外部输入',runtime:'运行时行为',agent_access:'Agent 信任与访问权限',structure:'Loop 定义结构',environment:'本机环境'};
 function checkAdvice(c){
   if(c.status==='pass')return '本项静态检查通过；没有执行脚本或调用模型。';
   if(c.kind==='implementation')return '启动或运行时可选择已有候选；实际需要这个节点时才检查。没有候选时由作者添加实现。';
@@ -90,6 +122,7 @@ function checkAdvice(c){
   if(['cwd','path'].includes(c.kind))return '核对路径和本机目录；平台不会创建或改写。';
   if(['executable','script','program'].includes(c.kind))return '核对程序、脚本和运行环境；平台不会安装依赖或修改命令。';
   if(['asset','manifest'].includes(c.kind))return '包文件缺失或已变化，请自行核对来源与文件，平台不会修复。';
+  if(c.kind==='agent_access')return '请在所列工作目录确认 Agent 已允许非交互运行、完成登录并可访问模型；平台不会修改信任设置。';
   if(c.kind==='manual_or_event')return '需要外部事件或用户/Agent 提交结果；确认已有对应的提供方。';
   return '模型权限、服务连通性、脚本依赖和业务效果需另行验证；静态检查无法证明。';
 }
@@ -114,7 +147,7 @@ async function preflight(item){
     report={checks:[...result.errors.map(detail=>({kind:'structure',status:'fail',target:'Loop 定义',detail})),...implementationSummary(item).missing.map(node=>({kind:'implementation',status:'fail',target:node,node})),{kind:'environment',status:'unknown',target:'旧版 / 非包资产',detail:'此资产没有安装包清单。仅检查结构，未检查路径、程序或外部服务。'}]};
   }
   if(item.loop_definition.schema_version!==2)report.checks.unshift({kind:'structure',status:'fail',target:'历史 v1 协议',detail:'旧Loop 定义仅供查看，不能启动；请发布 Timeline-based 新版本。'});
-  preflightCache.set(item.key,report);return report;
+  preflightCache.set(item.key,report);if(page==='launch'&&launchItem()?.key===item.key)syncFallbackControl('launch-fallback',item,launchBindings);return report;
 }
 // Labels are author metadata. Types come from contracts/defaults, not prose.
 function launchFields(bp,values){
@@ -191,8 +224,9 @@ function collectLaunchInputs(requireComplete=true){
   $('create-inputs').value=pretty(values);return values;
 }
 function prepareLaunch(item){
-  if(!$('launch-fallback'))$('launch-fields').insertAdjacentHTML('afterend','<label>Agent 兜底节点<select id="launch-fallback"></select></label><p class="small muted">未覆盖状态交给所选节点。Agent 由该节点的实现选择决定；留空时只记录问题。</p>');
-  if(!$('launch-global-agent'))$('launch-fallback').parentElement.insertAdjacentHTML('afterend','<label>全局 Agent 节点<select id="launch-global-agent"></select></label>');
+  if(!$('launch-notification-route'))$('launch-fields').insertAdjacentHTML('afterend','<label>本次通知出口<select id="launch-notification-route" data-outlet-select="run"></select></label>');renderOutletSelect('launch-notification-route','workspace');
+  if(!$('launch-fallback'))$('launch-fields').insertAdjacentHTML('afterend',fallbackControl('launch-fallback'));
+  if(!$('launch-global-agent'))$('launch-fallback').closest('.fallback-control').insertAdjacentHTML('afterend','<label>全局 Agent 节点<select id="launch-global-agent"></select></label>');
   $('launch-global-agent').innerHTML=globalAgentOptions(item.loop_definition,item.loop_definition.global_agent_node);
   $('launch-fallback').innerHTML=fallbackOptions(item.loop_definition,item.loop_definition.fallback_node);
   $('create-authorization').value='';launchEpoch++;pendingLaunch=null;launchMode='form';$('create-dialog').scrollTop=0;$('launch-error').textContent='';$('launch-confirm').hidden=true;$('launch-edit').hidden=false;$('launch-fields').hidden=false;$('launch-json').hidden=true;$('launch-mode').textContent='切换到高级 JSON';$('launch-ack').checked=false;
@@ -210,8 +244,8 @@ async function reviewLaunch(){
     if(epoch!==launchEpoch || !$('create-dialog').open)return;
     if(preventsStart(report)){$('launch-error').textContent='运行前检查发现缺项，请先在「使用准备」中处理。';$('create-dialog').close();await openLoop(item.key,'prepare');toast('发现阻塞项，尚未启动。请查看使用准备。');return;}
     await savePreparation();
-    pendingLaunch={key:item.key,title,inputs,authorization:$('create-authorization').value,bindings:structuredClone(launchBindings),fallback_node:$('launch-fallback').value,global_agent_node:$('launch-global-agent').value};
-    $('launch-summary').innerHTML=prose('使用的 Loop',item.loop_definition.name || item.loop_definition.id)+prose('运行名称',title)+prose('用户授权',pendingLaunch.authorization || '未提供额外授权')+`<h4>本次参数</h4><dl class="input-summary">${Object.entries(inputs).map(([k,v])=>`<dt>${esc(guideOf(item.loop_definition).parameters?.[k]?.label || k)}</dt><dd>${esc(typeof v==='string'?v:pretty(v))}</dd>`).join('') || '<dd>无启动参数</dd>'}</dl>`+executionHTML(item,pendingLaunch.bindings)+`<h4>运行前检查</h4>${launchCheckHTML(report)}`;
+    pendingLaunch={key:item.key,notification_route:$('launch-notification-route').value,title,inputs,authorization:$('create-authorization').value,bindings:structuredClone(launchBindings),fallback_node:$('launch-fallback').value,global_agent_node:$('launch-global-agent').value};
+    $('launch-summary').innerHTML=prose('使用的 Loop',item.loop_definition.name || item.loop_definition.id)+prose('运行名称',title)+prose('通知出口',outletLabel(pendingLaunch.notification_route))+prose('用户授权',pendingLaunch.authorization || '未提供额外授权')+`<h4>本次参数</h4><dl class="input-summary">${Object.entries(inputs).map(([k,v])=>`<dt>${esc(guideOf(item.loop_definition).parameters?.[k]?.label || k)}</dt><dd>${esc(typeof v==='string'?v:pretty(v))}</dd>`).join('') || '<dd>无启动参数</dd>'}</dl>`+fallbackSummary(item,pendingLaunch.fallback_node,pendingLaunch.bindings)+executionHTML(item,pendingLaunch.bindings)+`<h4>运行前检查</h4>${launchCheckHTML(report)}`;
     $('launch-edit').hidden=true;$('launch-confirm').hidden=false;$('launch-ack').checked=false;$('launch-start').disabled=false;$('create-dialog').scrollTop=0;
   }catch(error){$('launch-error').textContent=error.message;}
   finally{launchBusy=false;$('launch-review').disabled=false;}
@@ -255,3 +289,5 @@ document.addEventListener('click',event=>safely(async()=>{
 }));
 
 function globalAgentOptions(bp,selected){return '<option value="">默认使用兜底 Agent</option>'+Object.entries(bp.nodes).map(([id,n])=>`<option value="${esc(id)}" ${id===selected?'selected':''}>${esc(n.label||id)}</option>`).join('');}
+
+document.addEventListener('change',event=>safely(async()=>{if(event.target.closest('#run-bindings'))syncFallbackControl('run-fallback',run,readBindingFields($('run-bindings')));if(event.target.id==='author-default'){collectAll();syncFallbackControl('bp-fallback',editor);}}));

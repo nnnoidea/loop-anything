@@ -88,6 +88,12 @@ class PackageTests(unittest.TestCase):
         doc = document()
         self.assertTrue(validate_v2(doc['loop_definition'], {})['valid'])
         self.assertTrue(validate_v2(doc['loop_definition'], {})['valid'])
+        from loop_anything.runtime.lifecycle import template
+        personal=document();matrix=template('agent');matrix['transitions'][1]['notify']=[{'message':'done','route':'my-private-chat'}]
+        personal['implementations']['initialize']['lifecycle']=matrix
+        with self.assertRaises(Invalid):make_archive(personal,assets())
+        matrix['transitions'][1]['notify'][0]['route']='default'
+        self.assertTrue(make_archive(personal,assets()))
         for implementation in (None, {'options': []}, {'kind': 'command', 'command': 'wrong'}):
             self.assertFalse(validate_v2(doc['loop_definition'], {'finish': implementation})['valid'])
         doc.pop('implementations')
@@ -275,7 +281,13 @@ class PackageTests(unittest.TestCase):
         doc['implementations']['initialize']['timeout'] = float('nan')
         with self.assertRaises(Invalid):
             make_archive(doc, assets())
-        for implementation in (None, {'command': ['bad\x00command']}):
+        from loop_anything.runtime.lifecycle import template
+        personal=document();matrix=template('agent');matrix['transitions'][1]['notify']=[{'message':'done','route':'my-private-chat'}]
+        personal['implementations']['initialize']['lifecycle']=matrix
+        with self.assertRaises(Invalid):make_archive(personal,assets())
+        matrix['transitions'][1]['notify'][0]['route']='default'
+        self.assertTrue(make_archive(personal,assets()))
+        for implementation in (None, {'command': ['bad\x00command']}, {'kind':'command','command':['sender','private-recipient']}):
             bad = document()
             bad['implementations']['$notifications'] = implementation
             with self.assertRaises(Invalid):

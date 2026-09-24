@@ -4,7 +4,7 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;',
 const pretty = value => JSON.stringify(value, null, 2);
 // getRandomValues also works on ordinary HTTP inside the team network.
 const randomKey = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('');
-const labels = {skipped:'已跳过',running:'运行中',ready:'待执行',executing:'执行中',waiting:'等待外部',completed:'已完成',paused:'已暂停',terminated:'已终止',cancelled:'已取消',fault:'执行失败',retrying:'等待重试',blocked:'输入未就绪',decision:'等待 Agent',approval:'等待确认',unresolved:'转移待决策'};
+const labels = {skipped:'已跳过',running:'运行中',ready:'待执行',executing:'执行中',waiting:'等待中',completed:'已完成',paused:'已暂停',terminated:'已终止',cancelled:'已取消',fault:'执行失败',retrying:'等待重试',blocked:'输入未就绪',decision:'等待 Agent',approval:'等待确认',unresolved:'转移待决策'};
 const badge = status => `<span class="badge ${esc(status)}">${esc(labels[status] || status)}</span>`;
 let catalog = [], runs = [], run = null, selected = null, filterNode = null, activeTab = 'task-history', page = 'runs', settingsBase = null, pendingChange = null, loading = false;
 const drafts = {};
@@ -109,6 +109,7 @@ async function selectRun(id) {
 function renderRun() {
   updateNavigationUI();
   $('run-title').textContent = run.title;
+  renderRunOutlet();
   $('run-key').textContent = (run.loop_definition.name || run.loop_definition.id) + ' · v' + run.loop_definition.version;
   $('run-status').innerHTML = badge(run.status);
   $('run-id').textContent = run.id;
@@ -134,22 +135,23 @@ function renderRun() {
   $('settings-revision').textContent = 'rev ' + run.settings.revision + (settingsBase.revision !== run.settings.revision ? ' · 表单已过期' : '');
 }
 function renderGraph() {
-  const signature = pretty([run.id,filterNode,run.settings.bindings,run.executions,Object.values(run.tasks || {}).map(w=>[w.id,w.status]),[],$('graph').clientWidth]);
+  const signature = pretty([run.id,filterNode,run.settings,run.executions,Object.values(run.tasks || {}).map(w=>[w.id,w.status]),[],$('graph').clientWidth]);
   if(graphSignature===signature)return;graphSignature=signature;
   const old=$('graph').querySelector('.loop-map'),keep=old?.dataset.runId===run.id&&old.dataset.filterNode===(filterNode||'');
-  const focus=keep?old.dataset.mapFocus:filterNode,view=keep?old.dataset.mapView:'execution';
+  const focus=keep?old.dataset.mapFocus:filterNode,view=keep?old.dataset.mapView:'execution',layer=keep?old.dataset.graphLayer:'relations';
   $('graph').innerHTML=loopGraphHTML(run,{bindings:run.settings.bindings || {},focus:focus || '',action:'run'});
   const root=$('graph').querySelector('.loop-map');
-  if(root){root.dataset.runId=run.id;root.dataset.filterNode=filterNode||'';if(focus&&Object.hasOwn(run.loop_definition.nodes,focus))focusLoopMap(root,focus,view);}
+  if(root){setGraphLayer(root,layer);root.dataset.runId=run.id;root.dataset.filterNode=filterNode||'';if(focus&&Object.hasOwn(run.loop_definition.nodes,focus))focusLoopMap(root,focus,view);}
   $('graph-caption').textContent='循环关系来自 Loop 定义；上方运行过程保留每一项实际任务、结果与历次执行。';
 }
 function loadSettings() {
+  renderOutletSelect('run-notification-route',runNotificationRoute(run));
   settingsBase = {runId:run.id,initialized:run.initialized,...structuredClone(run.settings)};
   $('intent').value = run.settings.intent;
   $('guidance').value = run.settings.guidance;
   $('parallel').value = run.settings.max_parallel;
   $('constraints').value = pretty(run.settings.constraints);
-  if(run.schema_version===2){$('objective').value=run.settings.objective;$('authorization').value=run.settings.authorization || '';$('requirements').value=pretty(run.settings.requirements);$('completion-rule').value=pretty(run.settings.completion_rule ?? null);$('termination-signal').value=run.settings.termination_signal || '';$('run-bindings').innerHTML=bindingFields(run,run.settings.bindings || {});$('run-fallback').innerHTML=fallbackOptions(run.loop_definition,run.settings.fallback_node);$('run-global-agent').innerHTML=globalAgentOptions(run.loop_definition,run.settings.global_agent_node);}
+  if(run.schema_version===2){$('objective').value=run.settings.objective;$('authorization').value=run.settings.authorization || '';$('requirements').value=pretty(run.settings.requirements);$('completion-rule').value=pretty(run.settings.completion_rule ?? null);$('termination-signal').value=run.settings.termination_signal || '';$('run-bindings').innerHTML=bindingFields(run,run.settings.bindings || {});$('run-fallback').innerHTML=fallbackOptions(run.loop_definition,run.settings.fallback_node);$('run-global-agent').innerHTML=globalAgentOptions(run.loop_definition,run.settings.global_agent_node);syncFallbackControl('run-fallback',run,run.settings.bindings||{});}
 }
 function renderInspect() {
   const signature = pretty([run.id,filterNode,activeTab,run.executions,run.history,run.settings.revision,run.tasks,run.records,run.agent_sessions,run.task_dependencies]);
@@ -169,7 +171,7 @@ function renderInspect() {
     content = run.executions.filter(e=>['approval','decision','unresolved'].includes(e.status) && !(run.schema_version===2 && e.implementation.kind==='agent')).map(e=>task(e)).join('');
     if(run.schema_version===2)content += manualAgentTasks();
     const waiting = run.executions.filter(e=>e.status==='waiting' && e.implementation.kind==='event');
-    content += waiting.map(e=>`<div class="task-card"><h2>等待 ${esc(e.implementation.event)}</h2><p>提交符合节点输出契约的外部事件。</p><textarea id="event-${esc(e.id)}" class="code" rows="5">${esc(drafts[e.id] || '{}')}</textarea><button data-send-event="${esc(e.id)}">发送事件</button></div>`).join('');
+    content += waiting.map(e=>`<div class="task-card"><h2>等待 ${esc(e.implementation.event)}</h2>${waitDetails(e)}</div>`).join('');
     if(!content) content = '<div class="empty-inline">当前无需决策。Engine 会在到达决策节点时创建任务。</div>';
   }
   $('inspect').innerHTML = content;
@@ -216,7 +218,6 @@ document.addEventListener('click',event=>safely(async()=>{
     const payload={execution_id:e.id,token:e.token,envelope:JSON.parse($('result-'+e.id).value)};
     await api(`runs/${runId}/submit`,payload);toast('结果已提交');await refresh();return;
   }
-  if(d.sendEvent){const e=run.executions.find(x=>x.id===d.sendEvent);await api(`runs/${runId}/event`,{event_id:randomKey(),name:e.implementation.event,key:e.parameters?.event_key,payload:JSON.parse($('event-'+e.id).value)});toast('事件已持久化');await refresh();return;}
   switch(button.id){
     case 'new-run':await openCreate();break;
     case 'empty-create':await navigateTo({type:'catalog'});break;
@@ -235,7 +236,7 @@ $('create-loop_definition').addEventListener('change',createChanged);
 $('create-form').addEventListener('submit',e=>{e.preventDefault();safely(reviewLaunch);});
 $('settings-form').addEventListener('submit',e=>{e.preventDefault();safely(async()=>{
   const change={intent:$('intent').value,guidance:$('guidance').value,max_parallel:Number($('parallel').value),constraints:JSON.parse($('constraints').value)};
-  if(run.schema_version===2){change.objective=$('objective').value;change.authorization=$('authorization').value;change.requirements=JSON.parse($('requirements').value);change.completion_rule=JSON.parse($('completion-rule').value || 'null');change.termination_signal=$('termination-signal').value;change.bindings=readBindingFields($('run-bindings'));change.fallback_node=$('run-fallback').value || null;change.global_agent_node=$('run-global-agent').value || null;}
+  if(run.schema_version===2){change.notification_route=$('run-notification-route').value;change.objective=$('objective').value;change.authorization=$('authorization').value;change.requirements=JSON.parse($('requirements').value);change.completion_rule=JSON.parse($('completion-rule').value || 'null');change.termination_signal=$('termination-signal').value;change.bindings=readBindingFields($('run-bindings'));change.fallback_node=$('run-fallback').value || null;change.global_agent_node=$('run-global-agent').value || null;}
   pendingChange={runId:run.id,revision:settingsBase.revision,change};
   const diff=Object.keys(change).filter(k=>pretty(change[k])!==pretty(settingsBase[k]));
   if(!diff.length){toast('没有修改');return;}
