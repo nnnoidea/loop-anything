@@ -314,7 +314,16 @@ assert [n for n in z.namelist() if n.endswith('/SKILL.md')]==['platform/loop-any
 
     await page.locator('.guide-author > summary').filter({hasText:'Loop 操作手册'}).click();
     await page.locator('#handbook-instructions').fill('Read current issues and use the selected fallback Agent.');
-    await page.locator('#editor-publish').click();await page.locator('#launch-page').waitFor({state:'visible'});
+    await page.locator('#editor-save').click();await page.locator('#editor-save-status a').waitFor();
+  assert(await page.locator('#loop_definition-editor').isVisible());
+  const savedVersions=await (await page.request.get(url+'/api/catalog')).json();
+  await page.locator('#editor-save').click();await page.waitForFunction(()=>!editorBusy);
+  assert.deepEqual(await (await page.request.get(url+'/api/catalog')).json(),savedVersions);
+  await page.locator('#editor-save-status a').click();
+  await page.locator('[data-loop-tab="prepare"]').click();await page.locator('.runtime-check > summary').click();
+  await page.locator('#loop-runtime-check').click();await page.locator('#loop-runtime-result .check-row').first().waitFor();
+  assert((await page.locator('#loop-runtime-result').innerText()).includes('未验证'));
+  await page.locator('#loop-detail [data-create]').click();await page.locator('#launch-page').waitFor({state:'visible'});
     assert.equal(await page.locator('#launch-fallback').inputValue(),'fallback');
     const promptCatalog=await (await page.request.get(url+'/api/catalog')).json();
     assert(promptCatalog.some(item=>item.implementations.fallback?.options?.chosen?.prompt==='作者脚本入口\n{{context}}'));

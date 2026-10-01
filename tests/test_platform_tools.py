@@ -197,6 +197,17 @@ class PlatformToolTests(unittest.TestCase):
         stale = self.tools.respond('publish_loop', {'draft_id': changed['draft_id'], 'revision': changed['revision'], 'auto_version': True})
         self.assertFalse(stale['ok'])
 
+    def test_saving_unchanged_available_draft_reuses_version(self):
+        self.build()
+        current = self.tools.call('read_loop', {'draft_id': self.draft['draft_id']})['loop']
+        args = {'draft_id': current['id'], 'revision': current['revision'], 'auto_version': True}
+        before = self.store.catalog()
+        first = self.tools.call('publish_loop', args)
+        second = self.tools.call('publish_loop', dict(args, revision=first['revision']))
+        self.assertEqual(first['key'], second['key'])
+        self.assertEqual(first['revision'], second['revision'])
+        self.assertEqual(before, self.store.catalog())
+
     def test_author_tools_publish_then_user_tools_initialize_and_run(self):
         key = self.build()
         started = self.tools.call('start_run', {'key': key, 'title': 'User run', 'inputs': {'request': 'uppercase'}, 'authorization': 'Run this example'})

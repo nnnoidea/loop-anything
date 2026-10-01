@@ -29,6 +29,14 @@ def main():
         parser.error('Local package does not exist: ' + str(source))
     prefix = args.prefix.expanduser().resolve()
     environment = prefix / 'venv'
+    windows = sys.platform == 'win32'
+    python = environment / ('Scripts/python.exe' if windows else 'bin/python')
+    existing_environment = (environment / 'pyvenv.cfg').is_file()
+    if existing_environment:
+        # An upgrade may be launched with another Python installation. Recreating
+        # this venv can overwrite its interpreter links before pip can run.
+        subprocess.run([str(python), '-I', '-c',
+                        'import sys; assert sys.version_info >= (3, 9), "Python 3.9+ required"'], check=True)
     background = sys.platform == 'darwin' and not args.no_service
     if background:
         from loop_anything.runtime.service import configuration, manage, definition, available
@@ -39,9 +47,8 @@ def main():
         if previous:
             manage('stop')
         available(definition(expected, args.db, args.port, args.host, previous))
-    venv.EnvBuilder(with_pip=True).create(environment)
-    windows = sys.platform == 'win32'
-    python = environment / ('Scripts/python.exe' if windows else 'bin/python')
+    if not existing_environment:
+        venv.EnvBuilder(with_pip=True).create(environment)
     subprocess.run([str(python), '-m', 'pip', '--disable-pip-version-check', 'install', '--upgrade', '--force-reinstall', '--no-deps', str(source)], check=True)
     if windows:
         launcher = prefix / 'Loop Anything.cmd'

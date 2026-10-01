@@ -41,6 +41,8 @@ def bundle(url, installation_url=None):
         if not path.is_file() or path.suffix not in ('.md', '.py', '.json'):
             continue
         files[prefix + path.relative_to(source).as_posix()] = path.read_bytes()
+    from loop_anything.authoring_guidance import render_guide
+    files[prefix + 'references/platform-capabilities.md'] = render_guide().encode('utf-8')
     files[prefix + 'connection.json'] = connection.encode('utf-8')
     entry = ('# Loop Anything · 平台操作 Skill\n\n'
              '本包提供安装到 Agent 的平台操作手册、调用脚本与连接配置。\n\n'

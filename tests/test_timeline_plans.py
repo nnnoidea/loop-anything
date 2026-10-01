@@ -262,6 +262,62 @@ class PlanTests(unittest.TestCase):
             edit_tasks(self.store, self.run_id, changes, run['revision'], self.e['token'])
         self.assertEqual(run, self.store.get(self.run_id))
 
+    def test_agent_previews_composed_plan_then_commits_followup_atomically(self):
+        from loop_anything.interfaces.platform_tools import PlatformTools
+        self.bp['plans']['round']['steps']['prepare']['when'] = {'path': 'values.fresh'}
+        self.bp['plans']['round']['steps']['train']['parameters'] = {'$': 'values.options'}
+        self.start()
+        platform = PlatformTools(self.store)
+        auth = {'run_id': self.run_id, 'token': self.e['token']}
+        before = self.store.get(self.run_id)
+        changes = [{'tool': 'build_plan', 'arguments': {'name': 'round', 'key': 'composed',
+                    'values': {'experiments': ['a', 'b'], 'fresh': False, 'options': {'batch': 4, 'rate': .1}},
+                    'steps': {'train': {'implementation': 'default', 'parameters': {'batch': 8},
+                                        'inputs': {'data': {'record': 'cached'}}}}}}]
+        args = dict(auth, revision=before['revision'], changes=changes, preview=True)
+        preview = platform.call('edit_tasks', args)
+        self.assertEqual(self.store.get(self.run_id), before)
+        tasks = [c['after']['spec'] for c in preview['changes']]
+        trained = [t for t in tasks if t['node'] == 'train']
+        self.assertEqual(len(trained), 2)
+        self.assertTrue(all(t['parameters'] == {'batch': 8, 'rate': .1} and t['implementation'] == 'default' for t in trained))
+        judge = next(t for t in tasks if t['node'] == 'judge')
+        self.assertEqual(judge['inputs']['results']['records'], [t['outputs']['result']['id'] for t in trained])
+        self.assertEqual(preview['omitted'][0]['step'], 'prepare')
+        changes.append({'tool': 'add_task', 'arguments': {'key': 'followup', 'node_id': 'judge',
+                        'inputs': {'results': {'records': [judge['outputs']['summary']['id']]}}, 'after': [judge['id']]}})
+        preview = platform.call('edit_tasks', args)
+        self.assertEqual(len(preview['changes']), 4)
+        committed = platform.call('edit_tasks', dict(args, preview=False))
+        self.assertEqual(set(committed), {'run_id', 'revision', 'applied'})
+        self.assertTrue(committed['applied'])
+        after = self.store.get(self.run_id)
+        self.assertEqual(len(after['tasks']), 5)
+        self.assertTrue(all('agent' in t['origin'] for key, t in after['tasks'].items() if key != 'init'))
+        self.assertEqual(after['executions'], before['executions'])
+        with self.assertRaises(Conflict):platform.call('edit_tasks', dict(args, preview=False))
+        invalid = [{'tool': 'add_task', 'arguments': {'key': 'rollback', 'node_id': 'prepare', 'inputs': {}}},
+                   {'tool': 'add_task', 'arguments': {'key': 'invalid', 'node_id': 'missing', 'inputs': {}}}]
+        with self.assertRaises(Invalid):
+            platform.call('edit_tasks', dict(auth, revision=after['revision'], changes=invalid))
+        self.assertEqual(after, self.store.get(self.run_id))
+        with self.assertRaises(Conflict):
+            platform.call('edit_tasks', dict(args, token='expired', revision=after['revision']))
+        with self.store.edit(self.run_id) as run:
+            run['agent_sessions'] = []
+        with self.assertRaises(Conflict):
+            RunTools(self.store, self.run_id).call('edit_tasks', {'revision': self.store.get(self.run_id)['revision'],
+                                                               'changes': changes, 'preview': True})
+
+    def test_parameter_overrides_do_not_require_replaced_template_values(self):
+        self.bp['plans']['round']['steps']['train']['parameters'] = {'batch': {'$': 'values.absent'}, 'rate': .1}
+        tasks = build_plan(self.bp, 'round', 'override', {'experiments': ['a']},
+                           {'train': {'parameters': {'batch': 8}}})
+        self.assertEqual(next(t for t in tasks if t['node'] == 'train')['parameters'], {'batch': 8, 'rate': .1})
+        self.bp['plans']['round']['steps']['train']['parameters'] = {'$': 'values.options'}
+        with self.assertRaises(Invalid):
+            build_plan(self.bp, 'round', 'bad-object', {'experiments': ['a'], 'options': 4})
+
     def test_requirement_change_preserves_records_and_scheduled_work(self):
         self.bp['seed']['policy'] = 'current'
         self.start()

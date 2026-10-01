@@ -1,13 +1,13 @@
 # 统一 Loop 包：分享、安装、smoke、运行
 
-当前支持 v2 Loop 定义，格式为 `loop-anything-package/1`，扩展名 `.loop.zip`。
+当前支持 v2 Loop 定义，扩展名 `.loop.zip`。普通包使用 `loop-anything-package/1`；使用事件路由、稳定引用、扩展契约、流程验收或显式 requires 的包自动使用 `loop-anything-package/2`，并保存所需 capability IDs。旧服务明确拒绝新格式，接收服务也会检查实际能力。
 没有“Loop 定义包 / 半成品包 / 完整包”三种类型：同一格式允许零、部分、全部节点配置实现。
 结构有效即可分享、安装；缺失绑定只在实际需要执行相应任务时报告，不会自动补成 Agent 或模拟实现。
 历史 Run 保留；旧 v1 定义只读。原 CLI publish 复用相同包安装路径。
 
 ## 包内内容
 
-根文件 `loop.json` 保存 loop_definition、可选 implementations、可选 checks 以及格式与资源清单。
+根文件 `loop.json` 保存 loop_definition、可选 implementations、可选 checks、能力要求 requires 以及格式与资源清单。
 手册和节点 Skill 如果已内嵌 loop_definition，会原样保留。其它脚本/文档/资源必须明确选择附带。
 文件清单包含内容校验值和可执行标记；同一内容可重复安装，不覆盖已有文件。
 内容不同的部分/完整实现可以并存，即使其 loop_definition.id/version 相同。
@@ -22,8 +22,8 @@
 ## 工作台
 
 1. 在 Studio 中设计Loop 定义。通过候选实现表单选择执行方式；新节点不自动绑定 Agent。
-2. 点击“验证”检查定义，允许缺实现；“发布 Loop”将 v2 草稿作为包安装到本机，不启动。
-3. 点击“Loop 包”，选择要附带的文件/文件夹，下载 `.loop.zip`。资源和 smoke 声明可随草稿保存。
+2. 编辑自动保留草稿；点击“保存”统一校验并更新本机可用版本，保存后留在编辑页。版本号自动管理，相同内容重复保存不增加版本；已有 Run 保留原定义。
+3. 需要管理随包文件或分享时，打开“更多 → 文件与打包”，选择资源并下载 `.loop.zip`。打包独立于日常保存，资源和 smoke 声明随草稿保存。
    选择 `scripts` 文件夹会保留 `scripts/task.py`；单选普通文件时文件放在包根目录。
    浏览器附带的新文件默认不设置可执行位，可用 `python3 scripts/task.py` / `bash scripts/task.sh` 启动；
    CLI 打包会保留所选文件的可执行位。
@@ -102,3 +102,33 @@ CLI 有明确失败时退出码为 2；无已知失败时为 0。unknown 不能�
 包中的作者说明和节点 Skill 保持原文。作者 Skill 直接保存在对应节点的 skills 中，可用 put_node 编辑；Agent 用 read_task 按需读取。Loop 详情导出同一种 .loop.zip，包含节点 Skill 与附件。平台 Skill 单独下载，只教通用工具操作，不再生成作者 Skill 封装或要求额外安装。
 
 候选结构和选择工具见 [候选实现与 Binding](implementation-selection.md)。
+
+
+## 可选运行级检查
+
+在 Loop 的“使用准备 → 运行级检查”中显式执行，或使用 CLI：
+
+```sh
+python3 -m loop_anything --db ./state/runs.sqlite3 smoke-runtime <key> --timeout 30
+python3 -m loop_anything --db ./state/runs.sqlite3 smoke-runtime <key> --node runtime_repair --implementation repair_agent
+```
+
+平台工具 `smoke_runtime` 接受相同的 key、node_id、implementation_id、timeout，以及可选 cases 数组。此工具会运行命令，网页需编辑授权；原有 `smoke` 继续只读。
+
+- Agent 检查按已安装候选的原始 argv、实际 cwd 和当前进程环境发送最小响应请求，包含兜底候选；可能调用已配置模型。timeout 是每次检查的上限，候选更短的显式超时仍有效。平台不添加信任参数、替换模型或修复环境。
+- external 检查在临时 Timeline 中使用真实的 report/retry 写入逻辑，覆盖已声明事件和 process_error/check_error，检查重复事件、原 Task 重试及重试后的观察失败。不会执行真实 submit/observe、发送外部通知或修改业务 Run；模拟输出契约为空，业务输出和服务连通性另行验收。
+- 有条件分支或必填参数时，通过 `--cases cases.json` 提供代表性上下文。未提供所需上下文标记 unknown，不算验证通过。每个 case 指定 node、implementation、state、event，可提供 attempt、parameters、inputs、settings、detail 和 expected（预期目标状态）。例如：
+
+```json
+[{"node":"train","implementation":"remote","state":"waiting","event":"failed","attempt":3,"expected":"agent"}]
+```
+
+报告的 `ready` 表示没有已知失败；`verified` 只有全部检查均 pass 才为 true。unknown 和未覆盖的业务验收不会被标记成成功；CLI 有明确失败时退出码为 2。
+
+## 构建验收与能力发现
+
+`read_capabilities` 返回服务版本、启动时 build、磁盘 source_build、restart_required 和全部公开工具的能力分组。CLI list 与 HTTP 工具目录同样包含 service 信息；网页显示运行服务版本，后台/网页 Agent 上下文携带实际服务能力。源码更新不会自动升级已启动进程。
+
+`preview_plan` 只展开和校验草稿，`test_loop` 在隔离数据库中运行作者提供的模拟报告和断言。场景保存在 loop_definition.scenarios 并随包交付，编辑器「更多 → 流程验收」可保存和运行。入口与详细示例见 [平台测试手册](../skills/loop-anything-platform/references/testing.md)。
+
+能力发现还包括无需独立工具调用的调度、持久化、重启恢复、实现选择、原生查看和主机服务。create_loop/copy_loop/完整 read_loop 返回 authoring_context；read_capabilities 按机制说明 activation、平台职责、作者职责、配置、边界和组合示例。导出的 platform-capabilities.md 从同一份机制定义生成。

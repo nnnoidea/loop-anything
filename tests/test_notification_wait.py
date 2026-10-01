@@ -44,6 +44,40 @@ class NotificationWaitTests(unittest.TestCase):
         with patch('loop_anything.runtime.timeline_runtime.run_command',side_effect=send):self.engine.tick(self.base.id);self.settle()
         self.assertEqual(seen[-1][0],['fixed-sender'])
 
+    def test_missing_outlet_waits_without_fallback_and_can_be_retried_after_restart(self):
+        self.base.bp['nodes']['repair'] = {'instructions': 'Repair', 'inputs': {}, 'outputs': {}}
+        self.base.bp['fallback_node'] = 'repair'
+        self.base.implementations['repair'] = {'kind': 'agent'}
+        self.base.initialize()
+        tools = RunTools(self.store, self.base.id)
+        tools.call('notify', {'key': 'missing-outlet', 'message': 'Configure delivery', 'route': 'missing'})
+        tools.call('notify', {'key': 'missing-command', 'message': 'Configure sender', 'route': 'user'})
+        tools.call('notify', {'key': 'default', 'message': 'Available locally'})
+        # Previously persisted failures get the same treatment before and after recovery.
+        with self.store.edit(self.base.id) as run:
+            run['notifications'][0]['status'] = 'fault'
+        self.assertEqual(tools.call('next_tasks', {})['state'], 'normal')
+        self.engine.recover()
+        for _ in range(4):self.engine.tick(self.base.id);self.settle()
+        run = self.base.read()
+        self.assertEqual([n['status'] for n in run['notifications']], ['waiting_configuration', 'waiting_configuration', 'delivered'])
+        self.assertFalse(any(t['origin'].get('fallback') for t in run['tasks'].values()))
+        self.assertEqual(run['agent_failures'], 0)
+        self.assertEqual(run['status'], 'running')
+        self.assertEqual(run['notifications'][0]['attempt'], 0)
+        self.store.notification_channels({'missing': {'command': ['sender']}}, 0)
+        self.engine.command(self.base.id, 'retry_notification', notification_id='notice:missing-outlet')
+        def send(*args, **kwargs):return subprocess.CompletedProcess(args[0], 0, '{"delivered":true}', '')
+        with patch('loop_anything.runtime.timeline_runtime.run_command', side_effect=send):
+            self.engine.tick(self.base.id);self.settle()
+        self.assertEqual(self.base.read()['notifications'][0]['status'], 'delivered')
+        # A configured sender's real failure still reaches ordinary fault handling.
+        tools.call('notify', {'key': 'failed-send', 'message': 'Send failure', 'route': 'missing'})
+        with patch('loop_anything.runtime.timeline_runtime.run_command', return_value=subprocess.CompletedProcess(['sender'], 1, '', 'offline')):
+            self.engine.tick(self.base.id);self.settle()
+        self.assertEqual(self.base.read()['notifications'][-1]['status'], 'fault')
+        self.assertTrue(any(i.get('notification_id') == 'notice:failed-send' for i in tools.call('next_tasks', {})['items']))
+
     def test_question_event_reply_and_timeout_are_persistent(self):
         self.base.implementations['produce']={'kind':'event','event':'reply','wait':{'key':'{parameters.question}','timeout':60}}
         self.base.initialize([task_spec('answer','produce',{'source':{'record':'a'}},{'text':'answer'},parameters={'question':'budget'})])

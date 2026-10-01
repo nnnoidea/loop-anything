@@ -20,3 +20,9 @@ test('runtime relationships follow recorded creation and fallback evidence, not 
  assert.deepEqual(links,[{from:'a',to:'b',kind:'planning'},{from:'a',to:'f',kind:'recovery'}]);
  assert.equal(JSON.stringify(run),before);
 });
+
+test('pending collection follows its pinned producer versions, including mixed revisions',()=>{
+ const tasks={old:{id:'old',status:'completed',spec:{inputs:{},outputs:{result:{id:'shared'}}}},new:{id:'new',status:'completed',spec:{inputs:{},outputs:{result:{id:'shared',expected_revision:1}}}},other:{id:'other',status:'completed',spec:{inputs:{},outputs:{result:{id:'other',expected_revision:1}}}},review:{id:'review',status:'planned',spec:{inputs:{results:{records:['shared','other'],revisions:[1,2]}},outputs:{}}}};
+ const run={tasks,records:{shared:[{revision:1,tasks:'old'},{revision:2,tasks:'new'}],other:[{revision:2,tasks:'other'}]},executions:[]};
+ assert.deepEqual(history.rows(run).find(row=>row.tasks.id==='review').dependencies,['old','other']);
+});

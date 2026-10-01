@@ -54,8 +54,8 @@ python3 scripts/call.py read_task --arguments '{"run_id":"RUN_ID","token":"TOKEN
 ### 一次调用怎样才算完成
 
 1. 带本次操作令牌 `read_timeline`，确认 `read_only` 为 false；此时 `scope_task` 为 null 可操作全局，否则只可修改该 Task 及其后代。再 `read_task` 读取当前 `task_version`、`outputs` 中每个端口的契约、输入与作者 Skill。
-2. 按作者要求完成工作。用 `add_task` / `build_plan` 安排后续工作，只表示创建任务，不等于提交当前任务的结果。
-3. `report_task`（event=completed）：带上稳定的 `report_id` 和刚读取的 `task_version`，一次提交当前任务的全部 `envelope.outputs`。只有工具返回 `ok: true` 且 `accepted: true` 才算写入成功；失败时按错误修正当前提交，不要重复创建后续任务。
+2. 按作者要求完成工作。先读 read_task.routes：已有规则时只需提供所需结果/参数，平台接受事件后自动生成任务；检查回执 routes，勿再次创建同一批工作。临时工作仍可用 add_task / build_plan 安排，但安排任务本身不提交当前结果。
+3. `report_task`（event=completed）：带上稳定的 `report_id` 和刚读取的 `task_version`，一次提交当前任务的全部 `envelope.outputs`。节点有 routes 时，结果与命中规则产生的任务一起校验并提交。只有工具返回 `ok: true` 且 `accepted: true` 才算写入成功；失败时按错误修正当前提交，不要重复创建后续任务。
 4. `next_tasks`：检查自己范围内的任务和异常。完成本次任务、处理异常或用 `defer_task` 明确等待后，可将已安排的后续任务留给 Engine。不必清空任务列表；不要持有父任务范围等待子 Agent 启动，因为父子范围互斥。
 5. `finish`：确认返回 `ok: true` 和 `finished: true` 后退出。它释放本次操作权，不会替你提交结果，也不代表整个 Run 已达成目的。终态见下文。
 
@@ -103,6 +103,7 @@ python3 scripts/call.py finish --arguments '{"run_id":"RUN_ID","token":"TOKEN"}'
 - `next_tasks` 和 `read_timeline` 读取当前节点任务与异常、用户授权及作者整体说明。read_timeline 的 records 列出记录 ID、类型和最新版本，需要正文时用 `read_record`。正常运行或等待的脚本不需要 Agent 接管。
 - 对每项可处理任务先 `read_task`，读取最新输入、输出契约及作者节点 Skill，再 `report_task`（event=completed） 写入完整结果。结果当次生效；不能代写脚本、事件或审批结果。
 - `read_plans` 查看模板，`build_plan` 提供 name、稳定 key、values。默认安排无条件或 when 为真的步骤；steps.<步骤>.skip=true 明确不安排。省略不会创建 Task、skipped 占位或假输出，回执 omitted 与安排记录说明原因。需要其输出的下游必须显式提供复用输入来源。相同 key 重试必须保持参数与安排不变；不要用重复 key 隐式撤回已安排任务。已存在的任务不再需要时，明确取消，保留事实。
+- 成组任务变更用 `edit_tasks`：从 read_timeline 取得最新 revision，changes 按顺序列出 `{"tool":"add_task/build_plan/change_task 中的一种","arguments":{...}}`。`preview:true` 返回变化前后的 Task、实际生成的 ID 和省略原因，不落盘或派发；检查后用同一 revision 和 `preview:false` 提交，任意一步失败整组回滚。提交回执只返回 run_id、revision 和 applied；需要详情再读 Timeline。预览也遵守当前操作范围。若要给刚展开的批次增加后继，可从预览的 changes[].after 中取 Task ID，加入 add_task.after 后再次预览；不要自行复制生成 ID 的算法。此事务不包含 report_task、change_settings 或 finish，不能把整个业务 helper 的多次调用当成一次事务。
 - 若作者的 Loop 有轮次，build_plan 可传 `round`，例如作者确定的轮次名称。它只组织显示，不强制串行、不控制何时推进；不要给没有轮次的业务强加轮次。
 - `add_task` 从已声明的非入口节点安排单项工作：提供稳定 `key`、`node_id`、`inputs`，可选 `parameters`、`implementation`、`after` 和 `round`。返回任务 ID 与自动分配的输出记录 ID，供后续输入引用；不手写完整任务。
 - `change_task` 修正尚未执行的 `inputs`、`parameters`、`implementation` 和 `after`（前置任务 ID 列表）；重试前先核实是否已经产生外部副作用。执行中的正常脚本不应被当成待修复问题。
@@ -168,7 +169,7 @@ read_task.execution_state.wait 显示实际等待时刻、事件关联和截止�
 平台启动的 Agent 命令退出后，若 Loop 仍异常且启用了兜底，会按同一操作权规则进入指定兜底节点并唤醒 Agent。未启用兜底则保留未处理问题，不自动挑选 Agent。初次失败加两次重试，连续三次后暂停并自动发出通知请求；支线转交兜底时继续计入初次失败，不重新计数；异常成功解决后清零，用户明确恢复后开始新的计数。
 用户明确暂停或等待用户输入不作为失败。旧命令不能确认已经停止时保留操作权，使用现有确认停止恢复入口；交互 Agent 同样须先确认旧进程停止，再通过该入口恢复。
 
-通知使用上述通用出口。非零退出、超时或未确认送达都会记录失败；未配置发送命令也会明确记录未送达，不假称已经通知成功。
+通知使用上述通用出口。非零退出、超时或未确认送达都会记录失败；显式指定的出口未配置时记录 waiting_configuration，等待用户补配后重试，不计入 unexpected 或触发兜底。默认出口没有发送命令时使用平台通知区。
 执行前通知与业务运行并行；执行前暂停拦住目标 Task，直到放行。普通通知使用本 Run 的默认出口；未选外部出口的新 Run 使用平台通知区。`route: workspace` 可明确选择仅在工作台留存。
 
 不同支线的失败计数分别保留，进入全局兜底后沿用未解决支线的最长失败链，不把并行支线的失败次数相加；恢复运行会清零这些计数；一个 Agent 退出不会释放其他 Agent 的操作权。无法确认旧进程停止时保留它的范围，重叠范围不得启动第二个 Agent。
@@ -228,3 +229,9 @@ Run 默认实现或输入记录的变化不直接改写 Task 声明，因此不�
 监控报告返回 `stale: true` 表示旧检查已结束或凭证已被恢复/重试替换，报告只保留为证据。随 Skill 提供的 report.py 将其作为正常的过期回执返回；调用者应停止该旧检查，不再推进状态。错误凭证仍会被拒绝。
 
 执行记录的 `failure_kind=command_start` 表示命令/工作目录无法启动，`agent_command` 表示 Agent 命令异常；它们不证明外部训练等业务失败。读取原始错误和实际 cwd，检查命令及 Agent 信任/登录配置，不擅自修改信任范围或重提外部任务。
+
+## 发现已有能力与任务引用
+
+`read_capabilities` 返回当前服务能力及对应工具/文档，不需要取得操作权。实际可调用工具以当前入口的 list 为准；网页运行 Agent 的入口以运行操作为主，构建工具从平台作者入口调用。后台唤醒上下文的 platform 字段提供版本和能力标识。
+
+有稳定 ref 的 Task 可用 `resolve_refs` 查找 Task ID 和输出 record 引用。add_task 的 ref/after_refs 和 task_ref/task_refs 输入来源在写入时解析为真实依赖；build_plan/route 回执也返回 references。详细语义见 [contracts.md](contracts.md)。

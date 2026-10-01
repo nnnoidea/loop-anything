@@ -179,7 +179,13 @@ def task_list(run, runtime, owner=None):
     for request in run.get('user_requests', []):
         if request['status'] == 'pending':
             add({'id': request['id'], 'kind': 'request', 'reason': request['text']})
+    from loop_anything.runtime.notifications import waiting_configuration
     for notification in run.get('notifications', []):
+        if waiting_configuration(notification):
+            waiting.append({'id': 'notification:' + notification['id'], 'kind': 'waiting',
+                            'notification_id': notification['id'], 'status': 'waiting_configuration',
+                            'reason': notification.get('error')})
+            continue
         if notification['status'] == 'fault':
             add({'id': 'notification:' + notification['id'] + ':' + str(notification['attempt']),
                  'kind': 'unexpected', 'notification_id': notification['id'], 'reason': notification.get('error', 'Notification delivery failed')})
@@ -275,7 +281,8 @@ def apply_task_edit(run, tool, arguments, origin, owner=None):
     summary = {}
     if tool == 'build_plan':
         specs = build_plan(run['loop_definition'], arguments['name'], 'operator:' + ((owner['scope_task'] + ':') if owner and owner.get('scope_task') else '') + arguments['key'],
-                           arguments['values'], arguments.get('steps'), arguments.get('round'), summary)
+                           arguments['values'], arguments.get('steps'), arguments.get('round'), summary,
+                           known_tasks=[t['spec'] for t in run['tasks'].values()])
     elif tool == 'add_task':
         node = run['loop_definition']['nodes'].get(arguments['node_id'])
         if not node or node.get('initialize_timeline'):
@@ -283,11 +290,12 @@ def apply_task_edit(run, tool, arguments, origin, owner=None):
         if not arguments['key'].strip():
             raise Invalid('Task key must be nonempty')
         ident = 'task-' + digest([owner['scope_task'], arguments['key']] if owner and owner.get('scope_task') else arguments['key'])[:16]
-        spec = {k: copy.deepcopy(arguments[k]) for k in ('inputs', 'parameters', 'after', 'implementation', 'round') if k in arguments}
+        spec = {k: copy.deepcopy(arguments[k]) for k in ('inputs', 'parameters', 'after', 'implementation', 'round', 'ref', 'after_refs') if k in arguments}
         if not spec.get('implementation'):
             spec.pop('implementation', None)
         spec.update(id=ident, node=arguments['node_id'], outputs={p: {'id': ident + '.' + p} for p in node['outputs']})
-        specs = [spec]
+        from loop_anything.runtime.task_refs import resolve_task_references
+        specs = resolve_task_references([spec], [t['spec'] for t in run['tasks'].values()])
     else:
         raise Invalid('Unknown task edit')
     parent = arguments.get('parent_id', (owner.get('scope_task') or owner.get('task_id')) if owner else None)
@@ -308,7 +316,7 @@ def apply_task_edit(run, tool, arguments, origin, owner=None):
         guard_write(run, owner['token'] if owner else None, parent)
         if previous is None:
             Store.log(run, 'plan_built', '按模板安排：' + arguments['name'] + ' · 未安排 ' + str(len(summary['omitted'])) + ' 个步骤', detail=dict(summary, name=arguments['name'], fingerprint=fingerprint, tasks=[s['id'] for s in specs]))
-        return {'tasks': specs, 'omitted': summary['omitted']}
+        return {'tasks': specs, 'omitted': summary['omitted'], 'references': summary['references']}
     return {'tasks': specs}
 
 
@@ -330,7 +338,8 @@ def edit_tasks(store, run_id, changes, revision, token=None, preview=False):
             if tool not in ('add_task', 'change_task', 'build_plan'):
                 raise Invalid('Unknown task edit')
             contract(change.get('arguments'), definitions[tool], 'arguments')
-            result = apply_task_edit(run, tool, change['arguments'], {'user': True}, owner)
+            origin = {'agent': owner.get('execution_id') or 'interactive'} if owner else {'user': True}
+            result = apply_task_edit(run, tool, change['arguments'], origin, owner)
             omitted.extend(dict(item, plan=change['arguments']['name']) for item in result.get('omitted', []))
         return omitted
 
@@ -357,13 +366,16 @@ class RunTools:
     def definitions(self):
         text, obj = {'type': 'string'}, {'type': 'object'}
         defs = [
+            ('read_capabilities', 'Read actual service version/build, capability-to-tool map and supported contract keywords. Optional capability selects one guide; read-only and requires no operation scope.', {'capability':text}, [], True),
             ('next_tasks', 'Read current work and waiting reasons without acquiring rights. With a token, restrict the work view to that operation scope. Other active Agents are waiting, not tasks to take over.', {}, [], True),
             ('read_timeline', 'Read the latest shared Timeline without acquiring rights. read_only=true grants no write permission; scope_task=null means global rights only when read_only=false. Read before acquiring and re-read before editing.', {}, [], True),
             ('read_record', 'Read a committed record on demand.', {'id': text, 'revision': {'type': 'integer'}}, ['id'], True),
-            ('read_task', 'Read this Task input sources, live values, output contract and node Skill before completing it.', {'task_id': text}, ['task_id'], True),
-            ('read_plans', 'Read loop_definition batch templates and values schemas.', {}, [], True),
-            ('build_plan', 'Write a batch directly to Timeline. Omit steps with steps.<key>.skip=true or a false template when condition over values. No Task or output placeholder is created. Return omitted reasons; explicitly bind reused inputs. Reusing a key cannot change the arrangement. Stable key deduplicates. Optional round is a display label only; it never serializes execution.', {'name': text, 'key': text, 'values': obj, 'steps': obj, 'round': text, 'parent_id': text}, ['name', 'key', 'values'], False),
-            ('add_task', 'Add one task from a declared non-entry node. Stable key deduplicates; outputs get record identities automatically. after names predecessor tasks. No execution starts inside this tool.', {'key': text, 'node_id': text, 'inputs': obj, 'parameters': obj, 'after': {'type': 'array', 'items': text}, 'implementation': text, 'round': text, 'parent_id': text}, ['key', 'node_id', 'inputs'], False),
+            ('read_task', 'Read this Task input sources, live values, output contract, node Skill and declared event routes before completing it. Routes generate plan Tasks automatically from accepted reports; submit the mapped output parameters and inspect receipt.routes instead of arranging the same work twice.', {'task_id': text}, ['task_id'], True),
+            ('read_plans', 'Read batch templates, parameter contracts, ref/after_refs and input mappings.', {}, [], True),
+            ('resolve_refs', 'Resolve Run-unique authored Task refs to Task IDs and output record references. Read-only. Missing refs fail; omitted refs lists all authored references. Use task_ref/task_refs input sources and after_refs in plans to resolve automatically.', {'refs': {'type':'array','items':text}}, [], True),
+            ('build_plan', 'Write a batch directly to Timeline. Templates support each list expansion, per-item inputs/parameters and collect aggregation. Omit steps with steps.<key>.skip=true or a false template when condition over values. No Task or output placeholder is created. Return omitted reasons; explicitly bind reused inputs. Reusing a key cannot change the arrangement. Stable key deduplicates. Optional round is a display label only; it never serializes execution. Use edit_tasks preview to inspect generated IDs and parameters before committing.', {'name': text, 'key': text, 'values': obj, 'steps': {'type': 'object', 'description': 'Map template step IDs to overrides. parameters merge at the top level; implementation selects a registered candidate; empty string inherits the Run default.', 'additionalProperties': object_schema({'skip': {'type':'boolean'}, 'inputs': obj, 'parameters': obj, 'implementation': text}, [])}, 'round': text, 'parent_id': text}, ['name', 'key', 'values'], False),
+            ('edit_tasks', 'Preview or atomically apply an ordered group of existing add_task/build_plan/change_task operations. Supply the latest Timeline revision. preview=true returns generated task IDs, before/after task specs and omitted steps without persisting or dispatching. Commit the reviewed changes with preview=false; any failure rolls back the entire group. Uses the same scope, dependency and parameter checks as individual tools and the UI. Results/settings/completion reports are outside this transaction. An Agent needs its acquired operation scope even for preview.', {'revision': {'type':'integer'}, 'changes': {'type':'array', 'minItems':1, 'items':object_schema({'tool': {'type':'string','enum':['add_task','build_plan','change_task']}, 'arguments': obj})}, 'preview': {'type':'boolean'}}, ['revision','changes'], False),
+            ('add_task', 'Add one task from a declared non-entry node. Stable key deduplicates; outputs get record identities automatically. ref/after_refs and task_ref/task_refs bind authored identities; task output refs pin producer revisions. records inputs may use a parallel revisions array for mixed versions. after names predecessor tasks. No execution starts inside this tool.', {'key': text, 'node_id': text, 'inputs': obj, 'parameters': obj, 'after': {'type': 'array', 'items': text}, 'after_refs': {'type':'array','items':text}, 'ref':text, 'implementation': text, 'round': text, 'parent_id': text}, ['key', 'node_id', 'inputs'], False),
             ('notify', 'Queue one notification or question. Stable key deduplicates. Uses the Run default outlet unless route is supplied. Scripts need current execution_id/token and task_id; Agents need scope; user UI may submit with no token when the affected scope is free. reply needs event/key/schema, and does not pause the Run.', {'key':text,'message':text,'route':text,'reply':obj,'task_id':text,'execution_id':text}, ['key','message'], False),
             ('send_event', 'Submit an external event or reply, independently of the notification channel. Stable event_id deduplicates; name/key identify the wait. Optional notification_id validates the question schema. Agents must own the target wait Task or global scope; user input without token is allowed.', {'event_id':text,'name':text,'payload':obj,'key':text,'notification_id':text,'task_id':text}, ['event_id','name','payload'], False),
             ('report_task', 'Report an explicit lifecycle event. Scripts/monitors use their execution_id and token; Agents use fresh task_version from read_task. Use a stable report_id for retries. completed requires envelope with all outputs. Inspect accepted=true; stale=true is a recorded late monitor report, not a new failure. Uncovered transitions are recorded as issues. finish separately releases Agent scope.', {'task_id': text, 'execution_id': text, 'task_version': text, 'report_id': text, 'event': text, 'envelope': obj, 'detail': obj, 'external_id': text, 'poll_after': {'type': 'number'}}, ['task_id', 'report_id', 'event'], False),
@@ -388,6 +400,17 @@ class RunTools:
         if name not in definitions:
             raise Invalid('Unknown Run tool')
         contract(arguments, definitions[name]['inputSchema'], 'arguments')
+        if name == 'read_capabilities':
+            from loop_anything.capabilities import discover
+            return discover(arguments.get('capability'))
+        if name == 'edit_tasks':
+            if not self.token:
+                raise Conflict('Acquire an Agent operation scope before editing or previewing tasks')
+            result = edit_tasks(self.store, self.run_id, arguments['changes'], arguments['revision'], self.token, arguments.get('preview', False))
+            if arguments.get('preview', False):
+                return dict(result, run_id=self.run_id, revision=arguments['revision'], preview=True)
+            # The internal UI writer returns a full Run, which includes operation credentials.
+            return {'run_id': self.run_id, 'revision': result['revision'], 'applied': True}
         if definitions[name]['annotations']['readOnlyHint']:
             run = self.store.get(self.run_id)
             owner = require_owner(run, self.token) if self.token is not None else None
@@ -531,6 +554,9 @@ class RunTools:
         if name == 'read_timeline':
             return {'settings': run['settings'], 'handbook': resolve_skill(self.store.filename, run['loop_key'], run['loop_definition'].get('handbook', {})),
                     'records': [{'id': rid, 'type': rows[-1]['type'], 'revision': rows[-1]['revision']} for rid, rows in run['records'].items() if rows], 'implementations': {n: {'default': default_id(entry), 'options': list(options(entry))} for n, entry in run['implementations'].items()}, 'status': run['status'], 'tasks': task_list(run, self.runtime, owner), 'run_id': run['id'], 'revision': run['revision'], 'read_only': owner is None, 'scope_task': owner.get('scope_task') if owner else None}
+        if name == 'resolve_refs':
+            from loop_anything.runtime.task_refs import describe_references
+            return {'references': describe_references([t['spec'] for t in run['tasks'].values()], arguments.get('refs'))}
         if name == 'read_plans':
             return {'plans': run['loop_definition'].get('plans', {})}
         if name == 'read_record':
@@ -556,7 +582,8 @@ class RunTools:
                     'parameter_schema': node.get('parameter_schema'),
                     'implementation_id': selected(run, tasks)[0], 'implementation': selected(run, tasks)[1],
                     'implementation_options': options(run['implementations'].get(tasks['spec']['node'])),
-                    'instructions': node['instructions'], 'skills': [resolve_skill(self.store.filename, run['loop_key'], skill) for skill in node.get('skills', [])],
+                    'instructions': node['instructions'], 'routes': node.get('routes', []),
+                    'skills': [resolve_skill(self.store.filename, run['loop_key'], skill) for skill in node.get('skills', [])],
                     'initialize_timeline': bool(node.get('initialize_timeline')),
                     'settings_schema': node.get('agent_settings_schema') if node.get('initialize_timeline') else None,
                     'assertions': node.get('assertions', []),

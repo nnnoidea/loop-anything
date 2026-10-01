@@ -236,13 +236,14 @@ class RuntimeTests(unittest.TestCase):
         self.engine.tick(self.id)
         for future in self.engine.futures:
             future.result()
-        self.assertEqual('fault', self.read()['notifications'][0]['status'])
+        self.assertEqual('waiting_configuration', self.read()['notifications'][0]['status'])
         self.assertEqual('ready', self.read()['tasks']['join']['status'])
         self.engine.command(self.id, 'retry_notification', notification_id='failed:join', operator_token=self.read()['agent_sessions'][0]['token'])
         self.engine.tick(self.id)
         for future in self.engine.futures:
             future.result()
-        self.assertEqual(2, self.read()['notifications'][0]['attempt'])
+        self.assertEqual(0, self.read()['notifications'][0]['attempt'])
+        self.assertEqual('waiting_configuration', self.read()['notifications'][0]['status'])
 
     def test_intent_change_does_not_recreate_initializer(self):
         self.bp['seed']['policy'] = 'current'

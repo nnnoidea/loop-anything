@@ -1,4 +1,4 @@
-"""Thin host for the Timeline scheduler. It never constructs or routes Tasks."""
+"""Thin host for the Timeline scheduler; declared report routes use the Timeline writer."""
 import time
 from threading import Event
 from concurrent.futures import ThreadPoolExecutor

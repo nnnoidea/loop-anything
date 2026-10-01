@@ -1,8 +1,8 @@
-"""Timeline construction. Called by writers, never by the scheduling tick."""
+"""Timeline construction shared by tools and author-declared event routes."""
 import copy
 import time
 from loop_anything.runtime.timeline_model import check_task, expand
-from loop_anything.runtime.model import Conflict, Invalid, contract, digest
+from loop_anything.runtime.model import Conflict, Invalid, contract, digest, record_refs
 from loop_anything.runtime.checks import validate_expression, evaluate
 
 
@@ -19,6 +19,8 @@ def add_task(run, spec, origin):
         if old['spec'] != spec or old.get('parent_id') != parent_id:
             raise Conflict('Task id already names a different plan: ' + spec['id'])
         return old
+    from loop_anything.runtime.task_refs import reference_index
+    reference_index([t['spec'] for t in run['tasks'].values()] + [spec])
     check_selection(run, spec)
     if len(run['tasks']) >= run['loop_definition'].get('limits', {}).get('max_tasks', float('inf')):
         raise Invalid('Timeline Task budget exhausted')
@@ -70,8 +72,12 @@ def validate_plans(bp):
         for key, step in steps.items():
             if not isinstance(key, str) or not key or not isinstance(step, dict) or step.get('node') not in bp['nodes']:
                 raise Invalid('Plan step must name a declared node', path=[name, 'steps', key, 'node'])
-            if set(step) - {'node', 'inputs', 'parameters', 'after', 'each', 'implementation', 'when'}:
+            if set(step) - {'node', 'inputs', 'parameters', 'after', 'each', 'implementation', 'when', 'ref', 'after_refs'}:
                 raise Invalid('Unknown batch step field: ' + key, path=[name, 'steps', key])
+            if 'ref' in step and (not isinstance(step['ref'], (str, dict)) or not step['ref']):
+                raise Invalid('Step ref must be a nonempty template', path=[name, 'steps', key, 'ref'])
+            if 'after_refs' in step and not isinstance(step['after_refs'], (list, dict)):
+                raise Invalid('after_refs must be an array template', path=[name, 'steps', key, 'after_refs'])
             if 'when' in step:
                 try:
                     validate_plan_condition(step['when'])
@@ -95,7 +101,7 @@ def validate_plans(bp):
             if not isinstance(after, list) or any(x not in steps or x == key for x in after):
                 raise Invalid('Step after must name other steps in this plan', path=[name, 'steps', key, 'after'])
             for port, source in step.get('inputs', {}).items():
-                if not isinstance(source, dict) or len(set(source) & {'from', 'record', 'records', 'run', 'settings', 'literal', '$'}) != 1:
+                if not isinstance(source, dict) or len(set(source) & {'from', 'record', 'records', 'run', 'settings', 'literal', '$', 'task_ref', 'task_refs'}) != 1:
                     raise Invalid('Input needs one explicit source: ' + key + '.' + port, path=[name, 'steps', key, 'inputs', port])
                 if isinstance(source, dict) and 'from' in source:
                     upstream = steps.get(source['from'])
@@ -118,7 +124,7 @@ def validate_plans(bp):
             visit(key)
 
 
-def build_plan(bp, name, key, values=None, steps=None, round_name=None, summary=None):
+def build_plan(bp, name, key, values=None, steps=None, round_name=None, summary=None, known_tasks=(), defer_references=False, resolved_overrides=False):
     """Expand one loop_definition batch, omitting skipped steps without placeholders.
 
     `each` expands a step over a values array. `from` binds the matching item;
@@ -137,7 +143,7 @@ def build_plan(bp, name, key, values=None, steps=None, round_name=None, summary=
         raise Invalid('Overrides must name steps in this plan')
     for override in overrides.values():
         if not isinstance(override, dict) or set(override) - {'skip', 'inputs', 'parameters', 'implementation'}:
-            raise Invalid('Step override accepts only skip, inputs and parameters')
+            raise Invalid('Step override accepts only skip, inputs, parameters and implementation')
         if 'implementation' in override and override['implementation'] is not None and not isinstance(override['implementation'], str):
             raise Invalid('Step implementation override must be an ID or null')
         if type(override.get('skip', False)) is not bool:
@@ -186,9 +192,21 @@ def build_plan(bp, name, key, values=None, steps=None, round_name=None, summary=
         override = overrides.get(step_key, {})
         for index, spec in enumerate(group):
             context = contexts[spec['id']]
-            spec['parameters'] = expand(dict(step.get('parameters', {}), **override.get('parameters', {})), context)
+            parameter_overrides = copy.deepcopy(override.get('parameters', {})) if resolved_overrides else expand(override.get('parameters', {}), context)
+            parameter_template = step.get('parameters', {})
+            if not isinstance(parameter_overrides, dict) or not isinstance(parameter_template, dict):
+                raise Invalid('Task parameter templates must resolve to objects', path=['plans', name, 'steps', step_key, 'parameters'])
+            # Replaced fields need not resolve; whole-object references expand before merging.
+            if set(parameter_template) != {'$'}:
+                parameter_template = {k: v for k, v in parameter_template.items() if k not in parameter_overrides}
+            parameters = expand(parameter_template, context)
+            if not isinstance(parameters, dict):
+                raise Invalid('Task parameter templates must resolve to objects', path=['plans', name, 'steps', step_key, 'parameters'])
+            spec['parameters'] = dict(parameters, **parameter_overrides)
+            for field in ('ref', 'after_refs'):
+                if field in step:spec[field] = expand(step[field], context)
             for port, raw in dict(step.get('inputs', {}), **override.get('inputs', {})).items():
-                source = expand(raw, context)
+                source = copy.deepcopy(raw) if resolved_overrides and port in override.get('inputs', {}) else expand(raw, context)
                 if isinstance(source, dict) and 'from' in source:
                     if set(source) - {'from', 'port', 'collect'} or type(source.get('collect', False)) is not bool:
                         raise Invalid('Step output source accepts from, port and boolean collect only')
@@ -211,8 +229,13 @@ def build_plan(bp, name, key, values=None, steps=None, round_name=None, summary=
                         source = {'record': selected['outputs'][output]['id']}
                 spec['inputs'][port] = source
             spec['after'] = [w['id'] for predecessor in step.get('after', []) for w in groups[predecessor]]
-            check_task(bp, spec)
     tasks = [spec for group in groups.values() for spec in group]
+    if defer_references:
+        return tasks
+    from loop_anything.runtime.task_refs import resolve_task_references, describe_references
+    tasks = resolve_task_references(tasks, known_tasks)
+    for spec in tasks:check_task(bp, spec)
+    summary['references'] = describe_references(tasks)
     # Catch ordering/data cycles before publishing the batch.
     producers = {d['id']: w['id'] for w in tasks for d in w['outputs'].values()}
     deps = {w['id']: list(w['after']) + [producers[rid] for source in w['inputs'].values()
@@ -252,12 +275,12 @@ def task_dependencies(run):
                         links.add(producer)
         else:
             for source in task['spec']['inputs'].values():
-                for rid in source.get('records', [source.get('record')]):
+                for rid, revision in record_refs(source):
                     if not rid:
                         continue
                     versions = run.get('records', {}).get(rid, [])
-                    record = next((v for v in reversed(versions) if not source.get('revision') or v['revision'] == source['revision']), None)
-                    producer = (record.get('tasks') or executions.get(record.get('producer'), {}).get('task_id')) if record else producers.get((rid, source.get('revision', 1)))
+                    record = next((v for v in reversed(versions) if revision is None or v['revision'] == revision), None)
+                    producer = (record.get('tasks') or executions.get(record.get('producer'), {}).get('task_id')) if record else producers.get((rid, revision or 1))
                     if producer:
                         links.add(producer)
         deps[ident] = sorted(links)

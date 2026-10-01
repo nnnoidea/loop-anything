@@ -130,7 +130,9 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             if len(parts) == 5 and parts[0] == 'web':
                 web_agent.turn(parts[1], parts[2])
                 if parts[3:] == ['api', 'tools']:
-                    self.send({'tools': web_agent.definitions(parts[1], parts[2])})
+                    from loop_anything.capabilities import service_info
+                    from loop_anything.interfaces.platform_tools import WORKFLOW
+                    self.send({'service': service_info(), 'instructions': WORKFLOW, 'tools': web_agent.definitions(parts[1], parts[2])})
                     return
                 if parts[3:] == ['api', 'platform']:
                     parts = ['api', 'platform']
@@ -153,7 +155,8 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 return
             if parts == ['api', 'tools']:
                 from loop_anything.interfaces.platform_tools import PlatformTools
-                self.send({'tools': PlatformTools(store).definitions()})
+                from loop_anything.capabilities import service_info
+                self.send({'service': service_info(), 'instructions': PlatformTools.instructions, 'tools': PlatformTools(store).definitions()})
                 return
             if parts == ['api', 'skills']:
                 from loop_anything.packaging.skill_bundle import bundle
@@ -171,7 +174,8 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 return
             if parts == ['api', 'platform']:
                 import platform
-                self.send({'system': platform.system(), 'database': str(Path(store.filename).resolve()),
+                from loop_anything.capabilities import service_info
+                self.send({'service': service_info(), 'system': platform.system(), 'database': str(Path(store.filename).resolve()),
                            'keep_awake': power_status()})
             elif parts == ['api', 'catalog']:
                 self.send([dict(item, timeline_guide=timeline_guide) for item in store.catalog()])
@@ -359,19 +363,19 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 data = make_archive(body['document'], decode_assets(body.get('assets', [])))
                 self.send({'base64': base64.b64encode(data).decode(), 'bytes': len(data)})
             elif parts == ['api', 'packages', 'inspect']:
-                from loop_anything.packaging.packages import read_archive, validate_document
+                from loop_anything.packaging.packages import read_archive, validate_document, effective_definition
                 data = base64.b64decode(body['base64'], validate=True)
                 document, assets, key, _ = read_archive(data)
-                self.send({'document': document, 'key': key, 'report': validate_document(document),
+                self.send({'document': dict(document, loop_definition=effective_definition(document)), 'key': key, 'report': validate_document(document),
                            'assets': [{'path': n, 'base64': base64.b64encode(v[0]).decode(), 'executable': v[1]} for n, v in assets.items()]})
             elif parts == ['api', 'packages', 'install']:
                 from loop_anything.packaging.packages import install
                 self.send(install(store, base64.b64decode(body['base64'], validate=True)), 201)
             elif parts == ['api', 'packages', 'read']:
-                from loop_anything.packaging.packages import load_installed, installed_assets
+                from loop_anything.packaging.packages import load_installed, installed_assets, effective_definition
                 document, directory = load_installed(store.filename, body['key'])
                 assets = installed_assets(document, directory)
-                self.send({'document': document,
+                self.send({'document': dict(document, loop_definition=effective_definition(document)),
                            'assets': [{'path': n, 'base64': base64.b64encode(v[0]).decode(), 'executable': v[1]} for n, v in assets.items()]})
             elif parts == ['api', 'packages', 'smoke']:
                 from loop_anything.packaging.packages import load_installed, smoke

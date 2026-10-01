@@ -64,3 +64,23 @@ class InstallationTests(unittest.TestCase):
                     available(upgraded)
                 self.assertEqual(before, database.read_bytes())
             available(upgraded)
+
+    def test_upgrade_preserves_existing_interpreter_when_installer_uses_another_python(self):
+        import install as installer
+        import subprocess
+        with tempfile.TemporaryDirectory() as folder:
+            prefix=Path(folder)/'app';environment=prefix/'venv';(environment/'bin').mkdir(parents=True)
+            config=environment/'pyvenv.cfg';config.write_text('home = /another/python\nversion = 3.10.20\n')
+            executable=environment/'bin/python';executable.write_bytes(b'original interpreter')
+            wheel=Path(folder)/'local.whl';wheel.write_bytes(b'local package supplied by test')
+            calls=[]
+            def run(argv,**kwargs):calls.append(argv);return subprocess.CompletedProcess(argv,0)
+            with patch.object(installer.sys,'argv',['install.py','--prefix',str(prefix),'--package',str(wheel),'--no-service']), \
+                 patch.object(installer.subprocess,'run',side_effect=run), \
+                 patch.object(installer.venv.EnvBuilder,'create',side_effect=AssertionError('Must preserve existing venv')), \
+                 patch('builtins.print'):
+                installer.main()
+            self.assertEqual(executable.read_bytes(),b'original interpreter')
+            self.assertIn('/another/python',config.read_text())
+            self.assertTrue(all(Path(argv[0]).resolve()==executable.resolve() for argv in calls))
+            self.assertTrue(any('pip' in argv and str(wheel.resolve()) in argv for argv in calls))
