@@ -22,7 +22,8 @@ from loop_anything.runtime.task_scope import owner_for, scope_for, scope_availab
 from loop_anything.interfaces.agent_tasks import (node_for, acquire_in_run, require_owner,
                           guard_write, release_in_run, task_list, agent_calls)
 
-from loop_anything.runtime.notifications import enqueue, sender_for, validate_notice
+from loop_anything.runtime.notifications import (enqueue, sender_for, validate_notice,
+                                               NotificationConfigurationError, waiting_configuration)
 
 PENDING = {'planned', 'ready', 'blocked', 'held'}
 IN_FLIGHT = {'executing', 'decision', 'approval', 'waiting'}
@@ -119,11 +120,12 @@ class TimelineRuntime:
         for name, source in tasks['spec']['inputs'].items():
             try:
                 if 'record' in source or 'records' in source:
-                    ids = source['records'] if 'records' in source else [source['record']]
-                    records = [record_version(run, rid, source.get('revision')) for rid in ids]
-                    absent = [rid for rid, rec in zip(ids, records) if rec is None]
+                    from loop_anything.runtime.model import record_refs
+                    refs = record_refs(source)
+                    records = [record_version(run, rid, revision) for rid, revision in refs]
+                    absent = [ref for ref, rec in zip(refs, records) if rec is None]
                     if absent:
-                        missing.extend({'input': name, 'record': rid, 'revision': source.get('revision') or 1, 'reason': 'missing_record'} for rid in absent)
+                        missing.extend({'input': name, 'record': rid, 'revision': revision or 1, 'reason': 'missing_record'} for rid, revision in absent)
                         continue
                     value = [path(rec['value'], source.get('path', '')) for rec in records]
                     provenance = [{'record': rec['id'], 'revision': rec['revision'], 'execution': rec['producer']} for rec in records]
@@ -378,8 +380,8 @@ class TimelineRuntime:
                     try:
                         route=run['settings'].get('notification_route',notification['route']) if notification['route']=='user' and 'requested_route' not in notification else notification['route']
                         notification['route'],notification['sender']=sender_for(self.store,run,route)
-                    except Invalid as exc:
-                        notification.update(status='fault',error=str(exc));continue
+                    except NotificationConfigurationError as exc:
+                        notification.update(status='waiting_configuration',error=str(exc));continue
                 notification.update(status='sending', token=uid('delivery'), attempt=notification['attempt'] + 1)
                 deliveries.append((copy.deepcopy(notification), copy.deepcopy(run)))
             jobs = [(e, copy.deepcopy(run), observe) for e, _, observe in jobs]
@@ -574,6 +576,19 @@ class TimelineRuntime:
                 notices=expand(rule.get('notify',[]),context)
                 for notice in notices:validate_notice(notice)
             except (Invalid,KeyError,IndexError,TypeError,ValueError) as exc:issue='Invalid notification parameters: '+str(exc)
+        routed_tasks, route_firings = [], []
+        if rule and issue is None:
+            from loop_anything.runtime.routing import prepare_routes
+            route_context = dict(context, transition={'from': state, 'event': event, 'to': rule['to']})
+            if event == 'completed':
+                route_context['settings'] = dict(run['settings'], **report.get('envelope', {}).get('settings', {}))
+            try:
+                routed_tasks, route_firings = prepare_routes(run, e, report, route_context)
+            except Invalid as exc:
+                if source != 'engine':
+                    raise
+                # An invalid route on a platform-generated error must itself remain actionable.
+                issue = str(exc)
         matched = rule is not None and issue is None
         if event == 'check_error':
             e['observation_error'] = str(report.get('detail', {}).get('message') or 'Observation failed; external state is unknown')
@@ -594,6 +609,11 @@ class TimelineRuntime:
                     e.update(external_id=external_id, poll_after=delay, wake_at=time.time() + delay)
                     e['status'] = task['status'] = 'waiting'
             e['lifecycle_state'] = target
+            for spec, origin in routed_tasks:
+                add_task(run, spec, origin)
+            for firing in route_firings:
+                Store.log(run, 'route_fired', 'Event expanded plan: ' + firing['plan'], e['id'],
+                          dict(firing, task_id=task['id'], report_id=report['report_id'], event=event))
         else:
             target = state
             e.update(status='fault', error=issue or 'Transition did not match')
@@ -612,6 +632,8 @@ class TimelineRuntime:
                    'report_id': report['report_id']}
         if target == 'completed' and matched:
             receipt['completed'] = task['id']
+        if route_firings and matched:
+            receipt['routes'] = route_firings
         if not matched:
             receipt['issue'] = e['error']
         reports[report['report_id']] = {'fingerprint': fingerprint, 'receipt': receipt}
@@ -786,13 +808,14 @@ class TimelineRuntime:
                             agent_exited(run, self, exit_error, previous.get('scope_task'))
 
     def deliver(self, run_id, notification, snapshot):
+        configuration_error = False
         try:
             if notification['route'] == 'workspace':
                 receipt = {'delivered': True, 'channel': 'workspace', 'reference': notification['id']}
             else:
                 adapter = notification.get('sender', {})
                 if not adapter.get('command'):
-                    raise Invalid('No notification transport configured')
+                    raise NotificationConfigurationError('No notification transport configured')
                 task = snapshot['tasks'].get(notification.get('tasks'), {})
                 payload = {k: v for k, v in notification.items() if k not in ('sender', 'token')}
                 payload.update(run_id=run_id, title=snapshot['title'], run_status=snapshot['status'],
@@ -812,11 +835,12 @@ class TimelineRuntime:
             error = None
         except Exception as exc:
             receipt, error = None, str(exc)
+            configuration_error = isinstance(exc, NotificationConfigurationError)
         with self.store.edit(run_id) as run:
             row = next(n for n in run['notifications'] if n['id'] == notification['id'])
             if row.get('token') != notification['token'] or row['status'] != 'sending':
                 return
-            row.update(status='fault' if error else 'delivered', receipt=receipt, error=error)
+            row.update(status='waiting_configuration' if configuration_error else 'fault' if error else 'delivered', receipt=receipt, error=error)
             Store.log(run, 'notification_' + row['status'], row['message'], detail={'id': row['id'], 'route': row['route'], 'receipt': receipt, 'error': error})
 
     def change_settings(self, run_id, revision, change, operator_token=None):
@@ -885,7 +909,7 @@ class TimelineRuntime:
         guard_write(run, operator_token)
         if action == 'retry_notification':
             row = next(n for n in run['notifications'] if n['id'] == notification_id)
-            if row['status'] != 'fault':
+            if row['status'] != 'fault' and not waiting_configuration(row):
                 raise Conflict('Notification is not failed')
             if not row.get('sender',{}).get('command') and row['route']!='workspace':row.pop('sender',None)
             row['status'] = 'pending'
@@ -926,6 +950,9 @@ class TimelineRuntime:
     def recover(self, run):
         if not run.get('operator_protocol'):
             return
+        for notice in run.get('notifications', []):
+            if waiting_configuration(notice):
+                notice['status'] = 'waiting_configuration'
         for attempt in run['executions']:
             if attempt.get('worker_active'):
                 self.block_retry(run, attempt, 'Engine interrupted while process was active; verify stopped before retry')

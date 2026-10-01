@@ -59,7 +59,9 @@ await page.waitForTimeout(200);await page.screenshot({path:path.join(root,'edito
 await page.locator('[data-editor-layer="relations"]').click();
 assert.equal(await page.locator('#editor-state-overview').isVisible(),false);
 await page.waitForTimeout(200);await page.screenshot({path:path.join(root,'editor-relations.png'),fullPage:true});
-await page.locator('#editor-publish').click();await page.locator('#launch-page').waitFor({state:'visible'});
+await page.locator('#editor-save').click();await page.locator('#editor-save-status a').waitFor();
+  assert(await page.locator('#loop_definition-editor').isVisible());
+  await page.locator('#editor-save-status a').click();await page.locator('#loop-detail [data-create]').click();await page.locator('#launch-page').waitFor({state:'visible'});
 await page.locator('[data-focus-outlet="launch"]').click();
 await page.locator('#launch-notification-route').selectOption('demo');
 await page.locator('#preparation-saved').filter({hasText:'已保存'}).waitFor();

@@ -3,6 +3,7 @@
 function valueType(v){return v===null?'null':Array.isArray(v)?'array':typeof v==='object'?'object':typeof v;}
 function emptyValue(schema={}){return schema.default ?? ({string:'',number:0,integer:0,boolean:false,object:{},array:[],null:null}[schema.type] ?? '');}
 function valueField(value,schema={},name='值'){
+  if(Array.isArray(schema?.type)||(!schema?.type&&['oneOf','anyOf','allOf'].some(k=>schema?.[k])))return `<textarea data-value-type="json" rows="4" aria-label="${esc(name)}">${esc(pretty(value===undefined?(schema.default??null):value))}</textarea>`;
   const type=schema.type || valueType(value===undefined?'':value),v=value===undefined?emptyValue(schema):value;
   const attrs=`data-value-type="${esc(type)}" data-value-schema="${esc(pretty(schema))}"`;
   if(schema.enum)return `<select ${attrs} data-enum aria-label="${esc(name)}">${schema.enum.map(x=>`<option value="${esc(JSON.stringify(x))}" ${pretty(x)===pretty(v)?'selected':''}>${esc(String(x))}</option>`).join('')}</select>`;
@@ -28,6 +29,7 @@ function readValue(el){
     if(entries.some(([k])=>!k)||new Set(entries.map(x=>x[0])).size!==entries.length)throw new Error('字段名称不能为空或重复');
     return Object.fromEntries(entries);
   }
+  if(type==='json')return JSON.parse(el.value);
   if(type==='null')return null;
   if(type==='boolean')return el.value==='true';
   if(type==='number'||type==='integer'){if(!el.value.trim()||!el.checkValidity())throw new Error('请填写有效数字');return Number(el.value);}
@@ -53,7 +55,7 @@ function resultView(value){
   return `<span class="result-text">${esc(typeof value==='boolean'?(value?'是':'否'):value)}</span>`;
 }
 function sourceField(name,source,schema,choices=[],plan=false){
-  const modes=[...(plan?['unset']:[]),'literal','record','records','run','settings',...(plan?['from','value','template']:[])],mode=plan&&source?.literal&&typeof source.literal==='object'&&Object.hasOwn(source.literal,'$')?'value':plan&&JSON.stringify(source||{}).includes('"$"')?'template':modes.find(k=>Object.hasOwn(source || {},k)) || (plan?'unset':'literal');
+  const modes=[...(plan?['unset']:[]),'literal','record','records','run','settings',...(plan?['from','value','template']:source?.revisions?['template']:[])],mode=source?.revisions?'template':plan&&source?.literal&&typeof source.literal==='object'&&Object.hasOwn(source.literal,'$')?'value':plan&&(JSON.stringify(source||{}).includes('"$"')||source?.task_ref||source?.task_refs)?'template':modes.find(k=>Object.hasOwn(source || {},k)) || (plan?'unset':'literal');
   const names={unset:'待指定来源',literal:'直接填写',record:'单个结果',records:'多个结果',run:'初始输入字段',settings:'运行设置字段',from:'本批次上游输出',value:'本批参数或当前列表项',template:'参数化来源（高级）'};
   return `<fieldset class="source-field" data-source-name="${esc(name)}" data-source-schema="${esc(pretty(schema))}" data-source-original="${esc(pretty(source || {}))}" data-source-choices="${esc(pretty(choices))}"><legend>${esc(schema.title || name)}</legend><select data-source-mode aria-label="${esc(name)} 来源">${modes.map(m=>`<option value="${m}" ${m===mode?'selected':''}>${names[m]}</option>`).join('')}</select><div data-source-body>${sourceBody(mode,source || {},schema,choices)}</div></fieldset>`;
 }

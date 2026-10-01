@@ -6,6 +6,17 @@ from loop_anything.runtime.model import Invalid, Conflict, digest, check_schema
 from loop_anything.runtime.store import Store
 
 
+class NotificationConfigurationError(Invalid):
+    """Delivery must wait for an explicitly configured outlet."""
+
+
+def waiting_configuration(notice):
+    # Recognize older outbox rows as well, before the next recovery/save.
+    error = notice.get('error') or ''
+    return notice['status'] == 'waiting_configuration' or (notice['status'] == 'fault' and
+        (error == 'No notification transport configured' or error.startswith('Notification outlet is not configured: ')))
+
+
 def validate_notice(value):
     if not isinstance(value, dict) or set(value) - {'message', 'route', 'reply'} or not isinstance(value.get('message'), str) or not value['message'].strip():
         raise Invalid('Notification needs message and optional route/reply')
@@ -44,9 +55,11 @@ def sender_for(store, run, route):
         if not sender.get('command') and requested=='default':
             # New installations work out of the box inside the platform.
             return 'workspace', {}
+        if not sender.get('command'):
+            raise NotificationConfigurationError('No notification transport configured')
         return route, copy.deepcopy(sender)
     config = store.notification_channels()['channels'].get(route)
-    if config is None:raise Invalid('Notification outlet is not configured: ' + route)
+    if config is None:raise NotificationConfigurationError('Notification outlet is not configured: ' + route)
     return route, copy.deepcopy(config)
 
 
@@ -62,9 +75,9 @@ def enqueue(store, run, key, notice, task_id=None, execution_id=None):
                status='pending', attempt=0, at=time.time(), fingerprint=fingerprint)
     if notice.get('reply'):row['reply'] = copy.deepcopy(notice['reply'])
     try:row['route'], row['sender'] = sender_for(store, run, row['requested_route'])
-    except Invalid as exc:
+    except NotificationConfigurationError as exc:
         route=run['settings'].get('notification_route','user') if row['requested_route']=='default' else row['requested_route']
-        row.update(route=route, status='fault', error=str(exc))
+        row.update(route=route, status='waiting_configuration', error=str(exc))
     run['notifications'].append(row)
     Store.log(run, 'notification', 'Notification queued', execution_id, {'notification_id':key, 'task_id':task_id})
     return row

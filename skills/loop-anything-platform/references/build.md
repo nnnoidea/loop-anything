@@ -1,208 +1,111 @@
 # 构建 Loop
 
-本 Skill 由平台提供，只教平台操作。业务目标、流程职责、决策规则和专业 Skill 由 Loop 作者提供；不能用平台示例代替作者的业务设计。
+用平台机制组合用户需要的复杂流程，复用已有实现。Agent 负责发现能力、选择表达和完成接入；用户需要决定业务意图、资源与授权边界。具体工具字段按需查 [构建工具与接入契约](build-reference.md)，调用方式见 [平台 Skill](../SKILL.md)。
 
-工具调用方式见 [平台 Skill](../SKILL.md)。先检查连接并用 `list` 读取实际工具参数；编辑带上最新 draft_id/revision。连接失败先处理平台地址或服务问题，不创建业务 Run 测试连接。
+## 先明确平台和作者的分工
 
-## 从作者意图到可用 Loop
+创建/复制 Loop 或完整读取定义时，先看返回的 authoring_context。平台已经负责持久化 Timeline、依赖调度、并发与操作范围、执行快照和重启恢复；按声明负责批量、路由、重试、等待、通知与收口；工作台已有结构、任务、结果、来源和历史查看。作者负责业务方法、节点契约、真实实现与外部接口适配。
 
-先与作者明确任务、每步输入输出、哪些工作由脚本或 Agent 完成。不要替作者增加未要求的业务步骤。
+按需查询 read_capabilities(capability=...) 中的生效方式、配置和边界；同一份说明也随 Skill 提供：[平台能力与分工](platform-capabilities.md)。平台已有能力需要配置时，优先把需求落成对应声明。确有缺口时指出具体缺少的语义，再决定最小适配，避免在业务包内重建调度、控制权、状态存储或基本 viewer。
 
-按两层构建：先用 put_node 明确职责和端口，用 put_step/connect_steps 表达任务间关系，再用 set_implementation 选择实现及其执行生命周期。可先保留缺少实现的草稿。
+例如“给出参数 → 并行执行 → 汇总判断”：先用 source.routes 映射参数，再用 plan.each/collect/after 和稳定 ref，最后让 Engine 调度并由任务提交结果。工作台负责展示，作者提供执行命令和判断方法。read_capabilities.patterns 提供可改用的声明片段。
 
-- **任务关系与推进**：输入引用和 after 表达依赖，plan_nodes 声明可安排的后续工作。无依赖的支线可在权限与并发条件满足时并行；上游提交结果后，已有下游任务重新检查就绪条件。连线不自动创建任务，下一轮由 Agent 或脚本明确安排。
-- **执行生命周期**：绑定在候选实现的 lifecycle 上，描述一次执行如何响应 report_task 的事件。同步脚本与异步提交/监控可以是同一节点的不同实现；先读取工具填入的可见初始模板，有特殊业务阶段或恢复要求时再编辑。
+## 先把业务需求对应到平台机制
 
-两层共用真实定义：不另写一份任务间转移表。retry 是原 Task 的下一次执行；再次安排业务工作创建新 Task。网页总览查看关系，选中节点展开候选的执行生命周期；运行中按 Task 选择具体执行记录。
+先读取运行中服务的 `read_capabilities` 和 `list`，查看 instructions 和有关工具的参数；目录是当前可用接口的依据。已有 Loop 用 `list_loops` 找当前草稿和版本，读取定义及相关包文件，继续同一个 Loop。迁入已有系统时，先读它的业务方法、可调用入口与运行依赖，区分可直接复用的实现、需要适配的接口和平台已经承担的职责。
 
+从已有对话和材料得到：用户从什么意图开始、哪些地方需要判断、确定后的工作如何执行、用什么结果决定继续或结束。用简短说明或一张小表把这些对应关系告诉用户；已有明确答案直接落实，只有影响业务含义或授权的缺口才提问。不要要求用户逐项设计节点、schema、工具参数。
 
-- **开始或复用**：`list_loops` 找现有资产；`read_loop` 读它的实际定义。`create_loop` 建立草稿与通用入口；`copy_loop` 从已安装版本复制为草稿；普通修改传 new_version:true，保留 Loop ID 并自动选择后续版本，原有 Run 不变；只有用户要另建一个 Loop 时才使用普通复制。
-- **业务说明**：`set_loop` 写入作者提供的 `handbook`、用途说明、初始输入默认值或明确的运行限额。平台 Skill 不维护这些业务内容。
-- **节点**：`put_node` 写一个节点的职责、端口和可选作者 Skill。用 `skills: [{"name":"方法名","content":"作者提供的业务方法"}]` 直接绑定到该节点；Agent 读取节点任务时会获得这些内容。端口列表使用 `name` 加 `type`，嵌套契约使用 `schema`；工具生成输出记录类型。节点机械完成约束统一用 assertions 表达，例如 eq 比较字段值；不从约束自动填业务结果。入口端口变更会同步其初始位置。
-- **可复用批次**：`put_step` 将节点加入一个命名模板。可用 implementation 指定模板选用的候选 ID，通常留给 Run 或任务选择。用 `plan_parameters` 声明运行时参数；`each` 指向参数里的列表。`connect_steps` 把上游 output 连到下游 input，`collect:true` 表示收集全部展开结果。
-- **初始或复用输入**：在 `put_step.inputs` 中使用 `{"record":"initial.result"}` 等明确来源。入口的真实输出位置由 `read_loop` 返回，不猜名字。普通参数值用 `literal`；运行时替换值可以写 `{"literal":{"$":"values.参数名"}}`。列表元素对应 `item`。
-- **候选实现**：`set_implementation` 提供 node_id、implementation_id 和 agent、command、external、event、timer 或 approval 配置。同一节点可多次添加不同 ID；default:true 选为 Loop 默认，default:false 取消该候选的默认地位，省略则不改默认。已存在的候选可只传 ID 与 default 调整默认。填写实际命令参数列表。外部任务还需 observe；删除指定候选时用 unbind:true，不能伪装成模拟实现。`put_asset` 把作者编写的脚本/文档附进包。
-- **可选兜底**：与用户明确是否需要 Agent 兜底。需要时用 `put_node` 添加一个非入口节点，`inputs: []`，编写处理未覆盖状态的职责并绑定作者 Skill；通过 `set_implementation` 提供 Agent 候选，再用 `set_loop` 的 `fallback_node` 指定节点 ID。不需要时传空字符串关闭。兜底通过 Run 工具读取问题，使用同一套节点提交；不要自动挑其他节点的 Agent。
-- **通知**：在生命周期转移的 notify 数组中配置消息/询问，或由脚本、Agent 调用 notify；使用 default 路由。使用者在平台配置实际出口并在 Run 中选择，详见 [notifications.md](notifications.md)。
-- **结束条件**：作者说明完成目的与判定依据，运行时 Agent 把机械规则或终止信号写入 Timeline；不要给节点添加 terminal 标记。
-- **Agent 命令**：用 `set_implementation` 设置 kind="agent" 和用户提供的 command，例如 `["codex", "exec", "-"]`；cwd/timeout 按实际需要明确设置；Agent 留空 timeout 时不限时，脚本命令默认 60 秒。平台向标准输入传入任务 prompt，原样执行命令；模型、工具和权限沿用用户配置。无需专用启动器或工具注册。
-- **检查与交付**：`validate_loop` 检查结构并单列缺失实现。修正错误后 `publish_loop` 安装为一个版本，不启动；日常迭代可传 auto_version:true，在版本已存在时自动选用新版本，返回最新 draft_id/revision 和实际 version，原版本不被覆盖；`export_loop` 导出包含附件的包，客户端 `--output 文件.loop.zip` 保存它。
+先验证一条代表性的完整路径，再扩展本轮要求的其他实现和分支。完整路径包括任务结果如何被下游消费，以及何时继续、等待或结束。先跑通少量样例有助于提早发现接口问题；交付范围仍以用户要求为准。
 
-新建 Loop 默认提供无输入、无强制输出的 Agent 入口。用户与 Agent 讨论后，Agent 通过 start_run 接管入口，将目标、要求和约束写入完成报告的 settings，再按需安排任务并 finish。无需把对话复制到 request 表单，也不需要人为生成一条初始化结果；业务确需输入或共享初始结果时，用 put_node 明确添加端口。没有 command 的 Agent 候选由当前用户 Agent 操作；网页若需自动唤醒，仍需配置用户选择的 Agent 命令。
+## 将职责放到已有能力中
 
-每次编辑带上 `draft_id` 和刚返回的 `revision`。出现版本冲突，重新 `read_loop` 后再决定修改，不盲目覆盖。工具返回当前验证结果；未完整连接的草稿可保存，但必须修正结构错误才能发布。
+| 需要表达的事 | 使用的平台能力 | 作者需提供的内容 |
+| --- | --- | --- |
+| 目标、约束、指导与授权 | Timeline settings | 对话中确认的业务语义 |
+| 需要做判断的一步 | agent 节点及节点 Skill | 判断方法、所读证据、可用入口与完成条件 |
+| 已确定的自动工作 | command 或 external 候选 | 实际命令、参数、输入输出；异步工作另有 observe |
+| 条件、互斥及组合参数要求 | parameter_schema、validate_parameters | 候选真实接受的契约；见 [contracts.md](contracts.md) |
+| 按业务项选择任务及其结果 | ref、after_refs、task_ref/task_refs、resolve_refs | 唯一引用名、汇总成员和输出端口 |
+| 展开预览与流程验收 | preview_plan、test_loop、set_loop.scenarios | 样例输入、模拟节点报告及可观察的预期；见 [testing.md](testing.md) |
+| 一组可复用工作 | plan、输入来源与 after | 节点职责、真实数据交接与先后关系 |
+| 按列表批量工作，再汇总本批结果 | plan each、输入 collect | 列表路径、逐项参数与汇总需要的输出；复用平台生成的 Task/record ID |
+| 是否安排某步骤 | plan when 或本次 build_plan.steps.skip | 本次明确选择；省略后下游如何获得输入 |
+| 预览或一次提交多项任务变更 | edit_tasks | 有序的 add_task/build_plan/change_task 操作及当前 Timeline revision |
+| 根据结果或事件创建下一轮 | 节点 routes → plan | 触发事件、条件、模板参数来源；Agent/脚本只提交结果，平台生成 Task |
+| 临时追加未预定义的工作 | add_task / build_plan | 明确节点、参数、输入和依赖 |
+| 外部进度与失败恢复 | external 报告、lifecycle、可选 fallback | 有限事件、机械条件、允许的重试或接手动作 |
+| 暂停、通知与等待 | Hooks、notify、timer/event | 触发位置、用户问题或外部事件 |
+| 整个 Run 收口 | settings.completion_rule / termination_signal | 可机械判定的条件，或 Agent 已作出的完成判断 |
 
-## 作者 Skill 的文件与引用
+节点用于有独立业务职责、交付结果或需要单独跟踪的工作。不要把源系统的调度器、状态仓库、控制权或 viewer 原样复制成业务节点。源系统内部对象若是复用某个 API 的必要适配，只保留在该适配边界，并说明依赖。
 
-作者已有完整 Skill 目录时，保留 SKILL.md、references/ 和 scripts/ 的相对结构，用现有 `put_asset` 将各文件附进 Loop 包；本地打包也可使用已有的目录附件能力。
+复杂需求先尝试组合这些机制。条件、批量展开、聚合、后继安排和恢复各有明确作用，不因单个工具无法独立完成整个场景就重建控制器。组合仍无法表达时，记录所需行为、现有机制的限制和缺少的接口；不要把能力缺口藏进业务脚本。节点或候选数量由真实需求决定，不以数量少作为正确性的标准。
 
-- Loop Skill：`set_loop` 的 `handbook_path` 绑定包内入口，例如 `skills/research/SKILL.md`。可同时保留 handbook 简介；空字符串清除文件绑定。
-- 节点 Skill：`put_node` 的 `skills` 使用 `[{"name":"评审方法","path":"skills/review/SKILL.md"}]`。原有 content 正文方式继续可用。
-- 发布前 `validate_loop` 会检查绑定的入口文件已附入包。引用资源由作者完整附入，不自动扫描或改写 Markdown。
+普通模式差异优先用任务参数或是否安排任务表达。一个 Agent 能处理的不同入口意图，不必各建一个实现；共享执行骨架不因入口不同而复制 plan。确有不同执行机制、后端或参数契约时，才登记对应候选。
 
-安装后 `read_loop` 返回 Loop 和节点 Skill 的 `resolved_path`；运行中 `read_timeline` 返回 Loop Skill 的该路径，`read_task` 返回对应节点 Skill 的该路径。Agent直接读取文件，以其所在目录解析 references/、scripts/ 等相对引用。`path` 是包内绑定，`resolved_path` 是读取结果，不写回 Loop 定义。
+关系和状态要分别核实：`after` 让**已创建的任务**等待；`routes` 声明事件到模板的自动生成规则；`plan_nodes` 声明脚本主动安排任务的范围。作者已定义 routes 时，Agent 或上游只提交参数与结果，平台自动创建下一批任务，不再手动重复调用 build_plan。提前安排一个带 after 的后续决策任务，通常就能表达“这一批结果齐了再分析”，无需增加常驻协调器。
 
-## 可选步骤：满足条件才安排
+## 声明事件与参数来源
 
-`put_step` 可设置 `when`，使用已有确定性表达式，只读取本批 `values`。例如 `when={"path":"values.action.stages.prediction.enabled"}`：字段为 true 才安排，false 时不创建该步骤的任何 Task 或输出占位。`put_step` 省略 when 保留现值，传 `when={}` 清除条件；直接编辑定义时删除 when 字段即可。
+用 `put_node.routes` 配置“什么事件 → 哪个 plan → 参数从哪里取”。例如研究节点的 `completed` 事件将 `outputs.requests` 映射到 plan 的 `experiments`；plan 内用 each 生成实验，再用 collect 生成汇总。运行时只提交 `{requests:[第一组参数,第二组参数]}`，平台生成 Task、依赖和输出 ID。汇总节点可用 `when` 判断是否继续，并通过同样的规则开启下一轮。
 
-条件在 `build_plan` 时判断一次，作用于整个步骤，在 `each` 展开之前判断；不读取运行时结果或单个 item，不是运行过程中重新判断的分支。缺字段、非法表达式、非布尔结果会报错，不能当作 false。显式 `steps.<步骤>.skip=true` 优先表示本次不安排。
+`routes` 的参数映射可同时绑定候选、Task 参数和输入；沿用原 plan 的条件、省略、批量与聚合。定时器到期或外部事件节点收到匹配数据后，也报告 completed 并触发规则。作者需明确源输出 schema、条件和目的模板；平台不推断业务决策。完整示例和上下文见 [事件触发任务](build-reference.md#事件触发任务)。
 
-若下游仍引用被省略步骤的输出，构建会拒绝，必须显式复用已有输入或同时不安排该下游。仅有先后依赖的步骤沿用原省略语义，不为省略项占位。网页模板步骤中的“何时安排”可填写布尔字段或自定义表达式；安排预览和工具回执列出未安排原因。业务输出中名为 status 的字段不会改变平台 Task 状态。
+结果提交、事件转移与所有命中规则生成的任务一并生效；任一参数或任务不合法则不提交这一批。稳定 report_id 重试返回同一回执，`receipt.routes` 给出生成结果。不需要再写“提交结果后逐次创建流水线”的 helper。
 
-## 给运行时 Agent 提供简洁入口
+## 在安排工作时确定执行契约
 
-作者可以把常用 Timeline 操作封装为随包脚本，例如 `submit_experiment`、`arrange_next_round`。用已有 `put_asset` 添加脚本及其说明，通过节点 `skills[].path` 绑定说明入口；不需要注册新工具。Skill 内写清命令、参数、回执和出错后的处理，业务规则由作者负责。
+对自动执行的步骤，在创建 Task 时选定实现及参数。需要在执行时继续作业务判断的步骤才用 Agent。构建前读选中候选的 `parameter_schema`；平台同时检查节点公共契约和候选契约，不自动补参数默认值。
 
-封装调用同一个平台 HTTP 接口或 Skill 中的 `scripts/call.py`。从本次唤醒上下文取得实际地址、Run、Task 和令牌，不写死本机路径或另存一份 Timeline。后台节点使用 `platform_url` 并传 run_id/token；网页 Agent 使用 `tool_url`，其接口已绑定身份，参数中不再传 run_id/token。Skill 的 `resolved_path` 可直接读取，其 references、scripts 路径相对该文件所在目录解析。
-
-封装负责重新读取所需版本、检查每步回执，并返回实际提交结果。多次工具调用不是一个事务：中途失败时应报告已完成的操作，继续前先读取当前状态，避免重复安排。完成任务仍需提交必需输出，最后释放操作权；封装可以把这些步骤包在一个业务命令里。权限范围、版本冲突和输出校验由平台照常执行。
-
-Agent 候选支持 `prompt` 字符串，与 command 一起保存、分享；已有候选可用 `set_implementation` 单独修改 prompt，无需重填命令。网页在节点候选中可编辑、恢复默认和预览。例如：
-
-```text
-读取本次上下文中 skills 的作者说明，按说明使用随包脚本完成工作。
-{{context}}
-```
-
-只有 `{{context}}` 会替换为 JSON；其他文本原样发送，没有隐藏追加指令。不填写 prompt 时使用平台默认；显式空字符串就是空提示词。默认内容引导使用作者入口，平台手册仅在直接操作通用工具时按需读取。后台上下文含 run_id、execution_id、task_id、token、scope_task、platform_url、platform_client、platform_guide、loop_key、handbook、node_id、instructions 和 skills。网页上下文使用 tool_url，并提供 preparation、run_id、scope_task、start_requested 和 messages；网页 prompt 与节点候选单独配置。
-
-## 结果的通用展示
-
-界面按结果结构展示文本、字段和表格。可在输入输出 schema 中提供 `title`、`description` 解释字段，平台不识别业务字段名称。轮次由运行时 `round` 明确提供，没有轮次的 Loop 无需填写。
-
-文件输出使用 `schema: {"type":"string","format":"file"}`，结果值填写实际文件路径。相对路径以该次执行的工作目录为基准；没有工作目录时以安装的 Loop 包目录为基准。文件必须位于该目录内。图片可预览，其他文件通过浏览器查看或下载；文件不存在时会报错，不把普通字符串当文件，也不复制或保存外部文件历史。要保留旧产物，请每次执行使用不同文件名。
-
-## 修改既有设计
-
-1. 用 `list_loops` 的 loop_id 对照已有版本和草稿；普通修改继续现有草稿。revision 和 updated_at 帮助判断哪份是当前工作，不因重开会话就复制新 Loop。
-2. 定向读取需要修改的对象，带回执里的最新 revision 修改。没有筛选参数的 `read_loop` 仍返回完整定义，适合第一次了解整体结构。
-3. 看修改回执的 `changes`：每项包含字段路径和实际 before/after；新增没有 before，删除没有 after。文件回执只列大小、执行权限及 content_changed，不重复输出整份正文。`validation.valid=false` 表示草稿尚未可发布，不代表本次草稿保存失败。
-4. 修正 `validation.issues` 指出的路径，继续校验。errors 保留原文本；issues 定位当前首先遇到的结构问题，不声称一次列出所有错误。明确需要时才 publish_loop，原有 Run 不迁移。
-
-定向查询在同一个 `read_loop` 中完成，传 draft_id 或已安装 key 二选一：
-
-| 想读取什么 | 附加参数 |
+| 信息 | 平台中的执行来源 |
 | --- | --- |
-| 一个节点及其实现、输出记录类型 | node_id |
-| 一个候选实现（包括生命周期） | node_id、implementation_id |
-| 一个任务构建模板 | plan |
-| 模板中的一个步骤 | plan、step |
-| 包内脚本或 Skill 正文 | asset_path |
+| 选哪个候选 | Task implementation；批量安排用 steps.<step>.implementation |
+| 本次实现参数 | Task parameters；模板可用 `parameters: {"$":"values.options"}` 整体引用已确定对象，或调用时传 steps.<step>.parameters |
+| 上游数据或产物 | 显式 input 来源，引用上游输出或已有 record |
+| Run 的目的和约束 | Timeline settings |
 
-返回 value 和 references，以及草稿的 draft_id/revision 或已安装 key。references 列出声明中可确定的引用位置，例如节点被哪些步骤使用、某步骤输出被哪些输入使用、Skill 入口和命令参数引用了哪个包内文件；它不解析脚本逻辑或 Markdown 内的间接引用。读取普通包文件使用 UTF-8 正文；二进制文件明确返回 encoding=base64。安装版本只读，修改通过其草稿进行。
+领域计划对象可以保留研究意图和参数副本，但要说清哪个字段控制实际执行、谁把它写进 Task，以及修改后如何保持一致。不要为每个 Loop 再建立一套实现选择、参数校验或运行状态的事实来源。平台仅校验参数，不会自动把它们拼成命令行；适配脚本明确区分业务命令接受的参数、编排参数和产物声明。
 
-例如只改已有实现的命令：
+省略步骤时检查实际任务与数据流：不需要执行也不需要交付结果的阶段直接不创建任务；仍须生成可消费 manifest/引用的阶段，可以保留真正完成交付的任务。不要用 completed 加一个 skipped 字段代替“没有安排”。输入需要多个上游产物时，分别声明，不能只连最显眼的一条边。
 
-```json
-{"draft_id":"草稿ID","revision":12,"node_id":"train","implementation_id":"local","command":["python3","scripts/train_v2.py"]}
-```
+## 接入现有实现，保持适配可解释
 
-`set_implementation` 只修改传入字段。即使重复传 kind，也保留未传的 prompt、cwd、timeout、lifecycle 等字段；编辑既有候选不暗中改变默认选择，切换默认用 default:true。清除可选配置用 `clear:["timeout","prompt"]`，不能同时清除和设置同一个字段；空 prompt 表示发送空提示词，clear prompt 才表示恢复平台默认提示词。
+先使用已有稳定入口。平台已有 `scripts/call.py` 和报告客户端；有重复的业务操作时才写随包 helper。helper 的职责是把节点契约映射到现有接口，并把真实结果提交回来。新增依赖、身份解析或外部注册表应说明用途和部署条件；绑定了命令不代表其运行环境已经可用。
 
-候选实现可声明可选的 `parameter_schema`（type 为 object），约束该实现接收的 Task parameters；节点的 parameter_schema 继续表达公共要求，同一份参数必须同时满足两者。read_loop 定向读取候选可查看契约，网页在候选的“此实现的任务参数”中编辑。set_implementation 未传则保留，clear:["parameter_schema"] 明确清除。只做校验，不在服务端补参数默认值。
+同一计划的不同入口应共用参数映射、校验和提交恢复逻辑，避免各自复制一份。外部实现自己的复杂逻辑留在其实现中；若复用必须构造内部上下文，先确认这是稳定的接口要求，再决定适配范围。不要把大量旧控制面代码整体搬进来后逐个修补。
 
-新增、批量安排、修改与重试任务按有效实现校验参数，选择优先级仍是 Task 指定、Run 默认、Loop 默认。后续切换 Run 默认实现时，未执行且不满足新契约的任务会等待修正，不会带错参数启动；已派发执行保留原契约。没有选定实现时仍允许安排任务，选定后再检查。兜底候选由平台以空参数创建，因此不能要求必填的私有参数，应通过 Timeline 工具读取上下文。
+节点 Skill 写给执行这个任务的 Agent：读取哪些上下文、需要作什么判断、可调用哪个现有入口、参数在哪里、如何判断提交成功、异常从哪里继续。直接引用实际候选和共用参数契约；同一份实现清单、schema 或业务方法不在多个 Skill 中反复抄写。纯脚本节点需要执行接口说明，不需要假设另一个 Agent 来补参数。
 
-更改 kind 时明确提供新 lifecycle，或 `clear:["lifecycle"]` 使用该方式的初始模板。旧配置中不适用于新方式的字段也要明确清除，工具不会偷偷删除作者内容。例如 Agent 改同步脚本时，可清除 prompt 并设置真实 command。
+随包路径按包内目录组织；外部路径和依赖按目标机器实际配置。helper 从唤醒上下文取得平台地址和客户端位置。普通带 run_id/token 的接口与网页绑定身份的 tool_url 是两种实际入口，仅支持其中一种时写清适用范围。详细封装、prompt 和恢复说明见 [接入契约](build-reference.md#给运行时-agent-提供简洁入口)。
 
-集合字段约定保持简单：未传则保留，传入则替换该字段整体。put_node 的端口/Skill 列表、put_step 的 inputs/after、set_implementation 的 lifecycle 都遵循这一约定；先定向读取再修改，不把只提供一个元素误当作追加。单条连接可用 connect_steps 修改，不用重写其他输入。
+需要成组调整任务时，用 `edit_tasks(preview=true)` 查看生成的任务 ID、参数、依赖与省略原因，再用同一 revision 提交整组变更。后继依赖刚展开的任务时，可利用预览返回的 ID 加入 add_task 后再次预览；revision 冲突就重新读取并检查。edit_tasks 只包含任务编辑。需要把结果和自动生成后继一起提交时用节点 routes；多次独立工具调用仍不是同一个事务。
 
-包文件用 read_loop 的 asset_path 读取，再用 put_asset 的 content 写回；未传 executable 会保留已有权限。删除用 `put_asset(..., path="包内路径", remove=true)`，不同时传 content 或 executable。删除不级联删除节点和 Skill，草稿可暂时存在缺失引用，修正后再发布；检查 references 及作者脚本中的实际使用位置。
+## 验证意图是否落实为动作
 
-删除节点或输出时，保存草稿会清理本次失去最后一个输出引用的自动生成记录类型（节点ID.端口名）；共享类型保留，已发布版本和已有 Run 不变。validate_loop 的 unused_records 列出其他未引用类型；核对后可用 set_loop 的 remove_records 数组删除，工具拒绝删除仍被引用的类型。网页在模板下列出这些类型并提供清理按钮。
-
-模板输入未指定时保持缺失，不自动填空值。节点输入可查看每个模板步骤的实际来源；缺失或已删除的上游以提示色标出，点击输入或校验结果的“定位修正”直接编辑对应端口。校验只检查已声明的契约，业务是否还需要其他数据由作者判断。
-
-`remove_step` 要求先处理消费者，`remove_node` 要求先移除引用它的步骤。网页删除会列出引用，可定位修改或明确确认断开。网页编辑自动保存草稿，“保存并使用”统一校验、安装版本并进入准备页，不直接执行任务。
-
-循环安排通过节点的 plan_nodes 声明，运行任务依赖仍不能成环。可缺实现地构建、分享、安装和创建 Run；实际执行时才检查实现选择。业务脚本和环境配置由作者提供，不自动修复路径或依赖。构建完成后按 [run.md](run.md) 操作 Run；编辑 Loop 定义与修改正在运行的 Timeline 是不同操作。
+构建草稿时先用 validate_parameters 和 preview_plan 检查实际参数与任务展开，再把有意义的代表路径保存为 scenarios 并用 test_loop 验收。它运行真实 Engine、拦截所有命令和模型；外部环境仍用显式 smoke_runtime 或真实接入验收验证。不可把模拟报告当作业务实测。
 
 
-## 并行支线与全局决策
+沿代表路径核对可观察行为；只检查当前 Loop 用到的分支。
 
-运行时 Agent 默认在自己的 Task 支线内规划后续工作；相同节点模板可以用于多个并行 Task。归属由 parent_id 表达，输入/after 只表达数据与执行依赖。公共汇总任务由共同上层安排，后续业务步骤仍使用已有节点和批次模板。
+| 用户意图或发生的事 | 应检查的实际结果 |
+| --- | --- |
+| 只执行已确定工作 | 初始化后直接安排所需任务，自动阶段无需再次决策 |
+| 需要探索和迭代 | 决策结果创建本轮任务；后继决策引用准确的前置 Task/结果 |
+| 跳过阶段或复用产物 | 被省略任务确实不存在，保留的下游输入仍可解析 |
+| 参数或候选已确定 | Task 中的选择、参数和实际命令一致，编排字段没有混入业务 CLI |
+| 外部排队、失败或观察失败 | 事件进入声明的状态；查询失败不冒充业务失败；重试不重复提交已成功工作 |
+| 提交中途失败后继续 | 读取已提交结果，沿稳定 key 恢复剩余安排，不重做已完成的副作用 |
+| 用户目的已达成 | 完成判断写到平台的 completion_rule 或 termination_signal，Engine 进入终态 |
 
-需要某个正常决策节点处理整个 Run 时，通过 set_loop 的 global_agent_node 指定该节点，并提供 Agent 候选实现；初始化与兜底任务也具有全局范围。不要让普通节点靠改写同一全局记录协同，应输出各自结果再明确汇总。
+业务输出里的 `satisfied`、`terminated` 或名为 `completion_rule` 的字符串，本身不会结束 Run。必须明确由谁写入平台 settings，并检查 helper 没有过滤或遗漏这一步。`finish` 只释放操作权；没有任务也不等于完成。暂停或通知等字段也应有明确消费者和对应平台动作。
 
+用 `validate_loop` 检查定义和资源；在隔离样例中检查任务构建、参数交接与提交恢复；需要时显式做 [运行级检查](build-reference.md#运行级验证)，再按授权做目标环境的业务验收。dry-run 打印调用计划、静态校验、最小 Agent 响应、真实外部业务是不同证据，分别报告通过与未验证项。先证明一条接入路径可用，再批量扩展同类候选。
 
-## 执行生命周期与附属监控
+出现问题先定位负责层：节点业务方法、Loop 适配、运行环境或平台通用契约。平台能力确实缺失时记录具体用例和最小缺口；当前 Loop 可自行补齐的接口映射继续在其实现中完成。手册不把某个业务的固定超时、修复阈值或研究对象升级为所有 Loop 的规则。
 
-同步/异步由候选实现决定，同一节点可切换实现。`set_implementation` 保存候选时会填入明确的 `lifecycle: {initial, transitions}` 初始模板；`read_loop` 可查看，网页候选中可查看图示、编辑转移矩阵。模板不是业务决策。没有 lifecycle 的旧包保留原文；查看时展示对应初始模板，派发时将实际规则保存到执行快照。
+## 保存、使用与分享
 
-转移行是 `{from, event, to}`，同一状态/事件可以有多行，但每行必须声明不同的 `when` 条件，运行时必须恰好命中一行；不按行顺序选择。`when` 使用现有确定性表达式，读取 inputs、parameters、settings、detail、outputs、attempt（执行次数，从 1 开始）和 task_revision。状态和事件 ID 使用字母、数字、下划线或连字符。`initial` 指定执行开始时的阶段；completed、fault、retry、agent 是本次执行的出口，不能作为普通阶段继续向外转移。retry 会让同一 Task 开始下一次执行；agent 交给运行已配置的兜底 Agent，未配置时保留异常。进入 completed 只能报告 completed 并一次提交全部输出，通过节点的输出和 assertions 校验。生命周期状态表示这次执行的阶段；任务仍可能在执行之前等待输入、权限或暂停点。
+编辑持续保存同一 draft，用返回的 revision 继续修改。用户要求更新本机可用版本或启动该版本时，再调用 `publish_loop`；网页的“保存”负责这一步。分享时才 `export_loop`，无需每次编辑都生成可用版本或导出包。已有 Run 使用自己的版本快照。
 
-同步脚本一般使用 executing → completed/fault。external 将提交与检查绑定在一个候选里：command 提交工作，observe 是它的附属监控，接收同一 external_id；每次检查沿用同一任务和执行记录。用 report_task 报告 submitted、progress、completed 或 failed。监控进程失败由平台报告 check_error，默认保留最后的外部状态并停止检查、暴露异常；处理后恢复监控，不重复提交外部工作。作者可添加业务阶段和事件，但平台不会猜测缺失的转移；未覆盖的报告保留原状态及事件，进入明确的异常处理路径。
-
-`process_error` 来自平台检测的未完成交付、非零退出、超时等。已成功提交的结果不会因后续进程退出而撤回。权限、版本、输出校验和进程存活保护始终有效，不能通过编辑矩阵绕过。正常等待不自动判为失败。未启用 fallback_node 时只展示问题；启用后仍按既有范围和三次失败规则处理。
-
-脚本接入工具的用法见 [run.md](run.md#统一报告事件与结果)。作者可封装调用；业务事实与结果仍需真实验证。历史记录用于分析失败原因和后续优化建议，不会自动改写 Loop。
-
-
-### 在矩阵中声明恢复
-
-`to: "retry"` 使用原 Task 重试，不新建业务任务。可选 `parameters` 对象覆盖列出的顶层参数字段，其余参数保留；嵌套字段值整体替换，沿用模板已有的 `$` 路径引用。平台先按节点和有效候选校验完整参数，再记录匹配结果；真正重试时再检查当前契约和运行限额，在同一事务中应用参数、Task 修订与重试记录。原参重试不增加修订。
-
-次数条件使用已有表达式，例如 `{"op":"le","args":[{"path":"attempt"},2]}` 表示前两次执行；其余分支可用 ge 3。未设置条件的既有 failed → fault 不会自行变成自动重试；要加分支时，应修改该事件原有行，避免与无条件行重叠。retry 与 agent 在候选矩阵和运行详情中直接显示。
-
-下面是修改**已有同步脚本候选**的完整参数示例：第 1 次执行报告 failed 时原参重试，第 2 次将 batch 改为 8 后重试，第 3 次及以后交给已配置的兜底 Agent。batch 只是示例参数，须替换成作者实际允许修改且满足参数契约的字段和值；不默认启用这套策略。
-
-先用 `read_loop` 传 draft_id、node_id、implementation_id 读取候选，确认 kind 为 command，并取得最新 revision。将以下 JSON 保存为 `recovery.json`，替换草稿 ID、revision、节点与候选 ID；已有 command 等未传字段保持不变。
-
-```json
-{
-  "draft_id": "实际草稿ID",
-  "revision": 12,
-  "node_id": "train",
-  "implementation_id": "local",
-  "lifecycle": {
-    "initial": "executing",
-    "transitions": [
-      {"from": "executing", "event": "progress", "to": "executing"},
-      {"from": "executing", "event": "completed", "to": "completed"},
-      {"from": "executing", "event": "process_error", "to": "fault"},
-      {"from": "executing", "event": "failed", "to": "retry", "when": {"op": "eq", "args": [{"path": "attempt"}, 1]}},
-      {"from": "executing", "event": "failed", "to": "retry", "when": {"op": "eq", "args": [{"path": "attempt"}, 2]}, "parameters": {"batch": 8}},
-      {"from": "executing", "event": "failed", "to": "agent", "when": {"op": "ge", "args": [{"path": "attempt"}, 3]}}
-    ]
-  }
-}
-```
-
-在 Skill 根目录调用；其他目录使用 scripts/call.py 的绝对路径：
-
-```sh
-python3 scripts/call.py set_implementation --arguments @recovery.json
-python3 scripts/call.py validate_loop --arguments '{"draft_id":"实际草稿ID"}'
-```
-
-确认修改回执 `ok: true`、校验 `valid: true`，再定向 read_loop 核对保存的 lifecycle；下一次编辑使用修改回执中的新 revision。此操作只保存草稿，不会发布、启动或改变已有 Run。
-
-`attempt` 是同一 Task 的总执行次数，不是连续失败计数；改参重试保留 Task ID 和下游引用，参数确实变化时增加 Task 修订。`agent` 需要作者显式配置 fallback_node 及可用的 Agent 候选，否则保留异常等待处理。示例只对主动报告的 failed 分支重试；漏报、非零退出等 process_error 保留 fault，仍按原有兜底设置处理，不应被误认为已命中上述次数分支。
-
-注意 lifecycle 是整体替换。修改已有矩阵时保留其他业务阶段和转移，只替换相关的 failed 行；异步 external 不直接套用上述 executing 矩阵，应在读到的 submitting/waiting 矩阵上修改实际业务失败所在状态，保留 submitted 和 check_error 等行。
-
-同一事件零条命中、多条命中、条件求值失败或重试参数不合法，均保留为明确异常，不擅自选择分支。`process_error` 可进入 fault/retry/agent，但进程未确认停止时禁止自动重试。`check_error` 只代表监控查询失败，不允许借此进入 completed/fault/retry 或重提外部工作；可以显式转到 agent，让已启用的兜底 Agent 检查。恢复监控仍沿用原 external_id，并回到转交前的监控状态。
-
-重试等待上一进程退出和操作范围可写，暂停期间不执行。等待期间可由持权操作者明确接管重试或取消；原待应用转移随之失效。进程已确认结束的待重试动作会在重启后继续；重启时进程结局未知则标明原因，核实后通过已有 retry 工具恢复。调度复用现有限额，Agent 异常退出的三次暂停与通知机制继续有效。
-
-监控到达 completed、fault、retry 或 agent 后，本次监控停止。已经在途的报告可能收到 `stale: true, accepted: false`：平台只保留证据，不改变任务、结果或失败次数；不要为此安排新 Task 或重复提交外部工作。
-
-在界面的「Agent 兜底」启用开关并选择节点及候选实现。未配置命令的 Agent 只能等待外部接管，不能自动唤醒。运行前检查会列出实际工作目录、程序/脚本缺项及 Agent 信任/登录未验证项；作者应在该目录确认 Agent 可以非交互运行。平台不会自动切换 cwd 或修改信任设置。
-
-## 平台等待节点
-
-网页可直接添加「等时间」或「等事件 / 回复」。工具路径仍是 put_node + set_implementation，不需要守候脚本或常驻 Agent。
-
-- 时间等待：`kind="timer"`，wait 提供且只提供 seconds 或 until。seconds 是等待秒数，until 是带时区的 ISO 日期，例如 `2026-10-01T09:00:00+08:00`。相对时间从本次 Task 开始等待时计算，期限保存后重启不重算。一般没有业务输出；若节点声明输出，显式配置 wait.outputs。
-- 事件等待：`kind="event"`，event 为事件名称；wait.key 为关联标识，省略时沿用 Task parameters.event_key。可填 wait.timeout 作为最多等待秒数。收到匹配事件后，以 payload 作为节点全部输出，按原契约检查并提交。事件可先于等待到达；同一个事件只被一个等待执行消费。
-- wait 支持原有 `{parameters.name}` 或 `{"$":"parameters.name"}` 引用。回复事件名称、关联标识和输出结构需与询问一致。
-- 超时产生 timeout 事件，初始矩阵进入 fault；作者可在同一矩阵中改为重试或交给 Agent。取消等待不启动外部操作；下游是否改选输入仍由明确安排决定。暂停期间不推进，恢复时依据原期限处理。
-
-示例为通用工具参数，不包含业务方法：
-
-```json
-{"draft_id":"DRAFT_ID","revision":1,"node_id":"wait_reply","kind":"event","event":"reply","wait":{"key":"{parameters.question_id}","timeout":86400}}
-```
-
-使用真实的草稿 revision；先声明该节点的输出契约。需要完成后通知时，在它的 completed 转移行加入 notify；通知内容和具体输出字段由作者定义。
+交付时简要说明实际业务路径、实现与环境依赖、验证到哪一步，以及确实需要用户补充的内容。具体编辑、版本冲突和资源操作见 [构建工具与接入契约](build-reference.md#修改既有设计)，运行操作见 [run.md](run.md)。

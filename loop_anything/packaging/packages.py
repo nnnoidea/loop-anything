@@ -23,6 +23,7 @@ from loop_anything.runtime.model import Invalid, Conflict, current_definition
 from loop_anything.runtime.implementations import options, default_id
 
 FORMAT = 'loop-anything-package/1'
+CAPABILITY_FORMAT = 'loop-anything-package/2'
 MANIFEST = 'loop.json'
 MAX_BYTES = 20 * 1024 * 1024
 MAX_FILES = 256
@@ -73,14 +74,22 @@ def resolve_skill(database, key, skill):
 
 
 def validate_document(document):
-    if not isinstance(document, dict) or set(document) - {'format', 'loop_definition', 'implementations', 'checks', 'files'}:
+    if not isinstance(document, dict) or set(document) - {'format', 'loop_definition', 'implementations', 'checks', 'files', 'requires'}:
         raise Invalid('Package document accepts loop_definition, optional implementations/checks and package metadata only')
-    if document.get('format', FORMAT) != FORMAT:
+    if document.get('format', FORMAT) not in (FORMAT, CAPABILITY_FORMAT):
         raise Invalid('Unsupported Loop package format')
     bp, implementations = document.get('loop_definition'), document.get('implementations', {})
     report = validate_v2(current_definition(bp) if isinstance(bp, dict) else bp, implementations)
     if not report['valid']:
         raise Invalid('; '.join(report['errors']))
+    from loop_anything.capabilities import required_capabilities, require_supported
+    require_supported(document.get('requires', []))
+    needed = required_capabilities(bp, implementations)
+    require_supported(needed)
+    if document.get('format') == FORMAT and needed:
+        raise Invalid('This Loop requires package/2 for capabilities: ' + ', '.join(needed) + '; rebuild with the current platform')
+    if document.get('format') == CAPABILITY_FORMAT and set(needed) - set(document.get('requires', [])):
+        raise Invalid('Package manifest omits required capabilities: ' + ', '.join(sorted(set(needed) - set(document.get('requires', [])))))
     validate_skill_files(bp)
     checks = document.get('checks', {})
     if not isinstance(checks, dict) or set(checks) - {'paths', 'env', 'programs'}:
@@ -95,8 +104,25 @@ def validate_document(document):
     return report
 
 
+def effective_definition(document):
+    """Keep package-level compatibility requirements when editing or running its definition."""
+    result = current_definition(document['loop_definition'])
+    required = sorted(set(result.get('requires', [])) | set(document.get('requires', [])))
+    if required:result['requires'] = required
+    return result
+
+
 def make_archive(document, assets=None):
     """assets maps explicit relative names to (bytes, executable). No filesystem scan."""
+    from loop_anything.capabilities import required_capabilities
+    if not isinstance(document, dict) or document.get('format', FORMAT) not in (FORMAT, CAPABILITY_FORMAT):
+        raise Invalid('Unsupported Loop package format')
+    from loop_anything.capabilities import require_supported
+    require_supported(document.get('requires', []))
+    document = copy.deepcopy(document)
+    needed = sorted(set(document.get('requires', [])) | set(required_capabilities(document['loop_definition'], document.get('implementations', {}))))
+    document['format'] = CAPABILITY_FORMAT if needed else FORMAT
+    if needed:document['requires'] = needed
     validate_document(document)
     assets = assets or {}
     if set(document.get('files', {})) - set(assets):
@@ -104,7 +130,7 @@ def make_archive(document, assets=None):
     if len(assets) >= MAX_FILES:
         raise Invalid('Too many package files')
     manifest = copy.deepcopy(document)
-    manifest.update(format=FORMAT, implementations=copy.deepcopy(document.get('implementations', {})), files={})
+    manifest.update(format=document['format'], implementations=copy.deepcopy(document.get('implementations', {})), files={})
     total, seen = 0, set()
     for name, (data, executable) in assets.items():
         member_path(name)
@@ -159,7 +185,7 @@ def read_archive(data):
             raise Invalid('Package is missing loop.json')
         document = json.loads(contents.pop(MANIFEST))
         validate_document(document)
-        if document.get('format') != FORMAT or set(contents) != set(document.get('files', {})):
+        if document.get('format') not in (FORMAT, CAPABILITY_FORMAT) or set(contents) != set(document.get('files', {})):
             raise Invalid('Manifest must declare the exact package file list')
         assets = {}
         for name, metadata in document['files'].items():
@@ -330,7 +356,7 @@ def install(store, data):
             raise Conflict('Package identity already installed with different content/location')
         db.execute('INSERT OR IGNORE INTO loop_packages VALUES (?,?,?,?)', (key, fingerprint, str(root), json.dumps(document)))
         db.execute('INSERT OR IGNORE INTO loop_definitions VALUES (?,?,?,?)',
-                   (key, fingerprint, json.dumps(current_definition(document['loop_definition'])), json.dumps(bound)))
+                   (key, fingerprint, json.dumps(effective_definition(document)), json.dumps(bound)))
         db.commit()
     return {'key': key, 'loop_definition_id': document['loop_definition']['id'], 'version': document['loop_definition']['version'],
             'root': str(root), 'unbound_nodes': validate_document(document)['unbound_nodes'],

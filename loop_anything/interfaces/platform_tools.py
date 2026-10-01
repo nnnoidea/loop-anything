@@ -8,35 +8,67 @@ from loop_anything.runtime.model import Invalid, Conflict, contract, check_schem
 from loop_anything.runtime.store import uid
 from loop_anything.runtime.implementations import options, default_id
 
-WORKFLOW = 'Use Loop drafts for authoring and Run tools for execution. From any channel, find the existing Run with list_runs and read_timeline before editing; acquire_run only for writes. The Timeline is shared, chat histories are not. Read current revisions before edits. Platform Skills teach operations; business rules come from the author. start_run acquires operation rights; complete its entry task, handle current tasks, then finish.'
+WORKFLOW = ('Use the authoring_context in create_loop/copy_loop/read_loop to identify platform-owned work. read_capabilities explains automatic mechanisms, required declarations, author responsibilities, limits and composition examples, beyond the tool index. Use Loop drafts for authoring and Timeline tools for execution. Before writing adapters, inspect the available mechanisms: '
+            'put_step/connect_steps declare dependencies, each expansion, collect aggregation and when conditions; ref/after_refs and task_ref/task_refs bind work by authored identities; '
+            'put_node.routes maps accepted node events and result parameters to plans: the platform creates Tasks atomically with the report; '
+            'build_plan selects/omits steps and binds candidate implementations and Task parameters; '
+            'preview_plan validates draft expansion without a Run; validate_parameters checks node and candidate contracts including conditionals; test_loop executes saved scenarios with real Engine logic and simulated side effects; edit_tasks previews generated IDs and atomically applies live task edits; '
+            'set_implementation declares parameter contracts and external lifecycle/retry rules; '
+            'notify and timer/event candidates handle notification and waits. '
+            'read_loop selects a node, candidate, plan, step or package asset; read_plans/read_task return the current contracts. '
+            'Use the parameter schemas in this running service catalog, not remembered fields from another version. '
+            'Keep editing the existing draft; publish_loop makes a local usable version, export_loop shares it. '
+            'Find an existing Run with list_runs/read_timeline before editing; acquire_run only for writes and re-read revisions. '
+            'Start_run acquires entry ownership. Complete the entry task, inspect receipt.routes for generated work, and finish to release scope. Do not manually duplicate declared routes. '
+            'Run completion requires change_settings completion_rule/termination_signal; a business status field does not end the Run. '
+            'Platform Skills teach mechanisms; the author supplies business decisions.')
 TEXT = {'type': 'string'}
 OBJ = {'type': 'object'}
 BOOL = {'type': 'boolean'}
 STRINGS = {'type': 'array', 'items': TEXT}
 PORTS = {'type': 'array', 'items': object_schema({'name': TEXT, 'type': TEXT, 'schema': OBJ}, ['name'])}
+REPORT = object_schema({'event': TEXT, 'report_id': TEXT, 'envelope': OBJ, 'detail': OBJ,
+                        'external_id': TEXT, 'poll_after': {'type':'number'}}, ['event'])
+SCENARIO = object_schema({
+    'name': TEXT, 'inputs': OBJ, 'bindings': OBJ,
+    'steps': {'type':'array', 'maxItems':200, 'items': {'oneOf': [
+        object_schema({'task_id':TEXT,'ref':TEXT,'node':TEXT,'attempt':{'type':'integer','minimum':1},
+                       'report':REPORT,'accepted':BOOL,'duplicate':BOOL,'expect_error':TEXT}, ['report']),
+        object_schema({'send_event':object_schema({'event_id':TEXT,'name':TEXT,'key':TEXT,'payload':OBJ,'task_id':TEXT}, ['event_id','name','payload'])}),
+        object_schema({'ticks':{'type':'integer','minimum':1,'maximum':20}})]}},
+    'assertions': {'type':'array','minItems':1,'items':object_schema({'message':TEXT,'test':OBJ})}
+}, ['name','steps','assertions'])
+SCENARIOS = {'type':'array','maxItems':20,'items':SCENARIO}
+ROUTES = {'type': 'array', 'items': object_schema({'id': TEXT, 'event': TEXT, 'plan': TEXT, 'values': OBJ,
+          'each': TEXT, 'when': OBJ, 'steps': OBJ, 'round': TEXT}, ['id', 'event', 'plan', 'values'])}
 
 
 class PlatformTools:
     instructions = WORKFLOW
     def __init__(self, store):
         self.store = store
-        self.run_definitions = RunTools(store, '', '').definitions()
+        self.run_definitions = [d for d in RunTools(store, '', '').definitions() if d['name'] != 'read_capabilities']
 
     def definitions(self):
         draft = {'draft_id': TEXT, 'revision': {'type': 'integer'}}
         defs = [
+            ('preview_plan', 'Expand an existing draft or installed plan without creating a Run or executing commands. Returns concrete tasks, refs and omitted steps; validates candidate parameters and dependencies. For live Run references use edit_tasks preview.', {'draft_id':TEXT,'key':TEXT,'name':TEXT,'batch_key':TEXT,'values':OBJ,'steps':OBJ,'bindings':OBJ,'round':TEXT}, ['name','batch_key','values'], True),
+            ('validate_parameters', 'Validate prospective Task parameters against both node and selected candidate contracts, without creating a Task. Returns valid/errors. Reads the exact same schemas as execution; never injects defaults or filters fields.', {'draft_id':TEXT,'key':TEXT,'node_id':TEXT,'implementation_id':TEXT,'parameters':OBJ}, ['node_id','parameters'], True),
+            ('test_loop', 'Run saved or supplied author scenarios in a throwaway database with real Engine dispatch, input resolution and report routing. Commands/models/notification transports are intercepted. Each scenario requires name, steps and assertions; reports select task_id/ref/node. Assertions use the existing deterministic expression over status/task_count/counts/by_ref/by_id/records/route_count. Returns passed, step errors, assertions and resolved tasks. Does not install, start or modify a real Run. Read references/testing.md via read_capabilities for complete examples.', {'draft_id':TEXT,'key':TEXT,'scenarios':SCENARIOS}, [], True),
+            ('read_capabilities', 'Discover platform mechanisms beyond tools: automatic responsibilities, author obligations, activation, configuration, limits and composable examples, plus service version/build and supported schema keywords. Optional capability selects one guide. Use the live tool catalog as the interface contract.', {'capability': TEXT}, [], True),
             ('read_notification_channels', 'Read named notification outlets stored on this platform; not part of Loop packages.', {}, [], True),
             ('set_notification_channels', 'Replace local notification outlets using the current revision. Commands use the existing notification adapter stdin/receipt contract. Does not send messages.', {'revision':{'type':'integer'},'channels':OBJ}, ['revision','channels'], False),
             ('list_loops', 'List installed Loops and editable drafts. Does not start anything.', {}, [], True),
+            ('smoke_runtime', 'Explicit runtime check of an installed Loop. Starts configured Agent commands (may call models), including fallback candidates, with a minimal startup prompt and bounded timeout. Simulates external lifecycle reports in a temporary Timeline; never calls business submit/observe commands. Optional node_id/implementation_id select candidates. cases supplies node, implementation, state, event and optional attempt/inputs/parameters/settings/detail/expected for conditional transitions. Does not start or change a business Run.', {'key': TEXT, 'node_id': TEXT, 'implementation_id': TEXT, 'timeout': {'type': 'number'}, 'cases': {'type': 'array', 'items': OBJ}}, ['key'], False),
             ('read_loop', 'Read a draft_id or installed key. Optional node_id (+ implementation_id), plan (+ step), or asset_path selects one part and its explicit references. Without selectors returns the complete Loop. Targeted reads include draft revision; asset text is decoded UTF-8.', {'draft_id': TEXT, 'key': TEXT, 'node_id': TEXT, 'implementation_id': TEXT, 'plan': TEXT, 'step': TEXT, 'asset_path': TEXT}, [], True),
             ('create_loop', 'Create an editable Loop with a no-input Agent entry. The user Agent initializes Timeline settings from the conversation; add business ports only when needed. Add the author business handbook, tasks and implementations before validation.', {'name': TEXT, 'id': TEXT}, ['name'], False),
             ('copy_loop', 'Copy an installed Loop and its resources to an editable draft. Existing Runs stay on their original version.', {'key': TEXT, 'name': TEXT, 'new_version': BOOL}, ['key'], False),
-            ('set_loop', 'Update draft metadata and the AUTHOR business handbook; handbook_path binds a package-relative Skill entry (empty clears). Preserve unspecified fields. remove_records explicitly deletes unused record types; referenced types are protected. Defaults and limits are explicit author choices. fallback_node selects a declared non-entry Agent node with no input ports; empty disables automatic fallback.', dict(draft, name=TEXT, version=TEXT, description=TEXT, handbook=TEXT, handbook_path=TEXT, defaults=OBJ, limits=OBJ, guide=OBJ, checks=OBJ, fallback_node=TEXT, global_agent_node=TEXT, remove_records=STRINGS), ['draft_id', 'revision'], False),
-            ('put_node', 'Add or edit one node. Port lists use name plus type (string/number/object/array/etc.) or a full schema; output record types are generated. Entry ports automatically update its initial input/output locations. skills are author-provided methods, with content or a package-relative path to SKILL.md.', dict(draft, node_id=TEXT, instructions=TEXT, label=TEXT, inputs=PORTS, outputs=PORTS, skills={'type': 'array', 'items': object_schema({'name': TEXT, 'content': TEXT, 'path': TEXT}, ['name'])}, plan_nodes=STRINGS, parameter_schema=OBJ, agent_settings_schema=OBJ, assertions={'type': 'array', 'items': OBJ}), ['draft_id', 'revision', 'node_id'], False),
+            ('set_loop', 'Update draft metadata and the AUTHOR business handbook; handbook_path binds a package-relative Skill entry (empty clears). Preserve unspecified fields. remove_records explicitly deletes unused record types; referenced types are protected. Defaults and limits are explicit author choices. requires lists required capability IDs; scenarios stores author acceptance cases for test_loop. Parameter contracts support the documented conditional/composition subset; read_capabilities returns supported keywords. fallback_node selects a declared non-entry Agent node with no input ports; empty disables automatic fallback.', dict(draft, name=TEXT, version=TEXT, description=TEXT, handbook=TEXT, handbook_path=TEXT, defaults=OBJ, limits=OBJ, guide=OBJ, checks=OBJ, requires=STRINGS, scenarios=SCENARIOS, fallback_node=TEXT, global_agent_node=TEXT, remove_records=STRINGS), ['draft_id', 'revision'], False),
+            ('put_node', 'Add or edit one node. Port lists use name plus type or schema; output record types are generated. Entry ports update initial locations. skills bind author methods. routes optionally declare event -> plan task generation, atomically with each accepted lifecycle report. Each route has id/event/plan/values and optional each/when/steps/round. Map values and step overrides with $ references to outputs/inputs/parameters/settings/detail/task/transition/attempt/task_revision; each reads a context array and adds item/index. when is evaluated per item. Generated tasks belong to the source Task; duplicate reports never regenerate. Supplying routes replaces the list; [] clears it. plan_nodes remains the permission for scripts to arrange tasks explicitly; a route is itself an author declaration.', dict(draft, node_id=TEXT, instructions=TEXT, label=TEXT, inputs=PORTS, outputs=PORTS, skills={'type': 'array', 'items': object_schema({'name': TEXT, 'content': TEXT, 'path': TEXT}, ['name'])}, plan_nodes=STRINGS, routes=ROUTES, parameter_schema=OBJ, agent_settings_schema=OBJ, assertions={'type': 'array', 'items': OBJ}), ['draft_id', 'revision', 'node_id'], False),
             ('remove_node', 'Remove a draft node only after removing steps that use it. The initialization node cannot be deleted.', dict(draft, node_id=TEXT), ['draft_id', 'revision', 'node_id'], False),
             ('set_implementation', 'Add/update a named candidate with implementation_id; default=true selects the Loop default, default=false clears it. Omit implementation_id for the compact default candidate. Choose candidates per Run via settings.bindings or per Task via implementation. Execution kinds: agent, command, external, event, timer or approval. timer wait requires seconds or timezone-aware until; event wait accepts key/timeout. wait values support existing {parameters.x} or $ references. Timeouts emit timeout in the same lifecycle. Transition notify lists queue messages/questions atomically. command/observe are argv arrays, not shell strings. Optional agent prompt fully replaces the default; {{context}} expands runtime context. parameter_schema optionally constrains the Task parameters for this candidate, in addition to the node contract. No defaults are injected. lifecycle holds the visible initial state and explicit from/event/to transitions with optional when and retry parameters. Conditions may read attempt; retry reuses the Task and agent hands off to the configured fallback. Only supplied fields change, including when kind is repeated. clear removes named optional fields; clear lifecycle explicitly restores the initial template for the selected kind. Changing kind requires lifecycle or clear lifecycle; incompatible fields must be explicitly cleared. Omitted collections are preserved; supplied lifecycle replaces the matrix. Configure notification outlets with set_notification_channels on the local platform. Unbind explicitly to share an incomplete Loop.', dict(draft, node_id=TEXT, kind={'type': 'string', 'enum': ['agent', 'command', 'external', 'event', 'approval', 'timer']}, command=STRINGS, observe=STRINGS, cwd=TEXT, timeout={'type': 'number'}, event=TEXT, wait=OBJ, prompt=TEXT, lifecycle=OBJ, parameter_schema=OBJ, label=TEXT, description=TEXT, clear=STRINGS, unbind=BOOL, implementation_id=TEXT, default=BOOL), ['draft_id', 'revision', 'node_id'], False),
             ('put_asset', 'Write or explicitly remove one package file. Supply content (UTF-8) to write, or remove=true to delete. Unspecified executable preserves its previous value. Paths are package-relative; removal does not delete referenced nodes or other resources.', dict(draft, path=TEXT, content=TEXT, executable=BOOL, remove=BOOL), ['draft_id', 'revision', 'path'], False),
-            ('put_step', 'Add/edit a step in a named batch template. inputs map ports to literal, record, run, settings or from/port sources; each is a values array path; an empty string removes list expansion. Plan parameters describe build_plan values. Optional when uses the existing deterministic expression over values; false omits the entire step before each expansion. when={} removes the condition. No Task is created by editing a template.', dict(draft, plan=TEXT, step=TEXT, node_id=TEXT, inputs=OBJ, parameters=OBJ, after=STRINGS, each=TEXT, plan_parameters=OBJ, implementation=TEXT, when=OBJ), ['draft_id', 'revision', 'plan', 'step', 'node_id'], False),
+            ('put_step', 'Add/edit a step in a named batch template. inputs map ports to literal, record, run, settings or from/port sources; each is a values array path; an empty string removes list expansion. Plan parameters describe build_plan values. ref is a Run-unique Task label template; after_refs is an array template of labels to wait for. Inputs may use task_ref/task_refs plus port. Labels can reference values/item/index. Routes resolve across all batches atomically; standalone preview/build resolves against existing and current tasks. Optional ref/after_refs and task_ref/task_refs are resolved into ordinary dependencies and record sources. Optional when uses the existing deterministic expression over values; false omits the entire step before each expansion. when={} removes the condition. No Task is created by editing a template.', dict(draft, plan=TEXT, step=TEXT, node_id=TEXT, inputs=OBJ, parameters={"type":"object","description":"Task parameter template. Values may use $ references to values/item/index; a sole {\"$\":\"values.options\"} references the entire object. Template and call-time parameter objects are expanded before merging; call-time fields win."}, after=STRINGS, ref={'type':['string','object']}, after_refs={'type':['array','object'],'items':TEXT}, each={"type":"string","description":"Array path relative to build_plan values, e.g. experiments. Expands one Task per item; matching each paths bind corresponding outputs, collect aggregates all outputs."}, plan_parameters=OBJ, implementation=TEXT, when=OBJ), ['draft_id', 'revision', 'plan', 'step', 'node_id'], False),
             ('remove_step', 'Remove a batch step if no other step depends on it. Reconnect its consumers first.', dict(draft, plan=TEXT, step=TEXT), ['draft_id', 'revision', 'plan', 'step'], False),
             ('connect_steps', 'Connect an existing batch step output to another step input; collect=true aggregates all outputs of a list-expanded step. This records the source, not a new task.', dict(draft, plan=TEXT, from_step=TEXT, output=TEXT, to_step=TEXT, input=TEXT, collect=BOOL), ['draft_id', 'revision', 'plan', 'from_step', 'output', 'to_step', 'input'], False),
             ('validate_loop', 'Validate a draft and report missing implementations separately. Validation never runs handlers.', {'draft_id': TEXT}, ['draft_id'], True),
@@ -100,8 +132,12 @@ class PlatformTools:
                 report.setdefault('issues', []).append({'path': getattr(exc, 'path', None) or ['assets'], 'message': str(exc)})
         return report
 
-    def _summary(self, draft):
-        return {'draft_id': draft['id'], 'revision': draft['revision'], 'validation': self._validation(draft)}
+    def _summary(self, draft, authoring=False):
+        result = {'draft_id': draft['id'], 'revision': draft['revision'], 'validation': self._validation(draft)}
+        if authoring:
+            from loop_anything.authoring_guidance import authoring_context
+            result['authoring_context'] = authoring_context()
+        return result
 
     @staticmethod
     def _changes(before, after):
@@ -137,6 +173,11 @@ class PlatformTools:
         node, plan, step, asset, impl = (selection.get(k) for k in ('node_id', 'plan', 'step', 'asset_path', 'implementation_id'))
         def add(path, value):
             refs.append({'path': path, 'value': copy.deepcopy(value)})
+        if plan:
+            for ident, item in bp['nodes'].items():
+                for index, route in enumerate(item.get('routes', [])):
+                    if route.get('plan') == plan:
+                        add(['loop_definition', 'nodes', ident, 'routes', index], route)
         if node:
             for key in ('entry', 'fallback_node', 'global_agent_node'):
                 if not impl and bp.get(key) == node:
@@ -227,6 +268,35 @@ class PlatformTools:
         a = copy.deepcopy(arguments)
         if name in {d['name'] for d in self.run_definitions}:
             return RunTools(self.store, a.pop('run_id'), a.pop('token', None)).call(name, a)
+        if name in ('preview_plan','test_loop','validate_parameters'):
+            if bool(a.get('draft_id')) == bool(a.get('key')):raise Invalid('Supply exactly one draft_id or key')
+            document = self._draft(a['draft_id']) if a.get('draft_id') else self._installed(a['key'])
+            if name == 'test_loop':
+                from loop_anything.packaging.scenarios import run_scenarios
+                return run_scenarios(document,a.get('scenarios'))
+            if name == 'validate_parameters':
+                from loop_anything.runtime.implementations import check_parameters
+                node = document['loop_definition']['nodes'].get(a['node_id'])
+                if node is None:raise Invalid('Unknown node_id')
+                entry = document['implementations'].get(a['node_id'])
+                ident = a.get('implementation_id',default_id(entry))
+                candidate = options(entry).get(ident)
+                if candidate is None:raise Invalid('Select a declared implementation')
+                try:
+                    contract(a['parameters'],node.get('parameter_schema',{'type':'object'}),'Node parameters')
+                    check_parameters(candidate,a['parameters'],'Implementation parameters')
+                except Invalid as exc:return {'valid':False,'errors':[str(exc)],'implementation_id':ident}
+                return {'valid':True,'errors':[],'implementation_id':ident}
+            from loop_anything.packaging.scenarios import preview_plan
+            return preview_plan(document,a['name'],a['batch_key'],a['values'],a.get('steps'),a.get('bindings'),a.get('round'))
+        if name == 'smoke_runtime':
+            from loop_anything.packaging.packages import load_installed
+            from loop_anything.packaging.runtime_smoke import runtime_smoke
+            document, root = load_installed(self.store.filename, a.pop('key'))
+            return runtime_smoke(document, root, **a)
+        if name == 'read_capabilities':
+            from loop_anything.capabilities import discover
+            return discover(a.get('capability'))
         if name == 'read_notification_channels':
             import sys
             from loop_anything.paths import platform_skill_directory
@@ -246,7 +316,10 @@ class PlatformTools:
                 for node in bp['nodes'].values():
                     if 'skills' in node:
                         node['skills'] = [resolve_skill(self.store.filename, a['key'], skill) for skill in node['skills']]
-            return self._read_selection(loop, a) if any(k in a for k in ('node_id', 'implementation_id', 'plan', 'step', 'asset_path')) else {'loop': loop}
+            from loop_anything.authoring_guidance import authoring_context
+            if any(k in a for k in ('node_id', 'implementation_id', 'plan', 'step', 'asset_path')):
+                return dict(self._read_selection(loop, a), platform_guide={'tool':'read_capabilities','reference':'references/platform-capabilities.md'})
+            return {'loop': loop, 'authoring_context': authoring_context()}
         if name == 'start_run':
             run = self.store.create(a['key'], a['title'], a.get('inputs'), authorization=a['authorization'], acquire=True, bindings=a.get('bindings'), fallback_node=a.get('fallback_node'), global_agent_node=a.get('global_agent_node'), notification_command=a.get('notification_command'),notification_route=a.get('notification_route'))
             return {'run_id': run['id'], 'token': run['agent_sessions'][0]['token'], 'entry_task_id': run['loop_definition']['seed']['id']}
@@ -280,7 +353,7 @@ class PlatformTools:
                       'initialize': {'label': '初始状态', 'instructions': '根据已确认的对话将目标、要求和约束写入 Timeline settings；按需安排后续任务，提交本节点后释放操作权。',
                           'initialize_timeline': True, 'inputs': {}, 'outputs': {}}},
                   'seed': {'id': 'initialize', 'node': 'initialize', 'inputs': {}, 'outputs': {}}, 'plans': {}}
-            return self._summary(self.store.save_draft(bp, {'initialize': {'kind': 'agent'}}))
+            return self._summary(self.store.save_draft(bp, {'initialize': {'kind': 'agent'}}), authoring=True)
         if name == 'copy_loop':
             source = self._installed(a['key'])
             assets, checks = [], {}
@@ -291,21 +364,27 @@ class PlatformTools:
                 assets = [{'path': n, 'base64': base64.b64encode(data).decode(), 'executable': executable}
                           for n, (data, executable) in installed_assets(doc, root).items()]
                 checks = doc.get('checks', {})
-            bp = copy.deepcopy(source['loop_definition'])
+            from loop_anything.packaging.packages import effective_definition
+            bp = effective_definition(source)
             if a.get('new_version'):
                 bp['version'] = self._next_version(bp)
             else:
                 bp['id'] = uid('loop')
                 bp['name'] = a.get('name', bp.get('name', bp['id']) + ' · 副本')
                 bp['version'] = '1'
-            return self._summary(self.store.save_draft(bp, source['implementations'], assets=assets, checks=checks))
+            return self._summary(self.store.save_draft(bp, source['implementations'], assets=assets, checks=checks), authoring=True)
         draft = self._draft(a['draft_id'], a.get('revision'))
         before = copy.deepcopy(draft)
         bp, implementations = draft['loop_definition'], draft['implementations']
         if name == 'validate_loop':
             return self._validation(draft)
         if name in ('publish_loop', 'export_loop'):
-            from loop_anything.packaging.packages import make_archive, decode_assets, install
+            from loop_anything.packaging.packages import make_archive, decode_assets, install, read_archive
+            if name == 'publish_loop' and a.get('auto_version'):
+                raw = make_archive({'loop_definition': bp, 'implementations': implementations, 'checks': draft.get('checks', {})}, decode_assets(draft.get('assets', [])))
+                key = read_archive(raw)[2]
+                if any(item['key'] == key for item in self.store.catalog()):
+                    return dict(install(self.store, raw), draft_id=draft['id'], revision=draft['revision'])
             if name == 'publish_loop' and a.get('auto_version') and any(item['loop_definition']['id'] == bp['id'] and item['loop_definition']['version'] == bp['version'] for item in self.store.catalog()):
                 bp['version'] = self._next_version(bp)
             raw = make_archive({'loop_definition': bp, 'implementations': implementations, 'checks': draft.get('checks', {})}, decode_assets(draft.get('assets', [])))
@@ -322,7 +401,7 @@ class PlatformTools:
                     raise Invalid('Only existing unreferenced record types can be removed')
                 for record in set(a['remove_records']):
                     del bp['records'][record]
-            for field in ('name', 'version', 'description', 'defaults', 'limits', 'guide', 'fallback_node', 'global_agent_node'):
+            for field in ('name', 'version', 'description', 'defaults', 'limits', 'guide', 'fallback_node', 'global_agent_node', 'requires', 'scenarios'):
                 if field in a:
                     bp[field] = a[field]
             if 'fallback_node' in a:
@@ -342,7 +421,7 @@ class PlatformTools:
             if not re.fullmatch(r'[a-zA-Z0-9_-]+', id):
                 raise Invalid('Node ID accepts letters, numbers, underscore and hyphen')
             node = bp['nodes'].setdefault(id, {'instructions': '', 'inputs': {}, 'outputs': {}})
-            for field in ('instructions', 'label', 'skills', 'plan_nodes', 'parameter_schema', 'agent_settings_schema', 'assertions'):
+            for field in ('instructions', 'label', 'skills', 'plan_nodes', 'routes', 'parameter_schema', 'agent_settings_schema', 'assertions'):
                 if field in a:
                     node[field] = a[field]
             for direction in ('inputs', 'outputs'):
@@ -437,7 +516,7 @@ class PlatformTools:
                 plan['parameters'] = a['plan_parameters']
             step = plan['steps'].setdefault(a['step'], {'inputs': {}})
             step['node'] = a['node_id']
-            for field in ('inputs', 'parameters', 'after', 'each', 'implementation'):
+            for field in ('inputs', 'parameters', 'after', 'each', 'implementation', 'ref', 'after_refs'):
                 if field in a:
                     step[field] = a[field]
             if 'when' in a:
@@ -449,6 +528,10 @@ class PlatformTools:
                 step.pop('each', None)
         elif name == 'remove_step':
             plan = bp['plans'][a['plan']]
+            if len(plan['steps']) == 1:
+                for node_id, node in bp['nodes'].items():
+                    if any(r.get('plan') == a['plan'] for r in node.get('routes', [])):
+                        raise Invalid('Remove the route referencing this plan first: ' + node_id)
             for key, step in plan['steps'].items():
                 if key != a['step'] and (a['step'] in step.get('after', []) or any(s.get('from') == a['step'] for s in step['inputs'].values())):
                     raise Invalid('Reconnect dependent step first: ' + key)

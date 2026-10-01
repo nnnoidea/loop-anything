@@ -34,7 +34,7 @@ def check_connection(url):
     if not isinstance(tools, dict) or not isinstance(tools.get('tools'), list):
         return {'ok': False, 'url': url, 'error': tools}
     return {'ok': True, 'url': url, 'tool_count': len(tools['tools']),
-            'platform': status, 'agent_execution': 'not_checked'}
+            'platform': status, 'service': tools.get('service', status.get('service')), 'agent_execution': 'not_checked'}
 
 
 def load_json(value):

@@ -176,6 +176,8 @@ class WebAgent:
             defs += [('acquire_run', 'Acquire the operation scope selected in the webpage, only when a write is needed. A conflict must not be bypassed.', {}, []),
                      ('read_run', 'Read the attached Run and history without internal tokens.', {}, [])]
         result = [{'name': n, 'description': d, 'inputSchema': object_schema(p, required)} for n, d, p, required in defs]
+        if not doc.get('run_id'):
+            result += [d for d in PlatformTools(self.store).definitions() if d['name']=='read_capabilities']
         if doc.get('run_id'):
             result += RunTools(self.store, doc['run_id']).definitions()
         return result
@@ -187,7 +189,10 @@ class WebAgent:
             if name not in defs:
                 raise Invalid('Tool is unavailable in this webpage context')
             contract(arguments, defs[name]['inputSchema'], 'arguments')
-            if name == 'read_preparation':
+            if name == 'read_capabilities':
+                from loop_anything.capabilities import discover
+                result = discover(arguments.get('capability'))
+            elif name == 'read_preparation':
                 result = self.view(doc)
             elif name == 'change_preparation':
                 result = self.update(ident, arguments['revision'], launch=arguments['change'], turn_token=token)

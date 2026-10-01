@@ -2,7 +2,7 @@
 import copy
 import math
 import re
-from loop_anything.runtime.model import Invalid, contract, check_schema, path, validate_guide
+from loop_anything.runtime.model import Invalid, contract, check_schema, path, validate_guide, record_refs
 from loop_anything.runtime.checks import validate_expression
 
 VERSION = 2
@@ -90,6 +90,9 @@ def validate_v2(bp, implementations):
         location = ['handbook']
         if not isinstance(bp.get('handbook'), dict) or not (bp['handbook'].get('instructions') or bp['handbook'].get('path')):
             raise Invalid('A Loop operation handbook with instructions or a Skill path is required')
+        from loop_anything.capabilities import require_supported
+        location = ['requires']
+        require_supported(bp.get('requires', []))
         location = ['records']
         records = bp.get('records', {})
         if not isinstance(records, dict):
@@ -157,6 +160,12 @@ def validate_v2(bp, implementations):
         from loop_anything.runtime.timeline_plan import validate_plans
         location = ['plans']
         validate_plans(bp)
+        from loop_anything.packaging.scenarios import validate_scenarios
+        location = ['scenarios']
+        validate_scenarios(bp.get('scenarios', []))
+        from loop_anything.runtime.routing import validate_routes
+        location = []
+        validate_routes(bp)
         location = ['seed']
         check_task(bp, bp['seed'])
         if bp['seed']['node'] != bp['entry']:
@@ -194,6 +203,8 @@ def check_task(bp, tasks):
         raise Invalid('Task implementation must be an ID or null to inherit')
     if 'round' in tasks and (not isinstance(tasks['round'], str) or not tasks['round'].strip()):
         raise Invalid('Task round must be a nonempty display label')
+    if 'ref' in tasks and (not isinstance(tasks['ref'], str) or not tasks['ref'].strip()):
+        raise Invalid('Task ref must be nonempty text')
     node = bp['nodes'].get(tasks.get('node'))
     if node is None:
         raise Invalid('Task must target a declared node')
@@ -217,6 +228,7 @@ def check_task(bp, tasks):
             raise Invalid('record source must be an id')
         if 'records' in source and (not isinstance(source['records'], list) or not all(isinstance(x, str) and x for x in source['records'])):
             raise Invalid('records source must list record IDs')
+        if {'record','records','revisions'} & source.keys():record_refs(source)
         if 'literal' in source:
             contract(source['literal'], node['inputs'][name], 'Task input ' + name)
     for destination in tasks.get('outputs', {}).values():

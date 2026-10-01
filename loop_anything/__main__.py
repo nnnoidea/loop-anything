@@ -41,6 +41,12 @@ def main():
     install.add_argument('package')
     smoke = commands.add_parser('smoke', help='Read-only checks of an installed package; never repairs or executes')
     smoke.add_argument('key')
+    runtime_smoke = commands.add_parser('smoke-runtime', help='Opt-in Agent startup and isolated lifecycle probes; may call configured models')
+    runtime_smoke.add_argument('key')
+    runtime_smoke.add_argument('--node', dest='node_id')
+    runtime_smoke.add_argument('--implementation', dest='implementation_id')
+    runtime_smoke.add_argument('--timeout', type=float, default=30, help='Maximum seconds per Agent probe')
+    runtime_smoke.add_argument('--cases', help='JSON array of conditional lifecycle examples')
     tool = commands.add_parser('tool', help='Use the same structured tools as the UI and Agent')
     tool.add_argument('name', nargs='?', default='list')
     tool.add_argument('--arguments', default='{}', help='JSON arguments or @JSON_FILE')
@@ -90,10 +96,15 @@ def main():
             output.write(data)
         print(json.dumps({'package': str(Path(args.output).resolve()), 'bytes': len(data)}))
         return
-    if args.command == 'smoke':
+    if args.command in ('smoke', 'smoke-runtime'):
         from loop_anything.packaging.packages import load_installed, smoke
         document, root = load_installed(args.db, args.key)
-        result = smoke(document, root)
+        if args.command == 'smoke-runtime':
+            from loop_anything.packaging.runtime_smoke import runtime_smoke
+            result = runtime_smoke(document, root, timeout=args.timeout, node_id=args.node_id,
+                                   implementation_id=args.implementation_id, cases=read(args.cases) if args.cases else None)
+        else:
+            result = smoke(document, root)
         print(json.dumps(result, indent=2, ensure_ascii=False))
         raise SystemExit(0 if result['ready'] else 2)
     if args.command == 'validate':
@@ -119,7 +130,8 @@ def main():
         from loop_anything.interfaces.platform_tools import PlatformTools
         tools = PlatformTools(store)
         values = read(args.arguments[1:]) if args.arguments.startswith('@') else json.loads(args.arguments)
-        result = {'ok': True, 'tools': tools.definitions()} if args.name == 'list' else tools.respond(args.name, values)
+        from loop_anything.capabilities import service_info
+        result = {'ok': True, 'service': service_info(), 'instructions': tools.instructions, 'tools': tools.definitions()} if args.name == 'list' else tools.respond(args.name, values)
         if args.output and result.get('ok') and 'base64' in result:
             import base64
             with Path(args.output).open('xb') as target:

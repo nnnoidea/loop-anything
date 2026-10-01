@@ -14,7 +14,7 @@ Timeline 是一次 Run 的完整持久化过程：既保存目标、任务和已
 | `executions` | 每次执行尝试的输入、实现快照、状态及错误 |
 | `events`、`history` | 外部事件和可追溯的运行变化 |
 
-Agent 或脚本通过公开协议写入任务和结果；Engine 根据已有状态、依赖和控制条件推进。Engine 不解释自然语言授权，也不替业务规划后续任务。正式写入在同一数据库事务中校验并生效。
+Agent 或脚本通过公开协议写入任务和结果；节点声明 routes 时，平台在接受报告事件的事务内映射参数并展开指定 plan，自动创建 Task；Engine 根据已有状态、依赖和控制条件推进。Engine 不解释自然语言授权，也不替业务规划后续任务。正式写入在同一数据库事务中校验并生效。
 
 Loop 的节点是能力模板；一个节点可在同一 Run 中对应多项任务。候选实现和选用关系见 [Implementation 与 Binding](implementation-selection.md)。已派发执行保留当时的实现配置，修改默认选择只影响后续任务。
 
@@ -84,6 +84,14 @@ HTTP 写请求携带 `X-Loop-Anything: workspace`。持有 Agent 操作权时，
 
 修改目标、要求、约束、授权或 guidance 不会自动使任何任务、审批或结果失效。是否取消或调整工作，由用户决定，或由用户授权的 Agent 明确调用 change_task 落实。取消待确认的审批会撤销其提交令牌；已发生的执行和结果保留。Agent 提交仍检查最新 task_version，脚本和审批提交仍验证执行令牌及输出契约。旧 policy/intent_revision 不再参与运行。已有外部副作用不会被自动撤回。外部实现应使用稳定的 Run/任务身份处理业务幂等，不能把执行 token 当作永久业务身份。
 
+## 节点事件触发模板
+
+`nodes.<id>.routes` 声明 `{id,event,plan,values}`，可加 each、when、steps 和 round。只有接受的生命周期事件才触发；Agent 或上游只报告业务结果，平台映射到 plan 参数、生成任务并保留来源。timer 到期和匹配的外部 event 节点也通过 completed 触发。用户仍可通过 Timeline 工具追加未预定义工作。
+
+报告转移、结果写入和所有规则生成的任务原子生效。校验失败无部分 Task；重复 report_id 返回原 routes 回执，过期报告不展开。任务归属源 Task，沿用候选参数、预算和依赖校验。history 的 route_fired 和 Task.origin 可追踪规则与批次。规则不读取任意 Run 内部状态，也不解释自然语言。
+
+完整配置与上下文见 [构建契约](../skills/loop-anything-platform/references/build-reference.md#事件触发任务)。
+
 ## 显式 Agent 兜底
 
 Loop 的可选 `fallback_node` 指向一个真实、可见的非入口节点。未设置或为空表示关闭；节点用现有 implementations/bindings 选择 Agent，并可绑定作者 Skill。它通过 Run 工具读取未覆盖状态，不需要固定业务输入端口；可以声明自己的输出。
@@ -123,7 +131,7 @@ Hook 包含 `id`、`target:{node或tasks}`、`action:pause或notify`、`phase:be
 
 网页通过 `POST /api/runs/{id}/tasks` 提交 `{revision, changes:[{tool, arguments}]}`，tool 限于 `add_task`、`change_task`、`build_plan`。设置 `preview:true` 可在内存副本中展开并校验修改，返回实际任务差异，数据库不变。正式提交复用 Agent 工具参数与同一事务校验；版本冲突或修改范围与其他 Agent 重叠时拒绝提交。未开始任务可调整 inputs、parameters、implementation、after；已派发的脚本及已完成任务受保护。修改展示仅表示明确变更及依赖关联，不自动推断业务失效。
 
-文件输出的声明与路径约定见平台 [构建说明](../skills/loop-anything-platform/references/build.md#结果的通用展示)。结果值及来源保留历史；文件本体不会自动归档，作者应提供不同的产物路径。
+文件输出的声明与路径约定见平台 [构建说明](../skills/loop-anything-platform/references/build-reference.md#结果的通用展示)。结果值及来源保留历史；文件本体不会自动归档，作者应提供不同的产物路径。
 
 
 ## Task 归属与多 Agent
@@ -149,3 +157,9 @@ Task 的 `parent_id` 指向所属的父 Task，顶层为 null；归属固定，�
 
 
 恢复仍属于同一矩阵：分支条件可读取 Engine 提供的 attempt；必须唯一匹配。retry 固定待应用参数并保存在原执行中，Task 保持 retrying，待原进程确认结束且范围可写后，复用 change_task retry 原子应用并标记 applied；重启不重复应用。agent 进入既有显式兜底路径。查询失败仍恢复同一个外部任务的监控。改参受原有契约约束，执行快照保留；参数变更才增加 Task 修订，下游依赖不变。
+
+## 稳定任务引用
+
+模板步骤可声明 Run 内唯一 ref；输入的 task_ref/task_refs 和 after_refs 在写入时解析为既有 record/records/after。报告的所有 routes 批次共同解析，允许该报告内前向引用；单次 build_plan 可引用当前 Run 或该批任务。缺失、重复、未知端口及循环均拒绝，不创建占位或另设任务组生命周期。refs 保留在 Task spec，resolve_refs 和构建回执提供映射。
+
+参数契约和验收入口见 [contracts.md](../skills/loop-anything-platform/references/contracts.md) 与 [testing.md](../skills/loop-anything-platform/references/testing.md)。

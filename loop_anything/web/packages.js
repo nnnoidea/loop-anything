@@ -1,6 +1,6 @@
 'use strict';
 // Packaging uses the same server codec as the CLI. Selecting a file never runs it.
-editorPage.querySelector('.toolbar').insertAdjacentHTML('afterbegin','<button id="loop-package">Loop 包</button>');
+editorPage.querySelector('.editor-more-actions').insertAdjacentHTML('beforeend','<button id="loop-package">文件与打包</button>');
 $('new-loop_definition').insertAdjacentHTML('beforebegin','<button id="import-loop-package">导入 Loop 包</button>');
 const packageDialog=document.createElement('dialog');packageDialog.id='package-dialog';packageDialog.className='editor-json-modal';
 packageDialog.innerHTML=`<div class="dialog-heading"><h2>分享与安装 Loop</h2><button class="close-dialog" aria-label="关闭">×</button></div>
@@ -57,7 +57,7 @@ document.addEventListener('click',event=>safely(async()=>{
   if(button.dataset.removeAsset!==undefined){editor.assets.splice(Number(button.dataset.removeAsset),1);dirty();renderPackageAssets();return;}
   if(button.dataset.packageSmoke){await openLoop(button.dataset.packageSmoke,'prepare');return;}
   switch(button.id){
-    case 'loop-package':showPackage(true);break;
+    case 'loop-package':button.closest('details').open=false;showPackage(true);break;
     case 'import-loop-package':showPackage(false);break;
     case 'package-export':{
       editor.checks=JSON.parse($('package-checks').value || '{}');dirty();

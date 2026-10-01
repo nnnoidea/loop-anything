@@ -4,7 +4,7 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;',
 const pretty = value => JSON.stringify(value, null, 2);
 // getRandomValues also works on ordinary HTTP inside the team network.
 const randomKey = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('');
-const labels = {skipped:'已跳过',running:'运行中',ready:'待执行',executing:'执行中',waiting:'等待中',completed:'已完成',paused:'已暂停',terminated:'已终止',cancelled:'已取消',fault:'执行失败',retrying:'等待重试',blocked:'输入未就绪',decision:'等待 Agent',approval:'等待确认',unresolved:'转移待决策'};
+const labels = {waiting_configuration:'等待配置',skipped:'已跳过',running:'运行中',ready:'待执行',executing:'执行中',waiting:'等待中',completed:'已完成',paused:'已暂停',terminated:'已终止',cancelled:'已取消',fault:'执行失败',retrying:'等待重试',blocked:'输入未就绪',decision:'等待 Agent',approval:'等待确认',unresolved:'转移待决策'};
 const badge = status => `<span class="badge ${esc(status)}">${esc(labels[status] || status)}</span>`;
 let catalog = [], runs = [], run = null, selected = null, filterNode = null, activeTab = 'task-history', page = 'runs', settingsBase = null, pendingChange = null, loading = false;
 const drafts = {};
@@ -98,6 +98,9 @@ async function refresh() {
     if (!selected && runs.length) selected = runs[0].id;
     if (selected && page==='runs') { const id=selected,current=await api('runs/' + id);if(page==='runs' && selected===id){run=current;renderRun();} }
     const platform=await api('platform'),power=platform.keep_awake;
+    if(!$('platform-version'))document.querySelector('.topbar').insertAdjacentHTML('beforeend','<small id="platform-version" class="muted"></small>');
+    document.querySelector('.brand .version').textContent=platform.service?platform.service.version:'';
+    $('platform-version').textContent=platform.service?`v${platform.service.version} · ${platform.service.build}${platform.service.restart_required?' · 源码已更新，服务需重启':''}`:'服务未提供版本信息';
     renderPower(power);
     showPage();
   } catch (error) { $('engine-status').textContent = '连接中断 · 自动重连';$('platform-power').className='platform-power unprotected';$('platform-power-status').textContent='与平台连接中断 · 无法确认运行及防休眠状态';$('platform-power-switch').disabled=true; }
@@ -184,7 +187,7 @@ function details(id) {
   const e = run.executions.find(x=>x.id===id); if(!e)return;
   $('detail-title').textContent=nodeLabel(e.node)+' · '+e.id;
   const origin=run.tasks?.[e.task_id]?.origin;
-  const cause=origin?.fallback?'进入兜底节点':origin?.entry?'入口任务':origin?.agent?'Agent 安排':origin?.execution?'脚本安排':origin?.user?'用户安排':'历史记录';
+  const cause=origin?.fallback?'进入兜底节点':origin?.entry?'入口任务':origin?.route_id?'事件触发 · '+origin.route_id:origin?.agent?'Agent 安排':origin?.execution?'脚本安排':origin?.user?'用户安排':'历史记录';
   $('detail-content').innerHTML=`${badge(e.status)} <span class="mono">attempt ${e.attempt} · settings r${e.settings_revision}</span>${e.error?`<pre>${esc(e.error)}</pre>`:''}${promptHistory(e)}<div class="detail-section"><h3>创建原因</h3><p class="small">${esc(cause)} · ${esc(e.task_id || '')}</p></div><div class="detail-grid"><div><h3>Resolved inputs</h3><pre>${esc(pretty(e.inputs))}</pre></div><div><h3>Committed outputs</h3><pre>${esc(pretty(e.outputs || null))}</pre></div></div><div class="detail-section"><h3>Input provenance</h3><pre>${esc(pretty(e.sources))}</pre></div><div class="detail-section"><h3>Handler / external task</h3><pre>${esc(pretty({implementation:e.implementation,external_id:e.external_id,wake_at:e.wake_at?new Date(e.wake_at*1000).toLocaleString():undefined}))}</pre></div>${run.tasks?.[e.task_id]?.execution_id===e.id && ['fault','blocked'].includes(e.status)&&!e.routed?`<button data-retry="${esc(e.id)}">重试此执行</button><p class="field-note">先检查外部任务是否已经产生副作用，避免重复提交。</p>`:''}`;
   if(!$('detail-dialog').open)$('detail-dialog').showModal();
 }

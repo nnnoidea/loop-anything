@@ -17,10 +17,11 @@
           const producer=byExecution.get(ref.execution);if(producer)dependencies.add(producer.task_id);
         }
       }else for(const source of Object.values(w.spec.inputs || {})){
-        for(const id of source.records || (source.record?[source.record]:[])){
-          const versions=run.records?.[id] || [],record=source.revision?versions.find(r=>r.revision===source.revision):versions.at(-1);
+        for(const [index,id] of (source.records || (source.record?[source.record]:[])).entries()){
+          const revision=source.revisions?.[index]??source.revision;
+          const versions=run.records?.[id] || [],record=revision?versions.find(r=>r.revision===revision):versions.at(-1);
           if(record){const producer=record.tasks || byExecution.get(record.producer)?.task_id;if(producer)dependencies.add(producer);}
-          else {const producer=producers.get(id+'@'+(source.revision || 1));if(producer)dependencies.add(producer);}
+          else {const producer=producers.get(id+'@'+(revision || 1));if(producer)dependencies.add(producer);}
         }
       }
       dependencies.delete(w.id);

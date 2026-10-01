@@ -24,6 +24,9 @@ def call(name,args={}):
  with urlopen(req) as res:r=json.load(res)
  assert r['ok'],r
  return r
+capabilities=call('read_capabilities',{'capability':'task_refs'})
+assert 'resolve_refs' in capabilities['guide']['task_refs']['tools']
+assert c['platform']['version']==capabilities['version']
 mode=sys.argv[1]
 if mode=='discuss':
  p=call('read_preparation');call('change_preparation',{'revision':p['revision'],'change':{'bindings':{'script':'remote'},'inputs':{'request':'已讨论的要求'}}});print('已选择远端，还没有启动。')
