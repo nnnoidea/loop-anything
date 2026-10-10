@@ -4,6 +4,16 @@
 
 构建时先将需求对应到下列机制，再设计业务节点和实现。activation=automatic 表示平台自动执行；declared/configured 需要作者声明或使用者配置；operator 需要显式操作。
 
+## communication_context
+
+- 生效方式：automatic/operator
+- 平台承担：通信查询默认摘要，日志按需分段读取；外援续跑及追问不嵌入完整通信历史，保留业务上下文、结果及原 session。
+- 作者提供：优先读状态和结构化结果；排错时请求 include_logs 或 include_details，用返回的 log_cursor/log_offset 继续读取。
+- 配置入口：`read_assistance.include_logs`、`read_assistance.include_details`、`read_assistance.max_chars`、`read_assistance.after/offset`
+- 边界：单页日志默认 4000、最多 16000 字符；完整诊断按需返回，原始日志保留；结构化业务结果不自动删减。
+- 工具入口：read_assistance、request_assistance、control_assistance
+- 详细说明：[references/communication.md](communication.md)
+
 ## assistance_session_resume
 
 - 生效方式：configured/operator

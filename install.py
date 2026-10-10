@@ -79,8 +79,9 @@ def main():
     else:
         print('Foreground launcher: keep its terminal running. Ctrl+C exits.')
     print('CLI Python: ' + str(python))
-    print('Install the platform manual into your Agent Skill directory:')
+    print('Install the platform entry Skill into your Agent Skill directory (also required after upgrading the platform):')
     print(str(python) + ' -m loop_anything skills --install-dir <Agent-Skill-directory> --url <platform-url>')
+    print('For an existing generated Skill, keep its platform URL and add --replace to update it. Reload the Skill in your Agent, then run scripts/call.py check.')
     print('No shell PATH or Agent settings were changed.')
 
 

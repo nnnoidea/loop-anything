@@ -46,7 +46,7 @@ def bundle(url, installation_url=None):
     files[prefix + 'connection.json'] = connection.encode('utf-8')
     entry = ('# Loop Anything · 平台操作 Skill\n\n'
              '本包提供安装到 Agent 的平台操作手册、调用脚本与连接配置。\n\n'
-             '- [平台 Skill](platform/loop-anything-platform/SKILL.md)：按需读取 Loop 构建与 Timeline 操作说明。\n'
+             '- [平台 Skill](platform/loop-anything-platform/SKILL.md)：按场景选择持续工作、查询已有任务或调用本机/远端具名 Agent，再按需读取手册。\n'
              '- 作者说明及节点 Skill 随 Loop 包交付，处理任务时通过平台工具读取。\n\n')
     if installation_url:
         entry += '[下载平台安装包](' + installation_url + ')。首次安装步骤见解压后的 README.md。\n'
