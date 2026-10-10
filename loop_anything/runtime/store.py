@@ -165,6 +165,12 @@ class Store:
                 run['settings']['global_agent_node'] = global_agent_node or None
             from loop_anything.runtime.timeline_model import validate_global_agent
             validate_global_agent(loop_definition, run['implementations'], run['settings'].get('global_agent_node'))
+        with self.connection() as comm_db:
+            if comm_db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='communication_settings'").fetchone():
+                comm_settings=json.loads(comm_db.execute('SELECT document FROM communication_settings WHERE id=1').fetchone()[0])
+                run['communication_group']=comm_settings.get('loop_groups',{}).get('loop:'+key)
+            else:
+                run['communication_group']=None
         if acquire:
             from loop_anything.interfaces.agent_tasks import acquire_in_run
             acquire_in_run(run, 'interactive')

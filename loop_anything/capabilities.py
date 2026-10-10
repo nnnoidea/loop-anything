@@ -2,14 +2,19 @@
 import hashlib
 from pathlib import Path
 
-VERSION = '0.3.2'
+VERSION = '0.5.2'
 API_REVISION = 2
 CAPABILITIES = {
+    'assistance_session_resume': ('Waiting Agent tasks resume their exact native CLI session with assistance results and fresh credentials; remote work stays on the original instance/Agent and never silently starts a new conversation.', ['wait_assistance','register_agent_session','communication_execute','read_assistance'], 'references/communication.md'),
+    'group_notifications': ('Communication group notification bindings, a designated delivery machine, existing cc-connect outlets, durable NAS forwarding and delivery receipts.', ['communication_status','communication_config','read_notification_channels','set_notification_channels','read_assistance','control_assistance'], 'references/communication.md'),
+    'agent_communication': ('Named local Agents and NAS groups; standalone assistance, remote Agent nodes, durable reports and optional assistance waits. Ordinary sessions are not automatically exposed.', ['communication_workspace','communication_status','communication_config','request_assistance','read_assistance','control_assistance','wait_assistance','communication_execute'], 'references/communication.md'),
     'timeline_storage': ('Persistent Timeline, versioned records, execution history and atomic local writes.', ['read_timeline','read_record','read_run'], 'references/run.md'),
     'task_scheduler': ('Automatic input/dependency readiness, dispatch, parallelism and pause/scope checks.', ['next_tasks','change_settings'], 'references/run.md'),
     'execution_recovery': ('Persisted execution recovery and explicit handling of unknown process state.', ['read_task','command','change_task'], 'references/build-reference.md'),
     'implementation_selection': ('Task/Run/Loop candidate selection, parameter validation and execution snapshots.', ['read_loop','read_task','set_implementation'], 'references/contracts.md'),
     'workspace_inspection': ('Built-in structure, task, result, provenance and execution-history views.', ['read_run','read_loop'], 'references/build-reference.md'),
+    'agent_resume': ('Task result buttons and exact native CLI session continuation, fresh scoped credentials, immutable historical results; explicit user resume action.', ['register_agent_session','read_task','set_implementation'], 'references/terminal.md'),
+    'agent_terminal': ('Persistent live Agent output per execution, optional interactive CLI terminal on macOS/Linux, same process and task ownership; finish closes an interactive session.', ['set_implementation','read_task'], 'references/terminal.md'),
     'host_service': ('Persistent local host service, supported keep-awake and macOS background management.', [], 'references/platform-capabilities.md'),
     'authoring': ('Edit existing drafts; validate and save a usable local version; export separately.', ['list_loops','read_loop','create_loop','copy_loop','set_loop','put_node','remove_node','set_implementation','put_step','remove_step','connect_steps','validate_loop','publish_loop'], 'references/build.md'),
     'parameter_contracts': ('One parameter contract for tools, UI and runtime; validates types and nested fields without coercion or injecting defaults.', ['read_loop','read_task'], 'references/contracts.md'),
@@ -64,6 +69,8 @@ def discover(capability=None):
 
 def required_capabilities(bp, implementations=None):
     required = set(bp.get('requires', []))
+    from loop_anything.runtime.implementations import options
+    if any(c.get('dispatch') for entry in (implementations or {}).values() for c in options(entry).values()):required.add('agent_communication')
     if any(n.get('routes') for n in bp.get('nodes', {}).values()):required.add('event_routes')
     if bp.get('scenarios'):required.add('scenarios')
     steps = [s for p in bp.get('plans', {}).values() for s in p.get('steps', {}).values()]
@@ -72,6 +79,8 @@ def required_capabilities(bp, implementations=None):
     sources = [v for s in steps + [bp.get('seed', {})] for v in s.get('inputs',{}).values()]
     if any(isinstance(v,dict) and 'revisions' in v for v in sources):required.add('record_versions')
     from loop_anything.runtime.implementations import options
+    if any(c.get('agent_cli') or c.get('resume_command') or any('{{session_id}}' in a for a in c.get('command',[])) for entry in (implementations or {}).values() for c in options(entry).values()):required.add('agent_resume')
+    if any(c.get('terminal') for entry in (implementations or {}).values() for c in options(entry).values()):required.add('agent_terminal')
     schemas = list(bp.get('records', {}).values())
     for node in bp.get('nodes', {}).values():
         schemas += list(node.get('inputs', {}).values()) + [node[k] for k in ('parameter_schema','agent_settings_schema') if k in node]

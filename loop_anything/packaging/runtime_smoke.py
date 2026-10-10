@@ -108,18 +108,28 @@ def runtime_smoke(document, root, *, timeout=30, node_id=None, implementation_id
         try:
             for node, ident, config in candidates:
                 if config['kind'] == 'agent':
+                    if config.get('dispatch'):
+                        add(node, ident, 'agent_probe', 'unknown', 'Group Agent: configure the Run group and explicitly test its remote member. Local command is not executed.')
+                        continue
                     if not config.get('command'):
                         add(node, ident, 'agent_probe', 'unknown', 'Interactive Agent has no automatic command to probe.')
                         continue
                     marker = uid('loop-smoke-ok')
                     prompt = 'Startup check only. Do not use tools, read files, or perform any business task. Reply with exactly: ' + marker
                     try:
-                        result = run_command(config['command'], prompt, min(timeout, config.get('timeout', timeout)), config.get('cwd'))
+                        session = None
+                        if config.get('terminal') or any('{{session_id}}' in a for a in config['command']):
+                            session = engine.terminals.create('smoke', node, uid('probe'), config.get('terminal',False))
+                            import uuid
+                            session.native_id = str(uuid.uuid4())
+                            session.check = lambda: 'finished' if marker in session.output_tail else None
+                        result = run_command(config['command'], prompt, min(timeout, config.get('timeout', timeout)), config.get('cwd'), **({'session':session} if session else {}))
                         if result.returncode:
                             raise Invalid('Agent exited ' + str(result.returncode) + ': ' + result.stderr[-1500:])
                         if marker not in result.stdout:
                             raise Invalid('Agent exited without the requested probe response')
-                        add(node, ident, 'agent_probe', 'pass', 'Configured command and cwd returned the probe response.', cwd=config.get('cwd'))
+                        add(node, ident, 'agent_probe', 'unknown' if config.get('terminal') else 'pass',
+                            'Interactive CLI started and emitted the marker; terminal echo cannot prove a model reply. Verify business tool use in an explicit acceptance Run.' if config.get('terminal') else 'Configured command and cwd returned the probe response.', cwd=config.get('cwd'))
                     except Invalid as exc:
                         add(node, ident, 'agent_probe', 'fail', str(exc), cwd=config.get('cwd'), category='agent_configuration_or_access')
                 elif config['kind'] == 'external':

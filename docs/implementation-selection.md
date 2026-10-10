@@ -45,3 +45,9 @@ Engine 只读取选择结果，不自行挑选或失败后自动换实现。每�
 smoke 仍逐项报告所有候选的路径、命令及资源问题，不自动修复。候选未就绪不阻止创建 Run；包清单或随包资源损坏仍阻止使用。没有启动实际执行的候选不会因检查而被运行。
 
 兜底也通过声明节点的候选实现选择 Agent。Loop 的 fallback_node 可留空关闭，Run 可覆盖该选择；没有兜底配置时，平台不会遍历其他节点寻找 Agent。
+
+## 群组 Agent 执行
+
+Agent 候选可声明 `dispatch: {"location":"group","agent_id":"实际成员标识"}`；也可用 capability 允许符合能力的成员申请承接。命令、cwd 和 CLI 登录配置由执行机器的具名 Agent 提供。Run 使用本机配置的群组绑定；未声明 dispatch 的节点保持原本机执行。
+
+远端仍承担同一个业务 Task，结果通过来源平台原有校验写回；它不会复制、调度整个 Run。临时外援另用 request_assistance，不要求添加节点。详见[通信说明](../skills/loop-anything-platform/references/communication.md)。

@@ -82,12 +82,32 @@ python3 /平台Skill/scripts/call.py read_task --arguments '{"run_id":"RUN_ID","
 
 候选实现与运行时选择见 [Implementation 与 Binding](implementation-selection.md)。
 
+## 实时输出与交互终端
+
+后台 Agent 每次执行自动保存实时输出。在 Run 任务详情中选择执行尝试，打开输出或终端；关闭页面继续执行，重开读取历史。查看和输入均使用工作台编辑权限。
+
+候选设置 `terminal: true` 可在 macOS/Linux 启动交互 PTY，例如 `command: ["codex", "{{prompt}}"]`。`{{prompt}}` 作为一个参数传入完整任务上下文；`{{prompt_file}}` 则提供权限为 0600 的提示词文件路径，供支持文件输入的程序读取。普通命令继续一次性 stdin 提示词，交互命令保留 stdin 给用户输入；所有其他 argv 保持不变。
+
+交互面板连接同一 Agent 进程和操作权；结果仍通过平台工具写入。Agent 调用 `finish` 后，平台关闭交互进程组，防止 CLI 完成任务后持续停留。历史输出保留，重试独立记录。平台重启后标记会话中断并沿用旧操作权恢复规则，不承诺恢复厂商 CLI 会话。Windows 当前只支持普通命令实时输出。
+
+任务卡片现提供「查看结果」与 Agent「打开会话 / 恢复会话」。平台单独保存 CLI 原生 ID，支持输出识别、Agent 主动登记以及用户明确关联旧会话；恢复签发新操作权，保持原任务结果。候选可设置 agent_cli/resume_command，CLI 记录缺失时明确失败，不使用最近会话代替。
+
+完整配置、限制和验收见 [终端接入说明](../skills/loop-anything-platform/references/terminal.md)。组件本地打包，运行时不访问 CDN。
+
 ## 可选聊天桥接与通知适配
 
 用户可选择任意能调用本机 Agent 的聊天桥接。桥接负责聊天接入和 Agent 会话；Agent 通过同一组平台工具操作 Run，平台通过通用命令接口发送通知。终端使用不需要桥接。
 
 完整契约见[通知接口](../skills/loop-anything-platform/references/notifications.md)。平台提供 [cc-connect 适配器](../skills/loop-anything-platform/references/cc-connect.md)作为第一个可用示例；其他实现按相同输入和回执契约接入，无需修改 Engine、Loop 或注册插件。个人接收目标保存在 Run 设置中，不随 Loop 包共享。
 
+通信群组可以选择指定机器上的命名出口。发送机器通过 communication_config 的 group_notifications 操作绑定本地出口，并向 NAS 公布不含命令的路由信息；来源机器持久排队，指定机器调用既有适配器后回传回执。详见[群组通知绑定](../skills/loop-anything-platform/references/communication.md#群组绑定-cc-connect-与指定发送机器)。
+
 ## 跨入口继续同一 Run
 
 终端、网页或聊天桥接背后的 Agent 连接同一个平台实例。list_runs 定位已有运行；read_timeline/next_tasks/read_task/read_record/read_plans 无 token 时仅从当前快照读取，不取得写入权。需要编辑时 acquire_run，重新读取版本后使用原有写入工具，最后 finish。read_timeline 的 read_only=true 明确表示没有操作权，带令牌读取仍按原范围展示。显式无效令牌报错。Run 目标、约束、决定、结果和任务是共同上下文，聊天记录与通知目的地不承担状态同步。
+
+## 本机具名外援与群组远端 Agent
+
+使用通信群组时，每台机器保留独立平台与数据库。正式远程节点通过 Agent dispatch 接入；临时外援和普通对话通过统一 request_assistance 接口调用本机具名目录或明确群组。已有本机 Agent 不会因为加入群组而被远端启动。
+
+远端上下文提供本机 platform_client 和限定的 platform_url，原 read_task/report_task/finish 工具经此入口回到来源 Run；模型/CLI 配置不被平台替换。结果仍需结构化提交。消息尚未确认的 pending 回执不等于成功。包内资源分块传递并核验，业务产物使用可访问的共享引用。详细配置见[通信说明](../skills/loop-anything-platform/references/communication.md)。

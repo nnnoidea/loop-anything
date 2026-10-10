@@ -14,6 +14,11 @@ class Engine:
         self.futures = set()
         self.stopping = Event()
         self.timeline_runtime = TimelineRuntime(self)
+        from loop_anything.runtime.terminal import TerminalSessions
+        self.terminals = TerminalSessions(store)
+        from loop_anything.runtime.communication import service
+        self.communication = service(store)
+        self.communication.engine = self
 
     def close(self):
         self.stopping.set()
@@ -33,6 +38,8 @@ class Engine:
         return run
 
     def tick(self, run_id):
+        if self.communication.identity_conflict:
+            raise Invalid('Copied/moved platform identity; configure a new instance before running copied work')
         self.current(run_id)
         return self.timeline_runtime.tick(run_id)
 
@@ -56,6 +63,8 @@ class Engine:
             receive_event(run, event_id, name, payload, key)
 
     def recover(self):
+        self.terminals.recover()
+        self.communication.recover()
         for summary in self.store.list():
             if summary.get('schema_version') != 2:
                 continue

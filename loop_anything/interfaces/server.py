@@ -37,6 +37,10 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
 
     def scheduler():
         while not stop.wait(0.75):
+            try:
+                engine.communication.tick()
+            except Exception:
+                traceback.print_exc()
             for run in store.scheduling_list():
                 try:
                     engine.tick(run['id'])
@@ -46,6 +50,11 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                         current['status'] = 'paused'
                         Store.log(current, 'engine_error', str(exc))
                     traceback.print_exc()
+
+    def communication_transport():
+        while not stop.wait(.4):
+            try:engine.communication.scan()
+            except Exception:traceback.print_exc()
 
     from loop_anything.runtime.store import Store
 
@@ -73,6 +82,19 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             if parts == ['api', 'validate'] or parts == ['api', 'agent-prompts', 'preview'] or (
                     len(parts) == 3 and parts[:2] == ['api', 'packages'] and parts[2] in ('read', 'inspect', 'export', 'smoke')):
                 return True
+            if len(parts)==5 and parts[0]=='communication' and parts[3:]==['api','tools']:
+                return not self.headers.get('Origin') and engine.communication.authorized({'request_id':parts[1],'token':parts[2]},worker=True)
+            if parts == ['api', 'tools'] and body.get('tool') in {'communication_workspace','communication_config','communication_status','request_assistance','read_assistance','control_assistance','communication_execute','wait_assistance'}:
+                tool, args = body.get('tool'), body.get('arguments', {})
+                if tool == 'communication_execute':
+                    return not self.headers.get('Origin') and engine.communication.authorized(args, worker=True)
+                if tool in ('read_assistance','control_assistance'):
+                    return not self.headers.get('Origin') and engine.communication.authorized(args)
+                if tool in ('request_assistance','communication_status','wait_assistance'):
+                    source = args.get('source') or args
+                    from loop_anything.runtime.task_scope import owner_for
+                    return bool(not self.headers.get('Origin') and source.get('run_id') and owner_for(store.get(source['run_id']),args.get('token')))
+                return False
             if parts == ['api', 'tools'] and body.get('tool') in tool_reads:
                 return True
             if len(parts) == 4 and parts[:2] == ['api', 'runs'] and parts[3] == 'agent' and not body.get('operation') and body.get('tool') in tool_reads | {'list'}:
@@ -127,6 +149,11 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
 
         def get(self):
             parts = urlsplit(self.path).path.strip('/').split('/')
+            if len(parts)==5 and parts[0]=='communication' and parts[3:]==['api','tools']:
+                self.send(engine.communication.scoped_definitions(parts[1],parts[2]));return
+            if len(parts)==5 and parts[0]=='communication' and parts[3:]==['api','platform']:
+                if not engine.communication.authorized({'request_id':parts[1],'token':parts[2]},worker=True):raise Conflict('Invalid execution credential')
+                parts=['api','platform']
             if len(parts) == 5 and parts[0] == 'web':
                 web_agent.turn(parts[1], parts[2])
                 if parts[3:] == ['api', 'tools']:
@@ -136,6 +163,23 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                     return
                 if parts[3:] == ['api', 'platform']:
                     parts = ['api', 'platform']
+            if len(parts) == 6 and parts[:2] == ['api', 'runs'] and parts[3] == 'executions' and parts[5] in ('terminal','session'):
+                if host in ('127.0.0.1', 'localhost') and self.headers.get('Host') not in ('127.0.0.1:%s' % server.server_port, 'localhost:%s' % server.server_port):
+                    raise Invalid('Workspace host required')
+                if not self.editing():
+                    self.send({'error': '请先解锁编辑以查看执行终端。', 'code': 'edit_locked'}, 403)
+                    return
+                engine.execution(store.get(parts[2]), parts[4])
+                if parts[5]=='session':
+                    from loop_anything.runtime.native_sessions import preparation
+                    self.send(preparation(engine,parts[2],parts[4]));return
+                query = parse_qs(urlsplit(self.path).query)
+                try:
+                    after = int(query.get('after', ['0'])[0])
+                except ValueError:
+                    raise Invalid('Invalid output cursor')
+                self.send(engine.terminals.read(parts[2], parts[4], query.get('session', [None])[0], after))
+                return
             if parts == ['api', 'lifecycles']:
                 from loop_anything.runtime.lifecycle import template, KINDS
                 self.send({kind: template(kind) for kind in KINDS})
@@ -247,7 +291,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.send({'snapshot': self.visible_run(run), 'execution_id': execution['id'], 'token': execution.get('token') if self.editing() else None,
                            'settings_revision': execution['settings_revision'], 'output_contract': node_for(run, execution['node'])['outputs']})
             else:
-                filename = {name: name for name in ('app.js', 'notifications.js', 'lifecycle.js', 'loop_graph.js', 'settings.js', 'forms.js', 'workspace.js', 'authoring.js', 'workspace.css', 'conversation.js', 'conversation.css', 'task_history.js', 'style.css', 'graph.css', 'editor.js', 'editor.css', 'packages.js', 'library.js', 'library.css', 'navigation.js')}.get('/'.join(parts))
+                filename = {name: name for name in ('communication.js', 'communication.css', 'terminal.js', 'terminal.css', 'xterm.js', 'xterm-fit.js', 'xterm.css', 'app.js', 'notifications.js', 'lifecycle.js', 'loop_graph.js', 'settings.js', 'forms.js', 'workspace.js', 'authoring.js', 'workspace.css', 'conversation.js', 'conversation.css', 'task_history.js', 'style.css', 'graph.css', 'editor.js', 'editor.css', 'packages.js', 'library.js', 'library.css', 'navigation.js')}.get('/'.join(parts))
                 if parts == ['']:
                     filename = 'index.html'
                 if not filename:
@@ -294,6 +338,19 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.send({'error': 'Internal error; inspect engine console'}, 500)
 
         def post(self, parts, body):
+            if len(parts)==5 and parts[0]=='communication' and parts[3:]==['api','tools']:
+                result=engine.communication.scoped_tool(parts[1],parts[2],body['tool'],body.get('arguments',{}))
+                self.send(dict(result,ok=not bool(result.get('pending'))));return
+            if len(parts)==6 and parts[:2]==['api','runs'] and parts[3]=='executions' and parts[5]=='resume':
+                from loop_anything.runtime.native_sessions import resume
+                self.send(resume(engine,parts[2],parts[4],body));return
+            if len(parts) == 6 and parts[:2] == ['api', 'runs'] and parts[3] == 'executions' and parts[5] == 'terminal':
+                if body.get('action')=='confirm_stopped':
+                    if body.get('confirmed_stopped') is not True:raise Invalid('Explicit confirmation that the old process stopped is required')
+                    from loop_anything.runtime.native_sessions import confirm_stopped
+                    self.send(confirm_stopped(engine,parts[2],parts[4],body.get('session_id')));return
+                self.send(engine.terminals.control(parts[2], parts[4], body.get('session_id'), body.get('data'), body.get('cols'), body.get('rows')))
+                return
             if parts == ['api', 'platform', 'keep-awake']:
                 if not protection or type(body.get('enabled')) is not bool:
                     raise Invalid('Supply enabled as a boolean; sleep protection must be available')
@@ -453,6 +510,9 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             server.server_close()
             engine.close()
             raise
+    engine.communication.background_transport = True
+    transport_thread = threading.Thread(target=communication_transport, daemon=True)
+    transport_thread.start()
     thread = threading.Thread(target=scheduler, daemon=True)
     thread.start()
     print('Loop Anything workspace: http://127.0.0.1:%s' % server.server_port, flush=True)
@@ -470,5 +530,6 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
     finally:
         stop.set()
         thread.join(timeout=5)
+        transport_thread.join(timeout=1)
         server.server_close()
         engine.close()

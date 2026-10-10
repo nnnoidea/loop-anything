@@ -1,0 +1,4 @@
+pyte 0.8.2: https://github.com/selectel/pyte (LGPL-3.0-or-later; pyte/LICENSE.txt).
+wcwidth 0.2.13: https://github.com/jquast/wcwidth (MIT; wcwidth/LICENSE.txt).
+Vendored from official PyPI wheels. Modification: pyte/screens.py imports wcwidth from the sibling vendored package; unused CLI __main__.py omitted. Otherwise source unchanged.
+These replaceable Python modules supply background terminal state and cursor-query replies; no CLI or model-specific logic. Full corresponding module source is distributed here.

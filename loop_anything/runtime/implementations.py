@@ -19,6 +19,10 @@ def default_id(entry):
 def validate_implementation(implementation):
     if not isinstance(implementation, dict) or implementation.get('kind') not in ('agent', 'command', 'external', 'event', 'approval', 'timer'):
         raise Invalid('Invalid execution implementation', path=['kind'])
+    if 'dispatch' in implementation:
+        value = implementation['dispatch']
+        if implementation['kind'] != 'agent' or not isinstance(value, dict) or set(value) - {'location','agent_id','instance_id','capability'} or value.get('location') != 'group' or not (value.get('agent_id') or value.get('capability')):
+            raise Invalid('Agent dispatch requires group location and agent_id or capability')
     if 'wait' in implementation or implementation['kind']=='timer':
         wait=implementation.get('wait',{})
         if implementation['kind'] not in ('event','timer') or not isinstance(wait,dict) or set(wait)-{'seconds','until','timeout','key','outputs'}:
@@ -31,6 +35,15 @@ def validate_implementation(implementation):
             raise Invalid('Event waits use key/timeout; the received payload supplies outputs')
     if 'prompt' in implementation and (implementation['kind'] != 'agent' or not isinstance(implementation['prompt'], str)):
         raise Invalid('prompt is a string for Agent implementations only', path=['prompt'])
+    if any(k in implementation for k in ('agent_cli','resume_command')):
+        from loop_anything.runtime.native_sessions import PROVIDERS, validate_resume
+        if implementation['kind']!='agent':raise Invalid('CLI session configuration belongs to Agent implementations')
+        if 'agent_cli' in implementation and implementation['agent_cli'] not in PROVIDERS:raise Invalid('agent_cli must be codex, claude or custom')
+        if 'resume_command' in implementation:validate_resume(implementation['resume_command'])
+    if 'terminal' in implementation and (implementation['kind'] != 'agent' or type(implementation['terminal']) is not bool):
+        raise Invalid('terminal is a boolean for Agent implementations only', path=['terminal'])
+    if implementation.get('terminal') and not any('{{prompt}}' in a or '{{prompt_file}}' in a for a in implementation.get('command', []) if isinstance(a, str)):
+        raise Invalid('Interactive Agent command needs {{prompt}} or {{prompt_file}} to receive task context', path=['command'])
     for cmd in ('command', 'observe'):
         if cmd in implementation and (not isinstance(implementation[cmd], list) or not implementation[cmd] or not all(isinstance(x, str) and x and '\x00' not in x for x in implementation[cmd])):
             raise Invalid(cmd + ' must be nonempty argv', path=[cmd])

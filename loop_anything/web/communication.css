@@ -1,0 +1,13 @@
+#communication-page{max-width:1100px;margin:auto}
+#communication-page>.panel{padding:22px;margin-bottom:20px}
+#communication-page summary{font-weight:650;cursor:pointer;margin-bottom:14px}
+#communication-page form{display:grid;gap:12px;max-width:720px;margin:16px 0}
+#communication-page label,#communication-dialog label{display:grid;gap:6px}
+#communication-page input:not([type=checkbox]),#communication-page select,#communication-page textarea,#communication-dialog input:not([type=checkbox]),#communication-dialog select,#communication-dialog textarea{width:100%;box-sizing:border-box}
+#communication-page .inline-check,#communication-dialog .inline-check{display:flex;align-items:center;gap:8px}
+#communication-page pre,#communication-dialog pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;background:#f4f5f7;padding:12px;border-radius:8px}
+#communication-page code{overflow-wrap:anywhere}
+#communication-dialog{width:min(800px,calc(100vw - 32px));max-height:88vh;box-sizing:border-box;overflow:auto}
+#communication-dialog form{display:grid;gap:14px}
+#communication-page .result-section{border-top:1px solid #e5e7eb;padding:14px 0}
+@media(max-width:600px){#communication-page>.panel{padding:14px}#communication-page .page-heading{display:block}#communication-dialog{padding:16px}}

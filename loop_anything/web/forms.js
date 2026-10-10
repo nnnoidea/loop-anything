@@ -89,3 +89,8 @@ function readSources(root){return Object.fromEntries([...root.querySelectorAll('
 document.addEventListener('change',e=>{if(!e.target.matches('[data-source-mode]'))return;const el=e.target.closest('.source-field');el.querySelector('[data-source-body]').innerHTML=sourceBody(e.target.value,JSON.parse(el.dataset.sourceOriginal),JSON.parse(el.dataset.sourceSchema),JSON.parse(el.dataset.sourceChoices));});
 
 document.addEventListener('input',e=>{const row=e.target.closest('[data-value-content]')?.parentElement;if(row){const include=row.querySelector(':scope > .value-row-head > label > [data-value-include]');if(include)include.checked=true;}});
+
+// Line-per-argument remains convenient; JSON preserves embedded newlines exactly.
+function argvText(argv=[]){return argv.some(a=>/[\r\n]/.test(a))?JSON.stringify(argv,null,2):argv.join('\n');}
+function readArgv(text){const value=text.trimStart().startsWith('[')?JSON.parse(text):text.split('\n').filter(Boolean);if(!Array.isArray(value)||value.some(a=>typeof a!=='string'))throw new Error('命令必须是字符串参数数组');return value;}
+function argvPreview(text){try{return readArgv(text);}catch{return [];}}

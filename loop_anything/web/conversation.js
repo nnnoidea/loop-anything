@@ -20,7 +20,7 @@ $('draft-cards').insertAdjacentHTML('afterend','<div id="preparation-cards"></di
 
 function launchItem(){return catalog.find(c=>c.key===conversation?.launch.key);}
 function agentConfig(){
-  const command=$('web-agent-command').value.split('\n').filter(x=>x.length),cwd=$('web-agent-cwd').value.trim(),timeout=$('web-agent-timeout').value;
+  const command=readArgv($('web-agent-command').value),cwd=$('web-agent-cwd').value.trim(),timeout=$('web-agent-timeout').value;
   return {...readPrompt($('web-agent-prompt'),'web'),...(command.length?{command}:{}),...(cwd?{cwd}:{}),...(timeout?{timeout:Number(timeout)}:{})};
 }
 function launchValues(){return {notification_route:$('launch-notification-route').value,title:$('create-title').value,inputs:collectLaunchInputs(false),authorization:$('create-authorization').value,bindings:structuredClone(launchBindings),fallback_node:$('launch-fallback').value,global_agent_node:$('launch-global-agent').value};}
@@ -47,10 +47,10 @@ async function openPreparation(key,bindings){
 }
 function populateAgent(){
   const item=launchItem(),c=conversation.agent || {},options=[];
-  for(const [node,entry] of Object.entries(item?.implementations || {}))for(const [id,b] of Object.entries(implementationOptions(entry)))if(b.kind==='agent'&&b.command&&!b.simulation)options.push({node,id,config:b});
+  for(const [node,entry] of Object.entries(item?.implementations || {}))for(const [id,b] of Object.entries(implementationOptions(entry)))if(b.kind==='agent'&&b.command&&!b.simulation&&!b.terminal)options.push({node,id,config:b});
   $('web-agent-choice').innerHTML='<option value="">自定义命令</option>'+options.map((o,i)=>`<option value="${i}">${esc(item.loop_definition.nodes[o.node]?.label || o.node)} · ${esc(o.id)}</option>`).join('');
   $('web-agent-choice')._options=options;
-  $('web-agent-command').value=(c.command || []).join('\n');$('web-agent-cwd').value=c.cwd || '';$('web-agent-timeout').value=c.timeout || '';
+  $('web-agent-command').value=argvText(c.command||[]);$('web-agent-cwd').value=c.cwd || '';$('web-agent-timeout').value=c.timeout || '';
   $('web-agent-prompt').innerHTML=promptEditor('web',c);
   $('web-agent-config').open=!c.command?.length;
   $('web-chat-input').value=conversationDrafts.get(conversation.id || conversation.run_id) || '';
@@ -70,7 +70,7 @@ function populatePreparation(){
 }
 function renderPreparationGraph(){
   const item=launchItem();syncFallbackControl('launch-fallback',item,launchBindings);const old=$('preparation-flow').querySelector('.loop-map'),focus=old?.dataset.mapFocus || '',view=old?.dataset.mapView || 'execution',scroll=old?.querySelector('.loop-map-scroll'),position=scroll?{left:scroll.scrollLeft,top:scroll.scrollTop}:null;
-  $('preparation-flow').innerHTML=`<div class="preparation-heading"><div><h2>${esc(item.loop_definition.name || item.key)}</h2><p class="small muted">v${esc(item.loop_definition.version)} · 点击节点查看和选择本次实现</p><p class="preparation-outlet">通知出口：<strong>${esc(outletLabel($('launch-notification-route').value))}</strong> <button type="button" data-focus-outlet="launch">选择出口</button></p></div><button id="edit-prepared-loop" type="button">编辑 Loop 定义</button></div>${loopGraphHTML(item,{bindings:launchBindings,action:'prepare',fallbackNode:$('launch-fallback').value||null})}<details><summary>查看步骤关系与作者说明</summary>${flowHTML(item,false)}</details>`;
+  $('preparation-flow').innerHTML=`<div class="preparation-heading"><div><h2>${esc(item.loop_definition.name || item.key)}</h2><p class="small muted">v${esc(item.loop_definition.version)} · 点击节点查看和选择本次实现</p><p class="preparation-outlet">通知出口：<strong>${esc(outletLabel($('launch-notification-route').value))}</strong> <button type="button" data-focus-outlet="launch">选择出口</button></p></div><button type="button" data-comm-bind-loop="${esc(conversation.launch.key)}">通信群组</button><button id="edit-prepared-loop" type="button">编辑 Loop 定义</button></div>${loopGraphHTML(item,{bindings:launchBindings,action:'prepare',fallbackNode:$('launch-fallback').value||null})}<details><summary>查看步骤关系与作者说明</summary>${flowHTML(item,false)}</details>`;
   const root=$('preparation-flow').querySelector('.loop-map');setGraphLayer(root,old?.dataset.graphLayer||'relations');if(item.loop_definition.nodes[focus])focusLoopMap(root,focus,view);
   if(old?.classList.contains('expanded')){root.classList.add('expanded');root.querySelector('[data-map-expand]').checked=true;}
   if(position)root.querySelector('.loop-map-scroll').scrollTo(position);
@@ -91,7 +91,7 @@ async function enterRunChat(id){
   if(page!=='runs'||run?.id!==id)return;
   const item=catalog.find(c=>c.key===run.loop_key),node=run.settings.global_agent_node || run.settings.fallback_node || run.loop_definition.entry;
   const impl=chosenImplementation(item || run,node,run.settings.bindings) || {};
-  conversation=doc || {id:null,run_id:id,launch:{key:run.loop_key},agent:impl.kind==='agent'&&!impl.simulation?Object.fromEntries(['command','cwd','timeout'].filter(k=>k in impl).map(k=>[k,impl[k]])):{},messages:[],busy:false};
+  conversation=doc || {id:null,run_id:id,launch:{key:run.loop_key},agent:impl.kind==='agent'&&!impl.simulation&&!impl.terminal?Object.fromEntries(['command','cwd','timeout'].filter(k=>k in impl).map(k=>[k,impl[k]])):{},messages:[],busy:false};
   preparationDirty=false;$('run-chat-host').append(chat);populateAgent();renderConversation();
 }
 function renderConversation(){
@@ -148,7 +148,7 @@ function markPreparationDirty(){
   clearTimeout(savePreparation.timer);savePreparation.timer=setTimeout(()=>savePreparation().catch(err=>{$('preparation-saved').textContent='尚未保存 · '+err.message;}),600);
 }
 document.addEventListener('input',e=>{if(e.target.closest('#create-form,#web-agent-config')&&conversation)markPreparationDirty();});
-$('web-agent-choice').addEventListener('change',()=>{const b=$('web-agent-choice')._options?.[$('web-agent-choice').value]?.config;if(!b)return;$('web-agent-command').value=b.command.join('\n');$('web-agent-cwd').value=b.cwd||'';$('web-agent-timeout').value=b.timeout||'';preparationEdits++;preparationDirty=true;});
+$('web-agent-choice').addEventListener('change',()=>{const b=$('web-agent-choice')._options?.[$('web-agent-choice').value]?.config;if(!b)return;$('web-agent-command').value=argvText(b.command);$('web-agent-cwd').value=b.cwd||'';$('web-agent-timeout').value=b.timeout||'';preparationEdits++;preparationDirty=true;});
 $('web-chat-form').addEventListener('submit',e=>{e.preventDefault();safely(()=>sendWebMessage($('web-chat-input').value));});
 document.addEventListener('click',e=>safely(async()=>{
   const b=e.target.closest('button');if(!b)return;

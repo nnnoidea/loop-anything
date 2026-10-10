@@ -76,6 +76,7 @@ async function api(url, data) {
 function toast(message) { $('toast').textContent = message; $('toast').style.display = 'block'; clearTimeout(toast.timer); toast.timer = setTimeout(() => $('toast').style.display = 'none', 5500); }
 async function safely(fn) { try { await fn(); } catch (error) { toast(error.message); } }
 function showPage() {
+  if($('communication-page'))$('communication-page').hidden=page!=='communication';
   if($('launch-page'))$('launch-page').hidden=page!=='launch';
   $('workspace').hidden = page !== 'runs' || !run;
   $('empty').hidden = page !== 'runs' || !!run;
