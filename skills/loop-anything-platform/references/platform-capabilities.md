@@ -28,7 +28,7 @@
 
 - 生效方式：configured/operator
 - 平台承担：平台提供本机具名Agent目录、NAS群组收发、明确认领、进度结果、会话和等待恢复；通信不要求创建Loop。
-- 作者提供：配置本机允许的CLI、群组目录和成员；Loop绑定群组，节点显式声明群组执行；外援由Agent按需请求。
+- 作者提供：先配置已挂载的共享空间，用 communication_workspace(discover=true) 发现群组并显式加入；再配置具名 Agent 对应的本机 CLI/工作目录/恢复命令及开放群组，支持转交加入说明；Loop绑定群组，节点显式声明群组执行；外援由Agent按需请求。
 - 配置入口：`communication_config`、`implementations.*.dispatch`、`request_assistance`、`wait_assistance`
 - 边界：本地节点只由来源平台执行；群组不是业务Run副本；session不决定认领。失联不自动重跑。NAS实际环境需安装时检查，逐键远程PTY尚不承诺。
 - 工具入口：communication_workspace、communication_status、communication_config、request_assistance、read_assistance、control_assistance、wait_assistance、communication_execute
@@ -295,6 +295,31 @@
 - 详细说明：[references/build.md](build.md)
 
 ## 常见组合
+
+### shared_space_onboarding
+
+各机器独立安装后，首次寻找共同群组并开放具名 Agent。
+
+```json
+{
+  "use_when": "各机器独立安装后，首次寻找共同群组并开放具名 Agent。",
+  "capabilities": [
+    "agent_communication"
+  ],
+  "configuration": [
+    "communication_config(operation=space,path=本机已挂载目录) 保存共享空间并检查本机读写；各机路径可以不同，核对返回 space_id。",
+    "communication_workspace(discover=true) 返回各空间群组及读取错误；发现不自动加入。创建用 operation=group、space_id、create=true、name；加入用 space_id、relative_path、group_id。",
+    "用 operation=agent 显式配置本机 CLI、cwd、resume_command，并选择 groups；加入群组不自动开放任何 Agent，也可只调用别人。",
+    "communication_workspace(group_id=...) 返回不含本机命令、凭据和挂载路径的加入说明；communication_status 查看开放成员，再绑定 Loop 或普通对话。"
+  ],
+  "author_provides": "共享 NAS 的访问方式与本机挂载路径、群组用途、本机允许启动的 Agent 命令；NAS 权限负责准入。",
+  "verification": [
+    "communication_workspace",
+    "communication_status",
+    "communication_config"
+  ]
+}
+```
 
 ### group_cc_connect_delivery
 

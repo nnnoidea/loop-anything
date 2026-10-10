@@ -169,6 +169,9 @@ class Communication:
         request.setdefault('history', []).append({'at': time.time(), 'kind': kind, 'detail': clean(detail or {})})
 
     def config(self, operation, **a):
+        if operation=='space':
+            from loop_anything.runtime.communication_spaces import configure
+            return configure(self,a)
         if operation=='group_notifications':
             from loop_anything.runtime.communication_notifications import configure
             return configure(self,a)
@@ -220,22 +223,31 @@ class Communication:
                 config['agents'][ident] = agent
                 if a['agent'].get('enabled') is True:config.get('agent_errors',{}).pop(ident,None)
             elif operation == 'group':
-                root = Path(a['path']).expanduser().resolve()
-                root.mkdir(parents=True, exist_ok=True)
+                relative=None
+                if a.get('space_id'):
+                    from loop_anything.runtime.communication_spaces import group_path
+                    root,relative=group_path(config,a)
+                else:root = Path(a['path']).expanduser().resolve()
+                if a.get('create'):root.mkdir(parents=True, exist_ok=True)
                 manifest = root / 'group.json'
                 if manifest.exists():
-                    group = json.loads(manifest.read_text())
-                    if group.get('version') != 1:
-                        raise Invalid('Unsupported group protocol')
-                    identifier(group['id'])
+                    from loop_anything.runtime.communication_spaces import manifest as read_manifest
+                    group = read_manifest(manifest)
+                    if a.get('group_id') and a['group_id']!=group['id']:
+                        raise Conflict('Group identity changed; discover and select it again')
                 elif a.get('create'):
                     # Exclusive manifest creation: two creators must not silently overwrite identity.
-                    group = {'version': 1, 'id': uid('group'), 'name': a.get('name') or root.name}
+                    description=a.get('description','')
+                    name=a.get('name') or root.name
+                    if not isinstance(name,str) or not name.strip() or len(name)>256:raise Invalid('Group name must contain 1–256 characters')
+                    if not isinstance(description,str) or len(description)>4000:raise Invalid('Group description must contain at most 4000 characters')
+                    group = {'version': 1, 'id': uid('group'), 'name': name,'description':description}
                     with manifest.open('x', encoding='utf-8') as out:
                         json.dump(group, out, ensure_ascii=False)
                 else:
                     raise Invalid('Group does not exist; explicitly create it first')
-                config['groups'][group['id']] = dict(group, path=str(root), enabled=True)
+                config['groups'][group['id']] = dict(config['groups'].get(group['id'],{}), **group, path=str(root), enabled=True)
+                if relative:config['groups'][group['id']].update(space_id=a['space_id'],relative_path=relative)
             elif operation == 'leave':
                 group = config['groups'].get(a['group_id'])
                 if group is None:
