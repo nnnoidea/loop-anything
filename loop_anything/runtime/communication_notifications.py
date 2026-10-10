@@ -178,6 +178,9 @@ def receive_receipt(comm,db,message):
         return
     if p['status']=='not_sent':p=dict(p,status='fault')
     notice.update({k:p.get(k) for k in ('status','receipt','error')})
+    if p['status']=='delivered' and request.get('notification_conversation'):
+        from loop_anything.runtime.communication_conversations import remember_context
+        remember_context(comm,db,request['notification_conversation'],p.get('receipt'))
     comm.save(db,request)
 
 
@@ -191,7 +194,7 @@ def recover(comm,db):
 
 
 def deliver(comm):
-    from loop_anything.runtime.notifications import deliver_command, NotificationNotSent
+    from loop_anything.runtime.notifications import deliver_command, NotificationNotSent, NotificationConfigurationError
     from loop_anything.runtime.host_runtime import run_command
     with comm.store.connection() as db:
         pending=[json.loads(r[0]) for r in db.execute("SELECT document FROM communication_deliveries WHERE json_extract(document,'$.status')='queued'")]
@@ -212,6 +215,7 @@ def deliver(comm):
                 if payload.get('conversation'):payload['outlet']['destination']=payload['conversation']['session_key']
                 row.update(receipt=deliver_command(sender,payload,run_command),status='delivered',error=None)
             except NotificationNotSent as exc:row.update(status='not_sent',error=str(exc))
+            except NotificationConfigurationError as exc:row.update(status='waiting_configuration',error=str(exc))
             except Exception as exc:row.update(status='fault',error=str(exc))
             with comm.transaction() as db:
                 save(db,row);reply(comm,db,row)

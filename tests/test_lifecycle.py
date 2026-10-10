@@ -298,7 +298,7 @@ assert client.report(context,'progress',report_id='late')['stale']
                 with post() as response:self.assertTrue(json.load(response)['stale'])
                 body['arguments']['token']='wrong'
                 with self.assertRaises(HTTPError) as rejected:post()
-                self.assertEqual(rejected.exception.code,403)
+                self.assertEqual(rejected.exception.code,409)
 
                 self.assertTrue(any(h['kind']=='transition' and h['detail']['event']=='completed' for h in run['history']))
             finally:

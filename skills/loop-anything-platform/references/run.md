@@ -14,13 +14,13 @@ read_timeline/next_tasks 用于查看任务是否已安排、为何等待和哪�
 
 1. 已知 Run ID 就直接读取；否则用 `list_runs`，可传 query 按名称、Run ID、Loop 名称或目标筛选，或传 status 按运行状态筛选。返回列表按创建时间从新到旧；多个候选无法区分时请用户选择，不猜测“最近一个”就是目标。
 2. 无需 token，调用 `read_timeline` 查看最新目标、要求、指导、授权、记录索引、任务和异常。需要时用 `next_tasks`、`read_task`、`read_record`、`read_plans` 读取详情；完整事实和变更历史由 `read_run` 读取。查看状态不取得操作权，其他 Agent 可以继续工作。
-3. 需要修改时调用 `acquire_run`；全局修改不带 task_id，只修改某支线则带对应 task_id。使用这次返回的新 token，不从旧会话复制令牌。范围冲突时可以继续读取，但不能抢占或声称修改已生效。
-4. 取得操作权后重新 `read_timeline` / `read_task`，按最新版本落实用户要求，再 `finish` 释放操作权。既有执行记录和结果保留；改变目标不自动作废旧任务，由用户决定具体调整。
+3. 普通工作区操作可直接调用写入工具并传 run_id，无需额外口令或手动 token；平台获取临时操作范围并在调用结束后释放。已有交互操作范围可继续使用。实际后台节点持有重叠范围时仍返回冲突，不能抢占或声称修改已生效。
+4. 按最新 `read_timeline` / `read_task` 的修订和 task_version 落实用户要求。需要连续持有某支线时仍可显式 acquire_run（task_id 指定支线），使用新 token 并在完成后 finish。平台唤醒的节点使用 prompt 身份，不能通过普通入口扩大范围。既有执行记录和结果保留；改变目标不自动作废旧任务。
 
 ```sh
 python3 scripts/call.py list_runs --arguments '{"query":"研究","status":"running"}'
 python3 scripts/call.py read_timeline --arguments '{"run_id":"RUN_ID"}'
-python3 scripts/call.py acquire_run --arguments '{"run_id":"RUN_ID"}'
+# 普通操作无需 acquire_run；长操作或支线执行按需显式获取范围
 ```
 
 `read_timeline` 返回 `read_only: true` 时只是查看，不授予写入权；此时 scope_task 的 null 不能理解为有全局权限。带有效 token 读取时，`read_only: false`，scope_task 才表示本次操作范围；写入仍受 Run 终态及已派发任务的保护。显式传入过期或错误令牌会报错，不会默默切成只读。
@@ -132,7 +132,7 @@ python3 scripts/call.py finish --arguments '{"run_id":"RUN_ID","token":"TOKEN"}'
 
 ## 用户中途提出新要求
 
-按上面的继续运行流程，先只读查看，再 `acquire_run` 取得操作权并重新读取最新状态，决定怎样落实用户要求。若有 Agent 持有重叠范围的操作权，需要等待，不自行抢占。修改要求本身不会作废旧任务、审批或结果。由用户决定哪些工作需要改变，再按授权用 change_task 明确取消或修改；必要时先暂停推进。待确认审批可以取消，已派发脚本不能靠取消假定外部操作已停止。保留已有结果和来源，再检查当前任务与问题并结束。
+按上面的继续运行流程，先查看最新状态，普通操作由平台处理执行标识，长操作按需显式 acquire_run，决定怎样落实用户要求。若有 Agent 持有重叠范围的操作权，需要等待，不自行抢占。修改要求本身不会作废旧任务、审批或结果。由用户决定哪些工作需要改变，再按授权用 change_task 明确取消或修改；必要时先暂停推进。待确认审批可以取消，已派发脚本不能靠取消假定外部操作已停止。保留已有结果和来源，再检查当前任务与问题并结束。
 
 工具报错时读取 error 和当前状态：输入版本变化就重新 read_task；Timeline 版本变化就重新 read_timeline；缺字段按输出契约补齐。不要通过重复创建另一批任务绕过原错误，也不要重建 Run。
 
@@ -177,7 +177,7 @@ read_task.execution_state.wait 显示实际等待时刻、事件关联和截止�
 
 ## 统一报告事件与结果
 
-`report_task` 参数包含 task_id、event、稳定 report_id。Agent 先 read_task，读取实际生命周期、当前执行阶段及 last_transition，附带最新 task_version；脚本/监控使用本次上下文的 execution_id。普通平台入口还要传 run_id/token；网页 scoped 入口自动提供身份。completed 报告的 envelope 包含全部 outputs，初始化时还包含 settings；progress 等报告只带 detail，不提前发布结果或安排任务。
+`report_task` 参数包含 task_id、event、稳定 report_id。Agent 先 read_task，读取实际生命周期、当前执行阶段及 last_transition，附带最新 task_version；脚本/监控使用本次上下文的 execution_id。普通工作区入口传 run_id，token 可省略；平台唤醒的节点必须带 prompt 中的 token，网页 scoped 入口自动提供身份。completed 报告的 envelope 包含全部 outputs，初始化时还包含 settings；progress 等报告只带 detail，不提前发布结果或安排任务。
 
 ```json
 {"task_id":"任务ID","task_version":"read_task返回的版本","report_id":"这次交付的稳定ID","event":"completed","envelope":{"outputs":{"result":"实际结果"}}}

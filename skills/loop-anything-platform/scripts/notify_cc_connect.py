@@ -36,6 +36,7 @@ def main():
             parser.error(str(exc))
         return
     send_attempted=False
+    checked=None
     try:
         notice = json.load(sys.stdin)
         outlet=notice.get('outlet',{})
@@ -46,11 +47,14 @@ def main():
         directory=args.data_dir or str(Path.home()/'.cc-connect')
         if not all(isinstance(v,str) and v.strip() for v in (project,session,directory)):
             raise ValueError('The project/identity and session/destination must be explicit')
+        executable=shutil.which(args.executable)
+        if not executable:raise ValueError('cc-connect executable is unavailable on the sending machine')
         if args.conversation or conversation:
             from cc_connect_context import inspect_compatible as inspect
             session=conversation['session_key'] if conversation else session
             config_path=args.config or str(Path.home()/'.cc-connect/config.toml')
-            inspect(project,session,directory,config_path,expected=conversation)
+            checked=inspect(project,session,directory,config_path,expected=conversation)
+            if conversation:checked['entry_project']=conversation['entry_project']
         title=str(notice.get('title') or '协作通知')
         if notice.get('run_id'):title+=' · '+str(notice['run_id'])
         lines = [title, str(notice['message'])]
@@ -64,12 +68,12 @@ def main():
             if str(notice['request_id']) not in str(notice['message']):lines.append('请求：' + str(notice['request_id']))
         else:lines.append('通知：' + str(notice['id']))
         send_attempted=True
-        result = subprocess.run([args.executable, 'send', '--project', project, '--session', session,
+        result = subprocess.run([executable, 'send', '--project', project, '--session', session,
                                  '--data-dir', directory, '--stdin'], input='\n'.join(lines), text=True,
                                 encoding='utf-8', capture_output=True, timeout=25)
         if result.returncode:
             raise ValueError('cc-connect send failed: ' + (result.stderr.strip() or str(result.returncode)))
-        print(json.dumps({'delivered': True, 'channel': 'cc-connect', 'reference': notice['id']}, ensure_ascii=False))
+        print(json.dumps({'delivered': True, 'channel': 'cc-connect', 'reference': notice['id'], **({'conversation':checked} if checked else {})}, ensure_ascii=False))
     except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
         print(json.dumps({'delivered': False, 'not_sent':not send_attempted, 'error': str(exc)}, ensure_ascii=False))
         raise SystemExit(2)

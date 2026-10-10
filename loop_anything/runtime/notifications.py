@@ -17,6 +17,8 @@ class NotificationNotSent(Invalid):
 
 def deliver_command(adapter, payload, runner):
     """Shared receipt contract for Timeline and standalone request notifications."""
+    if adapter.get('configuration_error'):
+        raise NotificationConfigurationError(adapter['configuration_error'])
     if not adapter.get('command'):
         raise NotificationConfigurationError('No notification transport configured')
     result=runner(adapter['command'],json.dumps(payload),adapter.get('timeout',30),adapter.get('cwd'))
@@ -76,7 +78,15 @@ def sender_for(store, run, route):
     if route in ('user','external'):
         command = run['settings'].get('notification_command')
         sender = {'command': command} if command else {}
-        if command and run.get('notification_conversation_id'):sender['timeout']=60
+        if run.get('notification_conversation_id'):
+            from loop_anything.runtime.communication import service
+            from loop_anything.runtime.communication_conversations import resolve
+            binding=resolve(service(store),run['notification_conversation_id'],include_sender=True)
+            sender=copy.deepcopy(binding['sender'])
+            if sender.get('configuration_error'):
+                from loop_anything.runtime.communication_conversations import entry_sender
+                sender=entry_sender(service(store),binding['conversation'])
+            if sender.get('configuration_error'):raise NotificationConfigurationError(sender['configuration_error'])
         if not sender.get('command') and requested=='default':
             # New installations work out of the box inside the platform.
             return 'workspace', {}
@@ -103,6 +113,10 @@ def enqueue(store, run, key, notice, task_id=None, execution_id=None):
     except NotificationConfigurationError as exc:
         route=run['settings'].get('notification_route','user') if row['requested_route']=='default' else row['requested_route']
         row.update(route=route, status='waiting_configuration', error=str(exc))
+    if run.get('notification_conversation_id') and row.get('route') in ('user','external'):
+        from loop_anything.runtime.communication import service
+        from loop_anything.runtime.communication_conversations import resolve
+        row['conversation']=resolve(service(store),run['notification_conversation_id'])['conversation']
     run['notifications'].append(row)
     Store.log(run, 'notification', 'Notification queued', execution_id, {'notification_id':key, 'task_id':task_id})
     return row

@@ -1,6 +1,5 @@
 """Local same-origin workspace for loop_definition authoring and run settings."""
 import json
-import os
 import base64
 import mimetypes
 import threading
@@ -15,14 +14,10 @@ from loop_anything.paths import platform_skill_directory
 
 
 def serve(store, engine, port, initial_run=None, protection=None, open_browser=False, host='127.0.0.1'):
-    from loop_anything.interfaces.edit_access import EditAccess
-    access = EditAccess(os.environ.get('LOOP_ANYTHING_EDIT_PASSWORD'), str(Path(store.filename).resolve()))
-    if host not in ('127.0.0.1', 'localhost') and not access.password:
-        raise Invalid('Internal sharing requires LOOP_ANYTHING_EDIT_PASSWORD')
+    from loop_anything.interfaces.edit_access import EditAccess,EditLocked
+    access = EditAccess(store)
     from loop_anything.interfaces.platform_tools import PlatformTools
     platform_tools = PlatformTools(store)
-    tool_reads = {d['name'] for d in platform_tools.definitions() if d['annotations']['readOnlyHint']}
-    run_tools = {d['name'] for d in platform_tools.run_definitions}
     root = Path(__file__).resolve().parents[1] / 'web'
     stop = threading.Event()
     from loop_anything.interfaces.web_agent import WebAgent
@@ -63,70 +58,19 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             pass
 
         def edit_status(self):
-            return access.status(self.headers.get('Cookie', ''))
+            ident=parse_qs(urlsplit(self.path).query).get('loop_id',[None])[0]
+            return access.status(ident,self.headers.get('Cookie',''))
 
-        def editing(self):
-            return self.edit_status()['unlocked'] or (bool(access.password) and
-                access.permits_header(self.headers.get('Authorization', '')))
+        def can_edit_loop(self,ident,password=None):
+            return access.permits(ident,self.headers.get('Cookie',''),self.headers.get('Authorization',''),password)
 
-        def visible_run(self, run):
-            # Operation credentials grant writes; the rest of the Run stays visible.
-            if not self.editing():
-                for item in run.get('agent_sessions', []) + run.get('executions', []) + run.get('notifications', []):
-                    item.pop('token', None)
-            return run
-
-        def may_post(self, parts, body):
-            if parts == ['api', 'edit-access'] or self.editing():
-                return True
-            if parts == ['api', 'validate'] or parts == ['api', 'agent-prompts', 'preview'] or (
-                    len(parts) == 3 and parts[:2] == ['api', 'packages'] and parts[2] in ('read', 'inspect', 'export', 'smoke')):
-                return True
+        def may_post(self,parts,body):
+            # These handles bind execution reports to a specific live request/turn.
             if len(parts)==5 and parts[0]=='communication' and parts[3:]==['api','tools']:
                 return not self.headers.get('Origin') and engine.communication.authorized({'request_id':parts[1],'token':parts[2]},worker=True)
-            if parts == ['api', 'tools'] and body.get('tool') in {'communication_workspace','communication_config','communication_status','request_assistance','read_assistance','control_assistance','communication_execute','wait_assistance'}:
-                tool, args = body.get('tool'), body.get('arguments', {})
-                if tool == 'communication_execute':
-                    return not self.headers.get('Origin') and engine.communication.authorized(args, worker=True)
-                if tool in ('read_assistance','control_assistance'):
-                    return not self.headers.get('Origin') and engine.communication.authorized(args)
-                if tool in ('request_assistance','communication_status','wait_assistance'):
-                    source = args.get('source') or args
-                    from loop_anything.runtime.task_scope import owner_for
-                    return bool(not self.headers.get('Origin') and source.get('run_id') and owner_for(store.get(source['run_id']),args.get('token')))
-                return False
-            if parts == ['api', 'tools'] and body.get('tool') in tool_reads:
-                return True
-            if len(parts) == 4 and parts[:2] == ['api', 'runs'] and parts[3] == 'agent' and not body.get('operation') and body.get('tool') in tool_reads | {'list'}:
-                return True
-            # Already-authorized commands can finish independently of browser sessions.
-            # Browser mutations always require the edit cookie, even with a cached task token.
-            if self.headers.get('Origin'):
-                return False
-            if len(parts) == 5 and parts[0] == 'web' and parts[3:] == ['api', 'tools']:
-                web_agent.turn(parts[1], parts[2])
-                return True
-            if parts == ['api', 'tools'] and body.get('tool') in run_tools:
-                args = body.get('arguments', {})
-                run_id, token = args.get('run_id'), args.get('token')
-            elif len(parts) == 4 and parts[:2] == ['api', 'runs'] and parts[3] == 'agent' and not body.get('operation') and body.get('tool') in run_tools:
-                run_id, token = parts[2], body.get('token')
-            elif len(parts) == 4 and parts[:2] == ['api', 'runs'] and parts[3] == 'submit':
-                e = engine.execution(store.get(parts[2]), body['execution_id'])
-                return bool(body.get('token')) and body['token'] == e.get('token')
-            else:
-                return False
-            if not run_id or not token:
-                return False
-            from loop_anything.runtime.task_scope import owner_for
-            run = store.get(run_id)
-            args = body.get('arguments', {})
-            if body.get('tool') in ('report_task','notify') and args.get('execution_id'):
-                attempt = next((e for e in run['executions'] if e['id'] == args['execution_id']), None)
-                from loop_anything.runtime.lifecycle import monitor_token_matches
-                if attempt and (body.get('tool')=='report_task' and monitor_token_matches(attempt, token) or attempt['implementation']['kind'] in ('command', 'external') and attempt.get('token') == token):
-                    return True
-            return owner_for(run, token) is not None
+            if len(parts)==5 and parts[0]=='web' and parts[3:]==['api','tools']:
+                web_agent.turn(parts[1],parts[2])
+            return True
 
         def send(self, data, status=200, cookie=None):
             content = json.dumps(data, ensure_ascii=False).encode()
@@ -166,9 +110,6 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             if len(parts) == 6 and parts[:2] == ['api', 'runs'] and parts[3] == 'executions' and parts[5] in ('terminal','session'):
                 if host in ('127.0.0.1', 'localhost') and self.headers.get('Host') not in ('127.0.0.1:%s' % server.server_port, 'localhost:%s' % server.server_port):
                     raise Invalid('Workspace host required')
-                if not self.editing():
-                    self.send({'error': '请先解锁编辑以查看执行终端。', 'code': 'edit_locked'}, 403)
-                    return
                 engine.execution(store.get(parts[2]), parts[4])
                 if parts[5]=='session':
                     from loop_anything.runtime.native_sessions import preparation
@@ -227,7 +168,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.send(store.drafts())
             elif parts == ['api', 'runs']:
                 self.send([{k: v for k, v in r.items() if k in ('id', 'title', 'status', 'loop_key', 'created_at', 'executions', 'settings')}
-                           for r in [self.visible_run(r) for r in store.list()]])
+                           for r in store.list()])
             elif len(parts) == 3 and parts[:2] == ['api', 'runs']:
                 current = store.get(parts[2])
                 if current.get('operator_protocol'):
@@ -239,7 +180,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                             owner['tasks'] = task_list(current, engine.timeline_runtime, owner)['items']
                 from loop_anything.runtime.timeline_plan import task_dependencies
                 current['task_dependencies'] = task_dependencies(current) if current.get('schema_version') == 2 else {}
-                self.send(self.visible_run(current))
+                self.send(current)
             elif len(parts) == 4 and parts[:2] == ['api', 'runs'] and parts[3] == 'artifact':
                 from loop_anything.packaging.packages import load_installed
                 try:
@@ -288,7 +229,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 run = store.get(parts[2])
                 execution = engine.execution(run, parts[4])
                 from loop_anything.interfaces.agent_tasks import node_for
-                self.send({'snapshot': self.visible_run(run), 'execution_id': execution['id'], 'token': execution.get('token') if self.editing() else None,
+                self.send({'snapshot': run, 'execution_id': execution['id'], 'token': execution.get('token'),
                            'settings_revision': execution['settings_revision'], 'output_contract': node_for(run, execution['node'])['outputs']})
             else:
                 filename = {name: name for name in ('communication.js', 'communication.css', 'terminal.js', 'terminal.css', 'xterm.js', 'xterm-fit.js', 'xterm.css', 'app.js', 'notifications.js', 'lifecycle.js', 'loop_graph.js', 'settings.js', 'forms.js', 'workspace.js', 'authoring.js', 'workspace.css', 'conversation.js', 'conversation.css', 'task_history.js', 'style.css', 'graph.css', 'editor.js', 'editor.css', 'packages.js', 'library.js', 'library.css', 'navigation.js')}.get('/'.join(parts))
@@ -326,9 +267,11 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                     raise Invalid('JSON object required')
                 parts = urlsplit(self.path).path.strip('/').split('/')
                 if not self.may_post(parts, body):
-                    self.send({'error': '请先解锁编辑。', 'code': 'edit_locked'}, 403)
+                    self.send({'error': 'Invalid execution identity', 'code': 'invalid_execution'}, 403)
                     return
                 self.post(parts, body)
+            except EditLocked as exc:
+                self.send({'error':str(exc),'code':'edit_locked','loop_id':exc.loop_id},403)
             except Conflict as exc:
                 self.send({'error': str(exc)}, 409)
             except (Invalid, KeyError, TypeError, ValueError) as exc:
@@ -358,14 +301,16 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.send(power_status())
                 return
             if parts == ['api', 'edit-access']:
+                ident=body.get('loop_id')
+                if not isinstance(ident,str) or not ident:raise Invalid('Select the Loop to unlock')
                 if body.get('action') == 'lock':
-                    cookie = access.cookie(False)
-                elif body.get('action') == 'unlock' and access.matches(body.get('password')):
-                    cookie = access.cookie(True)
+                    cookie = access.cookie(ident,False)
+                elif body.get('action') == 'unlock' and access.matches(ident,body.get('password')):
+                    cookie = access.cookie(ident,True)
                 else:
                     self.send({'error': '编辑口令不正确。'}, 403)
                     return
-                self.send(access.status(cookie), cookie=cookie)
+                self.send(access.status(ident,cookie),cookie=cookie)
                 return
             if parts == ['api', 'agent-prompts', 'preview']:
                 from loop_anything.runtime.agent_prompt import author_context, render_prompt
@@ -391,7 +336,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 return
             if len(parts) == 5 and parts[0] == 'web' and parts[3:] == ['api', 'tools']:
                 result = web_agent.tool(parts[1], parts[2], body['tool'], body.get('arguments', {}))
-                self.send(result, 200 if result['ok'] else 409 if result['error']['code'] == 'conflict' else 400)
+                self.send(result, 200 if result['ok'] else 403 if result['error']['code']=='edit_locked' else 409 if result['error']['code'] == 'conflict' else 400)
                 return
             if parts == ['api', 'conversations']:
                 self.send(web_agent.create(body.get('key'), body.get('run_id')), 201)
@@ -412,12 +357,17 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 return
             if parts == ['api', 'tools']:
                 from loop_anything.interfaces.platform_tools import PlatformTools
-                result = PlatformTools(store).respond(body['tool'], body.get('arguments', {}))
-                self.send(result, 200 if result['ok'] else 409 if result['error']['code'] == 'conflict' else 400)
+                result = PlatformTools(store,self.can_edit_loop).respond(body['tool'],body.get('arguments',{}))
+                if body['tool']=='set_loop_password' and result.get('ok'):
+                    self.send(result,cookie=access.cookie(result['loop_id'],result['protected']));return
+                self.send(result, 200 if result['ok'] else 403 if result['error']['code']=='edit_locked' else 409 if result['error']['code'] == 'conflict' else 400)
                 return
             if parts == ['api', 'packages', 'export']:
                 from loop_anything.packaging.packages import make_archive, decode_assets
-                data = make_archive(body['document'], decode_assets(body.get('assets', [])))
+                from loop_anything.packaging.packages import export_document,require_export
+                assets=decode_assets(body.get('assets',[]))
+                require_export(store,body['document'],assets,lambda ident:self.can_edit_loop(ident,body.get('loop_password')))
+                data=make_archive(export_document(store,body['document']),assets)
                 self.send({'base64': base64.b64encode(data).decode(), 'bytes': len(data)})
             elif parts == ['api', 'packages', 'inspect']:
                 from loop_anything.packaging.packages import read_archive, validate_document, effective_definition
@@ -427,7 +377,10 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                            'assets': [{'path': n, 'base64': base64.b64encode(v[0]).decode(), 'executable': v[1]} for n, v in assets.items()]})
             elif parts == ['api', 'packages', 'install']:
                 from loop_anything.packaging.packages import install
-                self.send(install(store, base64.b64decode(body['base64'], validate=True)), 201)
+                self.send(install(store,base64.b64decode(body['base64'],validate=True),edit_access=lambda ident:self.can_edit_loop(ident,body.get('loop_password'))),201)
+            elif parts == ['api', 'packages', 'draft']:
+                from loop_anything.packaging.packages import import_draft
+                self.send(import_draft(store,base64.b64decode(body['base64'],validate=True),edit_access=lambda ident:self.can_edit_loop(ident,body.get('loop_password'))),201)
             elif parts == ['api', 'packages', 'read']:
                 from loop_anything.packaging.packages import load_installed, installed_assets, effective_definition
                 document, directory = load_installed(store.filename, body['key'])
@@ -441,11 +394,11 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             elif parts == ['api', 'validate']:
                 self.send(validate(body['loop_definition'], body.get('implementations', {})))
             elif parts == ['api', 'drafts']:
-                self.send(store.save_draft(body['loop_definition'], body['implementations'], body.get('id'), body.get('revision'), body.get('assets'), body.get('checks')))
+                self.send(store.save_draft(body['loop_definition'], body['implementations'], body.get('id'), body.get('revision'), body.get('assets'), body.get('checks'),edit_access=lambda ident:self.can_edit_loop(ident,body.get('loop_password'))))
             elif parts == ['api', 'publish']:
-                self.send(store.publish(body['loop_definition'], body['implementations']))
+                self.send(store.publish(body['loop_definition'],body['implementations'],edit_access=lambda ident:self.can_edit_loop(ident,body.get('loop_password'))))
             elif parts == ['api', 'runs']:
-                self.send(store.create(body['key'], body['title'], body.get('inputs'), authorization=body.get('authorization', ''), acquire=body.get('acquire', False), bindings=body.get('bindings'), fallback_node=body.get('fallback_node'), global_agent_node=body.get('global_agent_node'), notification_command=body.get('notification_command'),notification_route=body.get('notification_route')), 201)
+                self.send(store.create(body['key'], body['title'], body.get('inputs'), authorization=body.get('authorization', ''), acquire=body.get('acquire', False), bindings=body.get('bindings'), fallback_node=body.get('fallback_node'), global_agent_node=body.get('global_agent_node'), notification_command=body.get('notification_command'),notification_route=body.get('notification_route'),conversation_id=body.get('conversation_id'),chat_context=body.get('chat_context')), 201)
             elif len(parts) == 4 and parts[:2] == ['api', 'runs']:
                 run_id, action = parts[2:]
                 if action == 'request':
@@ -467,8 +420,10 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                                 require_owner(store.get(run_id), body['token'])
                             self.send(session.definitions())
                             return
-                        result = session.respond(body['tool'], body.get('arguments', {}))
-                        self.send(result, 200 if result['ok'] else 409 if result['error']['code'] == 'conflict' else 400)
+                        arguments=dict(body.get('arguments',{}),run_id=run_id)
+                        if 'token' in body:arguments['token']=body['token']
+                        result=PlatformTools(store,self.can_edit_loop).respond(body['tool'],arguments)
+                        self.send(result, 200 if result['ok'] else 403 if result['error']['code']=='edit_locked' else 409 if result['error']['code'] == 'conflict' else 400)
                         return
                 elif action == 'tasks':
                     from loop_anything.interfaces.agent_tasks import edit_tasks
@@ -517,7 +472,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
     thread.start()
     print('Loop Anything workspace: http://127.0.0.1:%s' % server.server_port, flush=True)
     if host not in ('127.0.0.1', 'localhost'):
-        print('Internal workspace: http://<server-address>:%s (editing unlock lasts 24 hours)' % server.server_port, flush=True)
+        print('Trusted workspace: http://<server-address>:%s (optional Loop editing locks)' % server.server_port, flush=True)
     print('Database: ' + str(Path(store.filename).resolve()), flush=True)
     if protection and protection.status()['error']:
         print('WARNING: sleep protection unavailable: ' + protection.status()['error'], flush=True)

@@ -4,13 +4,23 @@
 
 构建时先将需求对应到下列机制，再设计业务节点和实现。activation=automatic 表示平台自动执行；declared/configured 需要作者声明或使用者配置；operator 需要显式操作。
 
+## loop_edit_protection
+
+- 生效方式：configured
+- 平台承担：可选编辑口令按Loop身份保护定义、节点实现、手册及随包资源；草稿和版本共用，导出导入携带校验信息。
+- 作者提供：按需set_loop_password，受保护编辑使用loop_password或浏览器对此Loop解锁。
+- 配置入口：`set_loop_password`、`copy_loop`、`publish_loop`、`export_loop`
+- 边界：日常Run、通信和终端不需要全局解锁；平台自动处理普通操作执行标识，实际worker仍受执行范围、版本和过期结果校验。
+- 工具入口：set_loop_password、read_loop、copy_loop、publish_loop、export_loop
+- 详细说明：[references/connection.md](connection.md)
+
 ## conversation_notifications
 
 - 生效方式：automatic/configured
 - 平台承担：飞书入口调用默认回复原会话；私聊由入口Bot回复，群聊优先具名Agent对应Bot并保持原话题。
-- 作者提供：Skill call.py 自动捕获入口并注册 conversation_id；agent.notification_route 映射本机Bot出口。嵌套外援继承来源，不需要Agent重新拼接通知命令。
-- 配置入口：`communication_config(operation=conversation)`、`communication_config(operation=agent)`、`request_assistance.conversation_id`、`start_run.conversation_id`
-- 边界：发送前确认不可用才回退入口Bot；发送后失败或未知不改投。话题需要完整root session key和cc-connect话题隔离。显式出口优先；无聊天来源沿用群组按机器出口。
+- 作者提供：Skill call.py 只携带 chat_context；平台持久保存并复用来源，发送适配器核实渠道及调用cc-connect；agent.notification_route 映射本机Bot出口。嵌套外援继承来源，不需要Agent重新拼接通知命令。
+- 配置入口：`request_assistance.chat_context`、`start_run.chat_context`、`communication_config(operation=agent)`、`兼容已有conversation_id`
+- 边界：通知接入失败不阻断业务任务；发送前确认不可用才回退入口Bot，发送后失败或未知不改投。话题需要完整root session key和cc-connect话题隔离。显式出口优先；无聊天来源沿用群组按机器出口。
 - 工具入口：communication_config、request_assistance、start_run、read_assistance
 - 详细说明：[references/cc-connect.md](cc-connect.md)
 
@@ -60,7 +70,7 @@
 - 平台承担：平台提供本机具名Agent目录、NAS群组收发、明确认领、进度结果、会话和等待恢复；通信不要求创建Loop。
 - 作者提供：先配置已挂载的共享空间，用 communication_workspace(discover=true) 发现群组并显式加入；再配置具名 Agent 对应的本机 CLI/工作目录/恢复命令及开放群组，支持转交加入说明；Loop绑定群组，节点显式声明群组执行；外援由Agent按需请求。
 - 配置入口：`communication_config`、`implementations.*.dispatch`、`request_assistance`、`wait_assistance`
-- 边界：本地节点只由来源平台执行；群组不是业务Run副本；session不决定认领。失联不自动重跑。NAS实际环境需安装时检查，逐键远程PTY尚不承诺。
+- 边界：可信工作区配置、请求、查询无需全局编辑解锁；普通操作由平台处理内部标识，worker写回仍校验本次执行范围。原生 session ID 只用于恢复；本地节点只由来源平台执行，群组不是业务Run副本，session不决定认领。失联不自动重跑。NAS实际环境需安装时检查，逐键远程PTY尚不承诺。
 - 工具入口：communication_workspace、communication_status、communication_config、request_assistance、read_assistance、control_assistance、wait_assistance、communication_execute
 - 详细说明：[references/communication.md](communication.md)
 
@@ -130,7 +140,7 @@
 - 平台承担：为后台 Agent 每次执行持久化实时输出；可选交互终端连接同一 CLI 进程，转发键盘和窗口尺寸，finish 后关闭会话。
 - 作者提供：提供 CLI 命令、工作目录、登录与权限配置；交互命令用 {{prompt}} 或 {{prompt_file}} 接收任务上下文。
 - 配置入口：`implementations.*.terminal`、`implementations.*.command`、`任务详情 → 执行终端`
-- 边界：普通命令只读；交互终端当前支持 macOS/Linux。进程重启后只保留历史并按既有操作权恢复，不保证恢复 CLI 会话。终端访问需要编辑权限，结果仍须 report_task/finish；不要重复构建日志页。
+- 边界：普通命令只读；交互终端当前支持 macOS/Linux。进程重启后只保留历史并按既有操作权恢复，不保证恢复 CLI 会话。终端不需要Loop编辑解锁，session身份和执行状态仍校验，结果仍须 report_task/finish；不要重复构建日志页。
 - 工具入口：set_implementation、read_task
 - 详细说明：[references/terminal.md](terminal.md)
 
@@ -364,9 +374,9 @@
     "notifications"
   ],
   "configuration": [
-    "通过 Skill call.py 发起 request_assistance 或 start_run，自动读取桥接入口并注册 conversation_id。",
+    "通过 Skill call.py 发起 request_assistance 或 start_run，只随业务请求携带 chat_context；平台保存来源，适配器在发送机核实和投递。",
     "在具名 Agent 的 notification_route 选择本机 Bot 出口；群内执行确认和结果优先该 Bot，私聊仍由入口回复。",
-    "所有参与 Bot 开启话题隔离和回复原消息；只读预检确认原群/根消息，发送前不可用才由入口代发。"
+    "所有参与 Bot 开启话题隔离和回复原消息；适配器只读预检确认原群/根消息，发送前不可用才由入口代发；接入失败记录通知错误，不阻断任务。"
   ],
   "author_provides": "具名Agent对应Bot的本机出口映射；复用已有cc-connect配置及只读权限。",
   "verification": [
@@ -418,7 +428,7 @@
   ],
   "configuration": [
     "communication_status 发现显式开放的本机目录和获准群组，使用 agent_id 与必要的 instance_id 消歧。",
-    "request_assistance 返回持久请求及读取凭据；本机调用不要求 NAS，无 Loop 调用不创建业务 Run。",
+    "request_assistance 返回持久请求ID，可信工作区按ID读取；本机调用不要求 NAS，无 Loop 调用不创建业务 Run。",
     "平台托管节点先记录原生 session 和恢复配置，再使用 wait_assistance 持久等待并 finish；回复或期限到达后在原机器恢复同一个 CLI session，以新凭据和外援结果继续同一个 Task；不可恢复时明确阻塞，不新建会话。",
     "外援通过限定客户端 read_context 按需读取关联上下文，通过 complete 提交协助结果；不取得原节点写权限。"
   ],

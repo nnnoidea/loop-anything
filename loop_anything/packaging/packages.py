@@ -74,10 +74,12 @@ def resolve_skill(database, key, skill):
 
 
 def validate_document(document):
-    if not isinstance(document, dict) or set(document) - {'format', 'loop_definition', 'implementations', 'checks', 'files', 'requires'}:
+    if not isinstance(document, dict) or set(document) - {'format', 'loop_definition', 'implementations', 'checks', 'files', 'requires', 'edit_protection'}:
         raise Invalid('Package document accepts loop_definition, optional implementations/checks and package metadata only')
     if document.get('format', FORMAT) not in (FORMAT, CAPABILITY_FORMAT):
         raise Invalid('Unsupported Loop package format')
+    from loop_anything.interfaces.edit_access import validate_policy
+    validate_policy(document.get('edit_protection'))
     bp, implementations = document.get('loop_definition'), document.get('implementations', {})
     report = validate_v2(current_definition(bp) if isinstance(bp, dict) else bp, implementations)
     if not report['valid']:
@@ -85,6 +87,7 @@ def validate_document(document):
     from loop_anything.capabilities import required_capabilities, require_supported
     require_supported(document.get('requires', []))
     needed = required_capabilities(bp, implementations)
+    if document.get('edit_protection'):needed.append('loop_edit_protection')
     require_supported(needed)
     if document.get('format') == FORMAT and needed:
         raise Invalid('This Loop requires package/2 for capabilities: ' + ', '.join(needed) + '; rebuild with the current platform')
@@ -120,6 +123,7 @@ def make_archive(document, assets=None):
     from loop_anything.capabilities import require_supported
     require_supported(document.get('requires', []))
     document = copy.deepcopy(document)
+    if document.get('edit_protection'):document['requires']=sorted(set(document.get('requires',[]))|{'loop_edit_protection'})
     needed = sorted(set(document.get('requires', [])) | set(required_capabilities(document['loop_definition'], document.get('implementations', {}))))
     document['format'] = CAPABILITY_FORMAT if needed else FORMAT
     if needed:document['requires'] = needed
@@ -323,7 +327,7 @@ def load_installed(database, key):
     return json.loads(row[0]), Path(row[1])
 
 
-def install(store, data):
+def install(store, data, edit_access=None):
     document, assets, key, fingerprint = read_archive(data)
     parent = Path(store.filename).resolve().parent / 'packages'
     if parent.is_symlink():
@@ -333,6 +337,12 @@ def install(store, data):
     # A single transaction serializes installation across platform processes.
     with store.connection() as db:
         db.execute('BEGIN IMMEDIATE')
+        from loop_anything.interfaces.edit_access import require_edit
+        loop_id=document['loop_definition']['id']
+        existing_key=db.execute('SELECT 1 FROM loop_packages WHERE key=?',(key,)).fetchone()
+        if not existing_key:require_edit(store,loop_id,edit_access,db)
+        if not existing_key or not db.execute('SELECT 1 FROM loop_edit_protection WHERE loop_id=?',(loop_id,)).fetchone():
+            db.execute('INSERT INTO loop_edit_protection VALUES (?,?) ON CONFLICT(loop_id) DO UPDATE SET document=excluded.document',(loop_id,json.dumps(document.get('edit_protection'))))
         if root.exists() or root.is_symlink():
             if root.is_symlink() or (root / MANIFEST).is_symlink() or not (root / MANIFEST).is_file():
                 raise Conflict('Existing package directory is not a valid installation')
@@ -388,3 +398,43 @@ def installed_assets(document, root):
     if any(c['kind'] in ('asset', 'manifest') and c['status'] == 'fail' for c in report['checks']):
         raise Invalid('Installed assets no longer match the package; cannot export changed files silently')
     return {name: ((root / name).read_bytes(), spec['executable']) for name, spec in document['files'].items()}
+
+
+def export_document(store,document):
+    result=copy.deepcopy(document)
+    with store.connection() as db:row=db.execute('SELECT document FROM loop_edit_protection WHERE loop_id=?',(result['loop_definition']['id'],)).fetchone()
+    if row:
+        result.pop('edit_protection',None)
+        protection=json.loads(row[0])
+        if protection:result['edit_protection']=protection
+    return result
+
+
+def import_draft(store,data,edit_access=None):
+    """Load an exact validated package as a draft, retaining its edit protection."""
+    document,assets,_,_=read_archive(data)
+    definition=effective_definition(document);loop_id=definition['id']
+    with store.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        require_export(store,document,assets,edit_access)
+        db.execute('INSERT OR IGNORE INTO loop_edit_protection VALUES (?,?)',(loop_id,json.dumps(document.get('edit_protection'))))
+        result=store.save_draft(definition,document.get('implementations',{}),
+            assets=[{'path':name,'base64':base64.b64encode(value[0]).decode(),'executable':value[1]} for name,value in assets.items()],
+            checks=document.get('checks',{}),edit_access=lambda ident:ident==loop_id,_db=db)
+        db.commit()
+    return result
+
+
+def require_export(store,document,assets,allowed=None):
+    from loop_anything.interfaces.edit_access import policy,require_edit
+    loop_id=document['loop_definition']['id']
+    if not policy(store,loop_id) or allowed and allowed(loop_id):return
+    def shape(value):return {k:value.get(k,{}) for k in ('loop_definition','implementations','checks')}
+    candidates=[shape(document),shape(dict(document,loop_definition=effective_definition(document)))]
+    for draft in store.drafts():
+        if shape(draft) in candidates and decode_assets(draft.get('assets',[]))==assets:return
+    for item in store.catalog():
+        if item['loop_definition']['id']!=loop_id or not item.get('package_key'):continue
+        source,root=load_installed(store.filename,item['key'])
+        if (shape(source) in candidates or shape(dict(source,loop_definition=effective_definition(source))) in candidates) and installed_assets(source,root)==assets:return
+    require_edit(store,loop_id,allowed)

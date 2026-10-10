@@ -3,17 +3,15 @@ import argparse
 import base64
 import json
 import os
-import subprocess
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 
 def fetch(url, data=None):
     headers = {'Content-Type': 'application/json', 'X-Loop-Anything': 'workspace'}
-    if data is not None and os.environ.get('LOOP_ANYTHING_EDIT_PASSWORD'):
-        headers['Authorization'] = 'Basic ' + base64.b64encode((':' + os.environ['LOOP_ANYTHING_EDIT_PASSWORD']).encode('utf-8')).decode('ascii')
+    if data is not None and (os.environ.get('LOOP_ANYTHING_LOOP_PASSWORD') or os.environ.get('LOOP_ANYTHING_EDIT_PASSWORD')):
+        headers['Authorization'] = 'Basic ' + base64.b64encode((':' + (os.environ.get('LOOP_ANYTHING_LOOP_PASSWORD') or os.environ.get('LOOP_ANYTHING_EDIT_PASSWORD'))).encode('utf-8')).decode('ascii')
     request = Request(url, data=data, headers=headers)
     try:
         with urlopen(request, timeout=10) as response:
@@ -69,17 +67,11 @@ def main():
             parser.error('Supply notification_command once, in arguments or --notification-command')
         target['notification_command'] = load_json(args.notification_command)
     if args.tool in ('request_assistance','start_run') and not any(k in values for k in ('notification_route','conversation_id','notification_command')) and not values.get('source',{}).get('run_id') and os.environ.get('CC_PROJECT') and os.environ.get('CC_SESSION_KEY','').split(':')[0] in ('feishu','lark'):
-        try:
-            if urlsplit(url).hostname not in ('localhost','127.0.0.1','::1'):
-                raise ValueError('Automatic chat capture requires the bridge and platform on the same machine; use the local platform URL')
-            from cc_connect_context import capture_arguments
-            capture=capture_arguments()
-            registered=fetch(url+'/api/tools',json.dumps({'tool':'communication_config','arguments':capture}).encode('utf-8'))
-            if not registered.get('conversation_id'):raise ValueError(str(registered.get('error') or 'Conversation registration failed'))
-            values['conversation_id']=registered['conversation_id']
-            # start_run resolves the same registered sender atomically on the platform.
-        except (ValueError,OSError,subprocess.SubprocessError) as exc:
-            parser.error(str(exc)+'; fix the chat bridge or explicitly choose notification_route=workspace')
+        # Carry bridge provenance only; platform adapters resolve and deliver later.
+        if 'chat_context' not in values:
+            values['chat_context']={'platform':os.environ['CC_SESSION_KEY'].split(':')[0],
+                                    'entry_project':os.environ['CC_PROJECT'],
+                                    'session_key':os.environ['CC_SESSION_KEY']}
     data = None if args.tool == 'list' else json.dumps({'tool': args.tool, 'arguments': values}, ensure_ascii=False).encode('utf-8')
     result = fetch(url + '/api/tools', data=data)
     if args.output and result.get('ok') and 'base64' in result:

@@ -9,8 +9,7 @@ const {spawn,execFileSync}=require('node:child_process'),{chromium}=require('pla
   await new Promise((r,j)=>{const t=setTimeout(()=>j(Error(logs)),10000);server.stdout.on('data',x=>{if(String(x).includes('workspace:')){clearTimeout(t);r();}});});
   browser=await chromium.launch({channel:'chrome',headless:true});const page=await browser.newPage({viewport:{width:1450,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));page.setDefaultTimeout(12000);
   const base='http://127.0.0.1:'+port;await page.goto(base);
-  const lockedDiscovery=await page.request.post(base+'/api/tools',{data:{tool:'communication_workspace',arguments:{discover:true}},headers:{'X-Loop-Anything':'workspace'}});assert.equal(lockedDiscovery.status(),403,'Discovery requires owner edit access');
-  await page.locator('#edit-access-button').click();await page.locator('#edit-password').fill('communication-test');await page.locator('#edit-unlock-form button[type="submit"]').click();await page.locator('#edit-unlock-dialog').waitFor({state:'hidden'});
+  const lockedDiscovery=await page.request.post(base+'/api/tools',{data:{tool:'communication_workspace',arguments:{discover:true}},headers:{'X-Loop-Anything':'workspace'}});assert.equal(lockedDiscovery.status(),200,'Discovery needs no workspace unlock');
   await page.locator('#communication-nav').click();try{await page.locator('#communication-page h1').waitFor();}catch(e){console.error(await page.evaluate(()=>({toast:document.querySelector('#toast').textContent,html:document.querySelector('#communication-page')?.outerHTML,page:page,route:activeRoute})),errors,logs);throw e;}
   assert.equal(await page.locator('#communication-page h1').textContent(),'Agent 通信');
   await page.locator('#communication-agent-add').click();await page.locator('#communication-agent-form [name=name]').fill('本机论文助手');

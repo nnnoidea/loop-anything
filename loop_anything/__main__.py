@@ -74,7 +74,7 @@ def main():
         cmd.add_argument('--bindings', help='Optional JSON file mapping node IDs to candidate implementation IDs')
     run.add_argument('--port', type=int, default=DEFAULT_PORT)
     for cmd in (start, run):
-        cmd.add_argument('--host', default='127.0.0.1', help='Bind address; use 0.0.0.0 for internal sharing with LOOP_ANYTHING_EDIT_PASSWORD set')
+        cmd.add_argument('--host', default='127.0.0.1', help='Bind address; use 0.0.0.0 in the trusted internal network')
         cmd.add_argument('--allow-sleep', action='store_true', help='Initial sleep preference; a saved webpage choice takes precedence')
         cmd.add_argument('--open', action='store_true', help='Open the workspace in the default browser')
     args = parser.parse_args(sys.argv[1:] or ['serve', '--open'])
@@ -123,8 +123,6 @@ def main():
             target.write(data)
         print(json.dumps({'file': str(Path(args.output).resolve())}))
         return
-    if args.command in ('serve', 'run') and args.host not in ('127.0.0.1', 'localhost') and not os.environ.get('LOOP_ANYTHING_EDIT_PASSWORD'):
-        parser.error('Internal sharing requires LOOP_ANYTHING_EDIT_PASSWORD')
     store = Store(args.db)
     if args.command == 'tool':
         from loop_anything.interfaces.platform_tools import PlatformTools

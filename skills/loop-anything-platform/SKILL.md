@@ -27,12 +27,12 @@ python3 scripts/call.py check
 python3 scripts/call.py read_capabilities --arguments '{"capability":"agent_communication"}'
 ```
 
-按任务替换 capability；通过 `list` 读取实际工具 schema，再用 `scripts/call.py TOOL --arguments @参数.json` 调用。连接地址在 `connection.json`，也可用 `--url` 覆盖。连接失败先诊断，不新建另一个平台或 Run。安装、更新、编辑口令与调用细节见[连接说明](references/connection.md)。以运行服务的能力和 schema 为准；检查每次返回的 `ok`、`accepted`。
+按任务替换 capability；通过 `list` 读取实际工具 schema，再用 `scripts/call.py TOOL --arguments @参数.json` 调用。连接地址在 `connection.json`，也可用 `--url` 覆盖。连接失败先诊断，不新建另一个平台或 Run。安装、更新、编辑口令与调用细节见[连接说明](references/connection.md)。日常运行和通信无需全局解锁；仅修改受保护 Loop 时提供该 Loop 口令，平台自动处理普通操作标识。以运行服务的能力和 schema 为准；检查每次返回的 `ok`、`accepted`。
 
 ## 使用原则
 
 - 先查平台已有能力，再决定业务脚本需要做什么；平台已提供调度、持久化、通信、等待恢复和结果查看。
-- 从 cc-connect 飞书聊天发起时，用 `scripts/call.py` 自动捕获原会话；确认与结果沿原聊天/话题返回。具名 Agent 的 Bot 映射及话题前提见 [cc-connect](references/cc-connect.md#自动跟随原聊天)。显式 `notification_route` 可覆盖。
+- 从 cc-connect 飞书聊天发起时，用 `scripts/call.py` 随请求传递原会话标识，由平台保存、适配器核实并投递；确认与结果沿原聊天/话题返回。具名 Agent 的 Bot 映射及话题前提见 [cc-connect](references/cc-connect.md#自动跟随原聊天)。显式 `notification_route` 可覆盖。
 - 查询外援默认只读状态与结果。只有排错才请求日志，并沿返回游标按需读取；不反复携带完整日志、通知历史或旧请求。
 - 在已有授权范围内执行；发现能力不代表用户授权新建任务、发送通知或启动任意远端工作。
 - 恢复工作使用记录的原 session 与当前操作凭据，不能猜测最近会话；具体方法由 `read_task` 返回的作者 Skill 提供。

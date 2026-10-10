@@ -10,7 +10,7 @@
 
 ## 自动跟随原聊天
 
-平台 0.5.7 起，飞书/Lark 入口 Agent 通过 `scripts/call.py request_assistance` 或 `start_run` 调用时，客户端读取 `CC_PROJECT`、`CC_SESSION_KEY`、`CC_DATA_DIR`，自动注册原会话。无需先给通信群组配置固定接收群。显式 `notification_route`、`conversation_id` 或发送命令优先；子请求也可选择 `notification_route=workspace`，此选择在来源平台和追问中保留；平台内节点和嵌套外援沿用已保存来源。
+平台 0.6.1 起，飞书/Lark 入口 Agent 通过 `scripts/call.py request_assistance` 或 `start_run` 调用时，客户端只读取 `CC_PROJECT`、`CC_SESSION_KEY` 并随业务请求提交 `chat_context`。客户端不查找 cc-connect、不读取渠道配置、不查询飞书、不构造发送命令，也不单独注册会话。平台持久保存来源并复用同一会话绑定，发送适配器负责渠道检查与投递。无需先给通信群组配置固定接收群。显式 `notification_route`、`conversation_id` 或发送命令优先；子请求也可选择 `notification_route=workspace`，此选择在来源平台和追问中保留；平台内节点和嵌套外援沿用已保存来源。
 
 - 私聊：入口 Bot 回复原私聊。
 - 群聊：请求由入口 Bot 提示；具名 Agent 的执行确认、结果优先由其对应 Bot 回复原群/原话题。没有映射、离线或发送前检查不通过时，由入口 Bot 代发。
@@ -24,13 +24,21 @@
 
 话题入口和目标 Bot 项目均需 `thread_isolation=true`、`reply_to_trigger=true`。话题群缺少 root ID、根消息不可读、配置禁止话题回复时，明确失败，不能发送到群主时间线。普通群里使用话题回复也应开启话题隔离，否则桥接环境没有足够信息恢复原话题。
 
-自动捕获/发送前检查读取本机 cc-connect TOML（默认 `~/.cc-connect/config.toml`；自定义路径用 `CC_CONFIG_PATH`，或发送命令追加 `--config /绝对路径/config.toml`）。使用现有 Python 3.11+ 的 `tomllib`，或已安装的 `tomli`；客户端会寻找可用解释器，不安装依赖。命名 Bot 出口同样自动选择本机可用的 TOML 解释器；捕获会话的 Run 通知和具名 Bot 发送均提供至少 60 秒，覆盖预检与发送。
+发送适配器在发送机检查本机 cc-connect TOML（默认 `~/.cc-connect/config.toml`；自定义路径在发送机配置，在平台该 Bot 的通知出口命令中追加 `--config /绝对路径/config.toml`）。使用现有 Python 3.11+ 的 `tomllib`，或已安装的 `tomli`；适配器会寻找可用解释器，不安装依赖。命名 Bot 出口同样自动选择本机可用的 TOML 解释器；捕获会话的 Run 通知和具名 Bot 发送均提供至少 60 秒，覆盖预检与发送。
 
 检查通过飞书只读接口确认聊天类型、Bot 在群、原根消息属于该群；因此应用需要获取群信息、判断是否在群、读取原消息的相应权限。群发言受限且无法证明目标 Bot 可发言时回退入口。密钥仅从发送机配置读取，不放入平台会话记录或 NAS。当前适配器面向 cc-connect 的自建飞书应用凭据；第三方商店应用需要对应授权适配。
 
-配置应与正在运行的 bridge 一致。配置文件在 bridge 启动后修改时先重启 bridge，再使用话题通知；平台不会修改或重启 bridge。预检无法提供发送时刻的原子权限保证，真正发送后的错误保留原出口待核查。自动捕获仅用于指向本机 localhost/127.0.0.1/::1 的平台 URL，以免将本机命令路径注册到另一台机器。自动捕获失败会阻止此次调用并说明原因；若只需平台内记录，显式选择 `notification_route=workspace`。
+配置应与正在运行的 bridge 一致。配置文件在 bridge 启动后修改时先重启 bridge，再使用话题通知；平台不会修改或重启 bridge。预检无法提供发送时刻的原子权限保证，真正发送后的错误保留原出口待核查。`chat_context` 不携带调用机器的命令、配置路径或凭据，可随请求提交到显式指定的平台；发送机须有对应入口 Bot 的适配配置。平台按 `channel=cc-connect` 和入口 project 的 identity 查找适配器。同一 Bot 的多个接收位置可共用相同 command/cwd，超时取较大值，接收位置使用原会话；多个不同适配器配置则记录 waiting_configuration，任务继续。修正配置后可显式重试未发送的通知；已选定发送配置不自动更换。没有对应配置时使用内置适配器和发送机默认配置。自定义 `--executable`、`--data-dir`、`--config` 在平台通知出口配置一次，客户端不再每次生成命令。缺命令、配置或预检失败仅影响通知回执，Run/外援仍可启动并完成；原群/话题不会静默改投，发送结果未知不换 Bot 重发。
 
-直连 HTTP/MCP 的客户端先用 `communication_config(operation=conversation, conversation=元数据, notification_command=本机argv)` 注册，取得 `conversation_id`，再传给 `request_assistance` / `start_run`；命令注册需要平台所有者权限，远端 worker 不能登记任意命令。`start_run` 的普通 Timeline 通知自动复用该注册命令，无需再传一次。
+直连 HTTP/MCP 的客户端可在 request_assistance/start_run 中直接传纯元数据，例如：
+
+```json
+{"chat_context":{"platform":"feishu","entry_project":"入口Bot的project","session_key":"feishu:oc_chat:root:om_root"}}
+```
+
+chat_type 可选（p2p/group），未提供时由发送适配器核实；平台保存适配器返回的已核实类型，未知类型的具名 Bot 候选必须通过预检，私聊只能由入口 Bot 发送。嵌套外援继承原来源；worker 不能用 chat_context 改写入口。
+
+兼容旧客户端：可先用 `communication_config(operation=conversation, conversation=元数据, notification_command=本机argv)` 注册，取得 `conversation_id`，再传给 `request_assistance` / `start_run`；命令在可信工作区注册，无需Loop编辑解锁；远端 worker 限定入口不能登记任意命令。`start_run` 的普通 Timeline 通知自动复用该注册命令，无需再传一次。
 
 源码核实与模拟多实例测试不等于真实 Bot 跨群/跨话题验收；真实 NAS 与飞书应用权限、实际送达仍在安装环境验收。
 
