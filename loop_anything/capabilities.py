@@ -2,12 +2,12 @@
 import hashlib
 from pathlib import Path
 
-VERSION = '0.5.2'
+VERSION = '0.5.3'
 API_REVISION = 2
 CAPABILITIES = {
     'assistance_session_resume': ('Waiting Agent tasks resume their exact native CLI session with assistance results and fresh credentials; remote work stays on the original instance/Agent and never silently starts a new conversation.', ['wait_assistance','register_agent_session','communication_execute','read_assistance'], 'references/communication.md'),
     'group_notifications': ('Communication group notification bindings, a designated delivery machine, existing cc-connect outlets, durable NAS forwarding and delivery receipts.', ['communication_status','communication_config','read_notification_channels','set_notification_channels','read_assistance','control_assistance'], 'references/communication.md'),
-    'agent_communication': ('Named local Agents and NAS groups; standalone assistance, remote Agent nodes, durable reports and optional assistance waits. Ordinary sessions are not automatically exposed.', ['communication_workspace','communication_status','communication_config','request_assistance','read_assistance','control_assistance','wait_assistance','communication_execute'], 'references/communication.md'),
+    'agent_communication': ('Owner-configured shared NAS spaces, explicit group discovery/joining and portable join instructions; named local Agents and NAS groups; standalone assistance, remote Agent nodes, durable reports and optional assistance waits. Ordinary sessions are not automatically exposed.', ['communication_workspace','communication_status','communication_config','request_assistance','read_assistance','control_assistance','wait_assistance','communication_execute'], 'references/communication.md'),
     'timeline_storage': ('Persistent Timeline, versioned records, execution history and atomic local writes.', ['read_timeline','read_record','read_run'], 'references/run.md'),
     'task_scheduler': ('Automatic input/dependency readiness, dispatch, parallelism and pause/scope checks.', ['next_tasks','change_settings'], 'references/run.md'),
     'execution_recovery': ('Persisted execution recovery and explicit handling of unknown process state.', ['read_task','command','change_task'], 'references/build-reference.md'),

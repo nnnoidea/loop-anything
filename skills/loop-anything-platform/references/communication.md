@@ -2,12 +2,26 @@
 
 本机具名外援和群组远端外援使用同一请求接口。通信不要求创建 Loop。先调用 `read_capabilities` 检查 `agent_communication`，再读取当前服务工具 schema；不要为业务 Loop 自建 NAS 队列、心跳、轮询或回报脚本。
 
+## 首次组网：共享空间 → 群组 → 具名 Agent
+
+安装后打开“Agent 通信”，按四步配置；工具操作需要平台所有者的编辑权限，普通任务令牌不能修改组网配置。
+
+1. **配置共享空间**：先在每台机器挂载同一个 NAS 目录，再调用 `communication_config`，参数如 `{"operation":"space","path":"/本机挂载目录/协作空间","name":"研究协作"}`。目录必须已存在；平台保存空间 ID 和本机路径，做本机读写检查，不代替 NAS 挂载或真实双机验收。首台写入空间标识，其他机器读取同一 ID；本机路径不同也可加入。
+2. **发现或创建群组**：`communication_workspace({"discover":true})` 返回 `shared_spaces`，每个空间包含群组名称、用途、`id`、`relative_path`、是否已加入和读取错误。发现仅扫描该空间的 `groups/` 直接子目录，不自动加入，不扫描整台机器。创建调用 `communication_config({"operation":"group","space_id":"返回的空间ID","create":true,"name":"论文协作","description":"用途说明"})`；创建者同时加入。其他机器加入时传 `operation: group`、`space_id`、发现结果中的 `relative_path` 和 `group_id`，不用复制另一台机器的绝对路径。
+3. **选择开放的 Agent**：每个具名 Agent 映射执行机器本地的 `implementation.command`、`cwd`、`resume_command`；用 `operation: agent` 保存，再在 `agent.groups` 中明确选择群组。不选择即不对群组开放，加入群组本身不会公开任何 Agent。可以只调用别人而不提供服务；配置不会启动模型。
+4. **查看与使用**：`communication_status` 查看已开放成员及状态，随后给 Loop / Run 绑定群组，或设置普通对话默认群组。目录通过平台心跳更新，名称可重复，调用使用 `instance_id` 与 `agent_id` 消歧。
+
+“复制加入说明”或 `communication_workspace({"group_id":"群组ID"})` 返回可转交的纯文本，包含空间/群组 ID、相对目录和配置步骤，不含 CLI 命令、凭据或本机绝对路径。NAS 地址和访问权限需由空间提供者另行提供。群组 ID 用于核对身份，不是邀请凭据；当前没有管理员审批入群机制。
+
+同一空间更换本机挂载路径时，再保存新目录即可按空间 ID 更新路径；由该空间发现并加入的群组会校验身份后更新本机路径，保留开放范围和历史。目录缺失、空间身份变化或某个群组损坏会显示错误，不自动在缺失挂载位置创建新空间。此前直接配置的独立群组目录继续使用“直接加入已有群组目录”，不自动迁移。
+
 ## 配置（平台所有者）
 
 在“Agent 通信”页面配置本机具名 Agent 的名称、能力、CLI argv、cwd、接单上限及开放范围。`communication_config` 提供相同操作：
 
 - `operation: agent`：`agent_id` 可省略生成；`agent` 包含 name、description、capabilities（字符串数组）、local、enabled、groups、capacity、implementation。implementation 使用现有 `kind: agent` 命令契约。
-- `operation: group`：path 是本机挂载目录；已有目录群组直接加入，首次创建需 `create: true`。各机器路径可以不同，但必须指向同一共享群组。
+- `operation: space`：path 是已挂载的共享空间目录；首次可给 name。保存空间映射，不加入或公开 Agent。
+- `operation: group`：可使用上面的 space_id 发现流程；兼容旧版直接 path。path 是本机挂载目录；已有目录群组直接加入，首次创建需 `create: true`。各机器路径可以不同，但必须指向同一共享群组。
 - `operation: leave`：group_id。停止该组接新任务；已有执行、通信回执和历史仍保留。
 - `operation: probe`：group_id。本机写入、读回并清理测试文件；不将此结果当作双机 NAS 验收。
 - `operation: bind_loop`：loop_key 或 run_id，以及 group_id。Loop 默认在新 Run 创建时固定；Run 覆盖只影响新请求。

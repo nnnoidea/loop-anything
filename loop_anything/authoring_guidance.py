@@ -11,7 +11,7 @@ MECHANISMS = {
     'execution_recovery': ('automatic', '重启后恢复已持久化执行状态，保留重试和监控身份，暴露无法确认停止的进程与操作权。', '让外部提交和观察可恢复，核对未知外部副作用，必要时确认旧进程已停止。', ['implementations.*.observe','implementations.*.lifecycle','command'], '未知进程状态不会被当作安全完成；外部幂等和身份解析由适配器负责。'),
     'implementation_selection': ('declared', '按 Task 指定、Run binding、Loop 默认的顺序选择候选；校验节点和候选参数，保留执行快照。', '提供真实候选、参数契约与入口；在安排任务时确定自动阶段所需参数。', ['implementations','settings.bindings','Task.implementation','Task.parameters'], '平台不自动补默认参数、不生成业务命令、不修复执行环境。'),
     'workspace_inspection': ('automatic', '提供 Loop 结构、任务依赖、执行状态、结果、输入来源、历史、参数编辑、预览及文件结果展示。', '提供有意义的节点名称、schema title/description、明确的文件输出和业务结果。', ['nodes.*.label','records.*.title','records.*.description','records.*.format'], '现有工作台是操作界面；没有独立的脱敏团队只读看板。文件展示不证明产物有效。'),
-    'agent_communication': ('configured/operator', '平台提供本机具名Agent目录、NAS群组收发、明确认领、进度结果、会话和等待恢复；通信不要求创建Loop。', '配置本机允许的CLI、群组目录和成员；Loop绑定群组，节点显式声明群组执行；外援由Agent按需请求。', ['communication_config','implementations.*.dispatch','request_assistance','wait_assistance'], '本地节点只由来源平台执行；群组不是业务Run副本；session不决定认领。失联不自动重跑。NAS实际环境需安装时检查，逐键远程PTY尚不承诺。'),
+    'agent_communication': ('configured/operator', '平台提供本机具名Agent目录、NAS群组收发、明确认领、进度结果、会话和等待恢复；通信不要求创建Loop。', '先配置已挂载的共享空间，用 communication_workspace(discover=true) 发现群组并显式加入；再配置具名 Agent 对应的本机 CLI/工作目录/恢复命令及开放群组，支持转交加入说明；Loop绑定群组，节点显式声明群组执行；外援由Agent按需请求。', ['communication_config','implementations.*.dispatch','request_assistance','wait_assistance'], '本地节点只由来源平台执行；群组不是业务Run副本；session不决定认领。失联不自动重跑。NAS实际环境需安装时检查，逐键远程PTY尚不承诺。'),
     'agent_resume': ('configured/operator', '每个任务直接查看对应尝试的结果；记录CLI原生ID，按用户请求恢复同一会话，签发新操作权并保持历史结果。', '提供CLI及恢复命令；让CLI输出或Agent报告真实ID。用户选择恢复目标和本次要求。', ['implementations.*.agent_cli','implementations.*.resume_command','register_agent_session','command argv {{session_id}}'], '不使用--last猜测，不扫描无关CLI历史。进程退出前同原生ID跨Run互斥；外部手动CLI进程由用户管理。旧任务没有原生ID时需明确补充；CLI本机记录丢失会恢复失败。恢复只适用于仍在运行或暂停的Run；原生CLI会话存储与模型访问由CLI负责。'),
     'agent_terminal': ('automatic/configured', '为后台 Agent 每次执行持久化实时输出；可选交互终端连接同一 CLI 进程，转发键盘和窗口尺寸，finish 后关闭会话。', '提供 CLI 命令、工作目录、登录与权限配置；交互命令用 {{prompt}} 或 {{prompt_file}} 接收任务上下文。', ['implementations.*.terminal','implementations.*.command','任务详情 → 执行终端'], '普通命令只读；交互终端当前支持 macOS/Linux。进程重启后只保留历史并按既有操作权恢复，不保证恢复 CLI 会话。终端访问需要编辑权限，结果仍须 report_task/finish；不要重复构建日志页。'),
     'host_service': ('configured', '在已安装主机持续运行服务，保存工作区；提供受支持系统的防休眠和 macOS 后台托管。', '安装并选择主机、数据库、端口与所需凭据；可按运行需求配置主机。', ['service CLI','platform keep-awake setting'], '远程计算平台、凭据、训练环境和跨机器部署由安装或业务适配负责。'),
@@ -57,6 +57,15 @@ def mechanism_details(name):
 
 
 PATTERNS = {
+    'shared_space_onboarding': {
+        'use_when':'各机器独立安装后，首次寻找共同群组并开放具名 Agent。',
+        'capabilities':['agent_communication'],
+        'configuration':['communication_config(operation=space,path=本机已挂载目录) 保存共享空间并检查本机读写；各机路径可以不同，核对返回 space_id。',
+                         'communication_workspace(discover=true) 返回各空间群组及读取错误；发现不自动加入。创建用 operation=group、space_id、create=true、name；加入用 space_id、relative_path、group_id。',
+                         '用 operation=agent 显式配置本机 CLI、cwd、resume_command，并选择 groups；加入群组不自动开放任何 Agent，也可只调用别人。',
+                         'communication_workspace(group_id=...) 返回不含本机命令、凭据和挂载路径的加入说明；communication_status 查看开放成员，再绑定 Loop 或普通对话。'],
+        'author_provides':'共享 NAS 的访问方式与本机挂载路径、群组用途、本机允许启动的 Agent 命令；NAS 权限负责准入。',
+        'verification':['communication_workspace','communication_status','communication_config']},
     'group_cc_connect_delivery': {
         'use_when':'A 发起、B 执行，但只有 C 安装了 cc-connect，需要向同一飞书群通知协作进展。',
         'capabilities':['group_notifications','agent_communication','notifications'],

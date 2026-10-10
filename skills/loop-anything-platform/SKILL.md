@@ -51,3 +51,5 @@ python3 scripts/call.py TOOL --arguments @参数.json
 继续工作先用 list_runs 找到已有运行，再只读 read_timeline；编辑时才 acquire_run。微信、飞书、终端共用同一平台和 Timeline，切换入口不会新建 Run 或改变通知目标。
 
 后台 Agent 实时输出与可选 CLI 交互终端由平台提供，配置和限制见 [执行终端](references/terminal.md)。无需自建日志页或交互服务。
+
+首次跨机器组网使用“Agent 通信”的共享空间与群组发现流程，见 [通信手册](references/communication.md#首次组网共享空间--群组--具名-agent)。平台已提供空间映射、群组发现、加入说明和成员目录，不要自建注册中心或扫描其他机器的 CLI/session。
