@@ -111,3 +111,9 @@ python3 /平台Skill/scripts/call.py read_task --arguments '{"run_id":"RUN_ID","
 使用通信群组时，每台机器保留独立平台与数据库。正式远程节点通过 Agent dispatch 接入；临时外援和普通对话通过统一 request_assistance 接口调用本机具名目录或明确群组。已有本机 Agent 不会因为加入群组而被远端启动。
 
 远端上下文提供本机 platform_client 和限定的 platform_url，原 read_task/report_task/finish 工具经此入口回到来源 Run；模型/CLI 配置不被平台替换。结果仍需结构化提交。消息尚未确认的 pending 回执不等于成功。包内资源分块传递并核验，业务产物使用可访问的共享引用。详细配置见[通信说明](../skills/loop-anything-platform/references/communication.md)。
+
+### Agent 的轻量入口与通信读取
+
+平台 Skill 按持续工作、独立外援、查询已有任务和组网场景选择入口，详细调用与连接说明按需加载。升级平台后需同步导出/更新 Agent 实际加载的 Skill，并保留连接地址。
+
+通信查询默认返回精简状态和结果；仅排错时设置 read_assistance 的 include_logs（4000 字符默认、16000 上限），沿 log_cursor/log_offset 继续；include_details 单独请求原始上下文和历史。追问保留原始业务上下文及最近结果，外援续跑不携带完整通信档案；原 session 身份与结果契约保持不变。

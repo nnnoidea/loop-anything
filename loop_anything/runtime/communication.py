@@ -18,6 +18,7 @@ from pathlib import Path
 
 from loop_anything.runtime.model import Invalid, Conflict, contract, check_schema
 from loop_anything.runtime.store import uid
+from loop_anything.runtime.communication_views import summary as request_summary, continuation_context, log_page
 
 END = {'completed', 'failed', 'cancelled', 'unavailable', 'not_selected'}
 PRIVATE = {'access_token', 'worker_token', 'source_token', 'launch', 'pending_result', 'sender', 'rpc'}
@@ -391,6 +392,7 @@ class Communication:
             if binding['enabled']:request['notification_binding']=copy.deepcopy(binding)
             if 'notification_level' not in a:request['notification_level']=binding['level']
         if continuation_from is not None:
+            request['previous_request_id']=continuation_from['id']
             request.update(notification_route=continuation_from['notification_route'],notification_level=continuation_from['notification_level'])
             request['scope_group_id']=continuation_from.get('scope_group_id',continuation_from.get('group_id'))
             request['source_reference']=copy.deepcopy(continuation_from['source'] or continuation_from.get('source_reference',{}))
@@ -414,7 +416,7 @@ class Communication:
                 old = self.get(ident, db)
                 if (old['source'], old['kind'], old['message']) != (source, request['kind'], request['message']):
                     raise Conflict('Request ID already exists with different work')
-                return {'request': clean(old), 'request_token': old['access_token']}
+                return {'request': request_summary(old), 'request_token': old['access_token']}
             self.event(request, 'requested')
             if location == 'local':
                 candidates = [x for x in config['agents'].values() if self.eligible(x, request, config)]
@@ -441,7 +443,7 @@ class Communication:
                     request.update(agent_label=local['name'],executor_name=config['name'])
                 else:self.emit(db, request, 'broadcast', 'offer', clean(request))
             self.save(db, request)
-        return {'request': clean(request), 'request_token': request['access_token']}
+        return {'request': request_summary(request), 'request_token': request['access_token']}
 
     def eligible(self, agent, request, config):
         return (agent.get('enabled', True) and
@@ -477,22 +479,28 @@ class Communication:
         db.execute('INSERT OR IGNORE INTO communication_outbox(id,document) VALUES (?,?)', (msg['id'], json.dumps(msg)))
         return msg['id']
 
-    def read(self, ident, after=0):
+    def read(self, ident, after=0, include_logs=False, include_details=False, offset=0, max_chars=4000):
         if type(after) is not int or after<0:raise Invalid('Log cursor must be nonnegative')
+        if type(offset) is not int or offset<0:raise Invalid('Log offset must be nonnegative')
+        if type(max_chars) is not int or not 1<=max_chars<=16000:raise Invalid('Log budget must be 1–16000 characters')
+        if type(include_logs) is not bool or type(include_details) is not bool:raise Invalid('Read options must be boolean')
         request = self.get(ident)
-        result = clean(request)
+        result = clean(request) if include_details else request_summary(request)
+        # Transport bookkeeping embeds raw output too; detailed reads fetch logs separately.
+        for field in ('logs','last_sent','terminal'):result.pop(field,None)
         result['can_control']=not request.get('mirror') and request['origin']==self.settings()['instance_id']
         result['can_retry_notification']=request.get('notification_origin',request['origin'])==self.settings()['instance_id']
         if result['can_control'] and request['kind']=='node_execution':
             run=self.store.get(request['source']['run_id'])
             attempt=next(e for e in run['executions'] if e['id']==request['source']['execution_id'])
             result['business_outputs']=copy.deepcopy(attempt.get('outputs',{}))
-        if self.engine and request.get('executor') == self.settings()['instance_id']:
-            result['terminal'] = self.engine.terminals.read('', ident, after=after)
-        else:
+        if include_logs:
             with self.store.connection() as db:
-                result['logs']=[dict(x) for x in db.execute('SELECT sequence,text FROM communication_logs WHERE request_id=? AND sequence>? ORDER BY sequence LIMIT 64',(ident,after))]
-            result['log_cursor']=result['logs'][-1]['sequence'] if result['logs'] else after
+                local=self.engine and request.get('executor') == self.settings()['instance_id']
+                terminal=db.execute('SELECT id FROM execution_sessions WHERE run_id=? AND execution_id=? ORDER BY rowid DESC LIMIT 1',('',ident)).fetchone() if local else None
+                result.update(log_page(db,'execution_output' if terminal else 'communication_logs',
+                                       'session_id' if terminal else 'request_id',terminal[0] if terminal else ident,
+                                       after,offset,max_chars))
         return {'request': result}
 
     def authorized(self, a, worker=False):
@@ -516,7 +524,7 @@ class Communication:
                     raise Invalid('No recorded native session; explicitly choose a new session')
                 session = {'mode': 'resume', 'request_id': ident, 'instance_id': old['executor'], 'native_id': native['id']}
             return self.request(dict(location=old['location'], group_id=old.get('group_id'), agent_id=old['agent_id'], instance_id=old.get('executor'),
-                                     message=a['message'], context={'previous_request': clean(old)}, session=session,
+                                     message=a['message'], context=continuation_context(old), session=session,
                                      notification_route=old['notification_route'],_parent_request=old.get('parent_request')),continuation_from=old)
         with self.transaction() as db:
             row = self.get(ident, db)
@@ -525,7 +533,7 @@ class Communication:
                 raise Conflict('Control belongs to the source platform')
             if action == 'cancel':
                 if row['state'] in END | {'cancelling'} or row.get('cancel_requested'):
-                    return {'request': clean(row)}
+                    return {'request': request_summary(row)}
                 row['cancel_requested']=True
                 if row.get('assignment_id'):
                     local=row.get('executor')==self.settings(db)['instance_id']
@@ -559,7 +567,7 @@ class Communication:
             else:
                 raise Invalid('Unknown request action')
             self.save(db, row)
-        return {'request': clean(row)}
+        return {'request': request_summary(row)}
 
     def input(self, row, text):
         if not self.engine:
@@ -681,7 +689,7 @@ class Communication:
             dispatch.update(agent_id=remote['agent_id'],instance_id=remote['instance_id'],group_id=remote['group_id'])
             dispatch.pop('capability',None)
             session=dict(mode='resume',request_id=remote['request_id'],instance_id=remote['instance_id'],native_id=continuation['native_session']['id'])
-        context['assistance_results']=copy.deepcopy(snapshot['tasks'][execution['task_id']].get('assistance_results',[]))
+        context['assistance_results']=[request_summary(r) for r in snapshot['tasks'][execution['task_id']].get('assistance_results',[])]
         if continuation:context['assistance_resume']={'previous_execution_id':continuation['execution_id'],'native_session':continuation['native_session']}
         result = self.request(dict(dispatch, request_id='node-' + execution['id'], message=node['instructions'],session=session,
                                    context=context, result_schema={'type':'object'},
@@ -784,7 +792,7 @@ class Communication:
                                 current.setdefault('task_dispositions',{})['task:'+task['id']]={'status':'waiting_user','reason':'无法恢复原 session：'+str(exc)}
                                 self.store.log(current,'assistance_resume_blocked',str(exc),e['id'])
                             continue
-                    t['assistance_results'] = [clean(r) for r in replies]
+                    t['assistance_results'] = [request_summary(r) for r in replies]
                     t.pop('assistance_wait',None)
                     current.get('task_dispositions',{}).pop('task:'+task['id'],None)
                     t['status']='ready'
@@ -1087,6 +1095,7 @@ class Communication:
         context.update({k:task_info.get(k) for k in ('skills','instructions')})
         prompt = ('You are executing a named Agent request. Use the supplied client to report progress and structured results; '
                   'When assistance_resume is present, continue the exact saved CLI session and use assistance_results. All earlier platform tokens are obsolete; use only this fresh context. '
+                  'read_assistance defaults to compact status and results; request include_logs only for diagnosis, then advance after/offset from log_cursor/log_offset within max_chars. Do not replay full logs or request histories. '
                   'your final chat text is not a result. The client accepts --context FILE, or --url URL --request ID --token TOKEN, '
                   'then TOOL --arguments JSON. For assistance call complete with {"result":...}. For node_execution call '
                   'the source read_task/report_task/finish tools using source_call {"tool":...,"arguments":...}; '
@@ -1176,7 +1185,7 @@ class Communication:
                 if not previous or previous['id'] in parents:break
                 parents.add(previous['id'])
             if child.get('parent_request') not in parents:raise Conflict('Read/control only your own child assistance')
-            if tool=='read_assistance':return self.read(child['id'],arguments.get('after',0))
+            if tool=='read_assistance':return self.read(child['id'],**{k:arguments[k] for k in ('after','include_logs','include_details','offset','max_chars') if k in arguments})
             return self.control(child['id'],arguments['action'],**{k:v for k,v in arguments.items() if k not in ('request_id','action','token')})
         if tool == 'source_call':
             return self.queue_rpc(ident, arguments)

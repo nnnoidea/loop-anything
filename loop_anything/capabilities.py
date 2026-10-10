@@ -2,9 +2,10 @@
 import hashlib
 from pathlib import Path
 
-VERSION = '0.5.4'
+VERSION = '0.5.5'
 API_REVISION = 2
 CAPABILITIES = {
+    'communication_context': ('Compact request status/results by default, opt-in bounded log pages and diagnostics, and follow-ups/assistance resumes without embedded request archives.', ['read_assistance','request_assistance','control_assistance'], 'references/communication.md'),
     'assistance_session_resume': ('Waiting Agent tasks resume their exact native CLI session with assistance results and fresh credentials; remote work stays on the original instance/Agent and never silently starts a new conversation.', ['wait_assistance','register_agent_session','communication_execute','read_assistance'], 'references/communication.md'),
     'group_notifications': ('Communication group notification bindings, a designated delivery machine, existing cc-connect outlets, durable NAS forwarding and delivery receipts.', ['communication_status','communication_config','read_notification_channels','set_notification_channels','read_assistance','control_assistance'], 'references/communication.md'),
     'agent_communication': ('Owner-configured shared NAS spaces, explicit group discovery/joining and portable join instructions; named local Agents and NAS groups; standalone assistance, remote Agent nodes, durable reports and optional assistance waits. Ordinary sessions are not automatically exposed.', ['communication_workspace','communication_status','communication_config','request_assistance','read_assistance','control_assistance','wait_assistance','communication_execute'], 'references/communication.md'),

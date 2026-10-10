@@ -4,6 +4,7 @@ import json
 
 # activation, platform responsibility, author responsibility, configuration, limits.
 MECHANISMS = {
+    'communication_context': ('automatic/operator', '通信查询默认摘要，日志按需分段读取；外援续跑及追问不嵌入完整通信历史，保留业务上下文、结果及原 session。', '优先读状态和结构化结果；排错时请求 include_logs 或 include_details，用返回的 log_cursor/log_offset 继续读取。', ['read_assistance.include_logs','read_assistance.include_details','read_assistance.max_chars','read_assistance.after/offset'], '单页日志默认 4000、最多 16000 字符；完整诊断按需返回，原始日志保留；结构化业务结果不自动删减。'),
     'assistance_session_resume': ('configured/operator', '等待外援前检查原生 session 和准确恢复命令；回复或期限到达后恢复同一会话与 Task，携带结果和新操作凭据。', '配置托管 CLI 与 resume_command，登记真实 session；wait_assistance 成功后再 finish，远端还需完成执行请求。', ['wait_assistance','register_agent_session','implementations.*.resume_command'], '原机器/Agent/session 固定；缺失或恢复失败时明确阻塞，不新建对话。当前恢复使用 macOS/Linux 终端，CLI 自身的会话文件须保留。'),
     'group_notifications': ('configured/operator', '群组默认通知出口和发送机器；来源通过 NAS 持久交付通知，指定机器复用 cc-connect 等已有适配器投递并写回真实回执。', '在发送机器配置本地命名出口，再用 group_notifications 绑定群组；提供 cc-connect project 和聊天 session。', ['communication_config(operation=group_notifications)','platform notification channels'], '命令和凭据不写入 NAS；旧请求固定原绑定。离线保留待回执，不自动切换机器；未知送达须核实后显式重试。'),
     'timeline_storage': ('automatic', '持久化 Run、Task、执行尝试、版本化结果、事件和历史；正式写入使用同一数据库事务。', '定义业务结果 schema，并通过正式报告提交事实。', ['nodes.*.outputs','records','report_task.envelope'], '外部系统的副作用不属于本地事务；平台不会代替外部服务提供 exactly-once 提交。'),

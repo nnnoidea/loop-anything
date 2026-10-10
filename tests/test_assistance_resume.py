@@ -48,6 +48,8 @@ else:
  state['calls'].append(mode);state['tokens'].append(c['token']);p.write_text(json.dumps(state))
  if mode=='fail':sys.exit(4)
  assert c['assistance_results'][0]['result']['paper']=='paper-found',c
+ assert not {'logs','last_sent','history','context'} & c['assistance_results'][0].keys(),c
+ assert 'HELPER_LOG' not in json.dumps(c['assistance_results']),c
  lookup={'request_id':c['assistance_results'][0]['id']}
  if not remote:lookup['token']=state['helper_token']
  assert call('read_assistance',lookup)['request']['result']['paper']=='paper-found'
@@ -60,6 +62,7 @@ if remote:call('communication_execute',{'request_id':c['request_id'],'token':c['
 HELPER_CLI=r'''import json,sys,time
 from urllib.request import Request,urlopen
 c=json.loads(sys.stdin.read());time.sleep(.2)
+print('HELPER_LOG'*3000,flush=True)
 r=Request(c['platform_url']+'/api/tools',data=json.dumps({'tool':'communication_execute','arguments':{'request_id':c['request_id'],'token':c['token'],'tool':'complete','arguments':{'result':{'paper':'paper-found'}}}}).encode(),headers={'Content-Type':'application/json','X-Loop-Anything':'workspace'})
 with urlopen(r,timeout=10) as f:assert json.load(f)['ok']
 '''

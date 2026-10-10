@@ -17,11 +17,14 @@ const {spawn,execFileSync}=require('node:child_process'),{chromium}=require('pla
   await page.locator('#communication-agent-form [name=description]').fill('只在本机调用，不需要群组');
   // Keep the Python split separator literal while preserving real newlines in the argv item.
   const command=[python,'-c',"import sys,json,urllib.request\nc=json.loads(sys.stdin.read().split(chr(10),1)[1])\nb={'tool':'communication_execute','arguments':{'request_id':c['request_id'],'token':c['token'],'tool':'complete','arguments':{'result':{'summary':'浏览器本机外援完成'}}}}\nr=urllib.request.Request(c['platform_url']+'/api/tools',data=json.dumps(b).encode(),headers={'Content-Type':'application/json','X-Loop-Anything':'workspace'})\nprint(urllib.request.urlopen(r).read().decode())"];
+  command[2]=command[2].replace('print(urllib.request.urlopen',"print('LOG-BEGIN'+'x'*20000+'LOG-END',flush=True)\nprint(urllib.request.urlopen");
   await page.locator('#communication-agent-form [name=command]').fill(JSON.stringify(command));await page.locator('#communication-agent-form button.primary').click();await page.locator('#communication-dialog').waitFor({state:'hidden'});
   await page.waitForFunction(()=>document.querySelector('#communication-request [name=agent]')?.options.length===1);
   await page.locator('#communication-request [name=message]').fill('测试没有 Loop、没有 NAS 的本机外援');await page.locator('#communication-request button.primary').click();
   await page.waitForFunction(()=>document.querySelector('#comm-detail-state')?.textContent.includes('已完成'));
   assert((await page.locator('#comm-detail-result').textContent()).includes('浏览器本机外援完成'));
+  await page.waitForFunction(()=>document.querySelector('#comm-detail-logs')?.textContent.includes('LOG-END'));
+  const output=await page.locator('#comm-detail-logs').textContent();assert.equal(output.split('LOG-BEGIN').length,2);assert(output.includes('x'.repeat(20000)+'LOG-END'));
   const runs=await (await page.request.get(base+'/api/runs')).json();assert.equal(runs.length,0);
   await page.screenshot({path:path.join(root,'request.png'),fullPage:true});await page.locator('#communication-dialog [data-comm-close]').click();
   const nas=path.join(root,'nas');fs.mkdirSync(nas);
