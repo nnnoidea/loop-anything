@@ -8,11 +8,37 @@
 
 实际渠道能力由桥接及其版本决定。飞书和微信的扫码、机器人配置、发送限制以桥接说明为准，不把接口适配完成当成真实渠道联调成功。
 
+## 自动跟随原聊天
+
+平台 0.5.7 起，飞书/Lark 入口 Agent 通过 `scripts/call.py request_assistance` 或 `start_run` 调用时，客户端读取 `CC_PROJECT`、`CC_SESSION_KEY`、`CC_DATA_DIR`，自动注册原会话。无需先给通信群组配置固定接收群。显式 `notification_route`、`conversation_id` 或发送命令优先；子请求也可选择 `notification_route=workspace`，此选择在来源平台和追问中保留；平台内节点和嵌套外援沿用已保存来源。
+
+- 私聊：入口 Bot 回复原私聊。
+- 群聊：请求由入口 Bot 提示；具名 Agent 的执行确认、结果优先由其对应 Bot 回复原群/原话题。没有映射、离线或发送前检查不通过时，由入口 Bot 代发。
+- `通信 → 具名 Agent → 编辑 → 对应 Bot 的通知出口`，或 `communication_config(operation=agent, agent={notification_route:出口ID})` 建立映射。不同 Agent 可映射不同 project。通知出口继续使用 cc-connect 适配器，identity 是该 Bot 的 project；接收位置在此路径由原会话覆盖，不取该出口预设的其他群。其他适配器必须明确支持 `conversation` 输入和 `not_sent` 回执后才能用于此映射。
+- 嵌套外援和追问继承原始会话，不将中转机器的聊天当新入口；无 Loop、本机具名 Agent 同样支持。
+- 每条通知保存来源、选中 Bot、回退原因和送达回执。仅适配器明确返回 `delivered=false, not_sent=true`（从未调用发送）才能回退；CLI 已启动后失败、超时或平台重启一律不自动改投。远端已入队但失联也不会贸然切换。
+
+### cc-connect 前提与核实范围
+
+核对过本机 `v1.5.1-beta.1 / 80713167` 的[飞书实现](https://github.com/chenhg5/cc-connect/blob/80713167/platform/feishu/feishu.go)和[relay 实现](https://github.com/chenhg5/cc-connect/blob/80713167/core/relay.go)：完整会话格式是 `feishu:chat_id:user_id`，话题是 `feishu:chat_id:root:message_id`（Lark 前缀为 `lark`）。`send --session` 重建回复位置；**不要用 `relay send` 发通知，它会再次启动目标 Agent**。
+
+话题入口和目标 Bot 项目均需 `thread_isolation=true`、`reply_to_trigger=true`。话题群缺少 root ID、根消息不可读、配置禁止话题回复时，明确失败，不能发送到群主时间线。普通群里使用话题回复也应开启话题隔离，否则桥接环境没有足够信息恢复原话题。
+
+自动捕获/发送前检查读取本机 cc-connect TOML（默认 `~/.cc-connect/config.toml`；自定义路径用 `CC_CONFIG_PATH`，或发送命令追加 `--config /绝对路径/config.toml`）。使用现有 Python 3.11+ 的 `tomllib`，或已安装的 `tomli`；客户端会寻找可用解释器，不安装依赖。命名 Bot 出口同样自动选择本机可用的 TOML 解释器；捕获会话的 Run 通知和具名 Bot 发送均提供至少 60 秒，覆盖预检与发送。
+
+检查通过飞书只读接口确认聊天类型、Bot 在群、原根消息属于该群；因此应用需要获取群信息、判断是否在群、读取原消息的相应权限。群发言受限且无法证明目标 Bot 可发言时回退入口。密钥仅从发送机配置读取，不放入平台会话记录或 NAS。当前适配器面向 cc-connect 的自建飞书应用凭据；第三方商店应用需要对应授权适配。
+
+配置应与正在运行的 bridge 一致。配置文件在 bridge 启动后修改时先重启 bridge，再使用话题通知；平台不会修改或重启 bridge。预检无法提供发送时刻的原子权限保证，真正发送后的错误保留原出口待核查。自动捕获仅用于指向本机 localhost/127.0.0.1/::1 的平台 URL，以免将本机命令路径注册到另一台机器。自动捕获失败会阻止此次调用并说明原因；若只需平台内记录，显式选择 `notification_route=workspace`。
+
+直连 HTTP/MCP 的客户端先用 `communication_config(operation=conversation, conversation=元数据, notification_command=本机argv)` 注册，取得 `conversation_id`，再传给 `request_assistance` / `start_run`；命令注册需要平台所有者权限，远端 worker 不能登记任意命令。`start_run` 的普通 Timeline 通知自动复用该注册命令，无需再传一次。
+
+源码核实与模拟多实例测试不等于真实 Bot 跨群/跨话题验收；真实 NAS 与飞书应用权限、实际送达仍在安装环境验收。
+
 ## 平台命名出口
 
 平台「通知出口」选择 cc-connect，发送身份填已配置的 project，接收位置填 session。也可用 read_notification_channels 返回的 cc_connect_command 配合 set_notification_channels 保存同样配置。适配器从通知的 outlet.identity / destination 读取实际目标；命令中的旧 project/session 仅在未提供这些字段时使用。命令可追加 --executable 和 --data-dir 指定既有安装位置。
 
-多机器协作时，可以只在一台发送机器配置本出口，再在该机器“Agent 通信 → 群组 → 通知绑定”选择它。其他机器通过 NAS 转交通知，发送机器运行此适配器并写回回执；无需每台都安装 cc-connect。绑定与重试流程见[群组通知](communication.md#群组绑定-cc-connect-与指定发送机器)。
+多机器协作时，各机器可在“Agent 通信 → 群组 → 通知绑定”独立绑定本机出口。每条通知优先动作发生方，其次本次请求发起方；两者都未绑定则只保留平台记录，不交给任意第三台机器。选定后经 NAS 持久交付并写回回执，未知送达不自动切换。详见[群组通知优先级](communication.md#群组按机器绑定出口与通知优先级)。
 
 消息中的询问可以在网页回复，或让当前聊天的 Agent 读取 Timeline 后调用 send_event；本适配器只负责发送，不另外接管聊天入口。
 

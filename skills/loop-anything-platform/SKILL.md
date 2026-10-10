@@ -32,6 +32,7 @@ python3 scripts/call.py read_capabilities --arguments '{"capability":"agent_comm
 ## 使用原则
 
 - 先查平台已有能力，再决定业务脚本需要做什么；平台已提供调度、持久化、通信、等待恢复和结果查看。
+- 从 cc-connect 飞书聊天发起时，用 `scripts/call.py` 自动捕获原会话；确认与结果沿原聊天/话题返回。具名 Agent 的 Bot 映射及话题前提见 [cc-connect](references/cc-connect.md#自动跟随原聊天)。显式 `notification_route` 可覆盖。
 - 查询外援默认只读状态与结果。只有排错才请求日志，并沿返回游标按需读取；不反复携带完整日志、通知历史或旧请求。
 - 在已有授权范围内执行；发现能力不代表用户授权新建任务、发送通知或启动任意远端工作。
 - 恢复工作使用记录的原 session 与当前操作凭据，不能猜测最近会话；具体方法由 `read_task` 返回的作者 Skill 提供。

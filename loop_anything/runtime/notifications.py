@@ -11,11 +11,19 @@ class NotificationConfigurationError(Invalid):
     """Delivery must wait for an explicitly configured outlet."""
 
 
+class NotificationNotSent(Invalid):
+    """The authorized adapter confirms that no send was attempted."""
+
+
 def deliver_command(adapter, payload, runner):
     """Shared receipt contract for Timeline and standalone request notifications."""
     if not adapter.get('command'):
         raise NotificationConfigurationError('No notification transport configured')
     result=runner(adapter['command'],json.dumps(payload),adapter.get('timeout',30),adapter.get('cwd'))
+    try:receipt=json.loads(result.stdout)
+    except (ValueError,TypeError):receipt=None
+    if isinstance(receipt,dict) and receipt.get('delivered') is False and receipt.get('not_sent') is True:
+        raise NotificationNotSent(str(receipt.get('error') or 'Unavailable before sending'))
     if result.returncode:
         try:detail=json.loads(result.stdout).get('error')
         except (ValueError,AttributeError):detail=None
@@ -68,6 +76,7 @@ def sender_for(store, run, route):
     if route in ('user','external'):
         command = run['settings'].get('notification_command')
         sender = {'command': command} if command else {}
+        if command and run.get('notification_conversation_id'):sender['timeout']=60
         if not sender.get('command') and requested=='default':
             # New installations work out of the box inside the platform.
             return 'workspace', {}

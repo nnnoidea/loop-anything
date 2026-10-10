@@ -919,6 +919,7 @@ class TimelineRuntime:
             if old and {k: v for k, v in old.items() if k != 'enabled'} != {k: v for k, v in hook.items() if k != 'enabled'}:
                 raise Invalid('Use a new hook id to change a hook definition')
         candidate['revision'] += 1
+        if 'notification_route' in change or 'notification_command' in change:run.pop('notification_conversation_id',None)
         run['settings'] = candidate
         if before.get('fallback_node') != candidate['fallback_node']:
             for task in run['tasks'].values():

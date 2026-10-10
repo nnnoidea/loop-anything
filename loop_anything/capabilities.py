@@ -2,12 +2,14 @@
 import hashlib
 from pathlib import Path
 
-VERSION = '0.5.5'
+VERSION = '0.5.7'
 API_REVISION = 2
 CAPABILITIES = {
+    'conversation_notifications': ('Capture the originating Feishu/Lark conversation through the Skill client. Private replies use the entry Bot; group execution prefers the named Agent Bot in the original thread, with entry fallback only after a confirmed pre-send rejection. Nested assistance inherits provenance; explicit routes override.', ['communication_config','request_assistance','start_run','read_assistance'], 'references/cc-connect.md'),
+    'group_notification_priority': ('Group notices prefer the action machine outlet, then this request direct origin; with neither, record a skipped external notice. Each notice fixes its sender; unknown delivery never switches machines.', ['communication_config','communication_status','read_assistance'], 'references/communication.md'),
     'communication_context': ('Compact request status/results by default, opt-in bounded log pages and diagnostics, and follow-ups/assistance resumes without embedded request archives.', ['read_assistance','request_assistance','control_assistance'], 'references/communication.md'),
     'assistance_session_resume': ('Waiting Agent tasks resume their exact native CLI session with assistance results and fresh credentials; remote work stays on the original instance/Agent and never silently starts a new conversation.', ['wait_assistance','register_agent_session','communication_execute','read_assistance'], 'references/communication.md'),
-    'group_notifications': ('Communication group notification bindings, a designated delivery machine, existing cc-connect outlets, durable NAS forwarding and delivery receipts.', ['communication_status','communication_config','read_notification_channels','set_notification_channels','read_assistance','control_assistance'], 'references/communication.md'),
+    'group_notifications': ('Communication group notification bindings, per-machine outlets and one selected delivery machine, existing cc-connect outlets, durable NAS forwarding and delivery receipts.', ['communication_status','communication_config','read_notification_channels','set_notification_channels','read_assistance','control_assistance'], 'references/communication.md'),
     'agent_communication': ('Owner-configured shared NAS spaces, explicit group discovery/joining and portable join instructions; named local Agents and NAS groups; standalone assistance, remote Agent nodes, durable reports and optional assistance waits. Ordinary sessions are not automatically exposed.', ['communication_workspace','communication_status','communication_config','request_assistance','read_assistance','control_assistance','wait_assistance','communication_execute'], 'references/communication.md'),
     'timeline_storage': ('Persistent Timeline, versioned records, execution history and atomic local writes.', ['read_timeline','read_record','read_run'], 'references/run.md'),
     'task_scheduler': ('Automatic input/dependency readiness, dispatch, parallelism and pause/scope checks.', ['next_tasks','change_settings'], 'references/run.md'),

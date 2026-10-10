@@ -50,13 +50,15 @@ const {spawn,execFileSync}=require('node:child_process'),{chromium}=require('pla
   await page.screenshot({path:path.join(root,'onboarding.png'),fullPage:true});
   const outletResponse=await page.request.post(base+'/api/tools',{data:{tool:'set_notification_channels',arguments:{revision:0,channels:{test:{label:'测试群出口',identity:'project-test',destination:'chat-test',command:[python,'-c','print(\'{"delivered":true}\')']}}}},headers:{'X-Loop-Anything':'workspace'}});
   assert((await outletResponse.json()).ok);
+  await page.locator('[data-comm-edit]').click();await page.locator('#communication-agent-form [name=notification_route]').selectOption('test');await page.locator('#communication-agent-form button.primary').click();await page.locator('#communication-dialog').waitFor({state:'hidden'});
+  assert.equal(Object.values((await workspaceRead()).configuration.agents)[0].notification_route,'test');
   await page.locator(`[data-comm-notifications="${gid}"]`).click();await page.locator('#comm-group-notifications [name=route]').selectOption('test');
   await page.locator('#comm-group-notifications [name=level]').selectOption('attention');
   await page.screenshot({path:path.join(root,'group-notification-binding.png'),fullPage:true});
   await page.locator('#comm-group-notifications button.primary').click();await page.locator('#communication-dialog').waitFor({state:'hidden'});
   await page.waitForFunction(()=>document.querySelector('#communication-page').textContent.includes('chat-test'));
   const workspace=await (await page.request.post(base+'/api/tools',{data:{tool:'communication_workspace',arguments:{}},headers:{'X-Loop-Anything':'workspace'}})).json();
-  const group=workspace.configuration.groups[gid];assert.equal(group.notification_binding.sender_instance,workspace.configuration.instance_id);assert.equal(group.notification_binding.level,'attention');
+  const group=workspace.configuration.groups[gid];assert.equal(group.notification_bindings[workspace.configuration.instance_id].sender_instance,workspace.configuration.instance_id);assert.equal(group.notification_bindings[workspace.configuration.instance_id].level,'attention');
   assert.equal(workspace.notification_deliveries.length,0,'Saving a binding must not send a message');
   await page.screenshot({path:path.join(root,'groups.png'),fullPage:true});
   await page.locator(`[data-comm-leave="${gid}"]`).click();await page.waitForFunction(id=>document.querySelector(`[data-comm-leave="${id}"]`)?.disabled,gid);

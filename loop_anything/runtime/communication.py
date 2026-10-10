@@ -24,7 +24,7 @@ END = {'completed', 'failed', 'cancelled', 'unavailable', 'not_selected'}
 PRIVATE = {'access_token', 'worker_token', 'source_token', 'launch', 'pending_result', 'sender', 'rpc'}
 CHILD_FIELDS=('id','origin','parent_request','kind','source','source_summary','state','message','result','error',
               'native_session','created_at','revision','agent_id','agent_label','executor','executor_name','location',
-              'group_id','progress','history','notification_origin','notification_route','notification_level','notification_binding')
+              'group_id','scope_group_id','progress','history','notification_origin','notification_route','notification_level','notification_binding','notification_policy','notification_level_explicit','notification_conversation')
 RPC_TOOLS = {'read_loop', 'read_task', 'read_timeline', 'read_record', 'read_plans', 'read_capabilities',
              'next_tasks', 'report_task', 'complete_task', 'finish', 'build_plan', 'change_task',
              'edit_tasks', 'notify', 'defer_task', 'change_settings', 'register_agent_session',
@@ -170,6 +170,9 @@ class Communication:
         request.setdefault('history', []).append({'at': time.time(), 'kind': kind, 'detail': clean(detail or {})})
 
     def config(self, operation, **a):
+        if operation=='conversation':
+            from loop_anything.runtime.communication_conversations import register
+            return register(self,a)
         if operation=='space':
             from loop_anything.runtime.communication_spaces import configure
             return configure(self,a)
@@ -204,7 +207,7 @@ class Communication:
                 ident = identifier(a.get('agent_id') or uid('agent'))
                 old = config['agents'].get(ident, {})
                 agent = dict(old, **a['agent'], id=ident)
-                if set(agent) - {'id', 'name', 'description', 'capabilities', 'local', 'enabled', 'groups', 'capacity', 'implementation'}:
+                if set(agent) - {'id', 'name', 'description', 'capabilities', 'local', 'enabled', 'groups', 'capacity', 'implementation', 'notification_route'}:
                     raise Invalid('Unsupported named Agent setting')
                 if not isinstance(agent.get('name'),str) or not agent['name'].strip() or not isinstance(agent.get('description', ''), str):
                     raise Invalid('Named Agent needs name and description text')
@@ -221,6 +224,7 @@ class Communication:
                 for key in ('enabled', 'local'):
                     if type(agent.get(key, True)) is not bool:
                         raise Invalid(key + ' must be boolean')
+                if not isinstance(agent.get('notification_route',''),str):raise Invalid('Agent notification_route must be a local outlet ID')
                 config['agents'][ident] = agent
                 if a['agent'].get('enabled') is True:config.get('agent_errors',{}).pop(ident,None)
             elif operation == 'group':
@@ -303,11 +307,13 @@ class Communication:
         return {'instance_id': config['instance_id'], 'agents': rows, 'loops':loops,
                 'groups': [{k: v for k, v in g.items() if k != 'path'} for g in config['groups'].values()]}
 
-    def public_agent(self, agent, config, location):
+    def public_agent(self, agent, config, location, group_id=None, freeze=False):
         running = sum(r.get('executor') == config['instance_id'] and r.get('agent_id') == agent['id'] and
                       not r.get('mirror') and r['state'] in ('assigned', 'starting', 'running', 'unknown', 'cancelling') for r in self.requests())
+        from loop_anything.runtime.communication_conversations import bot_binding
         return {k: agent.get(k, '' if k in ('name', 'description') else []) for k in ('name', 'description', 'capabilities')} | {
             'id': agent['id'], 'instance_id': config['instance_id'], 'machine': config['name'], 'location': location,
+            'notification_binding':bot_binding(self,agent,group_id,freeze),
             'online': True, 'enabled': agent.get('enabled', True), 'busy': running >= agent.get('capacity', 1),
             'error':'启动配置不可用，请由机器所有者修复并重新启用' if config.get('agent_errors',{}).get(agent['id']) else None}
 
@@ -386,29 +392,43 @@ class Communication:
                    'access_token': secrets.token_urlsafe(32), 'notification_origin':config['instance_id'],
                    'notification_route': a.get('notification_route', 'default' if source.get('run_id') else 'workspace'),
                    'notification_level': a.get('notification_level', 'key'), 'history': [], 'rpc': {}, 'logs': []}
-        binding=config['groups'].get(scope_group_id,{}).get('notification_binding')
-        if binding and 'notification_route' not in a:
-            request['notification_route']='workspace'
-            if binding['enabled']:request['notification_binding']=copy.deepcopy(binding)
-            if 'notification_level' not in a:request['notification_level']=binding['level']
+        request['notification_policy']='actor_first' if scope_group_id and 'notification_route' not in a else 'explicit'
+        request['notification_level_explicit']='notification_level' in a
+        if request['notification_policy']=='actor_first':request['notification_route']='workspace'
+        if 'notification_route' not in a:
+            conversation_id=a.get('conversation_id')
+            if source.get('run_id'):
+                conversation_id=run.get('notification_conversation_id')
+            if conversation_id:
+                from loop_anything.runtime.communication_conversations import resolve
+                request['notification_conversation']=resolve(self,conversation_id)
+                request['notification_policy']='conversation'
         if continuation_from is not None:
+            if continuation_from.get('notification_conversation'):request['notification_conversation']=copy.deepcopy(continuation_from['notification_conversation'])
             request['previous_request_id']=continuation_from['id']
             request.update(notification_route=continuation_from['notification_route'],notification_level=continuation_from['notification_level'])
             request['scope_group_id']=continuation_from.get('scope_group_id',continuation_from.get('group_id'))
             request['source_reference']=copy.deepcopy(continuation_from['source'] or continuation_from.get('source_reference',{}))
             request['source_summary']=copy.deepcopy(continuation_from.get('source_summary',{}))
             request.pop('notification_binding',None)
-            if continuation_from.get('notification_binding'):request['notification_binding']=copy.deepcopy(continuation_from['notification_binding'])
+            request['notification_policy']=continuation_from.get('notification_policy','actor_first' if continuation_from.get('notification_binding') else 'explicit')
+            request['notification_level_explicit']=continuation_from.get('notification_level_explicit',False)
         if a.get('_parent_request'):
             request['parent_request']=a['_parent_request']
             parent=self.get(a['_parent_request'])
             request['source_reference']=parent['source'] or parent.get('source_reference',{})
             request['source_summary']=parent.get('source_summary',{})
             request['notification_origin']=parent.get('notification_origin',parent['origin'])
-            request['notification_route']=parent['notification_route']
-            request['notification_level']=parent['notification_level']
-            request.pop('notification_binding',None)
-            if parent.get('notification_binding'):request['notification_binding']=copy.deepcopy(parent['notification_binding'])
+            if continuation_from is None:
+                request.pop('notification_conversation',None)
+                request.pop('notification_binding',None)
+                if 'notification_route' not in a:
+                    request['notification_route']=parent['notification_route']
+                    request['notification_policy']=parent.get('notification_policy','actor_first' if parent.get('notification_binding') else 'explicit')
+                    if parent.get('notification_conversation'):request['notification_conversation']=copy.deepcopy(parent['notification_conversation'])
+                if 'notification_level' not in a:
+                    request['notification_level']=parent['notification_level']
+                    request['notification_level_explicit']=parent.get('notification_level_explicit',False)
         if node:
             request['source_token'] = a['token']
         with self.transaction() as db:
@@ -814,7 +834,7 @@ class Communication:
                 refresh(self,gid,group)
                 me = root / 'members' / (config['instance_id'] + '.json')
                 if not me.exists() or now - me.stat().st_mtime >= config['heartbeat_seconds']:
-                    agents = [self.public_agent(a, config, 'group') for a in config['agents'].values()
+                    agents = [self.public_agent(a, config, 'group', gid, freeze=True) for a in config['agents'].values()
                               if group['enabled'] and gid in a.get('groups', [])]
                     loops=[]
                     if group['enabled']:
@@ -1175,7 +1195,7 @@ class Communication:
                     if args.get('group_id') not in (None,scope_group) or not scope_group:
                         raise Conflict('Choose the parent request group')
                     args['group_id']=scope_group
-                for key in ('source','token','context_id','request_id'):args.pop(key,None)
+                for key in ('source','token','context_id','request_id','conversation_id'):args.pop(key,None)
                 args['_parent_request']=ident
                 return self.request(args)
             child=self.get(arguments['request_id'])
@@ -1434,12 +1454,19 @@ class Communication:
                 authority=old  # A returned view must never replace a locally owned request or execution.
             else:
                 authority={k:copy.deepcopy(child[k]) for k in CHILD_FIELDS if k in child}
+                explicit=child.get('notification_policy')=='explicit'
                 authority.update(mirror=True,mirror_revision=child.get('revision',0),
                     notification_origin=parent.get('notification_origin',parent['origin']),
-                    notification_route=parent.get('notification_route','workspace'),
-                    notification_level=parent.get('notification_level','key'))
+                    notification_route=child.get('notification_route','workspace') if explicit else parent.get('notification_route','workspace'),
+                    notification_level=child.get('notification_level',parent.get('notification_level','key')))
                 authority.pop('notification_binding',None)
-                if parent.get('notification_binding'):authority['notification_binding']=copy.deepcopy(parent['notification_binding'])
+                authority.pop('notification_conversation',None)
+                if not explicit:
+                    if parent.get('notification_conversation'):authority['notification_conversation']=copy.deepcopy(parent['notification_conversation'])
+                    if parent.get('notification_policy') in ('actor_first','conversation'):
+                        authority['notification_policy']=parent['notification_policy']
+                        authority['scope_group_id']=child.get('scope_group_id') or parent.get('scope_group_id') or parent.get('group_id')
+                    elif parent.get('notification_binding'):authority['notification_binding']=copy.deepcopy(parent['notification_binding'])
                 if old.get('mirror_revision',-1)<child.get('revision',0):
                     authority.update({k:old[k] for k in ('notifications','notified_signature','retry_notification') if k in old})
                     self.save(db,authority)
@@ -1516,10 +1543,21 @@ class Communication:
         for row in self.requests():
             if row.get('notification_origin',row['origin']) != self.settings()['instance_id']:continue
             state=row['state'];retry=row.get('retry_notification')
-            signature=state+(':'+digest(row.get('progress',{})) if row.get('notification_level')=='detailed' else '')
-            if not retry and (signature==row.get('notified_signature') or state not in labels):continue
-            if not retry and row.get('notification_level')=='attention' and state not in ('failed','unknown','unavailable'):continue
-            if not retry and row.get('notification_level')=='attention' and row['kind']=='assistance' and state=='unavailable':continue
+            binding=copy.deepcopy(row.get('notification_binding'));routing=None;fallback=None
+            level=row.get('notification_level','key')
+            if row.get('notification_policy')=='actor_first':
+                from loop_anything.runtime.communication_notifications import select_binding
+                binding,routing=select_binding(self,row,state)
+                if binding and not row.get('notification_level_explicit'):level=binding['level']
+            if row.get('notification_policy')=='conversation':
+                from loop_anything.runtime.communication_conversations import select
+                binding,routing,fallback=select(self,row,state)
+            signature=state+':'+digest(row.get('progress',{}))
+            last=(row.get('notifications') or [{}])[-1]
+            last_signature=last.get('event_signature',str(last.get('state'))+':'+digest(last.get('payload',{}).get('progress') or {}))
+            if not retry and (state not in labels or last.get('state')==state and (level!='detailed' or signature==last_signature)):continue
+            if not retry and level=='attention' and state not in ('failed','unknown','unavailable'):continue
+            if not retry and level=='attention' and row['kind']=='assistance' and state=='unavailable':continue
             with self.transaction() as db:
                 current=self.get(row['id'],db)
                 if retry:
@@ -1537,18 +1575,25 @@ class Communication:
                         result_value=next((c['arguments'].get('envelope',{}).get('outputs') for c in reversed(list(row.get('rpc',{}).values()))
                             if c['state']=='completed' and c['tool'] in ('report_task','complete_task') and c.get('result',{}).get('accepted') and (c['tool']=='complete_task' or c['arguments'].get('event')=='completed')),result_value)
                     text=scope+'\n'+actor+' · '+machine+' · '+labels[state]+('（外援回复）' if row['kind']=='assistance' and state=='completed' else '')+'\n请求：'+row['id']
-                    if not current.get('notifications'):text+='\n'+row['message'][:300]
+                    if not any(n['status']!='skipped' for n in current.get('notifications',[])):text+='\n'+row['message'][:300]
                     if result_value:text+='\n结果摘要：'+json.dumps(result_value,ensure_ascii=False)[:600]
                     if row.get('error'):text+='\n'+str(row['error'])[:300]
-                    notice={'id':uid('notice'),'state':state,'status':'sending','attempt':1,'requested_route':row['notification_route'],
+                    notice={'id':uid('notice'),'state':state,'event_signature':signature,'status':'sending','attempt':1,'requested_route':row['notification_route'],
                             'payload':{'request_id':row['id'],'source':row['source'],'agent_id':row.get('agent_id'),'title':summary.get('run_title','独立协助'),'run_id':summary.get('run_id'),'task_label':summary.get('node_label',''),
                             'message':text,
                             'result':result_value,'progress':row.get('progress'),'error':row.get('error')}}
-                    if row.get('notification_binding'):notice['group_binding']=copy.deepcopy(row['notification_binding'])
+                    if row.get('notification_policy')=='conversation':
+                        notice['payload']['conversation']=copy.deepcopy(row['notification_conversation']['conversation'])
+                    if fallback:notice['fallback_binding']=fallback
+                    if binding:notice['group_binding']=binding
+                    if routing:
+                        notice['routing']=routing
+                        if not binding:notice.update(status='skipped',reason='No group outlet on the action machine or request origin')
                     current.setdefault('notifications',[]).append(notice)
                 if notice.get('group_binding'):notice['status']='awaiting_delivery'
                 current['notifications']=[notice if n['id']==notice['id'] else n for n in current['notifications']]
                 self.save(db,current)
+                if notice['status']=='skipped':continue
                 if notice.get('group_binding'):
                     from loop_anything.runtime.communication_notifications import queue
                     queue(self,db,current,notice)

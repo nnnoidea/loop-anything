@@ -8,13 +8,13 @@ def summary(request):
     fields=('id','kind','state','message','message_truncated','source','source_reference','source_summary','parent_request','origin','origin_name','revision',
             'agent_id','agent_label','executor','executor_name','location','group_id','scope_group_id',
             'created_at','updated_at','native_session','result','error','progress','session','notification_binding',
-            'notification_origin','notification_route','notification_level')
+            'notification_conversation','notification_origin','notification_route','notification_level','notification_policy')
     result=clean({k:request[k] for k in fields if k in request})
     if len(result.get('message',''))>500:
         result['message']=result['message'][:500];result['message_truncated']=True
     notices=request.get('notifications',[])
     result['notification_count']=request.get('notification_count',len(notices))
-    result['notifications']=[{k:n[k] for k in ('id','state','status','attempt','error') if k in n} for n in notices[-3:]]
+    result['notifications']=[{k:n[k] for k in ('id','state','status','attempt','error','routing','reason') if k in n} for n in notices[-3:]]
     return result
 
 
