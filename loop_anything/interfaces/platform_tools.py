@@ -7,6 +7,7 @@ from loop_anything.runtime.timeline_model import validate_v2
 from loop_anything.runtime.model import Invalid, Conflict, contract, check_schema
 from loop_anything.runtime.store import uid
 from loop_anything.runtime.implementations import options, default_id
+from loop_anything.interfaces.communication_tools import CHAT_CONTEXT
 
 WORKFLOW = ('Use the authoring_context in create_loop/copy_loop/read_loop to identify platform-owned work. read_capabilities explains automatic mechanisms, required declarations, author responsibilities, limits and composition examples, beyond the tool index. Use Loop drafts for authoring and Timeline tools for execution. Before writing adapters, inspect the available mechanisms: '
             'put_step/connect_steps declare dependencies, each expansion, collect aggregation and when conditions; ref/after_refs and task_ref/task_refs bind work by authored identities; '
@@ -18,7 +19,7 @@ WORKFLOW = ('Use the authoring_context in create_loop/copy_loop/read_loop to ide
             'read_loop selects a node, candidate, plan, step or package asset; read_plans/read_task return the current contracts. '
             'Use the parameter schemas in this running service catalog, not remembered fields from another version. '
             'Keep editing the existing draft; publish_loop makes a local usable version, export_loop shares it. '
-            'Find an existing Run with list_runs/read_timeline before editing; acquire_run only for writes and re-read revisions. '
+            'Find an existing Run with list_runs/read_timeline; ordinary workspace calls can omit token and the platform manages temporary scope. Managed executions must keep their supplied scoped identity; re-read revisions before writes. '
             'Start_run acquires entry ownership. Complete the entry task, inspect receipt.routes for generated work, and finish to release scope. Do not manually duplicate declared routes. '
             'Run completion requires change_settings completion_rule/termination_signal; a business status field does not end the Run. '
             'Platform Skills teach mechanisms; the author supplies business decisions.')
@@ -45,9 +46,34 @@ ROUTES = {'type': 'array', 'items': object_schema({'id': TEXT, 'event': TEXT, 'p
 
 class PlatformTools:
     instructions = WORKFLOW
-    def __init__(self, store):
+    def __init__(self, store, edit_access=None):
         self.store = store
+        self.edit_access = edit_access
         self.run_definitions = [d for d in RunTools(store, '', '').definitions() if d['name'] != 'read_capabilities']
+
+    def _export(self,document):
+        from loop_anything.packaging.packages import export_document
+        return export_document(self.store,document)
+
+    def _save_draft(self,*args,**kwargs):
+        return self.store.save_draft(*args,edit_access=self.edit_access,**kwargs)
+
+    def _run_call(self,run_id,token,name,arguments):
+        if token is not None or next(d for d in self.run_definitions if d['name']==name)['annotations']['readOnlyHint']:
+            return RunTools(self.store,run_id,token).call(name,arguments)
+        return self._with_operator(run_id,lambda handle:RunTools(self.store,run_id,handle).call(name,arguments))
+
+    def _with_operator(self,run_id,operation):
+        from loop_anything.interfaces.agent_tasks import release_in_run
+        run=self.store.get(run_id)
+        owner=next((o for o in run.get('agent_sessions',[]) if o['kind']=='interactive' and o.get('scope_task') is None),None)
+        created=owner is None
+        if created:owner=acquire(self.store,run_id)
+        try:return operation(owner['token'])
+        finally:
+            if created:
+                with self.store.edit(run_id) as current:
+                    if any(o['token']==owner['token'] for o in current['agent_sessions']):release_in_run(current,owner['token'])
 
     def definitions(self):
         draft = {'draft_id': TEXT, 'revision': {'type': 'integer'}}
@@ -61,6 +87,7 @@ class PlatformTools:
             ('list_loops', 'List installed Loops and editable drafts. Does not start anything.', {}, [], True),
             ('smoke_runtime', 'Explicit runtime check of an installed Loop. Starts configured Agent commands (may call models), including fallback candidates, with a minimal startup prompt and bounded timeout. Simulates external lifecycle reports in a temporary Timeline; never calls business submit/observe commands. Optional node_id/implementation_id select candidates. cases supplies node, implementation, state, event and optional attempt/inputs/parameters/settings/detail/expected for conditional transitions. Does not start or change a business Run.', {'key': TEXT, 'node_id': TEXT, 'implementation_id': TEXT, 'timeout': {'type': 'number'}, 'cases': {'type': 'array', 'items': OBJ}}, ['key'], False),
             ('read_loop', 'Read a draft_id or installed key. Optional node_id (+ implementation_id), plan (+ step), or asset_path selects one part and its explicit references. Without selectors returns the complete Loop. Targeted reads include draft revision; asset text is decoded UTF-8.', {'draft_id': TEXT, 'key': TEXT, 'node_id': TEXT, 'implementation_id': TEXT, 'plan': TEXT, 'step': TEXT, 'asset_path': TEXT}, [], True),
+            ('set_loop_password', 'Set, change or clear the optional editing password for one Loop identity. Select draft_id or key. Empty new_password clears protection. A protected Loop needs its current loop_password or browser unlock. Never protects Run operations or communication; verifier travels in exports, never plaintext.', {'draft_id':TEXT,'key':TEXT,'new_password':TEXT,'loop_password':TEXT}, ['new_password'], False),
             ('create_loop', 'Create an editable Loop with a no-input Agent entry. The user Agent initializes Timeline settings from the conversation; add business ports only when needed. Add the author business handbook, tasks and implementations before validation.', {'name': TEXT, 'id': TEXT}, ['name'], False),
             ('copy_loop', 'Copy an installed Loop and its resources to an editable draft. Existing Runs stay on their original version.', {'key': TEXT, 'name': TEXT, 'new_version': BOOL}, ['key'], False),
             ('set_loop', 'Update draft metadata and the AUTHOR business handbook; handbook_path binds a package-relative Skill entry (empty clears). Preserve unspecified fields. remove_records explicitly deletes unused record types; referenced types are protected. Defaults and limits are explicit author choices. requires lists required capability IDs; scenarios stores author acceptance cases for test_loop. Parameter contracts support the documented conditional/composition subset; read_capabilities returns supported keywords. fallback_node selects a declared non-entry Agent node with no input ports; empty disables automatic fallback.', dict(draft, name=TEXT, version=TEXT, description=TEXT, handbook=TEXT, handbook_path=TEXT, defaults=OBJ, limits=OBJ, guide=OBJ, checks=OBJ, requires=STRINGS, scenarios=SCENARIOS, fallback_node=TEXT, global_agent_node=TEXT, remove_records=STRINGS), ['draft_id', 'revision'], False),
@@ -74,20 +101,24 @@ class PlatformTools:
             ('validate_loop', 'Validate a draft and report missing implementations separately. Validation never runs handlers.', {'draft_id': TEXT}, ['draft_id'], True),
             ('publish_loop', 'Publish a validated draft through the existing Loop package installer. auto_version=true selects a new version if already installed, preserving the Loop ID and old Runs. Returns the current draft revision. Does not start a Run.', dict(draft, auto_version=BOOL), ['draft_id', 'revision'], False),
             ('export_loop', 'Export draft definition and attached resources as a Loop ZIP. The CLI client can save the returned base64 via --output.', {'draft_id': TEXT}, ['draft_id'], True),
-            ('start_run', 'After user discussion, create a Run and acquire operation rights atomically. Complete entry_task_id using read_task/report_task (event=completed, report_id and task_version required), arrange tasks and finish; no second initializer is launched. Optional bindings map node IDs to candidate IDs or null; missing implementations do not prevent Run creation. Optional fallback_node overrides the Loop choice; an empty string disables fallback. conversation_id reuses the locally registered entrance Bot sender for Run notices and nested assistance. notification_command is this Run notification sender argv; persist an explicit chat destination rather than relying on the server environment.', {'key': TEXT, 'title': TEXT, 'inputs': OBJ, 'authorization': TEXT, 'bindings': OBJ, 'fallback_node': TEXT, 'global_agent_node': TEXT, 'notification_command': STRINGS, 'notification_route': TEXT, 'conversation_id': TEXT}, ['key', 'title', 'authorization'], False),
+            ('start_run', 'After user discussion, create a Run and acquire operation rights atomically. Complete entry_task_id using read_task/report_task (event=completed, report_id and task_version required), arrange tasks and finish; no second initializer is launched. Optional bindings map node IDs to candidate IDs or null; missing implementations do not prevent Run creation. Optional fallback_node overrides the Loop choice; an empty string disables fallback. chat_context carries entrance metadata without probing notifications; the platform records it and selects a local sender. Existing conversation_id reuses a registered entrance. Run notices and nested assistance inherit it. notification_command is this Run notification sender argv; persist an explicit chat destination rather than relying on the server environment.', {'key': TEXT, 'title': TEXT, 'inputs': OBJ, 'authorization': TEXT, 'bindings': OBJ, 'fallback_node': TEXT, 'global_agent_node': TEXT, 'notification_command': STRINGS, 'notification_route': TEXT, 'conversation_id': TEXT, 'chat_context': CHAT_CONTEXT}, ['key', 'title', 'authorization'], False),
             ('retry_notification', 'Retry one failed notification at its saved destination, including after the Run ends. Check whether an unknown delivery already arrived before retrying. Supply token if holding global operation rights; otherwise no overlapping Agent may be active.', {'run_id': TEXT, 'notification_id': TEXT, 'token': TEXT}, ['run_id', 'notification_id'], False),
             ('list_runs', 'Find existing Runs by title, Run ID, Loop name or objective, optionally filtering by status. Results are newest first. Continuing from another channel does not create a new Run.', {'query': TEXT, 'status': TEXT}, [], True),
-            ('read_run', 'Read an existing Run and its current state/history without internal operation tokens. This does not acquire rights; use acquire_run for your own operation token.', {'run_id': TEXT}, ['run_id'], True),
+            ('read_run', 'Read an existing Run and its current state/history without internal operation tokens. This does not acquire rights. Ordinary workspace writes can omit token; acquire_run remains available for explicit long-lived scopes.', {'run_id': TEXT}, ['run_id'], True),
             ('acquire_run', 'Acquire global rights when task_id is omitted, or the named task subtree when supplied. Only overlapping scopes conflict; never automatically take over.', {'run_id': TEXT, 'task_id': TEXT}, ['run_id'], False),
         ]
         result = [{'name': n, 'description': d, 'inputSchema': object_schema(p, required), 'annotations': {'readOnlyHint': ro}}
                   for n, d, p, required, ro in defs]
         from loop_anything.interfaces.communication_tools import definitions as communication_definitions
+        for definition in result:
+            if definition['name'] in ('create_loop','copy_loop','set_loop','put_node','remove_node','set_implementation','put_asset','put_step','remove_step','connect_steps','publish_loop'):
+                definition['inputSchema']['properties']['loop_password']=TEXT
         result.extend(communication_definitions())
         for original in self.run_definitions:
             d = copy.deepcopy(original)
             d['inputSchema']['properties'].update(run_id=TEXT, token=TEXT)
-            d['inputSchema']['required'] += ['run_id'] + ([] if d['annotations']['readOnlyHint'] or d['name'] in ('notify','send_event') else ['token'])
+            d['inputSchema']['required'] += ['run_id']
+            d['description'] += ' Ordinary workspace calls may omit token; the platform manages temporary operation scope. Managed execution calls must use their supplied scoped identity.'
             result.append(d)
         return result
 
@@ -95,7 +126,7 @@ class PlatformTools:
         try:
             return dict(ok=True, **self.call(name, arguments))
         except (ValueError, KeyError, TypeError, StopIteration) as exc:
-            return {'ok': False, 'error': {'code': 'conflict' if isinstance(exc, Conflict) else 'invalid_request', 'message': str(exc), **({'path': exc.path} if isinstance(exc, Invalid) and exc.path else {})}}
+            return {'ok': False, 'error': {'code': 'edit_locked' if hasattr(exc,'loop_id') else 'conflict' if isinstance(exc, Conflict) else 'invalid_request', **({'loop_id':exc.loop_id} if hasattr(exc,'loop_id') else {}), 'message': str(exc), **({'path': exc.path} if isinstance(exc, Invalid) and exc.path else {})}}
 
     def _draft(self, id, revision=None):
         draft = next((d for d in self.store.drafts() if d['id'] == id), None)
@@ -268,11 +299,25 @@ class PlatformTools:
             raise Invalid('Unknown platform tool')
         contract(arguments, definitions[name]['inputSchema'], 'arguments')
         a = copy.deepcopy(arguments)
+        if 'loop_password' in a:
+            from loop_anything.interfaces.edit_access import password_matches,policy
+            password=a.pop('loop_password');outer=self.edit_access
+            self=PlatformTools(self.store,lambda ident:bool(outer and outer(ident)) or password_matches(policy(self.store,ident),password))
+        if name=='set_loop_password':
+            if bool(a.get('draft_id'))==bool(a.get('key')):raise Invalid('Select draft_id or key')
+            target=self._draft(a['draft_id']) if a.get('draft_id') else self._installed(a['key'])
+            from loop_anything.interfaces.edit_access import set_password
+            return set_password(self.store,target['loop_definition']['id'],a['new_password'],self.edit_access)
         from loop_anything.interfaces.communication_tools import definitions as communication_definitions, call as communication_call
         if name in {d['name'] for d in communication_definitions()}:
+            source=a.get('source') or {}
+            if name=='request_assistance' and source.get('run_id') and 'token' not in a:
+                return self._with_operator(source['run_id'],lambda handle:communication_call(self.store,name,dict(a,token=handle)))
+            if name=='wait_assistance' and 'token' not in a:
+                return self._with_operator(a['run_id'],lambda handle:communication_call(self.store,name,dict(a,token=handle)))
             return communication_call(self.store, name, a)
         if name in {d['name'] for d in self.run_definitions}:
-            return RunTools(self.store, a.pop('run_id'), a.pop('token', None)).call(name, a)
+            return self._run_call(a.pop('run_id'),a.pop('token',None),name,a)
         if name in ('preview_plan','test_loop','validate_parameters'):
             if bool(a.get('draft_id')) == bool(a.get('key')):raise Invalid('Supply exactly one draft_id or key')
             document = self._draft(a['draft_id']) if a.get('draft_id') else self._installed(a['key'])
@@ -308,12 +353,15 @@ class PlatformTools:
             return dict(self.store.notification_channels(),cc_connect_command=[sys.executable,str(platform_skill_directory()/'scripts/notify_cc_connect.py')])
         if name == 'set_notification_channels':return self.store.notification_channels(a['channels'],a['revision'])
         if name == 'list_loops':
-            return {'loops': [{'key': d['key'], 'loop_id': d['loop_definition']['id'], 'version': d['loop_definition']['version'], 'name': d['loop_definition'].get('name', d['loop_definition']['id'])} for d in self.store.catalog()],
-                    'drafts': [{'draft_id': d['id'], 'revision': d['revision'], 'loop_id': d['loop_definition']['id'], 'version': d['loop_definition']['version'], 'updated_at': d['updated_at'], 'name': d['loop_definition'].get('name')} for d in self.store.drafts()]}
+            from loop_anything.interfaces.edit_access import policy
+            return {'loops': [{'key': d['key'], 'loop_id': d['loop_definition']['id'], 'edit_protected':d['edit_protected'], 'version': d['loop_definition']['version'], 'name': d['loop_definition'].get('name', d['loop_definition']['id'])} for d in self.store.catalog()],
+                    'drafts': [{'draft_id': d['id'], 'revision': d['revision'], 'loop_id': d['loop_definition']['id'], 'edit_protected':bool(policy(self.store,d['loop_definition']['id'])), 'version': d['loop_definition']['version'], 'updated_at': d['updated_at'], 'name': d['loop_definition'].get('name')} for d in self.store.drafts()]}
         if name == 'read_loop':
             if bool(a.get('draft_id')) == bool(a.get('key')):
                 raise Invalid('Supply exactly one draft_id or key')
             loop = self._draft(a['draft_id']) if a.get('draft_id') else self._installed(a['key'])
+            from loop_anything.interfaces.edit_access import policy
+            loop['edit_protected']=bool(policy(self.store,loop['loop_definition']['id']))
             if a.get('key'):
                 from loop_anything.packaging.packages import resolve_skill
                 bp = loop['loop_definition']
@@ -326,7 +374,7 @@ class PlatformTools:
                 return dict(self._read_selection(loop, a), platform_guide={'tool':'read_capabilities','reference':'references/platform-capabilities.md'})
             return {'loop': loop, 'authoring_context': authoring_context()}
         if name == 'start_run':
-            run = self.store.create(a['key'], a['title'], a.get('inputs'), authorization=a['authorization'], acquire=True, bindings=a.get('bindings'), fallback_node=a.get('fallback_node'), global_agent_node=a.get('global_agent_node'), notification_command=a.get('notification_command'),notification_route=a.get('notification_route'),conversation_id=a.get('conversation_id'))
+            run = self.store.create(a['key'], a['title'], a.get('inputs'), authorization=a['authorization'], acquire=True, bindings=a.get('bindings'), fallback_node=a.get('fallback_node'), global_agent_node=a.get('global_agent_node'), notification_command=a.get('notification_command'),notification_route=a.get('notification_route'),conversation_id=a.get('conversation_id'),chat_context=a.get('chat_context'))
             return {'run_id': run['id'], 'token': run['agent_sessions'][0]['token'], 'entry_task_id': run['loop_definition']['seed']['id']}
         if name == 'retry_notification':
             if not self.store.get(a['run_id']).get('operator_protocol'):
@@ -358,7 +406,7 @@ class PlatformTools:
                       'initialize': {'label': '初始状态', 'instructions': '根据已确认的对话将目标、要求和约束写入 Timeline settings；按需安排后续任务，提交本节点后释放操作权。',
                           'initialize_timeline': True, 'inputs': {}, 'outputs': {}}},
                   'seed': {'id': 'initialize', 'node': 'initialize', 'inputs': {}, 'outputs': {}}, 'plans': {}}
-            return self._summary(self.store.save_draft(bp, {'initialize': {'kind': 'agent'}}), authoring=True)
+            return self._summary(self._save_draft(bp, {'initialize': {'kind': 'agent'}}), authoring=True)
         if name == 'copy_loop':
             source = self._installed(a['key'])
             assets, checks = [], {}
@@ -377,7 +425,7 @@ class PlatformTools:
                 bp['id'] = uid('loop')
                 bp['name'] = a.get('name', bp.get('name', bp['id']) + ' · 副本')
                 bp['version'] = '1'
-            return self._summary(self.store.save_draft(bp, source['implementations'], assets=assets, checks=checks), authoring=True)
+            return self._summary(self._save_draft(bp, source['implementations'], assets=assets, checks=checks), authoring=True)
         draft = self._draft(a['draft_id'], a.get('revision'))
         before = copy.deepcopy(draft)
         bp, implementations = draft['loop_definition'], draft['implementations']
@@ -386,17 +434,17 @@ class PlatformTools:
         if name in ('publish_loop', 'export_loop'):
             from loop_anything.packaging.packages import make_archive, decode_assets, install, read_archive
             if name == 'publish_loop' and a.get('auto_version'):
-                raw = make_archive({'loop_definition': bp, 'implementations': implementations, 'checks': draft.get('checks', {})}, decode_assets(draft.get('assets', [])))
+                raw = make_archive(self._export({'loop_definition': bp, 'implementations': implementations, 'checks': draft.get('checks', {})}), decode_assets(draft.get('assets', [])))
                 key = read_archive(raw)[2]
                 if any(item['key'] == key for item in self.store.catalog()):
-                    return dict(install(self.store, raw), draft_id=draft['id'], revision=draft['revision'])
+                    return dict(install(self.store, raw,edit_access=self.edit_access), draft_id=draft['id'], revision=draft['revision'])
             if name == 'publish_loop' and a.get('auto_version') and any(item['loop_definition']['id'] == bp['id'] and item['loop_definition']['version'] == bp['version'] for item in self.store.catalog()):
                 bp['version'] = self._next_version(bp)
-            raw = make_archive({'loop_definition': bp, 'implementations': implementations, 'checks': draft.get('checks', {})}, decode_assets(draft.get('assets', [])))
+            raw = make_archive(self._export({'loop_definition': bp, 'implementations': implementations, 'checks': draft.get('checks', {})}), decode_assets(draft.get('assets', [])))
             if name == 'publish_loop':
                 if a.get('auto_version'):
-                    draft = self.store.save_draft(bp, implementations, draft['id'], draft['revision'], draft.get('assets'), draft.get('checks'))
-                return dict(install(self.store, raw), draft_id=draft['id'], revision=draft['revision'])
+                    draft = self._save_draft(bp, implementations, draft['id'], draft['revision'], draft.get('assets'), draft.get('checks'))
+                return dict(install(self.store, raw,edit_access=self.edit_access), draft_id=draft['id'], revision=draft['revision'])
             return {'filename': bp['id'] + '.loop.zip', 'base64': base64.b64encode(raw).decode()}
         if name == 'set_loop':
             if 'remove_records' in a:
@@ -551,5 +599,5 @@ class PlatformTools:
             target['inputs'][a['input']] = {'from': a['from_step'], 'port': a['output']}
             if a.get('collect'):
                 target['inputs'][a['input']]['collect'] = True
-        saved = self.store.save_draft(bp, implementations, draft['id'], draft['revision'], draft.get('assets'), draft.get('checks'))
+        saved = self._save_draft(bp, implementations, draft['id'], draft['revision'], draft.get('assets'), draft.get('checks'))
         return dict(self._summary(saved), changes=self._changes(before, saved))

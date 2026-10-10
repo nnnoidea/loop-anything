@@ -69,7 +69,7 @@ macOS 后台服务使用系统 launchd，登录时自动启动；注销或关机
 
 安装目录也提供 `Stop Loop Anything.command`。移除服务仅取消后台托管，不删除平台、Loop 包或数据库。开发调试可以用 `python3 install.py --no-service` 仅安装程序，再手动 `serve`；不要让前台预览与后台服务争用同一工作区或端口。安装时发现占用会报错，不擅自结束其他进程。
 
-原生配置位于 `~/Library/LaunchAgents/com.loop-anything.platform.plist`，日志位于用户数据目录的 `logs/`；没有第二套平台服务配置。安装时保存 PATH 和显式设置的 `LOOP_ANYTHING_EDIT_PASSWORD`，不会复制全部终端环境。其他必需环境变量可按需配置到该 plist 的 EnvironmentVariables，停止后修改，再启动。
+原生配置位于 `~/Library/LaunchAgents/com.loop-anything.platform.plist`，日志位于用户数据目录的 `logs/`；没有第二套平台服务配置。安装时保存 PATH 和显式配置的服务环境，不会复制全部终端环境。其他必需环境变量可按需配置到该 plist 的 EnvironmentVariables，停止后修改，再启动。
 
 指定已有工作区时，将 `--db 绝对路径` 放在 `serve` 等子命令前；平台不自动搬迁或合并数据库。平台状态 `/api/platform` 返回实际路径。换端口时同步 Skill 的 `connection.json`，也可用 `--url` 覆盖。
 
@@ -81,20 +81,25 @@ macOS 后台服务使用系统 launchd，登录时自动启动；注销或关机
 
 ## 内部共享访问
 
-在团队的一台机器上运行平台，其他人通过浏览器访问 `http://服务器地址:8767`。所有 Loop、Run、结果和对话都可查看；修改前点击右上角「解锁编辑」，输入统一口令。一次解锁固定 **24 小时**，刷新、切页、新标签页均保留；可随时「锁定编辑」。到期只影响新的修改，已有 Engine 和 Agent 继续运行。
-
-启动前设置环境变量 `LOOP_ANYTHING_EDIT_PASSWORD`，再开放内部监听（前台方式）：
+在可信内网的一台机器上运行平台，其他人通过浏览器访问 `http://服务器地址:8767`。默认仅监听本机；开放内部监听时：
 
 ```sh
-export LOOP_ANYTHING_EDIT_PASSWORD='换成团队共享口令'
 python3 -m loop_anything --db /绝对路径/runs.sqlite3 serve --host 0.0.0.0
 ```
 
-macOS 后台方式：设置同一环境变量后，首次安装使用 `python3 install.py --host 0.0.0.0`；已有后台服务先 `service stop`，再 `service install --host 0.0.0.0`。未指定的工作区和端口沿用已有配置。
+macOS 首次后台安装使用 `python3 install.py --host 0.0.0.0`；已有后台服务先 `service stop`，再 `service install --host 0.0.0.0`。未指定的工作区和端口沿用已有配置。
 
-Windows PowerShell 使用 `$env:LOOP_ANYTHING_EDIT_PASSWORD = '团队共享口令'` 设置同一变量。默认仍仅监听本机；本机也可以设置该变量启用编辑保护。平台不保存明文口令到数据库，使用相同口令和工作区重启后，未到期的浏览器会话继续有效。更换口令并重启会使旧会话失效。
+### 每个 Loop 的可选编辑口令
 
-普通 Agent 和脚本默认在**启动该 Run 的平台所在机器**执行。显式配置为群组执行的 Agent 节点由通信群组成员承接；外部训练等继续使用 external 适配。远端 Agent 也可以使用下载的 Skill 或在调用脚本时用 `--url` 指定平台地址；需要新建或取得编辑权时，在该 Agent 环境中设置相同的口令变量，客户端会随写入请求携带凭据。已有任务操作令牌仍按原范围有效。浏览器 Cookie 不写进 Loop 包，业务内容不做分享筛选；仅不向未解锁页面返回可直接写入的操作令牌。此模式面向可信内网。
+在 Loop 详情或草稿编辑页点击「设置编辑口令」。口令保护这个 Loop 的定义、节点实现、手册和随包资源；同一个 Loop ID 的草稿和版本共享设置。修改口令或清除保护需要当前口令或已解锁的浏览器。一次解锁固定 **24 小时**，刷新、新标签页和同一工作区重启均保留；可随时锁定此 Loop。换口令立即使旧解锁失效。
+
+导出/导入同一个 Loop 携带盐和口令校验信息，不包含明文口令或浏览器 Cookie；复制为新 Loop ID 可独立设置保护。保护属于 Loop 内容，不是平台登录机制。查看、使用和分享未改动的 Loop 不需要解锁。
+
+查看状态、启动 Run、修改运行参数与任务安排、通信配置、请求外援、通知和终端操作均无需编辑口令。普通用户操作由平台处理内部执行标识；实际节点执行仍检查操作范围、任务版本、过期结果与真实 session。具名 Agent 的 CLI 命令、工作目录和外部服务凭据仍在各自执行机器配置。
+
+Agent 修改受保护的 Loop 时，可在工具参数中提供 `loop_password`，或为调用脚本设置 `LOOP_ANYTHING_LOOP_PASSWORD`。旧客户端的 `LOOP_ANYTHING_EDIT_PASSWORD` 作为这一单 Loop 口令的兼容别名；它不再启用服务器全局锁。不要将明文口令写入 Loop、Skill 或提示词。
+
+普通 Agent 和脚本默认在**启动该 Run 的平台所在机器**执行。显式配置为群组执行的 Agent 节点由通信群组成员承接；外部训练等继续使用 external 适配。远端 Agent 可使用下载的 Skill 或通过 `--url` 指定平台地址。该共享模式面向可信内部环境。
 
 ## 具名 Agent 与通信群组
 
@@ -157,4 +162,4 @@ Timeline 的 `settings` 分区保存目标与运行设置，`tasks` 保存任务
 
 ## 聊天入口通知（0.5.7）
 
-飞书入口经 Skill 客户端自动保存原会话；私聊由入口 Bot 回复，群聊的执行确认和结果优先使用具名 Agent 的 `notification_route` 所映射 Bot，并保持原话题。发送前明确不可用才回退入口，发送结果未知不自动换 Bot。嵌套外援继承原来源；显式通知出口覆盖，无聊天来源保留按机器优先级。配置入口在具名 Agent 编辑界面。完整前提、只读权限及 API 用法见平台 Skill 的 `references/cc-connect.md`；话题需开启 cc-connect 话题隔离并保留 root session key。
+飞书入口由 Skill 客户端只随请求传递会话标识；平台保存来源并调度通知，适配器核实和调用 cc-connect。通知接入失败只记录通知状态，不阻断业务请求。私聊由入口 Bot 回复，群聊的执行确认和结果优先使用具名 Agent 的 `notification_route` 所映射 Bot，并保持原话题。发送前明确不可用才回退入口，发送结果未知不自动换 Bot。嵌套外援继承原来源；显式通知出口覆盖，无聊天来源保留按机器优先级。配置入口在具名 Agent 编辑界面。完整前提、只读权限及 API 用法见平台 Skill 的 `references/cc-connect.md`；话题需开启 cc-connect 话题隔离并保留 root session key。

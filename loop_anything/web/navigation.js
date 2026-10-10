@@ -81,7 +81,7 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
       if(previous.type!=='run' && previous.type!=='home')runReturns.set(route.id,structuredClone(previous));
       selected=route.id;run=nextRun;settingsBase=null;filterNode=null;page='runs';renderRun();await enterRunChat(route.id);
     }else{page='runs';await refresh();if(run)await enterRunChat(run.id);}
-    showPage();updateNavigationUI();window.scrollTo(0,0);if(page==='runs')requestAnimationFrame(()=>sizeTaskGraph());return true;
+    showPage();updateNavigationUI();await readEditAccess();window.scrollTo(0,0);if(page==='runs')requestAnimationFrame(()=>sizeTaskGraph());return true;
   }catch(error){
     if(serial!==navigationSerial)return false;
     if(external){activeRoute={type:'catalog'};history.replaceState(null,'','#loop_definitions');page='catalog';showPage();updateNavigationUI();}

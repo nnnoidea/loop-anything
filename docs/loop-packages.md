@@ -1,13 +1,14 @@
 # 统一 Loop 包：分享、安装、smoke、运行
 
-当前支持 v2 Loop 定义，扩展名 `.loop.zip`。普通包使用 `loop-anything-package/1`；使用事件路由、稳定引用、扩展契约、流程验收或显式 requires 的包自动使用 `loop-anything-package/2`，并保存所需 capability IDs。旧服务明确拒绝新格式，接收服务也会检查实际能力。
+当前支持 v2 Loop 定义，扩展名 `.loop.zip`。普通包使用 `loop-anything-package/1`；使用事件路由、稳定引用、扩展契约、流程验收、Loop编辑保护或显式 requires 的包自动使用 `loop-anything-package/2`，并保存所需 capability IDs。旧服务明确拒绝新格式，接收服务也会检查实际能力。
 没有“Loop 定义包 / 半成品包 / 完整包”三种类型：同一格式允许零、部分、全部节点配置实现。
 结构有效即可分享、安装；缺失绑定只在实际需要执行相应任务时报告，不会自动补成 Agent 或模拟实现。
 历史 Run 保留；旧 v1 定义只读。原 CLI publish 复用相同包安装路径。
 
 ## 包内内容
 
-根文件 `loop.json` 保存 loop_definition、可选 implementations、可选 checks、能力要求 requires 以及格式与资源清单。
+根文件 `loop.json` 保存 loop_definition、可选 implementations、可选 checks、能力要求 requires、可选 edit_protection 以及格式与资源清单。
+edit_protection 只包含算法、成本、盐和校验值，不含明文。平台导出/安装/载入草稿均保留同一Loop的保护；修改需该Loop口令，不影响查看或运行。新Loop身份可独立设置。
 手册和节点 Skill 如果已内嵌 loop_definition，会原样保留。其它脚本/文档/资源必须明确选择附带。
 文件清单包含内容校验值和可执行标记；同一内容可重复安装，不覆盖已有文件。
 内容不同的部分/完整实现可以并存，即使其 loop_definition.id/version 相同。

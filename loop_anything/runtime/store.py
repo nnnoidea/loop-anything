@@ -23,6 +23,7 @@ class Store:
                 raise Invalid('This database uses the pre-0.2 names. Convert a backup before opening it with Loop Anything; the original has not been changed.')
             db.execute('PRAGMA journal_mode=WAL')
             db.executescript('''
+            CREATE TABLE IF NOT EXISTS loop_edit_protection (loop_id TEXT PRIMARY KEY, document TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS loop_definitions (key TEXT PRIMARY KEY, digest TEXT, document TEXT, implementations TEXT);
             CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, document TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS platform_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -67,15 +68,16 @@ class Store:
                 db.commit()
             return value
 
-    def publish(self, loop_definition, implementations):
-        from loop_anything.packaging.packages import make_archive, install
-        return install(self, make_archive({'loop_definition': loop_definition, 'implementations': implementations}))
+    def publish(self, loop_definition, implementations, edit_access=None):
+        from loop_anything.packaging.packages import make_archive,install,export_document
+        return install(self,make_archive(export_document(self,{'loop_definition':loop_definition,'implementations':implementations})),edit_access=edit_access)
 
     def catalog(self):
         with self.connection() as db:
+            from loop_anything.interfaces.edit_access import policy
             packages = {r[0] for r in db.execute('SELECT key FROM loop_packages')}
             return [dict(key=r['key'], loop_definition=current_definition(json.loads(r['document'])), implementations=json.loads(r['implementations']),
-                         **({'package_key': r['key']} if r['key'] in packages else {}))
+                         edit_protected=bool(policy(self,json.loads(r['document'])['id'],db)),**({'package_key': r['key']} if r['key'] in packages else {}))
                     for r in db.execute('SELECT * FROM loop_definitions ORDER BY key')]
 
     def drafts(self):
@@ -83,7 +85,7 @@ class Store:
             return [dict(id=r['id'], revision=r['revision'], updated_at=r['updated_at'], **json.loads(r['document']))
                     for r in db.execute('SELECT * FROM loop_drafts ORDER BY updated_at DESC')]
 
-    def save_draft(self, loop_definition, implementations, draft_id=None, revision=None, assets=None, checks=None):
+    def save_draft(self, loop_definition, implementations, draft_id=None, revision=None, assets=None, checks=None, edit_access=None, _db=None):
         # Drafts may be incomplete. Strict graph validation belongs to publish.
         if not isinstance(loop_definition, dict) or not isinstance(loop_definition.get('nodes', {}), dict) or not isinstance(implementations, dict):
             raise Invalid('Draft loop_definition, nodes and implementations must be objects')
@@ -98,12 +100,15 @@ class Store:
             extra['checks'] = checks
         loop_definition = copy.deepcopy(loop_definition)
         now = time.time()
-        with self.connection() as db:
-            db.execute('BEGIN IMMEDIATE')
+        with (self.connection() if _db is None else nullcontext(_db)) as db:
+            if _db is None:db.execute('BEGIN IMMEDIATE')
+            from loop_anything.interfaces.edit_access import require_edit
+            require_edit(self,loop_definition.get('id'),edit_access,db)
             if draft_id:
                 row = db.execute('SELECT revision, document FROM loop_drafts WHERE id=?', (draft_id,)).fetchone()
                 if row is None or revision != row['revision']:
                     raise Conflict('Draft changed or no longer exists; reopen the saved draft')
+                require_edit(self,json.loads(row['document'])['loop_definition'].get('id'),edit_access,db)
                 from loop_anything.runtime.timeline_model import prune_removed_records
                 prune_removed_records(json.loads(row['document'])['loop_definition'], loop_definition)
                 revision += 1
@@ -114,16 +119,20 @@ class Store:
                 draft_id, revision = uid('draft'), 1
                 document = json.dumps({'loop_definition': loop_definition, 'implementations': implementations, **extra}, allow_nan=False)
                 db.execute('INSERT INTO loop_drafts VALUES (?,?,?,?)', (draft_id, revision, now, document))
-            db.commit()
+            if _db is None:db.commit()
         return {'id': draft_id, 'revision': revision, 'updated_at': now, 'loop_definition': loop_definition, 'implementations': implementations, **extra}
 
-    def create(self, key, title, inputs=None, settings=None, authorization='', acquire=False, bindings=None, fallback_node=None, global_agent_node=None, notification_command=None, notification_route=None, _db=None, conversation_id=None):
+    def create(self, key, title, inputs=None, settings=None, authorization='', acquire=False, bindings=None, fallback_node=None, global_agent_node=None, notification_command=None, notification_route=None, _db=None, conversation_id=None, chat_context=None):
+        if chat_context and not conversation_id and notification_route is None and notification_command is None:
+            from loop_anything.runtime.communication import service
+            from loop_anything.runtime.communication_conversations import from_source
+            conversation_id=from_source(service(self),chat_context)['id']
         inherit_conversation=bool(conversation_id and notification_route is None and notification_command is None)
         if conversation_id:
             from loop_anything.runtime.communication import service
             from loop_anything.runtime.communication_conversations import resolve
             captured=resolve(service(self),conversation_id,include_sender=True)
-            if inherit_conversation:notification_command=captured['sender']['command']
+            if inherit_conversation:notification_command=captured['sender'].get('command',[])
         if type(acquire) is not bool:
             raise Invalid('acquire must be boolean')
         item = next((c for c in self.catalog() if c['key'] == key), None)

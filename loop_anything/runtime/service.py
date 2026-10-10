@@ -50,8 +50,6 @@ def definition(python, database=None, port=None, host=None, previous=None):
     env.update(PATH=os.environ.get('PATH', '/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin'), PYTHONUNBUFFERED='1')
     if 'LOOP_ANYTHING_EDIT_PASSWORD' in os.environ:
         env['LOOP_ANYTHING_EDIT_PASSWORD'] = os.environ['LOOP_ANYTHING_EDIT_PASSWORD']
-    if host not in ('127.0.0.1', 'localhost') and not env.get('LOOP_ANYTHING_EDIT_PASSWORD'):
-        raise Invalid('Internal sharing requires LOOP_ANYTHING_EDIT_PASSWORD')
     argv = [str(Path(python).absolute()), '-I', '-m', 'loop_anything', '--db', database,
             'serve', '--host', host, '--port', str(port)]
     if '--allow-sleep' in (previous or {}).get('ProgramArguments', []):

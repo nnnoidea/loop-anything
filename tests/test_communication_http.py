@@ -55,7 +55,7 @@ class CommunicationHTTPTests(unittest.TestCase):
                     with socket.socket() as s:s.bind(('127.0.0.1',0));port=s.getsockname()[1]
                     log=(root/(name+'.log')).open('w+');logs.append(log)
                     process=subprocess.Popen([sys.executable,'-m','loop_anything','--db',str(root/(name+'.db')),'serve','--port',str(port),'--allow-sleep'],
-                        stdout=log,stderr=log,env=dict(os.environ,LOOP_ANYTHING_EDIT_PASSWORD='test-only-password'))
+                        stdout=log,stderr=log,env=dict(os.environ,LOOP_ANYTHING_EDIT_PASSWORD='test-only-password',PATH=''))
                     servers.append(process);url='http://127.0.0.1:'+str(port);urls.append(url)
                     for _ in range(100):
                         try:
@@ -69,6 +69,13 @@ class CommunicationHTTPTests(unittest.TestCase):
                     with urlopen(request,timeout=10) as f:value=json.load(f)
                     self.assertTrue(value.get('ok'),value)
                     return value
+                # Trusted workspace operations are open independently of the legacy global env password.
+                discovered=tool(0,'communication_status',{},admin=False)
+                self.assertEqual(discovered['agents'],[])
+                self.assertNotIn('access_token',json.dumps(discovered))
+                self.assertTrue(tool(0,'communication_config',{'operation':'identity','name':'open workspace'},admin=False)['ok'])
+                independent=tool(0,'request_assistance',{'location':'local','agent_id':'not-configured','message':'independent help'},admin=False)
+                self.assertEqual(tool(0,'read_assistance',{'request_id':independent['request']['id']},admin=False)['request']['state'],'unavailable')
                 group=tool(0,'communication_config',{'operation':'group','path':str(root/'nas'),'create':True})
                 gid=next(iter(group['configuration']['groups']))
                 tool(1,'communication_config',{'operation':'group','path':str(root/'nas')})
@@ -81,11 +88,29 @@ class CommunicationHTTPTests(unittest.TestCase):
                 else:self.fail('Group notification binding was not discovered')
                 tool(1,'communication_config',{'operation':'agent','agent_id':'papers','agent':{'name':'论文助手','local':True,'groups':[gid],
                      'implementation':{'kind':'agent','command':[sys.executable,str(worker)],'agent_cli':'custom','resume_command':[sys.executable,str(worker),'{{prompt}}','{{session_id}}']}}})
+                public=tool(1,'communication_status',{'group_id':gid},admin=False)
+                local=next(a for a in public['agents'] if a['location']=='local' and a['id']=='papers')
+                self.assertNotIn('implementation',local)
+                self.assertNotIn('command',json.dumps(public))
+                self.assertNotIn(str(root/'nas'),json.dumps(public))
+                # The client carries origin metadata even without cc-connect on either side.
+                client=Path(__file__).resolve().parents[1]/'skills/loop-anything-platform/scripts/call.py'
+                response=subprocess.run([sys.executable,str(client),'request_assistance','--url',urls[1],'--arguments',json.dumps({'location':'local','agent_id':'papers','message':'works without notification bridge'})],
+                    env=dict(os.environ,PATH='',CC_PROJECT='entrance',CC_SESSION_KEY='feishu:oc_isolated:root:om_isolated'),capture_output=True,text=True,timeout=10)
+                self.assertEqual(response.returncode,0,response.stderr);accepted=json.loads(response.stdout);self.assertTrue(accepted['ok'])
+                rid=accepted['request']['id']
+                for _ in range(150):
+                    state=tool(1,'read_assistance',{'request_id':rid,'include_details':True},admin=False)['request']
+                    if state['state']=='completed' and any(n.get('status')=='fault' for n in state.get('notifications',[])):break
+                    time.sleep(.05)
+                else:self.fail(str(state))
+                self.assertEqual(state['result']['message'],'works without notification bridge')
+                self.assertEqual(state['notification_conversation']['conversation']['thread_root'],'om_isolated')
                 for origin,location in ((1,'local'),(0,'group')):
                     business_context={'task':'分析实验结果并查找相关论文'}
                     created=tool(origin,'request_assistance',{'location':location,'group_id':gid,'agent_id':'papers','message':'查论文','context':business_context})
                     args={'request_id':created['request']['id'],'token':created['request_token']}
-                    with self.assertRaises(HTTPError):tool(origin,'read_assistance',{'request_id':args['request_id'],'token':'wrong'},admin=False)
+                    self.assertTrue(tool(origin,'read_assistance',{'request_id':args['request_id']},admin=False)['ok'])
                     for _ in range(100):
                         result=tool(origin,'read_assistance',args,admin=False)['request']
                         if result['state'] in ('completed','failed'):break
@@ -111,7 +136,7 @@ class CommunicationHTTPTests(unittest.TestCase):
                         self.assertEqual(continued['native_session']['id'],result['native_session']['id'])
                         self.assertEqual(continued['result']['message'],'继续解释')
                 for i in (0,1):self.assertEqual(tool(i,'list_runs',{})['runs'],[])
-                with self.assertRaises(HTTPError):tool(0,'communication_workspace',{},admin=False)
+                self.assertTrue(tool(0,'communication_workspace',{},admin=False)['ok'])
                 import test_timeline_runtime as fixture
                 from loop_anything.runtime.store import Store
                 definition=fixture.RuntimeTests();definition.setUp()

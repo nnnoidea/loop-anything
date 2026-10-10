@@ -380,7 +380,7 @@ class PlatformToolTests(unittest.TestCase):
             self.assertNotIn(terminal['token'],json.dumps(raw))
         self.assertEqual(before,self.store.get(rid))
         with self.assertRaises(Conflict): self.tools.call('acquire_run',{'run_id':rid})
-        self.assertFalse(self.tools.respond('change_settings',{'run_id':rid,'revision':1,'change':{'objective':'unauthorized'}})['ok'])
+        self.assertTrue(self.tools.respond('change_settings',{'run_id':rid,'revision':1,'change':{'objective':'User operation without credential gate'}})['ok'])
         write(terminal,'complete_task',task_id=terminal['entry_task_id'],task_version=task['task_version'],
               envelope={'settings':{'objective':'Original objective'},'outputs':{'result':'Evidence from terminal'}})
         batch = write(terminal,'build_plan',name='round',key='one',values={})['tasks']

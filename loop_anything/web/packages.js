@@ -19,10 +19,10 @@ function showPackage(authoring){
   $('package-author').hidden=!authoring;$('package-result').textContent='';
   if(authoring){$('package-checks').value=pretty(editor.checks || {});renderPackageAssets();}
   uploadedPackage=null;$('package-upload').value='';$('package-edit').disabled=$('package-install').disabled=true;
-  $('package-summary').textContent='先选择包查看内容；不会自动安装或启动。';packageDialog.showModal();
+  $('package-summary').textContent='先选择包查看内容；不会自动安装或启动。';packageDialog.showModal();applyEditorLock();
 }
 function renderPackageAssets(){
-  $('package-asset-list').innerHTML=(editor.assets || []).map((a,i)=>`<p>${esc(a.path)} <button type="button" data-remove-asset="${i}">移除</button></p>`).join('') || '<p class="muted small">未附带资源文件。手册和 Skill 若已内嵌Loop 定义，会随Loop 定义导出。</p>';
+  $('package-asset-list').innerHTML=(editor.assets || []).map((a,i)=>`<p>${esc(a.path)} <button type="button" data-remove-asset="${i}">移除</button></p>`).join('') || '<p class="muted small">未附带资源文件。手册和 Skill 若已内嵌Loop 定义，会随Loop 定义导出。</p>';applyEditorLock();
 }
 async function encodeFile(file){
   if(file.size>20*1024*1024)throw new Error('单个文件超过 20 MiB');
@@ -60,13 +60,14 @@ document.addEventListener('click',event=>safely(async()=>{
     case 'loop-package':button.closest('details').open=false;showPackage(true);break;
     case 'import-loop-package':showPackage(false);break;
     case 'package-export':{
+      if(editorLocked()){const result=await platformCall('export_loop',{draft_id:editor.id});downloadPackage(result.base64,editor.loop_definition.id);$('package-result').textContent='已导出原草稿，编辑保护随包保留。';break;}
       editor.checks=JSON.parse($('package-checks').value || '{}');dirty();
       const result=await api('packages/export',{document:{loop_definition:editor.loop_definition,implementations:editor.implementations,checks:editor.checks},assets:editor.assets || []});
       downloadPackage(result.base64,editor.loop_definition.id);$('package-result').textContent='已导出。运行前请在目标环境安装并执行 smoke；本机路径不会自动改写。';break;}
     case 'package-edit':{
       if(!uploadedPackage)return;if(editor?.dirty && !confirm('当前草稿未保存，是否载入包？'))return;
-      rememberEditor();editor={loop_definition:structuredClone(uploadedPackage.document.loop_definition),implementations:structuredClone(uploadedPackage.document.implementations),
-              checks:structuredClone(uploadedPackage.document.checks || {}),assets:structuredClone(uploadedPackage.assets),dirty:true};
+      const imported=await api('packages/draft',{base64:uploadedPackage.encoded});
+      rememberEditor();editor={...imported,dirty:false};
       packageDialog.close();openEditor();break;}
     case 'package-install':{
       if(!uploadedPackage)return;const installed=await api('packages/install',{base64:uploadedPackage.encoded});
@@ -91,5 +92,5 @@ document.addEventListener('click',event=>safely(async()=>{
     catch(error){schemeFileDialog.querySelector('.scheme-file-error').textContent=error.message;}
     finally{submit.disabled=false;}
   };
-  schemeFileDialog.showModal();
+  schemeFileDialog.showModal();applyEditorLock();
 }));

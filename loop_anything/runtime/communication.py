@@ -397,6 +397,9 @@ class Communication:
         if request['notification_policy']=='actor_first':request['notification_route']='workspace'
         if 'notification_route' not in a:
             conversation_id=a.get('conversation_id')
+            if not conversation_id and a.get('chat_context') and not source.get('run_id'):
+                from loop_anything.runtime.communication_conversations import from_source
+                conversation_id=from_source(self,a['chat_context'])['id']
             if source.get('run_id'):
                 conversation_id=run.get('notification_conversation_id')
             if conversation_id:
@@ -1195,7 +1198,7 @@ class Communication:
                     if args.get('group_id') not in (None,scope_group) or not scope_group:
                         raise Conflict('Choose the parent request group')
                     args['group_id']=scope_group
-                for key in ('source','token','context_id','request_id','conversation_id'):args.pop(key,None)
+                for key in ('source','token','context_id','request_id','conversation_id','chat_context'):args.pop(key,None)
                 args['_parent_request']=ident
                 return self.request(args)
             child=self.get(arguments['request_id'])
@@ -1583,7 +1586,7 @@ class Communication:
                             'message':text,
                             'result':result_value,'progress':row.get('progress'),'error':row.get('error')}}
                     if row.get('notification_policy')=='conversation':
-                        notice['payload']['conversation']=copy.deepcopy(row['notification_conversation']['conversation'])
+                        notice['payload']['conversation']=copy.deepcopy(binding['conversation'] if binding and 'conversation' in binding else row['notification_conversation']['conversation'])
                     if fallback:notice['fallback_binding']=fallback
                     if binding:notice['group_binding']=binding
                     if routing:

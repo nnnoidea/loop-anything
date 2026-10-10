@@ -39,17 +39,16 @@ print('RESTORED browser-native-123',flush=True);input();t.call('finish',{});time
 impl['init']={'kind':'agent','terminal':True,'agent_cli':'custom','resume_command':[sys.executable,'-u','-c',resume_code,'{{session_id}}','{{prompt_file}}',sys.argv[1]],'command':[sys.executable,'-u','-c',code,sys.argv[1],'{{prompt_file}}'],'cwd':str(Path.cwd())}
 key=s.publish(bp,impl)['key'];run=s.create(key,'终端会话验收');draft=s.save_draft(bp,impl)
 print(json.dumps({'run':run['id'],'draft':draft['id']}))`;
- const info=JSON.parse(execFileSync('python3',['-c',seed,db],{encoding:'utf8'}));
+ const info=JSON.parse(execFileSync(process.env.PYTHON || 'python3',['-c',seed,db],{encoding:'utf8'}));
  const probe=net.createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r));
- const server=spawn('python3',['-m','loop_anything','--db',db,'serve','--port',String(port)],{env:{...process.env,PYTHONUNBUFFERED:'1',PYTHONPYCACHEPREFIX:'/tmp/loop-pycache',LOOP_ANYTHING_EDIT_PASSWORD:'terminal-test'},stdio:['ignore','pipe','pipe']});let browser,logs='';server.stderr.on('data',x=>logs+=x);
+ const server=spawn(process.env.PYTHON || 'python3',['-m','loop_anything','--db',db,'serve','--port',String(port)],{env:{...process.env,PYTHONUNBUFFERED:'1',PYTHONPYCACHEPREFIX:'/tmp/loop-pycache',LOOP_ANYTHING_EDIT_PASSWORD:'terminal-test'},stdio:['ignore','pipe','pipe']});let browser,logs='';server.stderr.on('data',x=>logs+=x);
  try{
   await new Promise((r,j)=>{const t=setTimeout(()=>j(Error(logs)),10000);server.stdout.on('data',x=>{if(String(x).includes('workspace:')){clearTimeout(t);r();}});});
   browser=await chromium.launch({channel:'chrome',headless:true});const page=await browser.newPage({viewport:{width:1500,height:1050}}),errors=[];page.on('pageerror',e=>errors.push(e.message));page.setDefaultTimeout(12000);const base='http://127.0.0.1:'+port;
   await page.goto(base+'/#run/'+info.run);await page.locator('.process-task[data-task-focus="init"]').click();await page.locator('[data-open-terminal]').waitFor();
   const current=await (await page.request.get(base+'/api/runs/'+info.run)).json(),eid=current.executions[0].id,url=base+`/api/runs/${info.run}/executions/${eid}/terminal`;
-  assert.equal((await page.request.get(url)).status(),403);
-  assert.equal((await page.request.post(url,{headers:{'X-Loop-Anything':'workspace'},data:{session_id:'missing',data:'no'}})).status(),403);
-  await page.locator('#edit-access-button').click();await page.locator('#edit-password').fill('terminal-test');await page.locator('#edit-unlock-form button[type="submit"]').click();await page.locator('#edit-unlock-dialog').waitFor({state:'hidden'});
+  assert.equal((await page.request.get(url)).status(),200);
+  assert.equal((await page.request.post(url,{headers:{'X-Loop-Anything':'workspace'},data:{session_id:'missing',data:'no'}})).status(),409);
   await page.locator('[data-open-terminal]').click();await page.waitForFunction(()=>terminalView?.term.buffer.active.getLine(0)?.translateToString().includes('READY'));
   assert.equal(await page.evaluate(()=>window.terminalXSS),undefined);
   const first=await (await page.request.get(url)).json();assert(first.session.can_input);assert(!JSON.stringify(first.output).includes(current.executions[0].token));
@@ -83,14 +82,14 @@ print(json.dumps({'run':run['id'],'draft':draft['id']}))`;
 with sqlite3.connect(sys.argv[1]) as db:
  doc={'id':'audit-interrupted','run_id':sys.argv[2],'execution_id':sys.argv[3],'interactive':True,'state':'interrupted','created_at':time.time(),'cols':100,'rows':30,'error':'Interrupted fixture','native_session':{'provider':'custom','id':'browser-native-123'}}
  db.execute('INSERT INTO execution_sessions VALUES (?,?,?,?)',(doc['id'],doc['run_id'],doc['execution_id'],json.dumps(doc)))`;
-  execFileSync('python3',['-c',interrupted,db,info.run,eid]);
+  execFileSync(process.env.PYTHON || 'python3',['-c',interrupted,db,info.run,eid]);
   await page.locator('.process-task [data-agent-session]').click();await page.locator('#terminal-recover').waitFor({state:'visible'});await page.locator('#terminal-recover').click();await page.waitForFunction(()=>document.getElementById('terminal-status').textContent.includes('已确认停止'));
   assert.equal((await (await page.request.get(url)).json()).session.state,'released');assert.deepEqual((await (await page.request.get(base+'/api/runs/'+info.run)).json()).tasks,final.tasks);
   await page.locator('#terminal-close').click();
   await page.evaluate(id=>navigateTo({type:'editor',id}),info.draft);await page.locator('[data-drag-node="init"]').click();
   await page.locator('#author-label').fill('交互 Agent');await page.locator('#editor-save-status').filter({hasText:'草稿已保存'}).waitFor();
   const saved=(await (await page.request.get(base+'/api/drafts')).json()).find(d=>d.id===info.draft);assert(saved.implementations.init.options.default.terminal);assert.deepEqual(saved.implementations.init.options.default.command,current.executions[0].implementation.command);assert.deepEqual(saved.implementations.init.options.default.resume_command,current.executions[0].implementation.resume_command);
-  assert.deepEqual(errors,[]);console.log(JSON.stringify({passed:true,root,cases:['locked read/input','live ANSI terminal','same PID after close/reload','keyboard input','tool result and finish shutdown','replay and late-input rejection','editor config preservation','per-task result button','native session resume and immutable result','explicit interrupted-process recovery','correct failed native association with history preserved']},null,2));
+  assert.deepEqual(errors,[]);console.log(JSON.stringify({passed:true,root,cases:['public read and session-checked input','live ANSI terminal','same PID after close/reload','keyboard input','tool result and finish shutdown','replay and late-input rejection','editor config preservation','per-task result button','native session resume and immutable result','explicit interrupted-process recovery','correct failed native association with history preserved']},null,2));
  }catch(error){if(browser){const page=browser.contexts()[0]?.pages()[0];console.error((await page.locator('body').innerText()).slice(-1500));await page.screenshot({path:path.join(root,'failure.png'),fullPage:true});}console.error(logs.slice(-1500));throw error;}
  finally{if(browser)await browser.close();server.kill('SIGINT');await new Promise(r=>server.exitCode!==null?r():server.once('exit',r));}
 })().catch(e=>{console.error(e);process.exitCode=1});

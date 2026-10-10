@@ -91,8 +91,10 @@ def inspect(project, session, directory, config_path, expected=None):
     context = {'platform':parts[0], 'chat_id':parts[1], 'chat_type':'p2p' if mode == 'p2p' else 'group',
                'session_key':session, 'thread_root':root, 'entry_project':project}
     if expected:
-        if any(context[k] != expected.get(k) for k in ('platform','chat_id','chat_type','session_key','thread_root')):
+        if any(context[k] != expected.get(k) for k in ('platform','chat_id','session_key','thread_root')):
             raise ValueError('The destination no longer matches the original conversation')
+        if expected.get('chat_type') not in (None,'unknown',context['chat_type']):
+            raise ValueError('The destination no longer matches the original chat type')
         if context['chat_type'] == 'p2p' and project != expected['entry_project']:
             raise ValueError('Only the entry Bot may reply to this private chat')
     if (mode == 'topic' or chat.get('group_message_type') == 'thread') and not root:

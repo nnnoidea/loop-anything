@@ -14,37 +14,71 @@ function renderPower(power){
   $('platform-power').className='platform-power '+(power.active?'protected':'unprotected');
   $('platform-power-status').textContent=power.updating?(power.requested?'正在启用防休眠保护…':'正在关闭防休眠保护…'):power.error?'防休眠设置未生效 · '+power.error:power.active?'平台运行中 · 已启用防休眠保护':'平台运行中 · 当前允许系统休眠';
   $('platform-power-switch').checked=power.requested;
-  $('platform-power-switch').disabled=powerPending||power.updating||!power.controllable||!editAccess.unlocked;
-  $('platform-power-switch').title=editAccess.unlocked?'作用于平台所在机器；选择会保留，重启后仍有效':'请先解锁编辑';
+  $('platform-power-switch').disabled=powerPending||power.updating||!power.controllable;
+  $('platform-power-switch').title='作用于平台所在机器；选择会保留，重启后仍有效';
 }
 $('platform-power-switch').onchange=()=>safely(async()=>{
   const enabled=$('platform-power-switch').checked;powerPending=true;$('platform-power-switch').disabled=true;
   try{renderPower(await api('platform/keep-awake',{enabled}));}
   finally{powerPending=false;await refresh();}
 });
-let editAccess={protected:false,unlocked:true,expires_at:null};
-function showEditAccess(status){
-  editAccess=status;$('edit-access').hidden=!status.protected;
-  if(lastPower)renderPower(lastPower);
-  $('edit-access-state').textContent=status.unlocked?'可编辑 · '+new Date(status.expires_at*1000).toLocaleString()+' 到期':'只读';
-  $('edit-access-button').textContent=status.unlocked?'锁定编辑':'解锁编辑';
-  clearTimeout(showEditAccess.timer);
-  if(status.expires_at)showEditAccess.timer=setTimeout(()=>showEditAccess({...status,unlocked:false,expires_at:null}),Math.max(0,status.expires_at*1000-Date.now()));
+let editAccess={loop_id:null,protected:false,unlocked:true,expires_at:null};
+function editingLoop(){
+  if(page==='editor'&&editor)return {loop_id:editor.loop_definition.id,draft_id:editor.id};
+  if(page==='loop'&&typeof currentLoop==='function'){const loop=currentLoop();if(loop)return {loop_id:loop.loop_definition.id,key:loop.key};}
+  return null;
 }
-async function readEditAccess(){showEditAccess(await api('edit-access'));}
+function editorLocked(){return page==='editor'&&editor&&editAccess.loop_id===editor.loop_definition.id&&editAccess.protected&&!editAccess.unlocked;}
+function applyEditorLock(){
+  const locked=editorLocked(),root=$('loop_definition-editor');if(!root)return;
+  const view='.close-dialog,#editor-back,#editor-json,#loop-package,#expand-editor-detail,#canvas-zoom-in,#canvas-zoom-out,#canvas-zoom-reset,#canvas-fit,#canvas-fullscreen,[data-editor-layer],[data-editor-node],[data-edit-edge],[data-editor-implementation],[data-input-location],[data-locate-node],[data-locate-plan],[data-open-scheme-asset],[data-scheme-section],[data-prompt-preview]';
+  const controls=[...root.querySelectorAll('input,textarea,select,button')].filter(el=>!el.matches(view+',#author-plan-select'));
+  controls.push(...document.querySelectorAll('#editor-import,#package-author input,#package-author textarea,#package-author button:not(#package-export),.scheme-file-dialog [type=submit]'));
+  for(const control of controls){
+    if(locked){if(!control.hasAttribute('data-loop-lock'))control.dataset.loopLock=String(control.disabled);control.disabled=true;}
+    else if(control.hasAttribute('data-loop-lock')){control.disabled=control.dataset.loopLock==='true';delete control.dataset.loopLock;}
+  }
+  for(const text of document.querySelectorAll('#editor-json-value,.scheme-file-dialog textarea'))text.readOnly=!!locked;
+}
+function showEditAccess(status){
+  editAccess=status;$('edit-access').hidden=!status.loop_id;
+  $('edit-access-state').textContent=!status.protected?'Loop 编辑未设口令':status.unlocked?'Loop 可编辑 · '+new Date(status.expires_at*1000).toLocaleString()+' 到期':'Loop 编辑已锁定';
+  $('edit-access-button').textContent=!status.protected?'设置编辑口令':status.unlocked?'锁定此 Loop':'解锁此 Loop';
+  clearTimeout(showEditAccess.timer);
+  if(status.expires_at)showEditAccess.timer=setTimeout(()=>{if(editingLoop()?.loop_id===status.loop_id)readEditAccess().catch(()=>{});},Math.max(0,status.expires_at*1000-Date.now()));
+  applyEditorLock();
+}
+async function readEditAccess(){
+  const target=editingLoop(),id=target?.loop_id;
+  const status=await api('edit-access'+(id?'?loop_id='+encodeURIComponent(id):''));
+  if(editingLoop()?.loop_id===id)showEditAccess(status);
+}
 const unlockDialog=document.createElement('dialog');unlockDialog.id='edit-unlock-dialog';
-unlockDialog.innerHTML='<form id="edit-unlock-form"><h2>解锁编辑</h2><p>输入共享口令，24 小时内可持续编辑。刷新和切换页面无需再次输入。</p><label>编辑口令<input id="edit-password" type="password" autocomplete="current-password" required></label><p id="edit-unlock-error" role="alert"></p><div class="dialog-tasks"><button type="button" id="edit-unlock-cancel">取消</button><button class="primary" type="submit">解锁 24 小时</button></div></form>';
+unlockDialog.innerHTML='<form id="edit-unlock-form"><h2>解锁此 Loop 的编辑</h2><p>口令只用于修改这个 Loop，解锁有效期为 24 小时，不影响运行和外援。</p><label>编辑口令<input id="edit-password" type="password" autocomplete="current-password" required></label><p id="edit-unlock-error" role="alert"></p><div class="dialog-tasks"><button type="button" id="edit-unlock-cancel">取消</button><button class="primary" type="submit">解锁 24 小时</button></div></form>';
 document.body.append(unlockDialog);
+const passwordDialog=document.createElement('dialog');passwordDialog.id='loop-password-dialog';
+passwordDialog.innerHTML='<form id="loop-password-form"><h2>这个 Loop 的编辑口令</h2><p>保护定义、节点实现、手册和随包资源；同一个 Loop 导出、导入后保留保护。运行操作无需口令。</p><label>当前口令（已解锁时可留空）<input id="loop-password-current" type="password" autocomplete="current-password"></label><label>新口令（留空移除保护）<input id="loop-password-new" type="password" autocomplete="new-password"></label><p id="loop-password-error" role="alert"></p><div class="dialog-tasks"><button type="button" id="loop-password-cancel">取消</button><button class="primary" type="submit">保存口令设置</button></div></form>';
+document.body.append(passwordDialog);
+$('edit-access').insertAdjacentHTML('beforeend','<button id="loop-password-settings" type="button">口令设置</button>');
+function openPasswordSettings(){passwordDialog.target=editingLoop();if(!passwordDialog.target)return;$('loop-password-error').textContent='';passwordDialog.showModal();}
+$('loop-password-settings').onclick=openPasswordSettings;
 $('edit-access-button').onclick=()=>safely(async()=>{
-  if(editAccess.unlocked){showEditAccess(await api('edit-access',{action:'lock'}));await refresh();}
-  else{$('edit-unlock-error').textContent='';unlockDialog.showModal();$('edit-password').focus();}
+  if(!editAccess.protected){openPasswordSettings();return;}
+  if(editAccess.unlocked){await api('edit-access',{action:'lock',loop_id:editAccess.loop_id});await readEditAccess();}
+  else{unlockDialog.loopId=editAccess.loop_id;$('edit-unlock-error').textContent='';unlockDialog.showModal();$('edit-password').focus();}
 });
-$('edit-unlock-cancel').onclick=()=>unlockDialog.close();
+$('edit-unlock-cancel').onclick=()=>unlockDialog.close();$('loop-password-cancel').onclick=()=>passwordDialog.close();
 unlockDialog.addEventListener('close',()=>{$('edit-password').value='';});
+passwordDialog.addEventListener('close',()=>{$('loop-password-current').value='';$('loop-password-new').value='';});
 $('edit-unlock-form').onsubmit=async event=>{
   event.preventDefault();
-  try{showEditAccess(await api('edit-access',{action:'unlock',password:$('edit-password').value}));unlockDialog.close();await refresh();}
+  try{await api('edit-access',{action:'unlock',loop_id:unlockDialog.loopId,password:$('edit-password').value});unlockDialog.close();await readEditAccess();}
   catch(error){$('edit-unlock-error').textContent=error.message;}
+};
+$('loop-password-form').onsubmit=async event=>{
+  event.preventDefault();const {loop_id,...target}=passwordDialog.target;
+  try{await platformCall('set_loop_password',{...target,new_password:$('loop-password-new').value,...($('loop-password-current').value?{loop_password:$('loop-password-current').value}:{})});passwordDialog.close();await readEditAccess();toast('此 Loop 的编辑口令已更新');}
+  catch(error){$('loop-password-error').textContent=error.message;}
 };
 window.addEventListener('focus',()=>readEditAccess().catch(()=>{}));
 let promptDefaults={};
@@ -69,8 +103,8 @@ const nodeLabel = id => run?.loop_definition.nodes[id]?.label || id;
 async function api(url, data) {
   const response = await fetch('/api/' + url, data === undefined ? {} : {method:'POST',headers:{'Content-Type':'application/json','X-Loop-Anything':'workspace'},body:JSON.stringify(data)});
   const result = await response.json();
-  if(result.code==='edit_locked')showEditAccess({protected:true,unlocked:false,expires_at:null});
-  if (!response.ok) throw new Error(result.error || '请求失败');
+  if(result.code==='edit_locked'||result.error?.code==='edit_locked')readEditAccess().catch(()=>{});
+  if (!response.ok) throw new Error(result.error?.message || result.error || '请求失败');
   return result;
 }
 function toast(message) { $('toast').textContent = message; $('toast').style.display = 'block'; clearTimeout(toast.timer); toast.timer = setTimeout(() => $('toast').style.display = 'none', 5500); }

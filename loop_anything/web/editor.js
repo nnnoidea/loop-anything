@@ -38,12 +38,14 @@ async function newLoopDefinition(source=null,versionOnly=false){
     const reusable=drafts.find(d=>d.loop_definition.id===source.loop_definition.id&&!catalog.some(c=>c.loop_definition.id===d.loop_definition.id&&c.loop_definition.version===d.loop_definition.version));
     if(reusable){editor={...reusable,dirty:false};await openEditor();return true;}
   }
+  if(source&&versionOnly){const status=await api('edit-access?loop_id='+encodeURIComponent(source.loop_definition.id));if(!status.unlocked){await navigateTo({type:'loop',key:source.key});toast('请先解锁这个 Loop 的编辑口令');return false;}}
   const result=source?await platformCall('copy_loop',{key:source.key,new_version:versionOnly}):await platformCall('create_loop',{name:'我的新 Loop'});
   const loaded=(await platformCall('read_loop',{draft_id:result.draft_id})).loop;
   editor={...loaded,dirty:false};
   await openEditor();
 }
 async function editWithTool(tool,values){
+  if(editorLocked())throw new Error('请先解锁这个 Loop 的编辑口令');
   if(editorOperation)await editorOperation;
   const operation=performEditorEdit(tool,values);editorOperation=operation;
   try{return await operation;}finally{if(editorOperation===operation)editorOperation=null;}
@@ -125,8 +127,9 @@ function renderEditor(){
   if(b.schema_version===2){
     $('editor-edges-list').innerHTML=noticeScheduleHTML(editor)+loopProgressHTML(editor)+'<div id="unused-record-types">'+unusedRecordsHTML()+'</div>';
     $('editor-edges-list').insertAdjacentHTML('afterbegin',`<div class="editor-plan-picker"><label>构建模板<select id="author-plan-select">${Object.keys(b.plans || {}).map(k=>`<option ${k===authorPlan?'selected':''}>${esc(k)}</option>`).join('')}</select></label>${b.plans[authorPlan]?`<button type="button" data-edit-edge="${esc(authorPlan)}">编辑此模板 · ${Object.keys(b.plans[authorPlan].steps).length} 步</button>`:''}</div><div class="row"><input id="new-plan-name" placeholder="新模板名称"><button type="button" id="new-author-plan">＋ 模板</button></div>`);
-    $('editor-hint').textContent='实线：输入 / 先后依赖；后续安排与兜底见详情';return;
+    $('editor-hint').textContent='实线：输入 / 先后依赖；后续安排与兜底见详情';
   }
+  applyEditorLock();
 }
 
 function editorDependencyPath(a,b,sourceY,targetY,gap,self=false){
@@ -192,9 +195,9 @@ function renderEditorDetail(){
   }
   for(const el of $('editor-properties').querySelectorAll('[data-lifecycle-editor] .phase-source,[data-lifecycle-editor] [data-lifecycle-to]')){el.setAttribute('role','button');el.tabIndex=0;el.setAttribute('aria-label','编辑此状态的转移规则');}
 }
-function renderProperties(){renderAuthorProperties();renderEditorDetail();syncFallbackControl('bp-fallback',editor);if(activeRoute.implementation)$('editor-properties').querySelector('.author-candidate:not([hidden]) .candidate-machine')?.insertAdjacentHTML('beforeend','<div class="fallback-summary">'+fallbackSummary(editor,editor.loop_definition.fallback_node)+'</div>');}
+function renderProperties(){renderAuthorProperties();renderEditorDetail();syncFallbackControl('bp-fallback',editor);if(activeRoute.implementation)$('editor-properties').querySelector('.author-candidate:not([hidden]) .candidate-machine')?.insertAdjacentHTML('beforeend','<div class="fallback-summary">'+fallbackSummary(editor,editor.loop_definition.fallback_node)+'</div>');applyEditorLock();}
 function collectProperties(){collectAuthorProperties();}
-function collectAll(){collectMeta();collectProperties();}
+function collectAll(){if(editorLocked())return;collectMeta();collectProperties();}
 function selectEditor(selection){if(activeRoute.node&&selection.node!==activeRoute.node){safely(async()=>{if(await navigateTo({type:'editor',id:editor.routeId,...(selection.node?{node:selection.node}:{})})&&selection.edge)selectEditor(selection);});return;}collectAll();editSelection=selection;connectFrom=null;renderEditor();renderProperties();}
 async function addEdge(from,to){
   const b=editor.loop_definition;
@@ -272,7 +275,7 @@ document.addEventListener('click',event=>safely(async()=>{
     case 'add-fallback-node':{collectAll();let id='fallback',i=1;while(Object.hasOwn(editor.loop_definition.nodes,id))id='fallback_'+i++;await editWithTool('put_node',{node_id:id,label:'Agent 兜底',instructions:'读取当前未覆盖状态，按用户授权用工具处理相关任务，再完成本节点。',inputs:[],outputs:[]});await editWithTool('set_loop',{fallback_node:id});editSelection={node:id};renderEditor();renderProperties();toast('已添加兜底节点，请选择它的 Agent 实现。');break;}
     case 'add-node':{collectAll();let i=1;while(Object.hasOwn(editor.loop_definition.nodes,'node_'+i))i++;const id='node_'+i;await editWithTool('put_node',{node_id:id,label:'新节点 '+i,instructions:'声明本节点的业务职责',inputs:[],outputs:[{name:'result',type:'string'}]});editSelection={node:id};renderEditor();renderProperties();break;}
     case 'editor-save':await saveLoop();break;
-    case 'editor-json':el.closest('details').open=false;collectAll();$('editor-json-value').value=pretty({loop_definition:editor.loop_definition,implementations:editor.implementations});jsonDialog.showModal();break;
+    case 'editor-json':el.closest('details').open=false;collectAll();$('editor-json-value').value=pretty({loop_definition:editor.loop_definition,implementations:editor.implementations});jsonDialog.showModal();applyEditorLock();break;
     case 'editor-import':{const value=JSON.parse($('editor-json-value').value);if(!value.loop_definition || !value.loop_definition.nodes || Array.isArray(value.loop_definition.nodes) || value.loop_definition.schema_version!==2)throw new Error('需要当前 loop_definition（含 nodes 和 plans）；implementations 可以省略');value.implementations ||= {};const report=await api('validate',{...value});if(!report.valid)throw new Error('JSON 未通过校验：'+report.errors.join('；'));editor.loop_definition=value.loop_definition;editor.implementations=value.implementations;editor.loop_definition.layout ||= {};editSelection=null;jsonDialog.close();populateMeta();dirty();renderEditor();renderProperties();break;}
     case 'editor-export':{const content=$('editor-json-value').value;JSON.parse(content);const url=URL.createObjectURL(new Blob([content],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=(editor.loop_definition.id || 'loop_definition')+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);break;}
   }
@@ -287,6 +290,7 @@ editorPage.addEventListener('pointerdown',e=>{
   try{collectAll();}catch(error){toast(error.message);return;}
   editSelection={node:id};renderProperties();
   editorPage.querySelectorAll('.editor-node').forEach(c=>c.classList.toggle('picked',c.dataset.editorCard===id));
+  if(editorLocked())return;
   const p=editor.loop_definition.layout[id];dragState={id,x:e.clientX,y:e.clientY,startX:p.x,startY:p.y,moved:false};head.setPointerCapture(e.pointerId);
 });
 editorPage.addEventListener('pointermove',e=>{
