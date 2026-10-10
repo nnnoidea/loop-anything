@@ -1,6 +1,6 @@
 ---
 name: loop-anything-platform
-description: 使用已安装的 Loop Anything 构建与分享 Loop，启动 Run 并用工具操作 Timeline、任务和运行设置。业务方法按任务读取节点绑定的作者 Skill。
+description: 使用已安装的 Loop Anything 构建与运行 Loop，操作 Timeline；发现并调用本机或 NAS 群组中的具名 Agent，支持无 Loop 的独立外援。业务方法按需读取节点 Skill。
 metadata:
   provider: loop-anything-platform
 ---
@@ -11,6 +11,7 @@ metadata:
 
 ## 按当前任务读取
 
+- 本机具名 Agent、NAS 通信群组、远程节点或无 Loop 的独立外援：读取 [communication.md](references/communication.md)。先发现成员和调用范围，再发请求；普通 CLI 会话不会自动开放调用。
 - 构建或迁入 Loop：先读 [build.md](references/build.md) 的分工与能力地图，结合构建回执的 authoring_context 选择机制，再接入业务实现；详细分工按需查 [platform-capabilities.md](references/platform-capabilities.md)。事件到模板的参数映射用节点 routes，平台自动生成 Task。
 - 既有草稿的定向修改、字段与资源操作：按需查 [build-reference.md](references/build-reference.md)。
 - 直接使用通用工具启动 Run 或修改 Timeline：按需读取 [run.md](references/run.md)。作者已提供封装脚本和说明时，运行时优先按作者入口操作，无需先读平台手册。已经有 Run 和令牌时，不重新创建 Run。
@@ -48,3 +49,5 @@ python3 scripts/call.py TOOL --arguments @参数.json
 每次调用检查返回的 `ok`，报告状态还须检查 `accepted`；失败时脚本退出码为 2。脚本与监控接入统一报告工具时，见 [run.md 的报告说明](references/run.md#统一报告事件与结果)，调用脚本随 Skill 提供。安排后续任务不等于完成当前任务，文字回复也不是提交回执。作者封装可代为提交与退出；直接调用工具时，按需查看 run.md 中对应操作。
 
 继续工作先用 list_runs 找到已有运行，再只读 read_timeline；编辑时才 acquire_run。微信、飞书、终端共用同一平台和 Timeline，切换入口不会新建 Run 或改变通知目标。
+
+后台 Agent 实时输出与可选 CLI 交互终端由平台提供，配置和限制见 [执行终端](references/terminal.md)。无需自建日志页或交互服务。

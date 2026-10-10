@@ -12,6 +12,8 @@
 
 平台「通知出口」选择 cc-connect，发送身份填已配置的 project，接收位置填 session。也可用 read_notification_channels 返回的 cc_connect_command 配合 set_notification_channels 保存同样配置。适配器从通知的 outlet.identity / destination 读取实际目标；命令中的旧 project/session 仅在未提供这些字段时使用。命令可追加 --executable 和 --data-dir 指定既有安装位置。
 
+多机器协作时，可以只在一台发送机器配置本出口，再在该机器“Agent 通信 → 群组 → 通知绑定”选择它。其他机器通过 NAS 转交通知，发送机器运行此适配器并写回回执；无需每台都安装 cc-connect。绑定与重试流程见[群组通知](communication.md#群组绑定-cc-connect-与指定发送机器)。
+
 消息中的询问可以在网页回复，或让当前聊天的 Agent 读取 Timeline 后调用 send_event；本适配器只负责发送，不另外接管聊天入口。
 
 ## 生成当前聊天的发送命令

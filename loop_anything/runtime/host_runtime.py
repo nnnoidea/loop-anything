@@ -42,7 +42,9 @@ def lock_database(filename):
     return lock  # Closing the descriptor releases either OS lock.
 
 
-def run_command(command, request_text, timeout, cwd=None, stop=None):
+def run_command(command, request_text, timeout, cwd=None, stop=None, session=None):
+    if session is not None:
+        return session.run(command, request_text, timeout, cwd, stop)
     if stop is not None and stop.is_set():
         raise Invalid('Platform stopped before command started')
     options = {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session': True}
@@ -71,19 +73,23 @@ def run_command(command, request_text, timeout, cwd=None, stop=None):
     return subprocess.CompletedProcess(command, process.returncode, out, err)
 
 
-def stop_command(process):
+def stop_command(process, drain=True):
     if os.name == 'nt':
         result = subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], capture_output=True, timeout=5)
         if result.returncode:
             raise CommandNotStopped('Unable to stop timed-out command tree: ' + result.stderr.decode(errors='replace'))
-        process.communicate(timeout=5)
+        process.communicate(timeout=5) if drain else process.wait(timeout=5)
     else:
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
+        except PermissionError:
+            # macOS can reject signals briefly while an exited PTY group is reaped.
+            # A live parent still fails; the final group probe must confirm disappearance.
+            if process.poll() is None:raise
         try:
-            process.communicate(timeout=5)
+            process.communicate(timeout=5) if drain else process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             pass
         # A parent closing its pipes does not prove its children stopped.
@@ -91,13 +97,17 @@ def stop_command(process):
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        process.communicate(timeout=5)
+        except PermissionError:
+            if process.poll() is None:raise
+        process.communicate(timeout=5) if drain else process.wait(timeout=5)
         deadline = time.monotonic() + 5
         while True:
             try:
                 os.killpg(process.pid, 0)
             except ProcessLookupError:
                 return
+            except PermissionError:
+                pass  # An orphaned group can briefly reject probes while the OS reaps it; keep waiting.
             if time.monotonic() >= deadline:
                 raise CommandNotStopped('Timed-out process group still exists; verify it stopped before releasing ownership')
             time.sleep(.02)

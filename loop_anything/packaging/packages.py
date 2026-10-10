@@ -288,7 +288,9 @@ def smoke(document, root):
             if len(argv) > 1 and not argv[1].startswith('-') and Path(argv[1]).suffix in ('.py', '.sh', '.js', '.mjs'):
                 script = Path(argv[1]) if Path(argv[1]).is_absolute() else directory / argv[1]
                 add('script', str(script), script.is_file() and os.access(script, os.R_OK), 'Script existence/readability only.', name, ident)
-        if implementation.get('kind') == 'agent' and implementation.get('command'):
+        if implementation.get('terminal'):
+            add('terminal_host', name, os.name == 'posix', 'Interactive PTY requires macOS/Linux; ordinary command output works without a PTY.', name, ident)
+        if implementation.get('kind') == 'agent' and implementation.get('command') and not implementation.get('dispatch'):
             checks.append({'kind': 'agent_access', 'target': str(directory), 'status': 'unknown', 'node': name, 'implementation': ident,
                            'detail': 'Agent trust, login and model access are controlled by the user. Check this exact cwd with the configured Agent; the platform never changes trust settings or cwd.'})
         if implementation.get('kind') in ('event', 'approval') or implementation.get('kind') == 'agent' and not implementation.get('command'):

@@ -4,6 +4,36 @@
 
 构建时先将需求对应到下列机制，再设计业务节点和实现。activation=automatic 表示平台自动执行；declared/configured 需要作者声明或使用者配置；operator 需要显式操作。
 
+## assistance_session_resume
+
+- 生效方式：configured/operator
+- 平台承担：等待外援前检查原生 session 和准确恢复命令；回复或期限到达后恢复同一会话与 Task，携带结果和新操作凭据。
+- 作者提供：配置托管 CLI 与 resume_command，登记真实 session；wait_assistance 成功后再 finish，远端还需完成执行请求。
+- 配置入口：`wait_assistance`、`register_agent_session`、`implementations.*.resume_command`
+- 边界：原机器/Agent/session 固定；缺失或恢复失败时明确阻塞，不新建对话。当前恢复使用 macOS/Linux 终端，CLI 自身的会话文件须保留。
+- 工具入口：wait_assistance、register_agent_session、communication_execute、read_assistance
+- 详细说明：[references/communication.md](communication.md)
+
+## group_notifications
+
+- 生效方式：configured/operator
+- 平台承担：群组默认通知出口和发送机器；来源通过 NAS 持久交付通知，指定机器复用 cc-connect 等已有适配器投递并写回真实回执。
+- 作者提供：在发送机器配置本地命名出口，再用 group_notifications 绑定群组；提供 cc-connect project 和聊天 session。
+- 配置入口：`communication_config(operation=group_notifications)`、`platform notification channels`
+- 边界：命令和凭据不写入 NAS；旧请求固定原绑定。离线保留待回执，不自动切换机器；未知送达须核实后显式重试。
+- 工具入口：communication_status、communication_config、read_notification_channels、set_notification_channels、read_assistance、control_assistance
+- 详细说明：[references/communication.md](communication.md)
+
+## agent_communication
+
+- 生效方式：configured/operator
+- 平台承担：平台提供本机具名Agent目录、NAS群组收发、明确认领、进度结果、会话和等待恢复；通信不要求创建Loop。
+- 作者提供：配置本机允许的CLI、群组目录和成员；Loop绑定群组，节点显式声明群组执行；外援由Agent按需请求。
+- 配置入口：`communication_config`、`implementations.*.dispatch`、`request_assistance`、`wait_assistance`
+- 边界：本地节点只由来源平台执行；群组不是业务Run副本；session不决定认领。失联不自动重跑。NAS实际环境需安装时检查，逐键远程PTY尚不承诺。
+- 工具入口：communication_workspace、communication_status、communication_config、request_assistance、read_assistance、control_assistance、wait_assistance、communication_execute
+- 详细说明：[references/communication.md](communication.md)
+
 ## timeline_storage
 
 - 生效方式：automatic
@@ -53,6 +83,26 @@
 - 边界：现有工作台是操作界面；没有独立的脱敏团队只读看板。文件展示不证明产物有效。
 - 工具入口：read_run、read_loop
 - 详细说明：[references/build-reference.md](build-reference.md)
+
+## agent_resume
+
+- 生效方式：configured/operator
+- 平台承担：每个任务直接查看对应尝试的结果；记录CLI原生ID，按用户请求恢复同一会话，签发新操作权并保持历史结果。
+- 作者提供：提供CLI及恢复命令；让CLI输出或Agent报告真实ID。用户选择恢复目标和本次要求。
+- 配置入口：`implementations.*.agent_cli`、`implementations.*.resume_command`、`register_agent_session`、`command argv {{session_id}}`
+- 边界：不使用--last猜测，不扫描无关CLI历史。进程退出前同原生ID跨Run互斥；外部手动CLI进程由用户管理。旧任务没有原生ID时需明确补充；CLI本机记录丢失会恢复失败。恢复只适用于仍在运行或暂停的Run；原生CLI会话存储与模型访问由CLI负责。
+- 工具入口：register_agent_session、read_task、set_implementation
+- 详细说明：[references/terminal.md](terminal.md)
+
+## agent_terminal
+
+- 生效方式：automatic/configured
+- 平台承担：为后台 Agent 每次执行持久化实时输出；可选交互终端连接同一 CLI 进程，转发键盘和窗口尺寸，finish 后关闭会话。
+- 作者提供：提供 CLI 命令、工作目录、登录与权限配置；交互命令用 {{prompt}} 或 {{prompt_file}} 接收任务上下文。
+- 配置入口：`implementations.*.terminal`、`implementations.*.command`、`任务详情 → 执行终端`
+- 边界：普通命令只读；交互终端当前支持 macOS/Linux。进程重启后只保留历史并按既有操作权恢复，不保证恢复 CLI 会话。终端访问需要编辑权限，结果仍须 report_task/finish；不要重复构建日志页。
+- 工具入口：set_implementation、read_task
+- 详细说明：[references/terminal.md](terminal.md)
 
 ## host_service
 
@@ -245,6 +295,83 @@
 - 详细说明：[references/build.md](build.md)
 
 ## 常见组合
+
+### group_cc_connect_delivery
+
+A 发起、B 执行，但只有 C 安装了 cc-connect，需要向同一飞书群通知协作进展。
+
+```json
+{
+  "use_when": "A 发起、B 执行，但只有 C 安装了 cc-connect，需要向同一飞书群通知协作进展。",
+  "capabilities": [
+    "group_notifications",
+    "agent_communication",
+    "notifications"
+  ],
+  "configuration": [
+    "在 C 配置命名通知出口，使用平台 cc_connect_command 和明确的 project / 聊天 session。",
+    "C 调用 communication_config operation=group_notifications，选择 group_id、notification_route 和 notification_level；已有绑定需带当前 binding_id。",
+    "A 通过 communication_status 看到绑定后发出请求，省略 notification_route 即沿用群组；平台负责排队、去重、投递及回执。"
+  ],
+  "author_provides": "指定群组、发送机器和实际聊天目标；业务 Agent 无需编写 NAS 通知队列或自行调用 cc-connect。",
+  "verification": [
+    "communication_status",
+    "read_assistance",
+    "communication_workspace"
+  ]
+}
+```
+
+### named_agent_assistance
+
+当前节点或普通对话需要临时外援；外援可在本机，也可在明确选定的 NAS 群组中。
+
+```json
+{
+  "use_when": "当前节点或普通对话需要临时外援；外援可在本机，也可在明确选定的 NAS 群组中。",
+  "capabilities": [
+    "agent_communication",
+    "agent_terminal",
+    "assistance_session_resume"
+  ],
+  "configuration": [
+    "communication_status 发现显式开放的本机目录和获准群组，使用 agent_id 与必要的 instance_id 消歧。",
+    "request_assistance 返回持久请求及读取凭据；本机调用不要求 NAS，无 Loop 调用不创建业务 Run。",
+    "平台托管节点先记录原生 session 和恢复配置，再使用 wait_assistance 持久等待并 finish；回复或期限到达后在原机器恢复同一个 CLI session，以新凭据和外援结果继续同一个 Task；不可恢复时明确阻塞，不新建会话。",
+    "外援通过限定客户端 read_context 按需读取关联上下文，通过 complete 提交协助结果；不取得原节点写权限。"
+  ],
+  "author_provides": "具体问题、需分享的上下文、结果要求和不可用时的业务判断；机器所有者配置具名 CLI 与开放范围。",
+  "verification": [
+    "communication_config",
+    "read_assistance"
+  ]
+}
+```
+
+### group_agent_node
+
+某个正式 Agent 节点需要在其他机器完成。
+
+```json
+{
+  "use_when": "某个正式 Agent 节点需要在其他机器完成。",
+  "capabilities": [
+    "agent_communication",
+    "implementation_selection",
+    "lifecycle"
+  ],
+  "configuration": [
+    "保持 kind=agent，设置 dispatch.location=group 和 agent_id 或 capability；绑定 Run 群组。",
+    "成员申请承接，来源确认后启动；来源平台继续拥有业务 Run。其他本地节点不发布到群组。",
+    "通过限定 platform_client/URL 使用 read_task、report_task 和 finish，沿用原结果契约与操作范围。"
+  ],
+  "author_provides": "节点业务契约、成员选择；执行端提供 CLI、环境和可访问的产物。",
+  "verification": [
+    "communication_config",
+    "read_assistance"
+  ]
+}
+```
 
 ### result_to_batch_and_review
 

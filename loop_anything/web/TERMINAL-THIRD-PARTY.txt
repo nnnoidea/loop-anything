@@ -1,0 +1,4 @@
+Vendored from the official npm packages @xterm/xterm 5.5.0 and @xterm/addon-fit 0.10.0.
+Source: https://github.com/xtermjs/xterm.js
+Licenses: xterm-LICENSE.txt and xterm-fit-LICENSE.txt (MIT).
+No runtime CDN or npm installation is required.

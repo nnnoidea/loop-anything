@@ -299,7 +299,7 @@ class TimelineRuntime:
                     if self.apply_hooks(run, tasks, 'before'):
                         tasks['status'] = 'held'
                         continue
-                    implementation = selected(run, tasks)[1]
+                    implementation = tasks.get('assistance_resume',{}).get('implementation') or selected(run, tasks)[1]
                     if implementation['kind'] == 'agent':
                         scope = scope_for(run, tasks)
                         if 'task:' + tasks['id'] in run.get('task_dispositions', {}):
@@ -330,7 +330,7 @@ class TimelineRuntime:
                             self.report_in_run(run,e,{'event':'process_error','report_id':'wait-config:'+e['id'],'detail':{'message':str(exc)}},'engine')
                     elif implementation['kind'] == 'approval':
                         e['status'] = 'approval'
-                    elif implementation['kind'] == 'agent' and not implementation.get('command'):
+                    elif implementation['kind'] == 'agent' and not implementation.get('command') and not implementation.get('dispatch'):
                         e['status'] = 'decision'
                     else:
                         jobs.append((copy.deepcopy(e), copy.deepcopy(run), False))
@@ -420,6 +420,10 @@ class TimelineRuntime:
                  parameters=copy.deepcopy(tasks['spec'].get('parameters', {})), status='executing', token=uid('attempt'),
                  settings_revision=run['settings']['revision'],
                  implementation_id=selected(run, tasks)[0], implementation=copy.deepcopy(implementation), created_at=time.time(), started_at=None, attempt=tasks.get('attempts', 0) + 1)
+        if tasks.get('assistance_resume'):
+            e['assistance_resume']=copy.deepcopy(tasks['assistance_resume'])
+            e['native_session']=copy.deepcopy(e['assistance_resume']['native_session'])
+            e['implementation_id']=e['assistance_resume'].get('implementation_id')
         tasks['execution_id'], tasks['attempts'] = e['id'], e['attempt']
         e['implementation']['lifecycle'] = lifecycle_definition(implementation)
         e['lifecycle_state'] = e['implementation']['lifecycle']['initial']
@@ -682,9 +686,25 @@ class TimelineRuntime:
 
     def execute(self, run_id, e, snapshot, observe=False):
         implementation = e['implementation']
+        if implementation.get('dispatch'):
+            try:
+                self.engine.communication.submit_node(run_id, e, snapshot)
+            except Exception as exc:
+                with self.store.edit(run_id) as current_run:
+                    current = self.engine.execution(current_run, e['id'])
+                    self.report_in_run(current_run,current,{'event':'process_error','report_id':'dispatch:'+e['id'],'detail':{'message':str(exc)}},'engine')
+                    if owner_for(current_run,e['token']):release_in_run(current_run,e['token'])
+            return
         exit_error = None
         invocation = uid('call')
         try:
+            if e.get('assistance_resume'):
+                from loop_anything.runtime.native_sessions import resume_config,active_native
+                native=e['assistance_resume']['native_session']
+                implementation=resume_config(e['assistance_resume']['implementation'],native)
+                with self.store.connection() as db:active=active_native(db,native['provider'],native['id'],self.store)
+                if active and (active['run_id'],active['execution_id'])!=(run_id,e['id']):
+                    raise Conflict('The original CLI session is still active or its stop is unconfirmed')
             if implementation['kind'] == 'agent':
                 context = task_context(self.store, snapshot, e, getattr(self.engine, 'platform_url', None),
                                        owner_for(snapshot, e['token']).get('scope_task'))
@@ -716,9 +736,24 @@ class TimelineRuntime:
                     current['started_at'] = time.time()
                 if implementation['kind'] == 'agent':
                     current['prompt_text'] = mask_prompt(request_text, e['token'])
+            session = None
+            if implementation['kind'] == 'agent':
+                session = self.engine.terminals.create(run_id, e['id'], invocation, implementation.get('terminal', False), [e['token']])
+                from loop_anything.runtime.native_sessions import configure_capture
+                configure_capture(self.store, run_id, e['id'], session, implementation,e.get('assistance_resume',{}).get('native_session'))
+                def session_state():
+                    if e.get('assistance_resume') and session.doc.get('native_session_error'):return 'revoked'
+                    current_run = self.store.get(run_id)
+                    current = self.engine.execution(current_run, e['id'])
+                    if not owner_for(current_run, e['token']):
+                        return 'finished'
+                    if current_run['status'] == 'terminated' or current.get('token') != e['token']:
+                        return 'revoked'
+                session.check = session_state
             result = run_command(implementation['observe'] if observe else implementation['command'], request_text,
                                  implementation.get('timeout', None if implementation['kind'] == 'agent' else 60), implementation.get('cwd'),
-                                 stop=self.engine.stopping if implementation['kind'] == 'agent' else None)
+                                 stop=self.engine.stopping if implementation['kind'] == 'agent' else None, **({'session': session} if session else {}))
+            if e.get('assistance_resume') and session.doc.get('native_session_error'):raise Invalid(session.doc['native_session_error'])
             if observe:
                 with self.store.edit(run_id) as run:
                     current = self.engine.execution(run, e['id'])
@@ -727,7 +762,7 @@ class TimelineRuntime:
                             'detail': {'returncode': result.returncode, 'stdout': result.stdout[-1500:], 'stderr': result.stderr[-1500:]}}, 'monitor', stale=True)
                         return
             if result.returncode:
-                raise Invalid('Handler failed: ' + result.stderr[-1500:])
+                raise Invalid('Handler failed: ' + (result.stdout if implementation.get('terminal') else result.stderr)[-1500:])
             envelope = None
             with self.store.edit(run_id) as run:
                 current = self.engine.execution(run, e['id'])
@@ -822,16 +857,8 @@ class TimelineRuntime:
                                task_label=snapshot['loop_definition']['nodes'].get(task.get('spec', {}).get('node'), {}).get('label', ''),
                                task_status=task.get('status', ''))
                 payload['outlet']={k:adapter[k] for k in ('channel','identity','destination') if k in adapter}
-                result = run_command(adapter['command'], json.dumps(payload), adapter.get('timeout', 30), adapter.get('cwd'))
-                if result.returncode:
-                    try:
-                        detail = json.loads(result.stdout).get('error')
-                    except (ValueError, AttributeError):
-                        detail = None
-                    raise Invalid('Notification transport failed: ' + str(detail or result.stderr or result.returncode)[-1500:])
-                receipt = json.loads(result.stdout)
-                if receipt.get('delivered') is not True:
-                    raise Invalid('Transport did not confirm delivery')
+                from loop_anything.runtime.notifications import deliver_command
+                receipt = deliver_command(adapter,payload,run_command)
             error = None
         except Exception as exc:
             receipt, error = None, str(exc)
@@ -961,7 +988,7 @@ class TimelineRuntime:
         for owner in run.get('agent_sessions', []):
             if owner.get('execution_id'):
                 primary = self.engine.execution(run, owner['execution_id'])
-                if primary['implementation'].get('command'):
+                if primary['implementation'].get('command') and not primary['implementation'].get('dispatch') or owner.get('resume_session'):
                     owner['recovery_required'] = True
         for e in run['executions']:
             if e['status'] in IN_FLIGHT and 'lifecycle' not in e['implementation']:
@@ -969,6 +996,8 @@ class TimelineRuntime:
                 e['implementation']['lifecycle'] = lifecycle_definition(e['implementation'])
                 e.setdefault('lifecycle_state', 'waiting' if e['implementation']['kind'] == 'external' and e.get('external_id') else e['implementation']['lifecycle']['initial'])
             if e['status'] == 'executing':
+                if e['implementation'].get('dispatch'):
+                    continue  # Remote process state belongs to the communication assignment.
                 if e['implementation']['kind'] == 'external' and e.get('external_id'):
                     e.update(status='waiting', wake_at=0)
                     run['tasks'][e['task_id']]['status'] = 'waiting'

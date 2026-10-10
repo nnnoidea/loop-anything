@@ -1,6 +1,7 @@
 """Real subprocess startup and real lifecycle writes, without business services/models."""
 import copy
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -50,6 +51,17 @@ class RuntimeSmokeTests(unittest.TestCase):
                               'smoke-runtime', result['key'], '--node', 'initialize', '--timeout', '3'], capture_output=True, text=True)
         self.assertEqual(cli.returncode, 0, cli.stderr)
         self.assertTrue(json.loads(cli.stdout)['verified'])
+
+    @unittest.skipUnless(os.name == 'posix', 'PTY requires POSIX')
+    def test_interactive_prompt_echo_does_not_prove_model_reply(self):
+        config = {'kind': 'agent', 'terminal': True, 'command': [sys.executable, '-u', '-c',
+                  'import sys,time;print(sys.argv[1]);time.sleep(20)', '{{prompt}}']}
+        doc, root, _ = self.installed({'initialize': config})
+        report = runtime_smoke(doc, root, node_id='initialize', timeout=3)
+        probe = next(c for c in report['checks'] if c['kind'] == 'agent_probe')
+        self.assertEqual('unknown', probe['status'])
+        self.assertFalse(report['verified'])
+        self.assertTrue(report['ready'])
 
     def test_lifecycle_missing_events_retry_observation_and_conditional_cases(self):
         matrix = template('external')

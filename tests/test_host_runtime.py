@@ -4,12 +4,24 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 from loop_anything.runtime.host_runtime import KeepAwake, lock_database, run_command
 from loop_anything.runtime.model import Invalid
 
 
 class HostRuntimeTests(unittest.TestCase):
+    @unittest.skipIf(os.name == 'nt', 'POSIX process groups')
+    def test_exited_group_permission_race_still_requires_disappearance(self):
+        import signal
+        from loop_anything.runtime.host_runtime import stop_command
+        process=Mock(pid=12345);process.poll.return_value=0
+        with patch('os.killpg',side_effect=[PermissionError(),PermissionError(),ProcessLookupError()]) as kill:
+            stop_command(process,drain=False)
+        self.assertEqual([c.args[1] for c in kill.call_args_list],[signal.SIGTERM,signal.SIGKILL,0])
+        process.poll.return_value=None
+        with patch('os.killpg',side_effect=PermissionError()),self.assertRaises(PermissionError):
+            stop_command(process,drain=False)
+
     def test_runtime_timeout_stops_the_configured_process(self):
         with tempfile.TemporaryDirectory() as folder:
             pid_file = Path(folder) / 'pid'

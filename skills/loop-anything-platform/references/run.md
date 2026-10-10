@@ -235,3 +235,5 @@ Run 默认实现或输入记录的变化不直接改写 Task 声明，因此不�
 `read_capabilities` 返回当前服务能力及对应工具/文档，不需要取得操作权。实际可调用工具以当前入口的 list 为准；网页运行 Agent 的入口以运行操作为主，构建工具从平台作者入口调用。后台唤醒上下文的 platform 字段提供版本和能力标识。
 
 有稳定 ref 的 Task 可用 `resolve_refs` 查找 Task ID 和输出 record 引用。add_task 的 ref/after_refs 和 task_ref/task_refs 输入来源在写入时解析为真实依赖；build_plan/route 回执也返回 references。详细语义见 [contracts.md](contracts.md)。
+
+后台 Agent 实时输出与可选 CLI 交互终端由平台提供，配置和限制见 [执行终端](terminal.md)。无需自建日志页或交互服务。

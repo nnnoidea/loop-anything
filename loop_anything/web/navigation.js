@@ -3,6 +3,7 @@
 let activeRoute={type:'home'}, navigationSerial=0;
 const editorSessions=new Map(),runReturns=new Map();
 function routeHash(route){
+  if(route.type==='communication')return '#communication';
   if(route.type==='catalog')return '#loop_definitions';
   if(route.type==='loop')return '#loop/'+encodeURIComponent(route.key)+'/'+(route.tab || 'overview');
   if(route.type==='editor')return '#edit/'+encodeURIComponent(route.id)+(route.node?'/node/'+encodeURIComponent(route.node)+(route.implementation?'/implementation/'+encodeURIComponent(route.implementation):''):'');
@@ -12,6 +13,7 @@ function routeHash(route){
 }
 function parseRoute(hash){
   const parts=hash.replace(/^#/,'').split('/');
+  if(parts[0]==='communication')return {type:'communication'};
   if(!parts[0])return {type:'home'};
   if(parts[0]==='loop_definitions')return {type:'catalog'};
   if(parts[0]==='loop')return {type:'loop',key:decodeURIComponent(parts[1] || ''),tab:['overview','flow','prepare'].includes(parts[2])?parts[2]:'overview'};
@@ -67,7 +69,8 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
     if(document.fullscreenElement===editorPage&&routeHash(route)!==routeHash(previous))await document.exitFullscreen();
     if(!external)history[replace?'replaceState':'pushState'](null,'',routeHash(route));
     activeRoute=structuredClone(route);
-    if(route.type==='catalog'){page='catalog';await loadCatalog();}
+    if(route.type==='communication'){page='communication';await renderCommunication();}
+    else if(route.type==='catalog'){page='catalog';await loadCatalog();}
     else if(route.type==='loop'){page='loop';loopKey=route.key;loopTab=route.tab || 'overview';renderLoop();}
     else if(route.type==='prepare'){if(await enterPreparation(route.id)===false)return true;}
     else if(route.type==='editor'){
@@ -94,7 +97,8 @@ function updateNavigationUI(){
   if(typeof renderPreparationNav==='function')renderPreparationNav();
   $('run-list').querySelectorAll('[data-run]').forEach(b=>b.classList.toggle('chosen',page==='runs'&&b.dataset.run===selected));
   const crumbs=[navLink({type:'catalog'},'Loop 库')];
-  if(page==='loop'){
+  if(page==='communication'){crumbs.push('Agent 通信');}
+  else if(page==='loop'){
     crumbs.push(esc(currentLoop()?.loop_definition.name || loopKey));
     if($('loop-runs')){const content=relatedRunsHTML(loopKey);if($('loop-runs').innerHTML!==content)$('loop-runs').innerHTML=content;}
   }else if(page==='launch' && conversation){crumbs.push(navLink({type:'loop',key:conversation.launch.key},launchItem()?.loop_definition.name || 'Loop'));crumbs.push('启动准备');

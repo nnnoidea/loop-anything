@@ -41,7 +41,9 @@ def main():
         directory=args.data_dir or str(Path.home()/'.cc-connect')
         if not all(isinstance(v,str) and v.strip() for v in (project,session,directory)):
             raise ValueError('The project/identity and session/destination must be explicit')
-        lines = [str(notice['title']) + ' · ' + str(notice['run_id']), str(notice['message'])]
+        title=str(notice.get('title') or '协作通知')
+        if notice.get('run_id'):title+=' · '+str(notice['run_id'])
+        lines = [title, str(notice['message'])]
         if notice.get('task_label'):
             labels = {'completed': '已完成', 'executing': '执行中', 'fault': '失败', 'ready': '就绪', 'held': '暂停等待'}
             lines.append('任务：' + notice['task_label'] + ' · ' + labels.get(notice.get('task_status'), notice.get('task_status', '')))

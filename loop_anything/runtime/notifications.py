@@ -1,5 +1,6 @@
 """Named local notification outlets and one durable outbox in each Timeline."""
 import copy
+import json
 import re
 import time
 from loop_anything.runtime.model import Invalid, Conflict, digest, check_schema
@@ -8,6 +9,21 @@ from loop_anything.runtime.store import Store
 
 class NotificationConfigurationError(Invalid):
     """Delivery must wait for an explicitly configured outlet."""
+
+
+def deliver_command(adapter, payload, runner):
+    """Shared receipt contract for Timeline and standalone request notifications."""
+    if not adapter.get('command'):
+        raise NotificationConfigurationError('No notification transport configured')
+    result=runner(adapter['command'],json.dumps(payload),adapter.get('timeout',30),adapter.get('cwd'))
+    if result.returncode:
+        try:detail=json.loads(result.stdout).get('error')
+        except (ValueError,AttributeError):detail=None
+        raise Invalid('Notification transport failed: '+str(detail or result.stderr or result.returncode)[-1500:])
+    receipt=json.loads(result.stdout)
+    if not isinstance(receipt,dict) or receipt.get('delivered') is not True:
+        raise Invalid('Transport did not confirm delivery')
+    return receipt
 
 
 def waiting_configuration(notice):

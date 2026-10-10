@@ -70,14 +70,14 @@ def acquire(store, run_id, task_id=None, _db=None):
     return owner
 
 
-def recover_owner(store, run_id, token, confirmed_stopped=False):
+def recover_owner(store, run_id, token, confirmed_stopped=False, _db=None):
     """Explicit local recovery only; never expire a possibly live Agent automatically."""
-    with store.edit(run_id) as run:
+    with store.edit(run_id, _db=_db) as run:
         owner = require_owner(run, token)
         if confirmed_stopped is not True:
             raise Conflict('Verify the previous Agent stopped before releasing recovered ownership')
         release_in_run(run, token)
-        if owner.get('recovery_required'):
+        if owner.get('recovery_required') and not owner.get('resume_session'):
             from loop_anything.runtime.timeline_runtime import agent_exited
             agent_exited(run, RunTools(store, run_id, token).runtime, 'Previous Agent confirmed stopped after interruption', owner.get('scope_task'))
 
@@ -243,6 +243,8 @@ def change_task_in_run(run, arguments, actor=None):
     elif op == 'retry':
         if tasks['status'] not in ('fault', 'stale', 'waiting_user', 'cancelled', 'retrying') or tasks.get('budget_error'):
             raise Conflict('Only failed/stale tasks can retry; budgets remain enforced')
+        if tasks.get('assistance_wait') and not tasks.get('assistance_resume'):
+            raise Conflict('Cannot retry assistance waiting without the original native CLI session; restore its session metadata first')
         from loop_anything.runtime.timeline_model import check_task
         spec = copy.deepcopy(tasks['spec'])
         for field in ('inputs', 'parameters', 'implementation', 'after'):
@@ -367,6 +369,7 @@ class RunTools:
         text, obj = {'type': 'string'}, {'type': 'object'}
         defs = [
             ('read_capabilities', 'Read actual service version/build, capability-to-tool map and supported contract keywords. Optional capability selects one guide; read-only and requires no operation scope.', {'capability':text}, [], True),
+            ('register_agent_session', 'Record the native CLI session ID for your own current execution, so the user can resume this exact conversation. Obtain the actual ID from your CLI, never guess or use the most recent session. This is not the platform execution ID.', {'execution_id':text,'provider':{'type':'string','enum':['codex','claude','custom']},'session_id':text,'cwd':text}, ['execution_id','provider','session_id'], False),
             ('next_tasks', 'Read current work and waiting reasons without acquiring rights. With a token, restrict the work view to that operation scope. Other active Agents are waiting, not tasks to take over.', {}, [], True),
             ('read_timeline', 'Read the latest shared Timeline without acquiring rights. read_only=true grants no write permission; scope_task=null means global rights only when read_only=false. Read before acquiring and re-read before editing.', {}, [], True),
             ('read_record', 'Read a committed record on demand.', {'id': text, 'revision': {'type': 'integer'}}, ['id'], True),
@@ -472,6 +475,13 @@ class RunTools:
                         require_scope(run, owner, tasks['id'])
                         return self.runtime.report_in_run(run, current, report, 'agent')
             owner = require_owner(run, self.token)
+            if name == 'register_agent_session':
+                target=execution(run,arguments['execution_id'])
+                if target['implementation']['kind']!='agent' or target.get('token')!=self.token or (owner.get('execution_id') is not None and owner['execution_id']!=target['id']):
+                    raise Conflict('Register only your own active Agent execution')
+                require_scope(run,owner,target['task_id'])
+                from loop_anything.runtime.native_sessions import bind
+                return {'native_session':bind(run,target,arguments['provider'],arguments['session_id'],'agent_report',arguments.get('cwd'))}
             if name in ('report_task', 'change_task'):
                 tasks = run['tasks'].get(arguments['task_id'])
                 if not tasks:
@@ -535,6 +545,9 @@ class RunTools:
                     raise Invalid('Unknown user request')
                 request['status'] = 'completed'
             elif name == 'finish':
+                if owner.get('resume_session'):
+                    release_in_run(run,self.token)
+                    return {'finished':True,'continuation':True}
                 tasks = task_list(run, self.runtime, owner)
                 primary = run['tasks'].get(owner.get('task_id'), {})
                 attempt = execution(run, primary['execution_id']) if primary.get('execution_id') else {}
@@ -575,7 +588,7 @@ class RunTools:
             config = selected(run, tasks)[1]
             lifecycle = definition(config) if config else None
             attempt = execution(run, tasks['execution_id']) if tasks.get('execution_id') else {}
-            execution_state = {k: attempt[k] for k in ('id', 'task_revision', 'task_spec', 'lifecycle_state', 'external_id', 'wake_at', 'observation_error', 'retry', 'wait') if k in attempt}
+            execution_state = {k: attempt[k] for k in ('id', 'task_revision', 'task_spec', 'lifecycle_state', 'external_id', 'wake_at', 'observation_error', 'retry', 'wait', 'native_session') if k in attempt}
             last_transition = next((h for h in reversed(run['history']) if h['kind'] == 'transition' and h['execution'] == attempt.get('id')), None)
             return {'lifecycle': lifecycle, 'execution_state': execution_state, 'last_transition': last_transition, 'task': tasks, 'task_revision': tasks.get('revision'), 'inputs': values, 'sources': sources, 'missing': missing,
                     'task_version': digest([tasks.get('revision'), tasks['spec'], values, sources, selected(run, tasks)]),

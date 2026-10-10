@@ -74,7 +74,7 @@ class WebAgent:
         bindings = run['settings'].get('bindings', {}) if run else {}
         preferred = (run['settings'] if run else bp).get('global_agent_node') or (run['settings'] if run else bp).get('fallback_node') or bp['entry']
         implementation = choose(item['implementations'], preferred, bindings)[1] or {}
-        agent = {k: implementation[k] for k in ('command', 'cwd', 'timeout') if k in implementation} if implementation.get('kind') == 'agent' and not implementation.get('simulation') else {}
+        agent = {k: implementation[k] for k in ('command', 'cwd', 'timeout') if k in implementation} if implementation.get('kind') == 'agent' and not implementation.get('simulation') and not implementation.get('terminal') else {}
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             if run_id:
@@ -180,6 +180,13 @@ class WebAgent:
             result += [d for d in PlatformTools(self.store).definitions() if d['name']=='read_capabilities']
         if doc.get('run_id'):
             result += RunTools(self.store, doc['run_id']).definitions()
+        from loop_anything.interfaces.communication_tools import definitions as communication_definitions
+        for definition in communication_definitions():
+            if definition['name'] not in ('communication_status','request_assistance','read_assistance','control_assistance'):continue
+            definition=copy.deepcopy(definition)
+            for key in ('run_id','token','source'):definition['inputSchema']['properties'].pop(key,None)
+            definition['inputSchema']['required']=[k for k in definition['inputSchema']['required'] if k not in ('run_id','token','source')]
+            result.append(definition)
         return result
 
     def tool(self, ident, token, name, arguments):
@@ -189,7 +196,18 @@ class WebAgent:
             if name not in defs:
                 raise Invalid('Tool is unavailable in this webpage context')
             contract(arguments, defs[name]['inputSchema'], 'arguments')
-            if name == 'read_capabilities':
+            if name in ('communication_status','request_assistance','read_assistance','control_assistance'):
+                from loop_anything.interfaces.communication_tools import call as communication_call
+                args=copy.deepcopy(arguments)
+                if name=='communication_status' and doc.get('run_id'):args['run_id']=doc['run_id']
+                if name=='request_assistance' and doc.get('run_id'):
+                    args.update(source={'run_id':doc['run_id'],'task_id':doc['turn'].get('scope_task')},token=doc['turn'].get('operator_token'))
+                if name in ('read_assistance','control_assistance') and args['request_id'] not in doc.get('communication_requests',[]):
+                    raise Conflict('Read only requests created by this conversation')
+                result=communication_call(self.store,name,args)
+                if name=='request_assistance' or name=='control_assistance' and args['action']=='followup':
+                    with self.edit(ident) as (current,_):current.setdefault('communication_requests',[]).append(result['request']['id'])
+            elif name == 'read_capabilities':
                 from loop_anything.capabilities import discover
                 result = discover(arguments.get('capability'))
             elif name == 'read_preparation':
