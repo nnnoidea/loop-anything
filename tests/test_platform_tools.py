@@ -323,6 +323,12 @@ class PlatformToolTests(unittest.TestCase):
         sent = json.loads(capture.read_text())
         self.assertEqual(['send','--project','project A','--session','feishu:original','--data-dir',str(root.resolve()),'--stdin'],sent['argv'])
         self.assertIn(payload['message'],sent['text'])
+        legacy=dict(payload,request_id='request-legacy')
+        replay=subprocess.run(command,input=json.dumps(legacy),text=True,capture_output=True)
+        self.assertEqual(replay.returncode,0,replay.stdout)
+        replay_text=json.loads(capture.read_text())['text']
+        self.assertIn('请求：request-legacy',replay_text)
+        self.assertNotIn('通知：n1',replay_text)
         updated=dict(payload,outlet={'identity':'project B','destination':'weixin:next'})
         switched=subprocess.run(command,input=json.dumps(updated),text=True,capture_output=True)
         self.assertEqual(switched.returncode,0,switched.stdout)

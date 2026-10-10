@@ -1082,7 +1082,9 @@ class Communication:
         context.update(row['source'])
         if row.get('source_reference'):context['source_reference']=row['source_reference']
         context.update({k:row['context'][k] for k in ('handbook','inputs','scope_task','loop_key','node_id','parameters','resource_root','assistance_results','assistance_resume') if k in row['context']})
-        context.update({k:row['context'].get('task',{}).get(k) for k in ('skills','instructions')})
+        task_info=row['context'].get('task')
+        if not isinstance(task_info,dict):task_info={}
+        context.update({k:task_info.get(k) for k in ('skills','instructions')})
         prompt = ('You are executing a named Agent request. Use the supplied client to report progress and structured results; '
                   'When assistance_resume is present, continue the exact saved CLI session and use assistance_results. All earlier platform tokens are obsolete; use only this fresh context. '
                   'your final chat text is not a result. The client accepts --context FILE, or --url URL --request ID --token TOKEN, '
@@ -1525,7 +1527,8 @@ class Communication:
                     if row['kind']=='node_execution' and state=='completed':
                         result_value=next((c['arguments'].get('envelope',{}).get('outputs') for c in reversed(list(row.get('rpc',{}).values()))
                             if c['state']=='completed' and c['tool'] in ('report_task','complete_task') and c.get('result',{}).get('accepted') and (c['tool']=='complete_task' or c['arguments'].get('event')=='completed')),result_value)
-                    text=scope+'\n'+actor+' · '+machine+' · '+labels[state]+('（外援回复）' if row['kind']=='assistance' and state=='completed' else '')+'\n'+row['message'][:300]
+                    text=scope+'\n'+actor+' · '+machine+' · '+labels[state]+('（外援回复）' if row['kind']=='assistance' and state=='completed' else '')+'\n请求：'+row['id']
+                    if not current.get('notifications'):text+='\n'+row['message'][:300]
                     if result_value:text+='\n结果摘要：'+json.dumps(result_value,ensure_ascii=False)[:600]
                     if row.get('error'):text+='\n'+str(row['error'])[:300]
                     notice={'id':uid('notice'),'state':state,'status':'sending','attempt':1,'requested_route':row['notification_route'],

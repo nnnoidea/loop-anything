@@ -65,6 +65,30 @@ class CommunicationTests(unittest.TestCase):
         self.assertTrue(self.a.authorized({'request_id':result['request']['id'],'token':result['request_token']}))
         self.assertFalse(self.a.authorized({'request_id':result['request']['id'],'token':'wrong'}))
 
+    def test_assistance_context_task_accepts_business_json_without_blocking_launch(self):
+        gid=self.groups();self.agent(self.a);self.agent(self.b,groups=[gid])
+        contexts=[{}, {'task':'分析实验结果并查找相关论文'}, {'task':None}, {'task':['分析','检索']},
+                  {'task':42}, {'task':{'skills':['paper-review'],'instructions':'Compare methods'}}]
+        received=[]
+        def worker(command,prompt,*args,**kwargs):
+            received.append(json.loads(prompt.split('\n',1)[1]))
+            return self.worker(command,prompt,*args,**kwargs)
+        with patch('loop_anything.runtime.host_runtime.run_command',side_effect=worker):
+            for location in ('local','group'):
+                for context in contexts:
+                    with self.subTest(location=location,context=context):
+                        row=self.a.request({'location':location,'group_id':gid,'agent_id':'papers',
+                                            'message':'process context','context':context})['request']
+                        self.cycle(lambda:self.a.get(row['id'])['state'] in ('completed','failed'))
+                        result=self.a.get(row['id'])
+                        self.assertEqual(result['state'],'completed',result.get('error'))
+                        supplied=next(c for c in received if c['request_id']==row['id'])
+                        self.assertEqual(supplied['context'],context)
+                        self.assertEqual(result['result'],{'papers':['one']})
+                        if isinstance(context.get('task'),dict):
+                            self.assertEqual(supplied['skills'],context['task']['skills'])
+                            self.assertEqual(supplied['instructions'],context['task']['instructions'])
+
     def test_two_candidates_one_assignment_and_result_roundtrip(self):
         gid=self.groups()
         self.agent(self.b,groups=[gid]);self.agent(self.c,groups=[gid])
