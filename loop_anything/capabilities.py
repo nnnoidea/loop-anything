@@ -2,7 +2,7 @@
 import hashlib
 from pathlib import Path
 
-VERSION = '0.5.3'
+VERSION = '0.5.4'
 API_REVISION = 2
 CAPABILITIES = {
     'assistance_session_resume': ('Waiting Agent tasks resume their exact native CLI session with assistance results and fresh credentials; remote work stays on the original instance/Agent and never silently starts a new conversation.', ['wait_assistance','register_agent_session','communication_execute','read_assistance'], 'references/communication.md'),

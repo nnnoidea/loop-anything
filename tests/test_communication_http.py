@@ -41,7 +41,7 @@ if c["kind"]=="node_execution":
  source("finish",{})
  call("complete",{"result":{}})
 else:
- call("complete",{"result":{"papers":["example"],"message":c["message"]}})
+ call("complete",{"result":{"papers":["example"],"message":c["message"],"context":c["context"]}})
 '''
 
 
@@ -82,7 +82,8 @@ class CommunicationHTTPTests(unittest.TestCase):
                 tool(1,'communication_config',{'operation':'agent','agent_id':'papers','agent':{'name':'论文助手','local':True,'groups':[gid],
                      'implementation':{'kind':'agent','command':[sys.executable,str(worker)],'agent_cli':'custom','resume_command':[sys.executable,str(worker),'{{prompt}}','{{session_id}}']}}})
                 for origin,location in ((1,'local'),(0,'group')):
-                    created=tool(origin,'request_assistance',{'location':location,'group_id':gid,'agent_id':'papers','message':'查论文'})
+                    business_context={'task':'分析实验结果并查找相关论文'}
+                    created=tool(origin,'request_assistance',{'location':location,'group_id':gid,'agent_id':'papers','message':'查论文','context':business_context})
                     args={'request_id':created['request']['id'],'token':created['request_token']}
                     with self.assertRaises(HTTPError):tool(origin,'read_assistance',{'request_id':args['request_id'],'token':'wrong'},admin=False)
                     for _ in range(100):
@@ -91,6 +92,7 @@ class CommunicationHTTPTests(unittest.TestCase):
                         time.sleep(.15)
                     self.assertEqual(result['state'],'completed',result)
                     self.assertEqual(result['result']['papers'],['example'])
+                    self.assertEqual(result['result']['context'],business_context)
                     for _ in range(100):
                         result=tool(origin,'read_assistance',args,admin=False)['request']
                         if any(n['state']=='completed' and n['status']=='delivered' for n in result.get('notifications',[])):break

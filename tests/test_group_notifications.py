@@ -47,6 +47,7 @@ class GroupNotificationTests(unittest.TestCase):
         sent=[json.loads(x) for x in self.log.read_text().splitlines()]
         self.assertEqual(len(sent),1);self.assertIn('research-project',sent[0]['argv']);self.assertIn('feishu-chat',sent[0]['argv'])
         self.assertIn('实验支持',sent[0]['text'])
+        self.assertIn('论文分析完成',sent[0]['text'])  # Fast completion can be the first observed state.
         packet=next(json.loads(p.read_text()) for p in (self.root/'nas'/'messages'/binding['sender_instance']).glob('*.json') if json.loads(p.read_text()).get('kind')=='notification_deliver')
         self.c.receive(packet)
         duplicate=dict(packet,id='duplicate-delivery');self.c.receive(duplicate)
@@ -57,6 +58,27 @@ class GroupNotificationTests(unittest.TestCase):
         self.assertNotIn(str(self.root/'cc-connect-test'),shared)
         self.assertNotIn('"command"',shared)
         with self.assertRaises(Conflict):self.c.receive(dict(packet,id='changed-delivery',payload=dict(packet['payload'],payload={'message':'changed'})))
+
+    def test_lifecycle_messages_reference_same_request_without_repeating_body(self):
+        self.configure()
+        message='请检索这次实验相关的论文，并比较不同方法的假设'
+        ident=self.a.request(dict(location='group',group_id=self.gid,agent_id='papers',message=message))['request']['id']
+        for index,state in enumerate(('pending','running','completed'),1):
+            with self.a.transaction() as db:
+                row=self.a.get(ident,db);row['state']=state
+                if state=='completed':row['result']={'summary':'找到三篇相关论文'}
+                self.a.save(db,row)
+            self.cycle(lambda:len([n for n in self.a.get(ident).get('notifications',[]) if n['status']=='delivered'])==index)
+        sent=[json.loads(line)['text'] for line in self.log.read_text().splitlines()]
+        self.assertEqual(len(sent),3)
+        self.assertIn(message,sent[0])
+        for text in sent[1:]:self.assertNotIn(message,text)
+        for text in sent:
+            self.assertEqual(text.count(ident),1)
+            self.assertNotIn('通知：notice-',text)
+        self.assertIn('开始执行',sent[1])
+        self.assertIn('找到三篇相关论文',sent[2])
+        self.assertEqual(self.a.get(ident)['message'],message)
 
     def test_offline_sender_waits_and_binding_changes_do_not_redirect_existing_work(self):
         binding=self.configure();ident=self.completed_request()

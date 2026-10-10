@@ -50,7 +50,9 @@ def main():
         if notice.get('reason'):
             lines.append(str(notice['reason']))
         if notice.get('reply'):lines.append('需要回复：可以在平台回答，或让当前会话的 Agent 提交回复。')
-        lines.append('通知：' + str(notice['id']))
+        if notice.get('request_id'):
+            if str(notice['request_id']) not in str(notice['message']):lines.append('请求：' + str(notice['request_id']))
+        else:lines.append('通知：' + str(notice['id']))
         result = subprocess.run([args.executable, 'send', '--project', project, '--session', session,
                                  '--data-dir', directory, '--stdin'], input='\n'.join(lines), text=True,
                                 encoding='utf-8', capture_output=True, timeout=25)

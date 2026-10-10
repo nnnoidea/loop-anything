@@ -34,7 +34,7 @@
 
 1. `communication_status` 查看显式开放的本机成员和群组目录。Loop 调用带 run_id；此时只显示其群组范围。
 2. `request_assistance` 传 `location: local` 和 agent_id；或 `location: group`、明确 group_id 和 agent_id/capability。无默认群组时先选择，不跨组广播；同名目标以稳定 ID 消歧。
-3. 提供 message、需要分享的 context，以及可选 result_schema（默认 object）。节点内调用还需 `source: {run_id, task_id}` 和当前操作 token。无 Loop 不传 source，调用方无需成为接单成员。
+3. 提供 message、需要分享的 context，以及可选 result_schema（默认 object）。context 顶层须为 JSON 对象，内部业务字段可为文字、数组、null 等 JSON 值；例如 `{"task":"查找相关论文"}` 合法，不要求把 context.task 包装成平台 Task 对象。节点内调用还需 `source: {run_id, task_id}` 和当前操作 token。无 Loop 不传 source，调用方无需成为接单成员。
 4. 返回 request.id 和私有 request_token。之后 `read_assistance(request_id, token)` 查看进度、结果和日志；读取不会启动 Agent。
 5. `control_assistance` 可 cancel、input、followup。followup 默认要求继续准确记录的 session；明确 `resume: false` 才新建。取消已发出不等于远端已经停止。
 
@@ -97,7 +97,7 @@ python3 /实际客户端路径/communication.py --context 请求上下文.json c
 
 共享目录发布完整消息或分块消息，单个逻辑消息上限 32 MiB；大业务数据使用产物引用。未确认消息保留重发，日志按序号单独持久化。当前保留历史记录，不自动删除仍可能被引用的内容。大规模归档时需关注目录与本地数据库占用。
 
-通知使用已有命名出口，独立请求默认 workspace，节点执行可沿用 Run 出口。飞书/微信只用于通知；未配置时不猜接收人，不承担请求和正式结果传输。
+通知使用已有命名出口，独立请求默认 workspace，节点执行可沿用 Run 出口。通信消息统一显示请求 ID；首条实际生成的通知包含请求正文（即使请求很快进入执行或完成），后续通知引用同一 ID，保留状态、结果摘要或错误，不重复原请求。cc-connect 对通信消息不另附内部通知 ID，投递和重试回执仍按通知记录保存。飞书/微信只用于通知；未配置时不猜接收人，不承担请求和正式结果传输。
 
 ### 群组绑定 cc-connect 与指定发送机器
 
