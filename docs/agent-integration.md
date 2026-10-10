@@ -100,7 +100,7 @@ python3 /平台Skill/scripts/call.py read_task --arguments '{"run_id":"RUN_ID","
 
 完整契约见[通知接口](../skills/loop-anything-platform/references/notifications.md)。平台提供 [cc-connect 适配器](../skills/loop-anything-platform/references/cc-connect.md)作为第一个可用示例；其他实现按相同输入和回执契约接入，无需修改 Engine、Loop 或注册插件。个人接收目标保存在 Run 设置中，不随 Loop 包共享。
 
-通信群组可以选择指定机器上的命名出口。发送机器通过 communication_config 的 group_notifications 操作绑定本地出口，并向 NAS 公布不含命令的路由信息；来源机器持久排队，指定机器调用既有适配器后回传回执。详见[群组通知绑定](../skills/loop-anything-platform/references/communication.md#群组绑定-cc-connect-与指定发送机器)。
+通信群组按机器独立绑定通知入口。没有聊天来源的新群组请求，通知默认优先动作发生方，其次直接请求发起方，均无入口则仅记录；来源继续持久生成、去重并保存回执。发送失败或结果未知不自动切换机器。详见[群组通知优先级](../skills/loop-anything-platform/references/communication.md#群组按机器绑定出口与通知优先级)。
 
 ## 跨入口继续同一 Run
 
@@ -117,3 +117,7 @@ python3 /平台Skill/scripts/call.py read_task --arguments '{"run_id":"RUN_ID","
 平台 Skill 按持续工作、独立外援、查询已有任务和组网场景选择入口，详细调用与连接说明按需加载。升级平台后需同步导出/更新 Agent 实际加载的 Skill，并保留连接地址。
 
 通信查询默认返回精简状态和结果；仅排错时设置 read_assistance 的 include_logs（4000 字符默认、16000 上限），沿 log_cursor/log_offset 继续；include_details 单独请求原始上下文和历史。追问保留原始业务上下文及最近结果，外援续跑不携带完整通信档案；原 session 身份与结果契约保持不变。
+
+## 聊天入口通知（0.5.7）
+
+飞书入口经 Skill 客户端自动保存原会话；私聊由入口 Bot 回复，群聊的执行确认和结果优先使用具名 Agent 的 `notification_route` 所映射 Bot，并保持原话题。发送前明确不可用才回退入口，发送结果未知不自动换 Bot。嵌套外援继承原来源；显式通知出口覆盖，无聊天来源保留按机器优先级。配置入口在具名 Agent 编辑界面。完整前提、只读权限及 API 用法见平台 Skill 的 `references/cc-connect.md`；话题需开启 cc-connect 话题隔离并保留 root session key。

@@ -76,7 +76,7 @@ class CommunicationHTTPTests(unittest.TestCase):
                 binding=tool(1,'communication_config',{'operation':'group_notifications','group_id':gid,'notification_route':'test-outlet'})['notification_binding']
                 for _ in range(100):
                     discovered=tool(0,'communication_status',{'group_id':gid})['groups']
-                    if next(g for g in discovered if g['id']==gid).get('notification_binding',{}).get('id')==binding['id']:break
+                    if next(g for g in discovered if g['id']==gid).get('notification_bindings',{}).get(binding['sender_instance'],{}).get('id')==binding['id']:break
                     time.sleep(.1)
                 else:self.fail('Group notification binding was not discovered')
                 tool(1,'communication_config',{'operation':'agent','agent_id':'papers','agent':{'name':'论文助手','local':True,'groups':[gid],
@@ -98,7 +98,7 @@ class CommunicationHTTPTests(unittest.TestCase):
                         if any(n['state']=='completed' and n['status']=='delivered' for n in result.get('notifications',[])):break
                         time.sleep(.1)
                     else:self.fail('Group notification receipt was not returned')
-                    self.assertEqual(result['notification_binding']['id'],binding['id'])
+                    self.assertEqual(next(n for n in result['notifications'] if n['state']=='completed')['routing']['binding_id'],binding['id'])
                     self.assertEqual(result['native_session']['provider'],'custom')
                     self.assertNotIn('worker_token',result)
                     if location=='local':

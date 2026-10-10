@@ -4,6 +4,26 @@
 
 构建时先将需求对应到下列机制，再设计业务节点和实现。activation=automatic 表示平台自动执行；declared/configured 需要作者声明或使用者配置；operator 需要显式操作。
 
+## conversation_notifications
+
+- 生效方式：automatic/configured
+- 平台承担：飞书入口调用默认回复原会话；私聊由入口Bot回复，群聊优先具名Agent对应Bot并保持原话题。
+- 作者提供：Skill call.py 自动捕获入口并注册 conversation_id；agent.notification_route 映射本机Bot出口。嵌套外援继承来源，不需要Agent重新拼接通知命令。
+- 配置入口：`communication_config(operation=conversation)`、`communication_config(operation=agent)`、`request_assistance.conversation_id`、`start_run.conversation_id`
+- 边界：发送前确认不可用才回退入口Bot；发送后失败或未知不改投。话题需要完整root session key和cc-connect话题隔离。显式出口优先；无聊天来源沿用群组按机器出口。
+- 工具入口：communication_config、request_assistance、start_run、read_assistance
+- 详细说明：[references/cc-connect.md](cc-connect.md)
+
+## group_notification_priority
+
+- 生效方式：automatic/configured
+- 平台承担：无聊天来源时，群组通知逐条优先动作发生方，再回退本次请求的直接发起方；均无入口则仅平台记录。
+- 作者提供：按机器绑定入口；省略请求 notification_route 使用优先级。嵌套外援按子请求直接发起方回退。
+- 配置入口：`communication_config(operation=group_notifications)`、`communication_status.groups[].notification_bindings`、`read_assistance.notifications[].routing`
+- 边界：缺入口或明确停用才回退；离线、失败及送达未知不自动改投。显式出口优先，通知重试固定原绑定。
+- 工具入口：communication_config、communication_status、read_assistance
+- 详细说明：[references/communication.md](communication.md)
+
 ## communication_context
 
 - 生效方式：automatic/operator
@@ -27,10 +47,10 @@
 ## group_notifications
 
 - 生效方式：configured/operator
-- 平台承担：群组默认通知出口和发送机器；来源通过 NAS 持久交付通知，指定机器复用 cc-connect 等已有适配器投递并写回真实回执。
-- 作者提供：在发送机器配置本地命名出口，再用 group_notifications 绑定群组；提供 cc-connect project 和聊天 session。
+- 平台承担：各机器独立绑定群组通知入口；来源持久生成通知，选定机器复用 cc-connect 等适配器并写回回执。
+- 作者提供：在各机器配置本地命名出口，再用 group_notifications 绑定该机器的群组入口。
 - 配置入口：`communication_config(operation=group_notifications)`、`platform notification channels`
-- 边界：命令和凭据不写入 NAS；旧请求固定原绑定。离线保留待回执，不自动切换机器；未知送达须核实后显式重试。
+- 边界：命令和凭据不写入 NAS；已生成通知固定出口。旧策略请求按原策略完成；未知送达须核实后显式重试。
 - 工具入口：communication_status、communication_config、read_notification_channels、set_notification_channels、read_assistance、control_assistance
 - 详细说明：[references/communication.md](communication.md)
 
@@ -331,24 +351,51 @@
 }
 ```
 
-### group_cc_connect_delivery
+### chat_origin_delivery
 
-A 发起、B 执行，但只有 C 安装了 cc-connect，需要向同一飞书群通知协作进展。
+用户在飞书私聊或群话题中请求本机/远端外援，结果需要回到这段对话。
 
 ```json
 {
-  "use_when": "A 发起、B 执行，但只有 C 安装了 cc-connect，需要向同一飞书群通知协作进展。",
+  "use_when": "用户在飞书私聊或群话题中请求本机/远端外援，结果需要回到这段对话。",
   "capabilities": [
-    "group_notifications",
+    "conversation_notifications",
     "agent_communication",
     "notifications"
   ],
   "configuration": [
-    "在 C 配置命名通知出口，使用平台 cc_connect_command 和明确的 project / 聊天 session。",
-    "C 调用 communication_config operation=group_notifications，选择 group_id、notification_route 和 notification_level；已有绑定需带当前 binding_id。",
-    "A 通过 communication_status 看到绑定后发出请求，省略 notification_route 即沿用群组；平台负责排队、去重、投递及回执。"
+    "通过 Skill call.py 发起 request_assistance 或 start_run，自动读取桥接入口并注册 conversation_id。",
+    "在具名 Agent 的 notification_route 选择本机 Bot 出口；群内执行确认和结果优先该 Bot，私聊仍由入口回复。",
+    "所有参与 Bot 开启话题隔离和回复原消息；只读预检确认原群/根消息，发送前不可用才由入口代发。"
   ],
-  "author_provides": "指定群组、发送机器和实际聊天目标；业务 Agent 无需编写 NAS 通知队列或自行调用 cc-connect。",
+  "author_provides": "具名Agent对应Bot的本机出口映射；复用已有cc-connect配置及只读权限。",
+  "verification": [
+    "read_assistance",
+    "communication_workspace"
+  ]
+}
+```
+
+### group_cc_connect_delivery
+
+没有聊天来源时，A 请求 B 工作，通知优先由动作发生的机器发送，无入口时回退 A。
+
+```json
+{
+  "use_when": "没有聊天来源时，A 请求 B 工作，通知优先由动作发生的机器发送，无入口时回退 A。",
+  "capabilities": [
+    "conversation_notifications",
+    "group_notifications",
+    "group_notification_priority",
+    "agent_communication",
+    "notifications"
+  ],
+  "configuration": [
+    "在 A、B 各自配置本机通知出口，使用平台 cc_connect_command 和明确的 project / 聊天 session。",
+    "各机器调用 communication_config operation=group_notifications；修改需带本机当前 binding_id，互不覆盖其他机器。",
+    "communication_status 返回按机器索引的 notification_bindings；请求省略 notification_route，执行/返回事件优先 B，无 B 入口回退 A，均无入口只记录。"
+  ],
+  "author_provides": "群组及各机器实际聊天目标；业务 Agent 无需编写通知队列、选发送方或自行调用 cc-connect。",
   "verification": [
     "communication_status",
     "read_assistance",

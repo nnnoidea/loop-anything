@@ -117,7 +117,13 @@ class Store:
             db.commit()
         return {'id': draft_id, 'revision': revision, 'updated_at': now, 'loop_definition': loop_definition, 'implementations': implementations, **extra}
 
-    def create(self, key, title, inputs=None, settings=None, authorization='', acquire=False, bindings=None, fallback_node=None, global_agent_node=None, notification_command=None, notification_route=None, _db=None):
+    def create(self, key, title, inputs=None, settings=None, authorization='', acquire=False, bindings=None, fallback_node=None, global_agent_node=None, notification_command=None, notification_route=None, _db=None, conversation_id=None):
+        inherit_conversation=bool(conversation_id and notification_route is None and notification_command is None)
+        if conversation_id:
+            from loop_anything.runtime.communication import service
+            from loop_anything.runtime.communication_conversations import resolve
+            captured=resolve(service(self),conversation_id,include_sender=True)
+            if inherit_conversation:notification_command=captured['sender']['command']
         if type(acquire) is not bool:
             raise Invalid('acquire must be boolean')
         item = next((c for c in self.catalog() if c['key'] == key), None)
@@ -144,6 +150,7 @@ class Store:
                'implementations': item['implementations'], 'inputs': defaults,
                'status': 'running', 'revision': 1, 'created_at': time.time(),
                'executions': [], 'events': [], 'history': []}
+        if inherit_conversation:run['notification_conversation_id']=conversation_id
         if loop_definition.get('schema_version') == 2:
             from loop_anything.runtime.timeline_runtime import initialize_run
             initialize_run(run, bindings)

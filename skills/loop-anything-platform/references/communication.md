@@ -26,7 +26,7 @@
 - `operation: probe`：group_id。本机写入、读回并清理测试文件；不将此结果当作双机 NAS 验收。
 - `operation: bind_loop`：loop_key 或 run_id，以及 group_id。Loop 默认在新 Run 创建时固定；Run 覆盖只影响新请求。
 - `operation: context`：创建/更新 context_id 与默认 group_id，供无 Loop 的对话使用。
-- `operation: group_notifications`：在实际发送机器上，为 group_id 选择本地 notification_route 和 notification_level；当前机器成为群组发送机器。替换/停用需传当前 binding_id，enabled=false 停用群组外部通知。具体流程见下节。
+- `operation: group_notifications`：在实际发送机器上，为 group_id 选择本地 notification_route 和 notification_level；仅绑定当前机器的入口，不覆盖其他机器。替换/停用需传本机当前 binding_id，enabled=false 只停用本机入口。具体流程见下节。
 
 普通节点 CLI 和正在运行的 session 不会自动注册。local 开关与 groups 开放范围分开；本机调用无需 NAS。命令由执行机器所有者配置，请求不能提供任意启动命令。组目录是可信内部传输，不是多租户认证系统。
 
@@ -115,27 +115,28 @@ python3 /实际客户端路径/communication.py --context 请求上下文.json c
 
 通知使用已有命名出口，独立请求默认 workspace，节点执行可沿用 Run 出口。通信消息统一显示请求 ID；首条实际生成的通知包含请求正文（即使请求很快进入执行或完成），后续通知引用同一 ID，保留状态、结果摘要或错误，不重复原请求。cc-connect 对通信消息不另附内部通知 ID，投递和重试回执仍按通知记录保存。飞书/微信只用于通知；未配置时不猜接收人，不承担请求和正式结果传输。
 
-### 群组绑定 cc-connect 与指定发送机器
+### 群组按机器绑定出口与通知优先级
 
-先通过 `read_capabilities(capability: group_notifications)` 确认支持此能力。群组通信通知的默认路径是：通信群组 → 指定发送机器上的通知出口 → cc-connect project / 聊天 session → 飞书群。聊天 session 与 Agent CLI session 是两个标识。
+先检查 `group_notification_priority` 能力。没有聊天来源的新群组请求省略 notification_route 时，按每条事件选择一个发送方：**动作发生方的群组入口 → 本次请求直接发起方的群组入口 → 不发外部通知，仅平台记录**。请求、超时和无人承接等由发起方负责；开始执行、进度、完成或执行失败优先执行方。A 请求 B、B 又请求 C 时，子请求按 C → B 回退，不回退根请求 A。
 
-1. 在准备负责发送的机器 C 上安装并配置 cc-connect，确保能访问指定聊天目标；C 加入同一个 NAS 群组。
-2. 在 C 的“通知出口”选择 cc-connect，填写 project 和聊天 session；工具方式用 read_notification_channels 返回的 cc_connect_command，再用 set_notification_channels 保存命名出口。无需把发送命令复制到其他机器。
-3. 在 C 的“Agent 通信 → 群组 → 通知绑定”选择该出口和通知档位。工具等价调用：
+1. 在各台需要提供通知入口的机器上配置本地命名出口，例如 cc-connect 的 project 和聊天 session；各机器可以绑定自己的目标。聊天 session 与 Agent CLI session 是不同标识。
+2. 在“Agent 通信 → 群组 → 通知绑定”保存**本机入口**，或调用：
 
 ```json
 {"operation":"group_notifications","group_id":"group-实际ID","notification_route":"feishu-research","notification_level":"key"}
 ```
 
-4. A/B 的后台服务会从 NAS 读取公共绑定；`communication_status.groups[].notification_binding` 可查看发送机器、出口及目的地。确认目录显示绑定后，请求省略 notification_route 即继承群组设置。正式远端节点、本机外援和嵌套外援同样继承其所属调用范围的设置。
-5. 只有 C 调用 cc-connect，实际发送命令及凭据保留在 C 的本地数据库；NAS 不保存命令。通知请求、接收去重和回执均持久化。`read_assistance` 的 notifications 显示 awaiting_delivery（等待指定机器回执）、delivered、fault 或 waiting_configuration；C 的通信页另有本机投递记录。
+3. `communication_status.groups[].notification_bindings` 按 instance_id 列出各机器绑定。修改时传本机绑定的 id 作为 binding_id；enabled=false 仅停用本机入口。不同机器互不覆盖。目录公开发送机器、目的地和档位，命令与凭据留在各自本地。保存配置不会发送消息。
+4. 来源平台继续统一生成和去重通知，经 NAS 交给选定机器调用本地适配器。`read_assistance.notifications[].routing` 给出 actor_instance、request_origin、sender_instance、binding_id 和 reason；action_machine 表示动作方，request_origin 表示回退发起方，no_bound_outlet 表示两者都没有入口。无入口状态为 skipped，不会影响任务执行。
 
-已有绑定变更时先读取 binding.id，并作为 binding_id 提交，避免覆盖未看过的设置。在新机器上保存绑定代表明确改由这台机器发送；不根据在线状态自动切换。停用外部通知后，新请求使用平台记录。保存绑定本身不发送消息。
+缺少绑定或明确停用才回退。绑定存在但机器离线、发送失败或送达未知时，保留 awaiting_delivery/fault 等状态，不切换机器重发。已经生成的通知和显式重试固定当时的发送机器、目的地及命令；更改绑定只影响后续新生成的通知。通知档位默认取选中入口的 level，请求明确指定 notification_level 时优先使用请求值；过滤掉的事件不会改投另一个入口。
 
-新请求固定当时的绑定、通知档位和发送配置；原请求、嵌套外援、追问及重试继续使用原绑定。修改 cc-connect 出口后需要重新绑定，才应用于新请求。发送机器离线时持续保留 awaiting_delivery；重连后继续。发送过程中重启会标为结果未知，核实实际送达后由来源机器显式重试，不自动重发。
+显式请求 notification_route 仍优先；无群组请求沿用 Run 默认或 workspace。业务 lifecycle/notify 的 Run 出口不变。嵌套外援仍由根来源平台保存通知回执以避免重复，路由回退对象使用子请求的直接发起方。
 
-路由选择：显式请求 notification_route 优先；未指定时使用已发现的群组绑定；没有群组绑定时沿用 Run 默认出口或独立请求的 workspace。嵌套外援统一继承父请求。此绑定管理协作通知，业务 lifecycle/notify 的既有出口设置仍由 Run 控制。
+旧单一群组绑定读取为原发送机器自己的入口，不作为新请求的任意第三方兜底。升级前已创建的请求和通知保留原策略；新群组请求及沿用群组绑定的追问采用新优先级。所有参与平台应升级以使用新路由；不会自动迁移运行中的任务或重发历史通知。
 
-`notification_level` 可选 attention（仅需处理）、key（默认关键进展）、detailed（含进度摘要）。仅需处理档位不为无人承接的可选外援报警。通知显示关联 Loop/Run/节点、执行 Agent 和机器、结果摘要；嵌套外援由最初来源平台统一通知，避免两端重复发送。失败回执可用 `control_assistance(action: retry_notification, notification_id: ...)` 显式重试；结果未知时先核实送达情况。群组目录只公开明确绑定的 Loop/Run 摘要。
+通知档位支持 attention（仅需处理）、key（默认关键进展）、detailed（含进度摘要）。可选外援无人承接时 attention 不一律报警。失败回执通过 control_assistance(action: retry_notification, notification_id: ...) 显式重试；结果未知先核实。真实 NAS、多机、模型及渠道送达仍在安装时分别验收。
 
-安装时提供真实 NAS 和机器信息；连接检查、本机双实例、真实 NAS 多机、真实 CLI/模型与实际渠道送达分别验收，不相互替代。
+## 聊天入口通知（0.5.7）
+
+飞书入口经 Skill 客户端自动保存原会话；私聊由入口 Bot 回复，群聊的执行确认和结果优先使用具名 Agent 的 `notification_route` 所映射 Bot，并保持原话题。发送前明确不可用才回退入口，发送结果未知不自动换 Bot。嵌套外援继承原来源；显式通知出口覆盖，无聊天来源保留按机器优先级。配置入口在具名 Agent 编辑界面。完整前提、只读权限及 API 用法见平台 Skill 的 `references/cc-connect.md`；话题需开启 cc-connect 话题隔离并保留 root session key。
