@@ -137,6 +137,13 @@ def active_native(db, provider, ident, store):
             request=json.loads(row[0]);native=request.get('native_session') or {}
             if not request.get('mirror') and request.get('executor')==config['instance_id'] and request['state'] in ('starting','running','unknown','cancelling') and (native.get('provider'),native.get('id'))==(provider,ident):
                 return {'state':'external','id':None,'run_id':'','execution_id':request['id'],'communication_id':request['id']}
+    from loop_anything.runtime.collaboration import caller_active
+    for saved in db.execute('SELECT id FROM runs'):
+        run=store._load(db,saved[0])
+        for execution in run.get('executions',[]):
+            native=execution.get('native_session') or {}
+            if (native.get('provider'),native.get('id'))==(provider,ident) and caller_active(execution):
+                return {'state':'external','id':None,'run_id':run['id'],'execution_id':execution['id']}
     for row in db.execute('SELECT document FROM execution_sessions ORDER BY rowid DESC'):
         doc=json.loads(row[0]);native=doc.get('native_session') or {}
         if doc['state'] not in ('starting','running','interrupted'):continue

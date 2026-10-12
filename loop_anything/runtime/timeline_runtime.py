@@ -301,6 +301,12 @@ class TimelineRuntime:
                         continue
                     implementation = tasks.get('assistance_resume',{}).get('implementation') or selected(run, tasks)[1]
                     if implementation['kind'] == 'agent':
+                        coordinator=run.get('collaboration',{}).get('agent_id') if tasks['id']=='coordinate' else None
+                        if coordinator:
+                            from loop_anything.runtime.communication import service
+                            comm=service(self.store)
+                            capacity=comm.settings()['agents'].get(coordinator,{}).get('capacity',1)
+                            if comm.agent_load(coordinator,running_only=True,exclude_run=run['id'])>=capacity:continue
                         scope = scope_for(run, tasks)
                         if 'task:' + tasks['id'] in run.get('task_dispositions', {}):
                             continue
@@ -869,6 +875,13 @@ class TimelineRuntime:
                 return
             row.update(status='waiting_configuration' if configuration_error else 'fault' if error else 'delivered', receipt=receipt, error=error)
             Store.log(run, 'notification_' + row['status'], row['message'], detail={'id': row['id'], 'route': row['route'], 'receipt': receipt, 'error': error})
+        if not error and notification.get('conversation') and snapshot.get('notification_conversation_id'):
+            from loop_anything.runtime.communication import service
+            from loop_anything.runtime.communication_conversations import resolve, remember_context
+            comm=service(self.store)
+            entry=resolve(comm,snapshot['notification_conversation_id'])
+            with comm.transaction() as db:
+                remember_context(comm,db,entry,receipt)
 
     def change_settings(self, run_id, revision, change, operator_token=None):
         with self.store.edit(run_id) as run:

@@ -66,7 +66,7 @@ def main():
         if 'notification_command' in target:
             parser.error('Supply notification_command once, in arguments or --notification-command')
         target['notification_command'] = load_json(args.notification_command)
-    if args.tool in ('request_assistance','start_run') and not any(k in values for k in ('notification_route','conversation_id','notification_command')) and not values.get('source',{}).get('run_id') and os.environ.get('CC_PROJECT') and os.environ.get('CC_SESSION_KEY','').split(':')[0] in ('feishu','lark'):
+    if args.tool in ('request_assistance','start_run','start_collaboration') and not any(k in values for k in ('notification_route','conversation_id','notification_command')) and not values.get('source',{}).get('run_id') and os.environ.get('CC_PROJECT') and os.environ.get('CC_SESSION_KEY','').split(':')[0] in ('feishu','lark'):
         # Carry bridge provenance only; platform adapters resolve and deliver later.
         if 'chat_context' not in values:
             values['chat_context']={'platform':os.environ['CC_SESSION_KEY'].split(':')[0],

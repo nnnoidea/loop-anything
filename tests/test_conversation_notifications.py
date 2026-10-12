@@ -276,28 +276,158 @@ class ConversationTests(unittest.TestCase):
         finally:case.tearDown()
 
 
+    def test_thread_metadata_survives_registration_and_legacy_receipt_upgrade(self):
+        from loop_anything.runtime.communication_conversations import remember_context
+        source={'platform':'feishu','entry_project':'entrance','session_key':'feishu:oc_chat:thread:omt_topic'}
+        binding=from_source(self.a,source)
+        self.assertEqual(binding['conversation']['thread_id'],'omt_topic')
+        self.assertIsNone(binding['conversation']['thread_root'])
+        context=dict(binding['conversation'],chat_type='group')
+        registered=register(self.a,{'conversation':context,'notification_command':[sys.executable,'-c','pass']})
+        self.assertEqual(resolve(self.a,registered['conversation_id'])['conversation']['thread_id'],'omt_topic')
+        legacy=dict(binding,conversation=dict(binding['conversation'],thread_root='omt_topic'))
+        legacy['conversation'].pop('thread_id')
+        with self.a.transaction() as db:
+            remember_context(self.a,db,legacy,{'conversation':context})
+        updated=resolve(self.a,binding['id'])['conversation']
+        self.assertEqual(updated['thread_id'],'omt_topic');self.assertIsNone(updated['thread_root'])
+
+    def test_explicit_root_and_learned_root_persist_without_changing_session(self):
+        from loop_anything.runtime.communication_conversations import remember_context
+        source={'platform':'feishu','entry_project':'entrance','session_key':'feishu:oc_chat:thread:omt_topic','thread_root':'om_real'}
+        binding=from_source(self.a,source)
+        self.assertEqual(binding['conversation']['thread_root'],'om_real')
+        registered=register(self.a,{'conversation':binding['conversation'],'notification_command':[sys.executable,'-c','pass']})
+        self.assertEqual(registered['conversation']['thread_root'],'om_real')
+        source.pop('thread_root');binding=from_source(self.a,source)
+        self.bot(self.a)
+        pending=self.completed(binding['id'])
+        checked=dict(binding['conversation'],thread_root='om_real')
+        with self.a.transaction() as db:remember_context(self.a,db,binding,{'conversation':checked})
+        saved=from_source(self.a,source)['conversation']
+        self.assertEqual(saved['thread_root'],'om_real')
+        self.assertEqual(saved['session_key'],source['session_key'])
+        self.sent=[]
+        with patch('loop_anything.runtime.host_runtime.run_command',side_effect=self.receipt):
+            self.cycle(lambda:self.a.get(pending)['notifications'][-1]['status']=='delivered')
+        self.assertEqual(self.sent[-1]['outlet']['identity'],'papers-bot')
+        self.assertEqual(self.sent[-1]['conversation']['thread_root'],'om_real')
+
+    def test_timeline_delivery_saves_root_for_later_notices(self):
+        import test_timeline_runtime as runtime
+        from loop_anything.interfaces.platform_tools import PlatformTools
+        from loop_anything.runtime.notifications import enqueue
+        case=runtime.RuntimeTests();case.setUp()
+        try:
+            key=self.a.store.publish(case.bp,case.implementations)['key']
+            source={'platform':'feishu','entry_project':'entrance','session_key':'feishu:oc_chat:thread:omt_topic'}
+            started=PlatformTools(self.a.store).call('start_run',dict(key=key,title='topic',authorization='test',chat_context=source))
+            with self.a.store.edit(started['run_id']) as run:
+                notice=enqueue(self.a.store,run,'first',{'message':'result'})
+                notice.update(status='sending',token='delivery-token')
+            snapshot=self.a.store.get(started['run_id'])
+            receipt={'delivered':True,'conversation':dict(notice['conversation'],thread_root='om_real')}
+            with patch('loop_anything.runtime.timeline_runtime.run_command',return_value=subprocess.CompletedProcess([],0,json.dumps(receipt),'')):
+                self.a.engine.timeline_runtime.deliver(started['run_id'],notice,snapshot)
+            run=self.a.store.get(started['run_id'])
+            later=enqueue(self.a.store,run,'second',{'message':'later'})
+            self.assertEqual(later['conversation']['thread_root'],'om_real')
+            self.assertEqual(later['conversation']['session_key'],source['session_key'])
+        finally:case.tearDown()
+
+    def test_receipts_cannot_erase_or_replace_saved_topic_identity(self):
+        from loop_anything.runtime.communication_conversations import remember_context
+        source={'platform':'feishu','entry_project':'entrance','session_key':'feishu:oc_chat:thread:omt_topic'}
+        stale=from_source(self.a,source)
+        learned=dict(stale['conversation'],thread_root='om_real',chat_type='group')
+        with self.a.transaction() as db:
+            remember_context(self.a,db,dict(stale),{'conversation':learned})
+            remember_context(self.a,db,dict(stale),{'conversation':stale['conversation']})
+            remember_context(self.a,db,dict(stale),{'conversation':dict(learned,thread_root='om_wrong')})
+            remember_context(self.a,db,dict(stale),{'conversation':dict(learned,thread_id='omt_wrong')})
+        self.assertEqual(resolve(self.a,stale['id'])['conversation'],learned)
+
+
 class BridgePreflightTests(unittest.TestCase):
-    def inspect(self, expected=None, root='om_root', options=None, chat=None, member=True):
+    def setUp(self):
+        # Test resolution in-process even on Python 3.9/3.10 without tomli.
+        patcher=patch.object(bridge,'prepare_compatible',side_effect=bridge.prepare_delivery)
+        patcher.start();self.addCleanup(patcher.stop)
+
+    def test_http_permission_error_preserves_code_and_required_scope_without_credentials(self):
+        from urllib.error import HTTPError
+        from io import BytesIO
+        payload=json.dumps({'code':230027,'msg':'Lack of necessary permissions, ext=need scope: im:message.group_msg; token=private-value'}).encode()
+        error=HTTPError('https://open.feishu.cn/open-apis/im/v1/messages',400,'Bad Request',{},BytesIO(payload))
+        with patch.object(bridge,'urlopen',side_effect=error),self.assertRaises(ValueError) as failure:
+            bridge.api('https://open.feishu.cn','/open-apis/im/v1/messages','secret-token')
+        self.assertIn('230027',str(failure.exception));self.assertIn('im:message.group_msg',str(failure.exception))
+        self.assertNotIn('private-value',str(failure.exception));self.assertNotIn('secret-token',str(failure.exception))
+
+    def test_unfamiliar_alternate_response_falls_back_to_entry_without_reprobing(self):
+        import notify_cc_connect as adapter
+        from io import StringIO
+        origin={'platform':'feishu','chat_id':'oc_chat','chat_type':'unknown','session_key':'feishu:oc_chat:ou_user','entry_project':'entry'}
+        sent=[]
+        for project in ('candidate','entry'):
+            payload={'id':'n','message':'result','conversation':origin,'outlet':{'identity':project}}
+            def send(argv,**kwargs):
+                sent.append(argv);return subprocess.CompletedProcess(argv,0,'','')
+            with patch.object(sys,'argv',['adapter']),patch.object(sys,'stdin',StringIO(json.dumps(payload))),patch.object(sys,'stdout',new_callable=StringIO) as out,patch.object(bridge,'config_options',side_effect=AttributeError('unfamiliar configuration shape')) as probe,patch.object(bridge,'inspect_compatible',side_effect=bridge.inspect),patch.object(adapter.shutil,'which',return_value='/fake/cc-connect'),patch.object(adapter.subprocess,'run',side_effect=send):
+                if project=='candidate':
+                    with self.assertRaises(SystemExit):adapter.main()
+                    self.assertTrue(json.loads(out.getvalue())['not_sent'])
+                else:
+                    adapter.main();probe.assert_not_called()
+                    self.assertTrue(json.loads(out.getvalue())['delivered'])
+        self.assertEqual(len(sent),1)
+        self.assertEqual(sent[0][3],'entry');self.assertEqual(sent[0][5],origin['session_key'])
+
+    def test_original_entry_bypasses_all_channel_and_format_probes(self):
+        import notify_cc_connect as adapter
+        from io import StringIO
+        for session in ('feishu:oc_chat:ou_user','feishu:oc_chat:root:om_root','opaque-future-key/with/different:syntax'):
+            origin={'platform':'feishu','chat_id':'','chat_type':'unknown','session_key':session,'entry_project':'entry'}
+            payload={'id':'n','message':'result','conversation':origin}
+            with patch.object(sys,'argv',['adapter','--project','entry','--config','/missing/config']),patch.object(sys,'stdin',StringIO(json.dumps(payload))),patch.object(sys,'stdout',new_callable=StringIO) as out,patch.object(bridge,'config_options',side_effect=AssertionError('No config read')),patch.object(bridge,'api',side_effect=AssertionError('No API')),patch.object(bridge,'helper',side_effect=AssertionError('No interpreter probe')),patch.object(adapter.shutil,'which',return_value='/fake/cc-connect'),patch.object(adapter.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'','')) as send:
+                adapter.main()
+            self.assertEqual(send.call_args.args[0][5],session)
+            self.assertTrue(json.loads(out.getvalue())['delivered'])
+        with self.assertRaises(ValueError):
+            bridge.inspect_compatible('entry','changed','unused','unused',expected=origin)
+
+    def inspect(self, expected=None, root='om_root', options=None, chat=None, member=True, scope='root'):
         defaults={'app_id':'local-id','app_secret':'secret','thread_isolation':True,'reply_to_trigger':True}
         defaults.update(options or {})
         def api(base,path,token=None,data=None):
             if path.endswith('/internal'):return {'tenant_access_token':'private-token'}
             if path.endswith('/is_in_chat'):return {'data':{'is_in_chat':member}}
-            if '/messages/' in path:return {'data':{'items':[{'message_id':'om_root','chat_id':'oc_chat'}]}}
+            if '/messages/' in path:raise AssertionError('Do not reinterpret the bridge destination as a message ID')
             return {'data':chat or {'chat_mode':'group','group_message_type':'thread','moderation_permission':'all_members'}}
-        session='feishu:oc_chat:root:'+root if root else 'feishu:oc_chat:ou_user'
-        with patch.object(bridge,'config_options',return_value=defaults),patch.object(bridge,'bridge_ready'),patch.object(bridge,'api',side_effect=api):
+        session='feishu:oc_chat:'+scope+':'+root if root else 'feishu:oc_chat:ou_user'
+        expected=expected or dict(platform='feishu',chat_id='oc_chat',chat_type='unknown',session_key=session,entry_project='entrance',thread_root=root if scope=='root' else None,**({'thread_id':root} if scope=='thread' else {}))
+        with patch.object(bridge,'config_options',return_value=defaults),patch.object(bridge,'api',side_effect=api):
             return bridge.inspect('papers-bot',session,'unused','unused',expected)
 
-    def test_preflight_checks_membership_thread_config_and_root(self):
+    def test_routing_checks_membership_and_topic_config_without_validating_ids(self):
         self.assertEqual(self.inspect()['thread_root'],'om_root')
-        for args in ({'root':None},{'member':False},{'options':{'thread_isolation':False}},
-                     {'options':{'reply_to_trigger':False}},{'root':'om_wrong'}):
+        for args in ({'member':False},{'chat':{'chat_mode':'future-mode'}},{'chat':{'chat_mode':'group','moderation_permission':'unknown'}}):
             with self.subTest(args=args),self.assertRaises(ValueError):self.inspect(**args)
+        self.assertEqual(self.inspect(options={'thread_isolation':False,'reply_to_trigger':False})['session_key'],'feishu:oc_chat:root:om_root')
         context=self.inspect();context['entry_project']='entrance'
         with self.assertRaises(ValueError):self.inspect(expected=context,chat={'chat_mode':'group','moderation_permission':'only_owner'})
         context.update(chat_type='p2p',session_key='feishu:oc_chat:ou_user',thread_root=None)
         with self.assertRaises(ValueError):self.inspect(expected=context,root=None,chat={'chat_mode':'p2p'})
+
+    def test_thread_id_is_not_a_root_message_and_legacy_context_is_accepted(self):
+        context=self.inspect(root='omt_topic',scope='thread')
+        self.assertEqual(context['thread_id'],'omt_topic')
+        self.assertIsNone(context['thread_root'])
+        self.assertEqual(context['session_key'],'feishu:oc_chat:thread:omt_topic')
+        legacy=dict(context,thread_root='omt_topic');legacy.pop('thread_id')
+        self.assertEqual(self.inspect(expected=legacy,root='omt_topic',scope='thread'),legacy)
+        self.assertEqual(self.inspect(root='future-id')['thread_root'],'future-id')
+        with self.assertRaises(ValueError):self.inspect(expected=dict(context,session_key='feishu:oc_other:thread:omt_topic'),root='omt_topic',scope='thread')
 
     def test_adapter_preflight_failure_never_calls_send(self):
         import notify_cc_connect as adapter
@@ -312,7 +442,7 @@ class BridgePreflightTests(unittest.TestCase):
         import notify_cc_connect as adapter
         from io import StringIO
         payload={'id':'n','message':'result','outlet':{'identity':'bot','destination':''},'conversation':{'session_key':'feishu:oc_chat:root:om_root','entry_project':'bot'}}
-        with patch.object(sys,'argv',['adapter']),patch.object(sys,'stdin',StringIO(json.dumps(payload))),patch.object(sys,'stdout',new_callable=StringIO) as out,patch.object(bridge,'inspect_compatible',return_value={}),patch.object(adapter.shutil,'which',return_value='/fake/cc-connect'),patch.object(adapter.subprocess,'run',side_effect=subprocess.TimeoutExpired('send',25)):
+        with patch.object(sys,'argv',['adapter']),patch.object(sys,'stdin',StringIO(json.dumps(payload))),patch.object(sys,'stdout',new_callable=StringIO) as out,patch.object(bridge,'inspect_compatible',return_value=payload['conversation'].copy()),patch.object(adapter.shutil,'which',return_value='/fake/cc-connect'),patch.object(adapter.subprocess,'run',side_effect=subprocess.TimeoutExpired('send',25)):
             with self.assertRaises(SystemExit):adapter.main()
             self.assertFalse(json.loads(out.getvalue())['not_sent'])
 
@@ -336,7 +466,7 @@ class BridgePreflightTests(unittest.TestCase):
 
     def test_unknown_chat_type_is_resolved_and_private_chat_cannot_use_another_bot(self):
         context=self.inspect(expected={'platform':'feishu','chat_id':'oc_chat','chat_type':'unknown','session_key':'feishu:oc_chat:ou_user','thread_root':None,'entry_project':'papers-bot'},root=None,chat={'chat_mode':'p2p'})
-        self.assertEqual(context['chat_type'],'p2p')
+        self.assertEqual(context['chat_type'],'unknown')
         with self.assertRaises(ValueError):self.inspect(expected=dict(context,chat_type='unknown',entry_project='entrance'),root=None,chat={'chat_mode':'p2p'})
 
     def test_sending_adapter_resolves_and_sends_to_original_topic(self):
@@ -352,6 +482,22 @@ class BridgePreflightTests(unittest.TestCase):
         self.assertEqual(send.call_args.args[0][5],origin['session_key'])
         receipt=json.loads(out.getvalue());self.assertTrue(receipt['delivered']);self.assertEqual(receipt['conversation']['entry_project'],'entrance')
 
+    def test_sending_adapter_uses_root_but_keeps_original_thread_identity(self):
+        import notify_cc_connect as adapter
+        from io import StringIO
+        origin=self.inspect(root='omt_topic',scope='thread')
+        origin['thread_root']='om_actual_root'
+        payload={'id':'n','message':'result','conversation':origin}
+        # Exercise the actual routing checker, including its API calls, before send.
+        def inspect(project,session,directory,config_path,expected=None):
+            self.assertEqual(session,'feishu:oc_chat:thread:omt_topic')
+            return self.inspect(expected=expected,root='omt_topic',scope='thread')
+        with patch.object(sys,'argv',['adapter','--project','papers-bot']),patch.object(sys,'stdin',StringIO(json.dumps(payload))),patch.object(sys,'stdout',new_callable=StringIO) as out,patch.object(bridge,'inspect_compatible',side_effect=inspect),patch.object(bridge,'config_options',return_value={'thread_isolation':True}),patch.object(bridge,'api',side_effect=AssertionError('Saved root needs no API query')),patch.object(adapter.shutil,'which',return_value='/fake/cc-connect'),patch.object(adapter.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'','')) as send:
+            adapter.main()
+        self.assertEqual(send.call_args.args[0][5],'feishu:oc_chat:root:om_actual_root')
+        self.assertEqual(json.loads(out.getvalue())['conversation']['thread_id'],'omt_topic')
+        self.assertEqual(json.loads(out.getvalue())['conversation']['session_key'],origin['session_key'])
+
     def test_adapter_missing_executable_records_definite_unsent(self):
         import notify_cc_connect as adapter
         from io import StringIO
@@ -359,6 +505,72 @@ class BridgePreflightTests(unittest.TestCase):
         with patch.object(sys,'argv',['adapter']),patch.object(sys,'stdin',StringIO(json.dumps(payload))),patch.object(sys,'stdout',new_callable=StringIO) as out,patch.object(adapter.shutil,'which',return_value=None),patch.object(adapter.subprocess,'run') as send:
             with self.assertRaises(SystemExit):adapter.main()
             self.assertTrue(json.loads(out.getvalue())['not_sent']);send.assert_not_called()
+
+    def test_cold_topic_resolves_root_from_history_and_sends_with_custom_binary(self):
+        import notify_cc_connect as adapter
+        from io import StringIO
+        from urllib.parse import urlparse,parse_qs
+        for platform in ('feishu','lark'):
+            origin=dict(platform=platform,entry_project='entry',chat_id='oc_chat',chat_type='unknown',session_key=f'{platform}:oc_chat:thread:omt_topic')
+            calls=[]
+            def api(base,path,token=None,data=None):
+                calls.append((base,path))
+                if path.endswith('/internal'):return {'tenant_access_token':'private'}
+                query=parse_qs(urlparse(path).query)
+                self.assertEqual(query['container_id_type'],['thread'])
+                self.assertEqual(query['container_id'],['omt_topic'])
+                self.assertNotIn('/messages/omt_',path)
+                return {'data':{'items':[{'chat_id':'oc_chat','thread_id':'omt_topic','message_id':'om_reply','root_id':'om_real'}]}}
+            payload={'id':'n','message':'result','conversation':origin}
+            with patch.object(sys,'argv',['adapter','--project','entry','--executable','/custom/cc-connect','--config','/custom/config.toml']),patch.object(sys,'stdin',StringIO(json.dumps(payload))),patch.object(sys,'stdout',new_callable=StringIO) as out,patch.object(bridge,'config_options',return_value={'thread_isolation':True,'app_id':'id','app_secret':'secret'}) as config,patch.object(bridge,'api',side_effect=api),patch.object(adapter.shutil,'which',side_effect=lambda p:p),patch.object(adapter.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'','')) as send:
+                adapter.main()
+            argv=send.call_args.args[0]
+            self.assertEqual(argv[0],'/custom/cc-connect');self.assertEqual(argv[5],f'{platform}:oc_chat:root:om_real')
+            config.assert_called_once_with('/custom/config.toml','entry',platform)
+            receipt=json.loads(out.getvalue())
+            self.assertEqual(receipt['conversation']['session_key'],origin['session_key'])
+            self.assertEqual(receipt['conversation']['thread_root'],'om_real')
+            self.assertEqual(receipt['delivery_session_key'],argv[5]);self.assertNotIn('secret',out.getvalue())
+            self.assertEqual(calls[0][0],'https://open.larksuite.com' if platform=='lark' else 'https://open.feishu.cn')
+
+    def test_topic_resolution_failures_are_definitely_unsent(self):
+        import notify_cc_connect as adapter
+        from io import StringIO
+        origin=dict(platform='feishu',entry_project='entry',chat_id='oc_chat',chat_type='unknown',session_key='feishu:oc_chat:thread:omt_topic')
+        cases=[({},[]),({'thread_isolation':True,'reply_to_trigger':False},[]),
+               ({'thread_isolation':True},[]),
+               ({'thread_isolation':True},[{'chat_id':'wrong','thread_id':'omt_topic','root_id':'om_root'}]),
+               ({'thread_isolation':True},[{'chat_id':'oc_chat','thread_id':'wrong','root_id':'om_root'}])]
+        for options,items in cases:
+            def api(base,path,token=None,data=None):
+                return {'tenant_access_token':'private'} if path.endswith('/internal') else {'data':{'items':items}}
+            with self.subTest(options=options,items=items),patch.object(sys,'argv',['adapter','--project','entry']),patch.object(sys,'stdin',StringIO(json.dumps({'id':'n','message':'result','conversation':origin}))),patch.object(sys,'stdout',new_callable=StringIO) as out,patch.object(bridge,'config_options',return_value=dict(options,app_id='id',app_secret='secret')),patch.object(bridge,'api',side_effect=api),patch.object(adapter.shutil,'which',return_value='/fake/cc'),patch.object(adapter.subprocess,'run') as send:
+                with self.assertRaises(SystemExit):adapter.main()
+                self.assertTrue(json.loads(out.getvalue())['not_sent']);send.assert_not_called()
+
+    def test_generated_sender_preserves_custom_executable_and_config(self):
+        import notify_cc_connect as adapter
+        import os
+        with patch.dict(os.environ,{'CC_PROJECT':'entry','CC_SESSION_KEY':'feishu:oc_chat:root:om_root'}),patch.object(adapter.shutil,'which',side_effect=lambda p:p):
+            argv=adapter.sender_command('/custom/cc-connect','/custom/data','/custom/config.toml')
+        self.assertEqual(argv[argv.index('--executable')+1],'/custom/cc-connect')
+        self.assertEqual(argv[argv.index('--data-dir')+1],'/custom/data')
+        self.assertEqual(argv[argv.index('--config')+1],'/custom/config.toml')
+
+    def test_adapter_subprocess_accepts_installed_cli_at_custom_path_without_cache(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);cli=root/'custom cc-connect';config=root/'bridge.toml';log=root/'sent.json'
+            cli.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\nPath('+repr(str(log))+').write_text(json.dumps({"argv":sys.argv[1:],"body":sys.stdin.read()}))\n')
+            cli.chmod(0o700)
+            config.write_text('[[projects]]\nname="entry"\n[[projects.platforms]]\ntype="feishu"\n[projects.platforms.options]\nthread_isolation=true\n')
+            origin=dict(platform='feishu',entry_project='entry',chat_id='oc_chat',chat_type='group',session_key='feishu:oc_chat:thread:omt_topic',thread_id='omt_topic',thread_root='om_real')
+            result=subprocess.run([sys.executable,str(SCRIPTS/'notify_cc_connect.py'),'--project','entry','--executable',str(cli),'--data-dir',str(root/'no-cache'),'--config',str(config)],input=json.dumps({'id':'n','message':'result','conversation':origin}),text=True,capture_output=True,timeout=45)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            sent=json.loads(log.read_text());receipt=json.loads(result.stdout)
+            self.assertEqual(sent['argv'][sent['argv'].index('--session')+1],'feishu:oc_chat:root:om_real')
+            self.assertEqual(receipt['conversation'],origin)
+            self.assertFalse((root/'no-cache').exists())
 
 
 if __name__=='__main__':unittest.main()

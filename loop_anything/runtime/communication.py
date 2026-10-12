@@ -24,7 +24,7 @@ END = {'completed', 'failed', 'cancelled', 'unavailable', 'not_selected'}
 PRIVATE = {'access_token', 'worker_token', 'source_token', 'launch', 'pending_result', 'sender', 'rpc'}
 CHILD_FIELDS=('id','origin','parent_request','kind','source','source_summary','state','message','result','error',
               'native_session','created_at','revision','agent_id','agent_label','executor','executor_name','location',
-              'group_id','scope_group_id','progress','history','notification_origin','notification_route','notification_level','notification_binding','notification_policy','notification_level_explicit','notification_conversation')
+              'group_id','scope_group_id','progress','history','deadline','cancellation','selection_decision','notification_origin','notification_route','notification_level','notification_binding','notification_policy','notification_level_explicit','notification_conversation')
 RPC_TOOLS = {'read_loop', 'read_task', 'read_timeline', 'read_record', 'read_plans', 'read_capabilities',
              'next_tasks', 'report_task', 'complete_task', 'finish', 'build_plan', 'change_task',
              'edit_tasks', 'notify', 'defer_task', 'change_settings', 'register_agent_session',
@@ -206,8 +206,10 @@ class Communication:
                 from loop_anything.runtime.implementations import validate_implementation
                 ident = identifier(a.get('agent_id') or uid('agent'))
                 old = config['agents'].get(ident, {})
+                if 'task_confirmation' in a['agent']:
+                    raise Invalid('Confirm the main task with the user through task_confirmed, not stored metadata')
                 agent = dict(old, **a['agent'], id=ident)
-                if set(agent) - {'id', 'name', 'description', 'capabilities', 'local', 'enabled', 'groups', 'capacity', 'implementation', 'notification_route'}:
+                if set(agent) - {'id', 'name', 'description', 'capabilities', 'local', 'enabled', 'groups', 'capacity', 'implementation', 'notification_route', 'task_confirmation'}:
                     raise Invalid('Unsupported named Agent setting')
                 if not isinstance(agent.get('name'),str) or not agent['name'].strip() or not isinstance(agent.get('description', ''), str):
                     raise Invalid('Named Agent needs name and description text')
@@ -219,6 +221,17 @@ class Communication:
                     raise Invalid('capabilities must be strings')
                 if not isinstance(agent.get('groups', []), list) or any(g not in config['groups'] for g in agent.get('groups', [])):
                     raise Invalid('Join groups before exposing an Agent to them')
+                confirmation = agent.get('task_confirmation', {})
+                if confirmation.get('description') != agent.get('description'):
+                    agent.pop('task_confirmation', None)
+                if a.get('task_confirmed') is True:
+                    if not agent.get('description', '').strip():raise Invalid('Ask the user for this Agent main task before confirming')
+                    agent['task_confirmation'] = {'description': agent['description'], 'groups': list(agent.get('groups', [])), 'at': time.time()}
+                confirmation = agent.get('task_confirmation', {})
+                if agent.get('groups') and agent.get('enabled', True) and (
+                        confirmation.get('description') != agent.get('description') or
+                        not set(agent['groups']) <= set(confirmation.get('groups', []))):
+                    raise Invalid('Ask the user to confirm this Agent main task and group exposure, then pass task_confirmed=true. Do not invent user confirmation.')
                 if type(agent.get('capacity', 1)) is not int or not 1 <= agent.get('capacity', 1) <= 8:
                     raise Invalid('Agent capacity must be 1–8')
                 for key in ('enabled', 'local'):
@@ -308,21 +321,45 @@ class Communication:
                 'groups': [{k: v for k, v in g.items() if k != 'path'} for g in config['groups'].values()]}
 
     def public_agent(self, agent, config, location, group_id=None, freeze=False):
-        running = sum(r.get('executor') == config['instance_id'] and r.get('agent_id') == agent['id'] and
-                      not r.get('mirror') and r['state'] in ('assigned', 'starting', 'running', 'unknown', 'cancelling') for r in self.requests())
+        running = self.agent_load(agent['id'])
         from loop_anything.runtime.communication_conversations import bot_binding
         return {k: agent.get(k, '' if k in ('name', 'description') else []) for k in ('name', 'description', 'capabilities')} | {
             'id': agent['id'], 'instance_id': config['instance_id'], 'machine': config['name'], 'location': location,
             'notification_binding':bot_binding(self,agent,group_id,freeze),
-            'online': True, 'enabled': agent.get('enabled', True), 'busy': running >= agent.get('capacity', 1),
+            'online': True, 'enabled': agent.get('enabled', True) and (location=='local' or self.task_confirmed(agent,group_id)),
+            'task_confirmed': self.task_confirmed(agent,group_id), 'busy': running >= agent.get('capacity', 1),
             'error':'启动配置不可用，请由机器所有者修复并重新启用' if config.get('agent_errors',{}).get(agent['id']) else None}
+
+    def agent_load(self, agent_id, db=None, running_only=False, exclude_run=None, exclude_request=None):
+        if db is None:
+            with self.store.connection() as connection:
+                return self.agent_load(agent_id, connection, running_only, exclude_run, exclude_request)
+        states={'starting','running','unknown','cancelling'} | (set() if running_only else {'assigned'})
+        instance=self.settings(db)['instance_id']
+        count=sum(r['id']!=exclude_request and r.get('executor')==instance and r.get('agent_id')==agent_id and
+                  not r.get('mirror') and r['state'] in states for r in self.requests(db))
+        for row in db.execute('SELECT id FROM runs'):
+            if row[0]==exclude_run:continue
+            run=self.store._load(db,row[0])
+            if run.get('collaboration',{}).get('agent_id')!=agent_id:continue
+            task=run['tasks'].get('coordinate',{})
+            if task.get('status') in ({'executing','decision'} | (set() if running_only else {'planned','ready'})):count+=1
+        return count
 
     def request(self, a, node=None, continuation_from=None):
         if self.identity_conflict:raise Conflict('Copied/moved platform identity: explicitly create a new instance identity before executing')
         config = self.settings()
         source = copy.deepcopy(a.get('source') or {})
+        if a.get('collaboration_id') and (source.get('run_id') or a.get('_parent_request')):
+            raise Invalid('A scoped request already belongs to its source; do not also pass collaboration_id')
         source_summary={}
         group_id = a.get('group_id')
+        if a.get('collaboration_id') and not source.get('run_id'):
+            collaboration_run=self.store.get(a['collaboration_id'])
+            if not collaboration_run.get('collaboration'):raise Invalid('Unknown standalone collaboration')
+            bound_group=self.run_group(collaboration_run,config)
+            if group_id and group_id!=bound_group:raise Conflict('Use the collaboration Run group')
+            group_id=bound_group
         if source.get('run_id'):
             from loop_anything.runtime.task_scope import owner_for, require_scope
             run = self.store.get(source['run_id'])
@@ -434,12 +471,19 @@ class Communication:
                     request['notification_level_explicit']=parent.get('notification_level_explicit',False)
         if node:
             request['source_token'] = a['token']
+        standalone = not source.get('run_id') and not a.get('_parent_request') and not node
+        if standalone:
+            from loop_anything.runtime.collaboration import ensure_loop
+            collaboration_key=ensure_loop(self.store)
         with self.transaction() as db:
             if db.execute('SELECT 1 FROM communication_requests WHERE id=?', (ident,)).fetchone():
                 old = self.get(ident, db)
                 if (old['source'], old['kind'], old['message']) != (source, request['kind'], request['message']):
                     raise Conflict('Request ID already exists with different work')
                 return {'request': request_summary(old), 'request_token': old['access_token']}
+            if standalone:
+                from loop_anything.runtime.collaboration import attach
+                attach(self,request,collaboration_key,a.get('collaboration_id'),db)
             self.event(request, 'requested')
             if location == 'local':
                 candidates = [x for x in config['agents'].values() if self.eligible(x, request, config)]
@@ -468,13 +512,19 @@ class Communication:
             self.save(db, request)
         return {'request': request_summary(request), 'request_token': request['access_token']}
 
+    @staticmethod
+    def task_confirmed(agent,group_id):
+        confirmation=agent.get('task_confirmation',{})
+        return bool(agent.get('description','').strip() and confirmation.get('description')==agent['description'] and
+                    (not group_id or group_id in confirmation.get('groups',[])))
+
     def eligible(self, agent, request, config):
         return (agent.get('enabled', True) and
                 (not request.get('target_instance') or request['target_instance']==config['instance_id']) and
                 (not request.get('agent_id') or request['agent_id'] == agent['id']) and
                 (not request.get('capability') or request['capability'] in agent.get('capabilities', [])) and
                 (agent.get('local', True) if request['location'] == 'local' else
-                 request['group_id'] in agent.get('groups', []) and config['groups'].get(request['group_id'], {}).get('enabled')))
+                 request['group_id'] in agent.get('groups', []) and self.task_confirmed(agent,request['group_id']) and config['groups'].get(request['group_id'], {}).get('enabled')))
 
     def continuing_wait(self,request,db=None):
         session=request.get('session',{})
@@ -546,8 +596,13 @@ class Communication:
                 if not native.get('id'):
                     raise Invalid('No recorded native session; explicitly choose a new session')
                 session = {'mode': 'resume', 'request_id': ident, 'instance_id': old['executor'], 'native_id': native['id']}
+            collaboration_id=old.get('collaboration',{}).get('run_id')
+            if not collaboration_id and not old.get('parent_request') and old['source'].get('run_id'):
+                source_run=self.store.get(old['source']['run_id'])
+                if source_run.get('collaboration'):collaboration_id=source_run['id']
             return self.request(dict(location=old['location'], group_id=old.get('group_id'), agent_id=old['agent_id'], instance_id=old.get('executor'),
                                      message=a['message'], context=continuation_context(old), session=session,
+                                     collaboration_id=collaboration_id,
                                      notification_route=old['notification_route'],_parent_request=old.get('parent_request')),continuation_from=old)
         with self.transaction() as db:
             row = self.get(ident, db)
@@ -557,6 +612,9 @@ class Communication:
             if action == 'cancel':
                 if row['state'] in END | {'cancelling'} or row.get('cancel_requested'):
                     return {'request': request_summary(row)}
+                reason=a.get('reason','')
+                if not isinstance(reason,str):raise Invalid('Cancellation reason must be text')
+                row['cancellation']={'at':time.time(),'previous_state':row['state'],'reason':reason or 'Cancellation requested through control_assistance'}
                 row['cancel_requested']=True
                 if row.get('assignment_id'):
                     local=row.get('executor')==self.settings(db)['instance_id']
@@ -566,7 +624,7 @@ class Communication:
                 else:
                     row['state'] = 'cancelled'
                     db.execute("DELETE FROM communication_outbox WHERE json_extract(document,'$.request_id')=? AND json_extract(document,'$.kind')='offer'",(row['id'],))
-                self.event(row, 'cancel_requested')
+                self.event(row, 'cancel_requested', row['cancellation'])
             elif action == 'confirm_stopped':
                 if ident in self.live or row['state'] != 'unknown' or not a.get('confirmed_stopped'):
                     raise Conflict('Explicitly verify the unknown execution is stopped first')
@@ -629,6 +687,8 @@ class Communication:
         if not self.engine or self.engine.stopping.is_set() or self.identity_conflict:
             return
         if not getattr(self,'background_transport',False):self.scan()
+        from loop_anything.runtime.collaboration import adopt_pending
+        adopt_pending(self)
         self.resume_dispatches()
         config = self.settings()
         for row in self.requests():
@@ -668,6 +728,8 @@ class Communication:
         self.process_rpcs()
         self.reconcile_nodes()
         self.wake_assistance()
+        from loop_anything.runtime.collaboration import reconcile
+        reconcile(self)
         self.deliver_notifications()
         from loop_anything.runtime.communication_notifications import deliver
         deliver(self)
@@ -739,7 +801,7 @@ class Communication:
                         'detail':{'message':row.get('error',row['state'])}},'engine')
                 if row['state'] in ('failed','unavailable','cancelled') and owner_for(run,e['token']):release_in_run(run,e['token'])
             if (run['status'] == 'terminated' or run['status'] == 'completed' and e['status'] != 'completed' or task.get('execution_id') != e['id']) and row['state'] not in END | {'cancelling'}:
-                self.control(row['id'],'cancel')
+                self.control(row['id'],'cancel',reason='Source Run ended or source execution was replaced')
 
     def wait_assistance(self, run_id, token, task_id, request_ids, seconds=300):
         from loop_anything.runtime.task_scope import owner_for, require_scope
@@ -805,6 +867,10 @@ class Communication:
                     t = current['tasks'][task['id']]
                     if t.get('assistance_wait') != wait or t['status']!='waiting_user' or t.get('execution_id')!=wait['execution_id']:continue
                     e = next(e for e in current['executions'] if e['id']==wait['execution_id'])
+                    from loop_anything.runtime.collaboration import caller_active
+                    if caller_active(e):
+                        current.setdefault('task_dispositions',{})['task:'+task['id']]={'status':'waiting_user','reason':'等待原 Agent 进程退出后恢复 session'}
+                        continue
                     if e.get('worker_active') or owner_for(current,e.get('token')):continue
                     if e.get('communication_id') and self.get(e['communication_id'])['state'] not in END:continue
                     if not t.get('assistance_resume'):
@@ -943,7 +1009,14 @@ class Communication:
                             db.execute("DELETE FROM communication_outbox WHERE json_extract(document,'$.request_id')=? AND json_extract(document,'$.kind')='offer'",(row['id'],))
                     if row['origin'] != config['instance_id'] or row['state'] != 'pending' or row['deadline'] < time.time():
                         if row['origin']==config['instance_id']:
-                            self.emit(db,row,msg['sender'],'not_selected',{})
+                            reason=('cancelled' if row['state'] in ('cancelled','cancelling') else
+                                    'already_assigned' if row.get('assignment_id') else
+                                    'acceptance_expired' if row['deadline']<time.time() else 'request_not_pending')
+                            decision={'reason':reason,'source_state':row['state'],'deadline':row['deadline'],
+                                      **{k:row[k] for k in ('executor','error','cancellation') if k in row}}
+                            self.event(row,'claim_not_selected',dict(decision,claimant=msg['sender']))
+                            self.save(db,row)
+                            self.emit(db,row,msg['sender'],'not_selected',decision)
                             db.execute('INSERT INTO communication_inbox VALUES (?,?)',(msg['id'],json.dumps(msg)))
                             self.emit(db,row,msg['sender'],'ack',{'message_id':msg['id']})
                         return
@@ -967,7 +1040,9 @@ class Communication:
                         row.update(state='failed',error='Agent stopped accepting before the grant arrived')
                     else:row.update(accepted_at=time.time(),launch=copy.deepcopy(agent['implementation']),agent_label=agent['name'],executor_name=config['name'])
                 elif kind=='not_selected' and msg['sender']==row['origin']:
-                    if row['state']=='offered':row['state']='not_selected'
+                    if row['state']=='offered':
+                        row['state']='not_selected'
+                        row['selection_decision']=copy.deepcopy(payload)
                 else:
                     if row['state']=='offered' and msg['sender']==row['origin']:
                         return  # The grant may be later in the same directory scan.
@@ -1039,8 +1114,7 @@ class Communication:
                 self.save(db, row)
                 return
             agent=agent or {'id':row['agent_id'],'capacity':1}
-            busy = sum(r['id'] != ident and r.get('agent_id') == agent['id'] and r.get('executor') == config['instance_id'] and
-                       not r.get('mirror') and r['state'] in ('starting', 'running', 'unknown', 'cancelling') for r in self.requests(db))
+            busy = self.agent_load(agent['id'],db,running_only=True,exclude_request=ident)
             if busy >= agent.get('capacity', 1):
                 return
             row.update(state='starting', worker_token=secrets.token_urlsafe(32), launch=copy.deepcopy(row.get('launch') or agent['implementation']), terminal_id=uid('terminal'))
@@ -1111,6 +1185,7 @@ class Communication:
         context['platform_client']=str(platform_skill_directory()/'scripts/call.py')
         context['platform_guide']=str(platform_skill_directory()/'references/communication.md')
         context.update(row['source'])
+        if row.get('collaboration'):context['collaboration']=copy.deepcopy(row['collaboration'])
         if row.get('source_reference'):context['source_reference']=row['source_reference']
         context.update({k:row['context'][k] for k in ('handbook','inputs','scope_task','loop_key','node_id','parameters','resource_root','assistance_results','assistance_resume') if k in row['context']})
         task_info=row['context'].get('task')
@@ -1586,7 +1661,8 @@ class Communication:
                             'message':text,
                             'result':result_value,'progress':row.get('progress'),'error':row.get('error')}}
                     if row.get('notification_policy')=='conversation':
-                        notice['payload']['conversation']=copy.deepcopy(binding['conversation'] if binding and 'conversation' in binding else row['notification_conversation']['conversation'])
+                        entry=fallback or binding
+                        notice['payload']['conversation']=copy.deepcopy(entry['conversation'] if entry and 'conversation' in entry else row['notification_conversation']['conversation'])
                     if fallback:notice['fallback_binding']=fallback
                     if binding:notice['group_binding']=binding
                     if routing:

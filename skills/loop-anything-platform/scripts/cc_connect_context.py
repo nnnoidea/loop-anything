@@ -1,14 +1,14 @@
-"""Read-only Feishu preflight for cc-connect. No credentials leave this process."""
-import http.client
+"""Check notification routing facts, leaving session ID validity to cc-connect."""
 import json
+import copy
 import os
 from pathlib import Path
 import re
 import shutil
-import socket
 import subprocess
 import sys
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
@@ -19,8 +19,8 @@ def config_options(config_path, project, platform):
         try:
             import tomli as tomllib
         except ImportError:
-            raise ValueError('Feishu conversation capture needs Python 3.11+ or tomli; run call.py with that interpreter')
-    config = tomllib.loads(Path(config_path).read_text(encoding='utf-8'))
+            raise ValueError('Reading cc-connect configuration needs Python 3.11+ or tomli on the sending machine')
+    config = tomllib.loads(Path(config_path).expanduser().read_text(encoding='utf-8'))
     projects = [p for p in config.get('projects', []) if p.get('name') == project]
     if len(projects) != 1:
         raise ValueError('The cc-connect project is missing or ambiguous in the configured file')
@@ -30,9 +30,14 @@ def config_options(config_path, project, platform):
     options = dict(platforms[0].get('options', {}))
     for key,value in options.items():
         if isinstance(value,str):options[key]=re.sub(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}',lambda m:os.environ.get(m[1],m[0]),value)
+    return options
+
+
+def tenant_token(base, options):
     if not all(isinstance(options.get(k), str) and options[k] and '${' not in options[k] for k in ('app_id', 'app_secret')):
         raise ValueError('The local cc-connect app credentials are unavailable')
-    return options
+    return api(base,'/open-apis/auth/v3/tenant_access_token/internal',
+               data={k:options[k] for k in ('app_id','app_secret')})['tenant_access_token']
 
 
 def api(base, path, token=None, data=None):
@@ -44,75 +49,99 @@ def api(base, path, token=None, data=None):
     try:
         with urlopen(request, timeout=4) as response:
             result = json.load(response)
+    except HTTPError as exc:
+        try:result=json.load(exc)
+        except (ValueError,TypeError):
+            raise ValueError('Feishu metadata lookup rejected (HTTP %s)' % exc.code) from None
     except Exception:
-        raise ValueError('Feishu preflight could not reach the read-only API') from None
+        raise ValueError('Feishu metadata lookup could not reach the API') from None
     if result.get('code') != 0:
-        raise ValueError('Feishu preflight rejected (code %s); check Bot permissions and membership' % result.get('code'))
+        scopes=sorted(set(re.findall(r'\bim:[A-Za-z0-9_.:]+',str(result.get('msg','')))))
+        detail='; required scope: '+', '.join(scopes) if scopes else '; check Bot permissions and membership'
+        raise ValueError('Feishu metadata lookup rejected (code %s)' % result.get('code')+detail)
     return result
 
 
-def bridge_ready(directory, project, config_path):
-    path = Path(directory) / 'run/api.sock'
-    if Path(config_path).stat().st_mtime > path.stat().st_mtime:
-        raise ValueError('cc-connect configuration changed after startup; reload/restart and verify before replying to a topic')
-    class UnixConnection(http.client.HTTPConnection):
-        def connect(self):
-            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            self.sock.settimeout(self.timeout)
-            self.sock.connect(str(path))
-    conn = UnixConnection('localhost', timeout=4)
-    try:
-        conn.request('GET', '/sessions')
-        response = conn.getresponse()
-        sessions = json.load(response)
-        if response.status != 200 or sessions is not None and not isinstance(sessions, list):
-            raise ValueError('cc-connect local API unavailable')
-        # /sessions contains only active chats; absence does not mean an unloaded project.
-        # The explicit --project send rejects unknown projects without selecting another.
-    finally:
-        conn.close()
-
-
 def inspect(project, session, directory, config_path, expected=None):
-    parts = session.split(':')
-    if len(parts) not in (2, 3, 4) or parts[0] not in ('feishu', 'lark') or not re.fullmatch(r'oc_[A-Za-z0-9_-]+', parts[1]):
-        raise ValueError('Unsupported cc-connect Feishu session key; use the full original key')
-    root = parts[3] if len(parts) == 4 and parts[2] in ('root', 'thread') else None
-    if len(parts) == 4 and (not root or not re.fullmatch(r'om_[A-Za-z0-9_-]+', root)):
-        raise ValueError('Invalid original thread root')
-    options = config_options(config_path, project, parts[0])
-    bridge_ready(directory, project, config_path)
-    base = 'https://open.larksuite.com' if parts[0] == 'lark' else 'https://open.feishu.cn'
-    token = api(base, '/open-apis/auth/v3/tenant_access_token/internal', data={k:options[k] for k in ('app_id','app_secret')})['tenant_access_token']
-    chat = api(base, '/open-apis/im/v1/chats/' + quote(parts[1], safe=''), token)['data']
-    mode = chat.get('chat_mode')
-    if mode not in ('p2p', 'group', 'topic'):
-        raise ValueError('Cannot determine whether this is a private chat or group')
-    context = {'platform':parts[0], 'chat_id':parts[1], 'chat_type':'p2p' if mode == 'p2p' else 'group',
-               'session_key':session, 'thread_root':root, 'entry_project':project}
-    if expected:
-        if any(context[k] != expected.get(k) for k in ('platform','chat_id','session_key','thread_root')):
-            raise ValueError('The destination no longer matches the original conversation')
-        if expected.get('chat_type') not in (None,'unknown',context['chat_type']):
-            raise ValueError('The destination no longer matches the original chat type')
-        if context['chat_type'] == 'p2p' and project != expected['entry_project']:
-            raise ValueError('Only the entry Bot may reply to this private chat')
-    if (mode == 'topic' or chat.get('group_message_type') == 'thread') and not root:
-        raise ValueError('Topic chat lacks its original root ID; enable cc-connect thread_isolation and start from that topic')
-    if context['chat_type'] == 'group':
-        member = api(base, '/open-apis/im/v1/chats/' + quote(parts[1], safe='') + '/members/is_in_chat', token)['data']
-        if member.get('is_in_chat') is not True:
-            raise ValueError('This Bot is not in the original group')
-        # Restricted posting cannot be proven with chat metadata alone. Use the entry Bot.
-        if expected and project != expected['entry_project'] and chat.get('moderation_permission') != 'all_members':
-            raise ValueError('Cannot confirm this Bot may post in the moderated group')
-    if root:
-        if options.get('thread_isolation') is not True or options.get('reply_to_trigger', True) is not True:
-            raise ValueError('Topic replies require thread_isolation=true and reply_to_trigger=true in this Bot project')
-        messages = api(base, '/open-apis/im/v1/messages/' + quote(root, safe=''), token)['data'].get('items', [])
-        if not any(m.get('message_id') == root and m.get('chat_id') == parts[1] and not m.get('deleted') for m in messages):
-            raise ValueError('The original thread root is inaccessible or belongs to another chat')
+    """Original entry is opaque passthrough; probes only decide alternate Bot use."""
+    if not isinstance(session,str) or not session or not isinstance(project,str) or not project:
+        raise ValueError('The original session and sending project must be explicit')
+    if expected and session != expected.get('session_key'):
+        raise ValueError('The destination no longer matches the original conversation')
+    parts=session.split(':',3)
+    context=copy.deepcopy(expected) if expected else {
+        'platform':parts[0], 'chat_id':parts[1] if len(parts)>1 else '',
+        'chat_type':'unknown', 'session_key':session, 'entry_project':project}
+    # No parsing, config reads, API access, socket checks or TOML interpreter
+    # discovery may stand between the original entry and cc-connect send.
+    if project == context.get('entry_project'):
+        return context
+    if context.get('chat_type') == 'p2p':
+        raise ValueError('Only the entry Bot may reply to this private chat')
+    if context.get('platform') not in ('feishu','lark') or not context.get('chat_id'):
+        raise ValueError('Cannot confirm an alternate Bot destination; use the entry Bot')
+    options=config_options(config_path,project,context['platform'])
+    base='https://open.larksuite.com' if context['platform']=='lark' else 'https://open.feishu.cn'
+    token=tenant_token(base,options)
+    chat=api(base,'/open-apis/im/v1/chats/'+quote(context['chat_id'],safe=''),token)['data']
+    # Positive evidence selects an alternate; unknown channel metadata means
+    # fallback, never rejection of the original session's validity.
+    if chat.get('chat_type') == 'p2p' or chat.get('chat_mode') not in ('group','topic'):
+        raise ValueError('Cannot confirm a group for the alternate Bot; use the entry Bot')
+    member=api(base,'/open-apis/im/v1/chats/'+quote(context['chat_id'],safe='')+'/members/is_in_chat',token)['data']
+    if member.get('is_in_chat') is not True or chat.get('moderation_permission') != 'all_members':
+        raise ValueError('Cannot confirm the alternate Bot may post; use the entry Bot')
+    context['chat_type']='group'
     return context
+
+
+def prepare_delivery(project, session, config_path, expected=None):
+    """Translate a known thread target to a root message; retain source identity."""
+    context=copy.deepcopy(expected) if expected else inspect(project,session,'',config_path)
+    if context.get('session_key') != session:
+        raise ValueError('The destination no longer matches the original conversation')
+    parts=session.split(':',3)
+    if len(parts)!=4 or parts[0] not in ('feishu','lark') or parts[2]!='thread' or not parts[3]:
+        return {'session':session,'conversation':context}
+    platform,chat,_,thread=parts
+    if context.get('platform',platform)!=platform or context.get('chat_id',chat) not in ('',chat) or context.get('thread_id',thread)!=thread:
+        raise ValueError('Thread metadata does not match the original conversation')
+    context.update(platform=platform,chat_id=chat,thread_id=thread)
+    options=config_options(config_path,project,platform)
+    # These options control ReplyInThread in the supported bridge, not ID validity.
+    if options.get('thread_isolation') is not True or options.get('reply_to_trigger') is False:
+        raise ValueError('Topic delivery requires cc-connect thread_isolation=true and reply_to_trigger=true (or omitted); apply the configuration to the running bridge')
+    root=context.get('thread_root')
+    # Older records incorrectly stored the thread ID in thread_root.
+    if not root or root==thread:
+        base='https://open.larksuite.com' if platform=='lark' else 'https://open.feishu.cn'
+        token=tenant_token(base,options)
+        query=urlencode({'container_id_type':'thread','container_id':thread,'page_size':20,'sort_type':'ByCreateTimeAsc'})
+        items=api(base,'/open-apis/im/v1/messages?'+query,token)['data'].get('items',[])
+        roots=set()
+        for item in items:
+            if item.get('chat_id')!=chat or item.get('thread_id')!=thread:
+                raise ValueError('Thread lookup did not confirm the original chat and topic')
+            candidate=item.get('root_id') or (item.get('message_id') if not item.get('parent_id') else None)
+            if isinstance(candidate,str) and candidate and candidate!=thread:roots.add(candidate)
+        if len(roots)!=1:
+            raise ValueError('Could not resolve one root message for the original topic; supply its actual thread_root or check Bot history access')
+        root=roots.pop()
+    if not isinstance(root,str) or not root:
+        raise ValueError('thread_root must be the actual root message ID')
+    context['thread_root']=root
+    return {'session':f'{platform}:{chat}:root:{root}','conversation':context}
+
+
+def prepare_compatible(project, session, config_path, expected=None):
+    parts=session.split(':',3)
+    if len(parts)==4 and parts[0] in ('feishu','lark') and parts[2]=='thread' and parts[3]:
+        try:
+            import tomllib
+        except ImportError:
+            try:import tomli
+            except ImportError:return helper(['--prepare',project,session,config_path],expected)
+    return prepare_delivery(project,session,config_path,expected)
 
 
 def capture():
@@ -131,7 +160,7 @@ def toml_python():
     for exe in dict.fromkeys(x for x in candidates if x):
         check = subprocess.run([exe, '-c', 'try:\n import tomllib\nexcept ImportError:\n import tomli'], capture_output=True, timeout=5)
         if check.returncode == 0:return exe
-    raise ValueError('Feishu conversation capture requires an installed Python 3.11+ or tomli')
+    raise ValueError('Reading cc-connect configuration requires an installed Python 3.11+ or tomli')
 
 
 def helper(arguments=(), expected=None):
@@ -143,11 +172,13 @@ def helper(arguments=(), expected=None):
 
 
 def capture_arguments():
-    """Use an installed TOML-capable Python; do not install or change the bridge."""
-    return helper()
+    """Capture metadata without probing the bridge or channel."""
+    return capture()
 
 
 def inspect_compatible(project, session, directory, config_path, expected=None):
+    if not expected or project == expected.get('entry_project'):
+        return inspect(project,session,directory,config_path,expected)
     try:
         import tomllib
     except ImportError:
@@ -158,7 +189,9 @@ def inspect_compatible(project, session, directory, config_path, expected=None):
 
 if __name__ == '__main__':
     try:
-        value=inspect(*sys.argv[2:],expected=json.load(sys.stdin)) if sys.argv[1:2]==['--inspect'] else capture()
+        if sys.argv[1:2]==['--inspect']:value=inspect(*sys.argv[2:],expected=json.load(sys.stdin))
+        elif sys.argv[1:2]==['--prepare']:value=prepare_delivery(*sys.argv[2:],expected=json.load(sys.stdin))
+        else:value=capture()
         print(json.dumps(value, ensure_ascii=False))
     except Exception as exc:
         print(json.dumps({'error':str(exc)}, ensure_ascii=False))

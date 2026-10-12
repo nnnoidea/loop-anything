@@ -10,16 +10,20 @@ def register(comm, args):
     if comm.identity_conflict:raise Conflict('Resolve this machine identity before registering a conversation')
     from loop_anything.runtime.implementations import validate_implementation
     context=copy.deepcopy(args['conversation'])
-    allowed={'platform','chat_id','chat_type','session_key','thread_root','entry_project'}
+    allowed={'platform','chat_id','chat_type','session_key','thread_root','thread_id','entry_project'}
     if not isinstance(context,dict) or set(context)-allowed or context.get('platform') not in ('feishu','lark'):
         raise Invalid('Expected a captured Feishu/Lark conversation')
-    if context.get('chat_type') not in ('p2p','group') or not all(isinstance(context.get(k),str) and context[k] for k in ('chat_id','session_key','entry_project')):
-        raise Invalid('Conversation requires chat type, chat ID, full session key and entry project')
-    parts=context['session_key'].split(':')
-    if parts[:2]!=[context['platform'],context['chat_id']] or len(parts) not in (2,3,4):raise Invalid('Conversation/session mismatch')
-    root=parts[3] if len(parts)==4 and parts[2] in ('root','thread') else None
-    if len(parts)==4 and not root or context.get('thread_root')!=root:raise Invalid('Thread root/session mismatch')
-    if root and context['chat_type']!='group':raise Invalid('A private conversation cannot have a group thread')
+    if context.get('chat_type') not in ('p2p','group','unknown') or not all(isinstance(context.get(k),str) and context[k] for k in ('session_key','entry_project')):
+        raise Invalid('Conversation requires full session key and entry project')
+    context.setdefault('chat_id','')
+    parts=context['session_key'].split(':',3)
+    root=parts[3] if len(parts)==4 and parts[2]=='root' else None
+    thread=parts[3] if len(parts)==4 and parts[2]=='thread' else None
+    # Scope labels are display metadata, never a validity test for the opaque key.
+    if root or thread:
+        context['thread_root']=root or context.get('thread_root')
+        if thread and context['thread_root']==thread:context['thread_root']=None
+        if thread:context.setdefault('thread_id',thread)
     if not args.get('notification_command'):raise Invalid('Conversation requires a local notification sender command')
     sender={'timeout':60,'command':args['notification_command'],'identity':context['entry_project'],'destination':context['session_key'],'channel':'cc-connect'}
     validate_implementation(dict(sender,kind='command'))
@@ -47,14 +51,17 @@ def entry_sender(comm,context):
 
 def from_source(comm,source):
     """Persist bridge metadata and a local adapter, without probing the channel."""
-    if not isinstance(source,dict) or set(source)-{'platform','entry_project','session_key','chat_type'}:
-        raise Invalid('Chat context accepts platform, entry_project, session_key and optional chat_type')
+    if not isinstance(source,dict) or set(source)-{'platform','entry_project','session_key','chat_type','chat_id','thread_id','thread_root'}:
+        raise Invalid('Chat context accepts platform, entry_project, session_key and optional chat_type, chat_id, thread_id, thread_root')
     if source.get('platform') not in ('feishu','lark') or not all(isinstance(source.get(k),str) and source[k] for k in ('entry_project','session_key')):
         raise Invalid('Chat context requires platform, entry project and session key')
-    parts=source['session_key'].split(':')
-    root=parts[3] if len(parts)==4 and parts[2] in ('root','thread') else None
-    context=dict(source,chat_id=parts[1] if len(parts)>1 else '',
-                 chat_type=source.get('chat_type','group' if root else 'unknown'),thread_root=root)
+    parts=source['session_key'].split(':',3)
+    root=parts[3] if len(parts)==4 and parts[2]=='root' else None
+    thread=parts[3] if len(parts)==4 and parts[2]=='thread' else None
+    context=dict(source,chat_id=source.get('chat_id') or (parts[1] if len(parts)>1 else ''),
+                 chat_type=source.get('chat_type','unknown'),thread_root=root or source.get('thread_root'))
+    if thread and context['thread_root']==thread:context['thread_root']=None
+    if thread:context.setdefault('thread_id',thread)
     if context['chat_type'] not in ('p2p','group','unknown'):raise Invalid('Invalid chat type')
     sender=entry_sender(comm,context)
     binding={'id':'conversation-'+digest([comm.settings()['instance_id'],source,sender])[:40],
@@ -68,14 +75,27 @@ def from_source(comm,source):
 def remember_context(comm,db,entry,receipt):
     """Learn channel facts only from the selected adapter's delivery receipt."""
     checked=receipt.get('conversation') if isinstance(receipt,dict) else None
-    if not isinstance(checked,dict) or checked.get('chat_type') not in ('p2p','group'):return
-    checked={k:checked.get(k) for k in ('platform','chat_id','chat_type','session_key','thread_root','entry_project')}
+    if not isinstance(checked,dict) or checked.get('chat_type') not in ('p2p','group','unknown'):return
+    checked={k:checked.get(k) for k in ('platform','chat_id','chat_type','session_key','thread_root','entry_project','thread_id') if k in checked}
     expected=entry['conversation']
-    if any(checked.get(k)!=expected.get(k) for k in ('platform','chat_id','session_key','thread_root','entry_project')):return
+    if any(checked.get(k)!=expected.get(k) for k in ('platform','chat_id','session_key','entry_project')):return
     if expected.get('chat_type') not in ('unknown',checked['chat_type']):return
     row=db.execute('SELECT document FROM communication_notification_bindings WHERE id=?',(entry['id'],)).fetchone()
+    binding=json.loads(row[0]) if row else entry
+    current=binding['conversation']
+    if any(current.get(k)!=expected.get(k) for k in ('platform','chat_id','session_key','entry_project')):return
+    if current.get('chat_type') in ('p2p','group'):
+        if checked['chat_type'] not in ('unknown',current['chat_type']):return
+        checked['chat_type']=current['chat_type']
+    for key in ('thread_root','thread_id'):
+        saved=current.get(key)
+        # Legacy thread records stored the topic ID in the root field.
+        parts=current['session_key'].split(':',3)
+        if key=='thread_root' and len(parts)==4 and parts[2]=='thread' and saved==parts[3]:saved=None
+        if saved and checked.get(key) and saved!=checked[key]:return
+        if saved and not checked.get(key):checked[key]=saved
     if row:
-        binding=json.loads(row[0]);binding['conversation']=copy.deepcopy(checked)
+        binding['conversation']=copy.deepcopy(checked)
         db.execute('UPDATE communication_notification_bindings SET document=? WHERE id=?',(json.dumps(binding),entry['id']))
     entry['conversation']=copy.deepcopy(checked)
 

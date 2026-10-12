@@ -18,9 +18,9 @@
 
 - 生效方式：automatic/configured
 - 平台承担：飞书入口调用默认回复原会话；私聊由入口Bot回复，群聊优先具名Agent对应Bot并保持原话题。
-- 作者提供：Skill call.py 只携带 chat_context；平台持久保存并复用来源，发送适配器核实渠道及调用cc-connect；agent.notification_route 映射本机Bot出口。嵌套外援继承来源，不需要Agent重新拼接通知命令。
+- 作者提供：Skill call.py 只携带 chat_context；平台持久保存并复用来源，发送适配器保存原入口，话题用根消息调用cc-connect，缺根消息由适配器查询补齐；换Bot时核实候选；agent.notification_route 映射本机Bot出口。嵌套外援继承来源，不需要Agent重新拼接通知命令。
 - 配置入口：`request_assistance.chat_context`、`start_run.chat_context`、`communication_config(operation=agent)`、`兼容已有conversation_id`
-- 边界：通知接入失败不阻断业务任务；发送前确认不可用才回退入口Bot，发送后失败或未知不改投。话题需要完整root session key和cc-connect话题隔离。显式出口优先；无聊天来源沿用群组按机器出口。
+- 边界：通知接入失败不阻断业务任务；发送前确认不可用才回退入口Bot，发送后失败或未知不改投。原始session_key保留；适配器将明确话题目标转换为同群同话题的root发送目标，查询失败不降级群时间线。显式出口优先；无聊天来源沿用群组按机器出口。
 - 工具入口：communication_config、request_assistance、start_run、read_assistance
 - 详细说明：[references/cc-connect.md](cc-connect.md)
 
@@ -42,6 +42,26 @@
 - 配置入口：`read_assistance.include_logs`、`read_assistance.include_details`、`read_assistance.max_chars`、`read_assistance.after/offset`
 - 边界：单页日志默认 4000、最多 16000 字符；完整诊断按需返回，原始日志保留；结构化业务结果不自动删减。
 - 工具入口：read_assistance、request_assistance、control_assistance
+- 详细说明：[references/communication.md](communication.md)
+
+## standalone_collaboration
+
+- 生效方式：configured/operator
+- 平台承担：独立协作由内置 Loop 承接；事件等待记录结果，当前会话或具名协调 Agent 复用原 Task/session 挂起续跑。
+- 作者提供：request_assistance 返回协作 Run；追问延续原 Run。自动续跑使用 start_collaboration，提供真实本机会话、Agent PID 和恢复配置，wait_assistance 后 finish 并退出原进程。
+- 配置入口：`start_collaboration`、`request_assistance`、`wait_assistance`
+- 边界：未知外部会话仅保存结果并通知；不猜 session，不并行恢复尚存活的原进程。
+- 工具入口：start_collaboration、request_assistance、read_assistance、wait_assistance、communication_status
+- 详细说明：[references/communication.md](communication.md)
+
+## confirmed_agent_directory
+
+- 生效方式：configured
+- 平台承担：群组目录共享用户确认的主要任务、能力与可用状态；旧的未确认说明不接收新群组工作。
+- 作者提供：先询问用户主要任务并确认说明及开放群组，再 communication_config(task_confirmed=true)。修改说明或新增群组重新确认。
+- 配置入口：`communication_config`、`communication_status`
+- 边界：Agent 自拟描述不等于用户确认。
+- 工具入口：communication_config、communication_status
 - 详细说明：[references/communication.md](communication.md)
 
 ## assistance_session_resume
@@ -67,8 +87,8 @@
 ## agent_communication
 
 - 生效方式：configured/operator
-- 平台承担：平台提供本机具名Agent目录、NAS群组收发、明确认领、进度结果、会话和等待恢复；通信不要求创建Loop。
-- 作者提供：先配置已挂载的共享空间，用 communication_workspace(discover=true) 发现群组并显式加入；再配置具名 Agent 对应的本机 CLI/工作目录/恢复命令及开放群组，支持转交加入说明；Loop绑定群组，节点显式声明群组执行；外援由Agent按需请求。
+- 平台承担：平台提供本机具名Agent目录、NAS群组收发、明确认领、进度结果、会话和等待恢复；独立协作自动使用平台内置 Loop。
+- 作者提供：先配置已挂载的共享空间，用 communication_workspace(discover=true) 发现群组并显式加入；再配置具名 Agent 对应的本机 CLI/工作目录/恢复命令及开放群组，支持转交加入说明；Loop绑定群组，节点显式声明群组执行；外援由Agent按需请求；pending/offered表示等待，默认接单期限300秒，不得因几秒无回应而取消或重建，按需挂起等待。
 - 配置入口：`communication_config`、`implementations.*.dispatch`、`request_assistance`、`wait_assistance`
 - 边界：可信工作区配置、请求、查询无需全局编辑解锁；普通操作由平台处理内部标识，worker写回仍校验本次执行范围。原生 session ID 只用于恢复；本地节点只由来源平台执行，群组不是业务Run副本，session不决定认领。失联不自动重跑。NAS实际环境需安装时检查，逐键远程PTY尚不承诺。
 - 工具入口：communication_workspace、communication_status、communication_config、request_assistance、read_assistance、control_assistance、wait_assistance、communication_execute
@@ -374,9 +394,9 @@
     "notifications"
   ],
   "configuration": [
-    "通过 Skill call.py 发起 request_assistance 或 start_run，只随业务请求携带 chat_context；平台保存来源，适配器在发送机核实和投递。",
+    "通过 Skill call.py 发起 request_assistance 或 start_run，只随业务请求携带 chat_context；平台保存来源及可用thread_root，适配器补齐根消息并投递，换Bot时核实候选。",
     "在具名 Agent 的 notification_route 选择本机 Bot 出口；群内执行确认和结果优先该 Bot，私聊仍由入口回复。",
-    "所有参与 Bot 开启话题隔离和回复原消息；适配器只读预检确认原群/根消息，发送前不可用才由入口代发；接入失败记录通知错误，不阻断任务。"
+    "保存原始session_key和话题信息；发送时优先使用thread_root，缺失时适配器查询原话题，核对后调用cc-connect root目标，Agent无需自己构建查询。话题转换需要桥接启用话题回复；候选Bot的群聊和成员/发言权限无法确认就回退原入口；发送已开始后的未知结果不自动重发，通知失败不阻断任务。"
   ],
   "author_provides": "具名Agent对应Bot的本机出口映射；复用已有cc-connect配置及只读权限。",
   "verification": [
@@ -428,7 +448,7 @@
   ],
   "configuration": [
     "communication_status 发现显式开放的本机目录和获准群组，使用 agent_id 与必要的 instance_id 消歧。",
-    "request_assistance 返回持久请求ID，可信工作区按ID读取；本机调用不要求 NAS，无 Loop 调用不创建业务 Run。",
+    "request_assistance 返回持久请求ID，可信工作区按ID读取；本机调用不要求 NAS，独立调用由内置协作 Run 跟踪；后续求援传 collaboration_id，追问自动沿用原 Run。",
     "平台托管节点先记录原生 session 和恢复配置，再使用 wait_assistance 持久等待并 finish；回复或期限到达后在原机器恢复同一个 CLI session，以新凭据和外援结果继续同一个 Task；不可恢复时明确阻塞，不新建会话。",
     "外援通过限定客户端 read_context 按需读取关联上下文，通过 complete 提交协助结果；不取得原节点写权限。"
   ],

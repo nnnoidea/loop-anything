@@ -14,9 +14,10 @@ metadata:
 | 当前需要 | 先做什么 | 按需读取 |
 |---|---|---|
 | 多轮工作、依赖步骤、等待训练或其他外部结果后继续 | 查 `list_loops`、`list_runs`，复用已有工作；确需新流程再构建 | [构建](references/build.md)、[运行](references/run.md) |
-| 请另一个专长或另一台机器上的 Agent 帮忙 | `communication_status` 发现可调用成员，再 `request_assistance`；无需先建 Loop | [通信](references/communication.md) |
+| 请另一个专长或另一台机器上的 Agent 帮忙 | `communication_status` 发现可调用成员，再 `request_assistance`；平台自动用内置 Loop 跟踪结果 | [通信](references/communication.md) |
+| 独立会话需要等待外援后自动续跑 | `start_collaboration` 接入真实原 session/当前 Agent PID/恢复命令，或启动本机具名协调 Agent；再使用 `wait_assistance` | [通信](references/communication.md#独立协作内置-loop) |
 | 看进度、取结果、继续之前的工作 | 用已有 Run/请求 ID 查状态；有任务令牌就沿用，不重复创建 | [运行](references/run.md)、[通信](references/communication.md) |
-| 首次建立多机协作 | 配置共享空间，显式加入群组，选择开放的具名 Agent | [组网](references/communication.md#首次组网共享空间--群组--具名-agent) |
+| 首次建立多机协作 | 配置共享空间，加入群组；先询问用户主要任务，再确认具名 Agent 的说明和开放范围 | [组网](references/communication.md#首次组网共享空间--群组--具名-agent) |
 
 ## 连接并发现
 
@@ -31,8 +32,10 @@ python3 scripts/call.py read_capabilities --arguments '{"capability":"agent_comm
 
 ## 使用原则
 
+- 向群组开放 Agent 前，先问用户“这个 Agent 主要负责什么任务”，确认准确说明及目标群组后才设置 `task_confirmed=true`。已有明确用户回答可复用；Agent 自拟说明、CLI 名称、模型名称均不等于用户确认。
 - 先查平台已有能力，再决定业务脚本需要做什么；平台已提供调度、持久化、通信、等待恢复和结果查看。
-- 从 cc-connect 飞书聊天发起时，用 `scripts/call.py` 随请求传递原会话标识，由平台保存、适配器核实并投递；确认与结果沿原聊天/话题返回。具名 Agent 的 Bot 映射及话题前提见 [cc-connect](references/cc-connect.md#自动跟随原聊天)。显式 `notification_route` 可覆盖。
+- 从 cc-connect 飞书聊天发起时，用 `scripts/call.py` 随请求传递原会话标识，由平台保存、适配器核实并投递；已有根消息可随 chat_context.thread_root 提供，缺失时由适配器查询原话题，Agent 无需自行查询或拼接发送命令。原始会话保留，确认与结果沿原聊天/话题返回。具名 Agent 的 Bot 映射及话题前提见 [cc-connect](references/cc-connect.md#自动跟随原聊天)。显式 `notification_route` 可覆盖。
+- 外援 pending/offered 是等待接单，不是无人可用；不得因几秒未回应就取消、重建或缩短接单期限。使用平台挂起或保留请求等通知；用户明确撤回仍可取消。
 - 查询外援默认只读状态与结果。只有排错才请求日志，并沿返回游标按需读取；不反复携带完整日志、通知历史或旧请求。
 - 在已有授权范围内执行；发现能力不代表用户授权新建任务、发送通知或启动任意远端工作。
 - 恢复工作使用记录的原 session 与当前操作凭据，不能猜测最近会话；具体方法由 `read_task` 返回的作者 Skill 提供。
