@@ -229,6 +229,8 @@ class Store:
             return normalize_run(run)  # Legacy snapshots are migrated transactionally on next edit.
         loop_definition = db.execute('SELECT document, implementations FROM loop_definitions WHERE key=?', (run['loop_key'],)).fetchone()
         run.update(loop_definition=current_definition(json.loads(loop_definition[0])), implementations=json.loads(loop_definition[1]))
+        if run['loop_definition']['id']=='platform-collaboration' and run.get('collaboration',{}).get('coordinator_implementation'):
+            run['implementations']['coordinate']=copy.deepcopy(run['collaboration']['coordinator_implementation'])
         for field, section in self.PARTS.items():
             rows = [json.loads(r[0]) for r in db.execute(
                 'SELECT document FROM timeline_parts WHERE run_id=? AND section=? ORDER BY position', (run_id, section))]

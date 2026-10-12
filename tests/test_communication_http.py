@@ -86,7 +86,7 @@ class CommunicationHTTPTests(unittest.TestCase):
                     if next(g for g in discovered if g['id']==gid).get('notification_bindings',{}).get(binding['sender_instance'],{}).get('id')==binding['id']:break
                     time.sleep(.1)
                 else:self.fail('Group notification binding was not discovered')
-                tool(1,'communication_config',{'operation':'agent','agent_id':'papers','agent':{'name':'论文助手','local':True,'groups':[gid],
+                tool(1,'communication_config',{'operation':'agent','task_confirmed':True,'agent_id':'papers','agent':{'description':'查找研究论文','name':'论文助手','local':True,'groups':[gid],
                      'implementation':{'kind':'agent','command':[sys.executable,str(worker)],'agent_cli':'custom','resume_command':[sys.executable,str(worker),'{{prompt}}','{{session_id}}']}}})
                 public=tool(1,'communication_status',{'group_id':gid},admin=False)
                 local=next(a for a in public['agents'] if a['location']=='local' and a['id']=='papers')
@@ -135,7 +135,10 @@ class CommunicationHTTPTests(unittest.TestCase):
                         self.assertEqual(continued['state'],'completed',continued)
                         self.assertEqual(continued['native_session']['id'],result['native_session']['id'])
                         self.assertEqual(continued['result']['message'],'继续解释')
-                for i in (0,1):self.assertEqual(tool(i,'list_runs',{})['runs'],[])
+                standalone_runs={i:{r['id'] for r in tool(i,'list_runs',{})['runs']} for i in (0,1)}
+                for i,ids in standalone_runs.items():
+                    self.assertTrue(ids)
+                    for rid in ids:self.assertIn('collaboration',tool(i,'read_run',{'run_id':rid})['run'])
                 self.assertTrue(tool(0,'communication_workspace',{},admin=False)['ok'])
                 import test_timeline_runtime as fixture
                 from loop_anything.runtime.store import Store
@@ -152,7 +155,7 @@ class CommunicationHTTPTests(unittest.TestCase):
                     self.assertEqual(actual['tasks']['init']['status'],'completed',actual['history'])
                     self.assertEqual(actual['records']['a'][0]['value'],'A')
                     self.assertEqual(actual['agent_sessions'],[])
-                    self.assertEqual(tool(1,'list_runs',{})['runs'],[])
+                    self.assertEqual({r['id'] for r in tool(1,'list_runs',{})['runs']},standalone_runs[1])
                 finally:definition.tearDown()
             finally:
                 for p in servers:

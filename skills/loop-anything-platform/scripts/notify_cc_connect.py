@@ -8,16 +8,19 @@ import subprocess
 import sys
 
 
-def sender_command():
+def sender_command(executable=None, data_dir=None, config_path=None):
     project, session = (os.environ.get(key, '').strip() for key in ('CC_PROJECT', 'CC_SESSION_KEY'))
     if not project or not session:
         raise ValueError('CC_PROJECT and CC_SESSION_KEY are required; configure notifications from the intended cc-connect chat')
-    executable = shutil.which('cc-connect')
+    executable = shutil.which(executable or 'cc-connect')
     if not executable:
         raise ValueError('cc-connect is not installed; use the existing bridge setup first')
-    directory = Path(os.environ.get('CC_DATA_DIR', '').strip() or Path.home() / '.cc-connect').expanduser().resolve()
-    return [sys.executable, str(Path(__file__).resolve()), '--project', project, '--session', session,
-            '--data-dir', str(directory), '--executable', str(Path(executable).absolute())]
+    directory = Path(data_dir or os.environ.get('CC_DATA_DIR', '').strip() or Path.home() / '.cc-connect').expanduser().resolve()
+    command = [sys.executable, str(Path(__file__).resolve()), '--project', project, '--session', session,
+               '--data-dir', str(directory), '--executable', str(Path(executable).absolute())]
+    config_path=config_path or os.environ.get('CC_CONFIG_PATH')
+    if config_path:command.extend(['--config',str(Path(config_path).expanduser().resolve())])
+    return command
 
 
 def main():
@@ -25,13 +28,13 @@ def main():
     parser.add_argument('--print-command', action='store_true', help='Print sender argv for the current cc-connect chat without sending a message')
     for name in ('project', 'session', 'data-dir'):
         parser.add_argument('--' + name)
-    parser.add_argument('--config', help='Local cc-connect configuration file for read-only conversation preflight')
-    parser.add_argument('--conversation', action='store_true', help='Require exact original conversation and preflight before sending')
+    parser.add_argument('--config', help='Config of the running cc-connect; used for topic resolution and alternate Bot selection')
+    parser.add_argument('--conversation', action='store_true', help='Preserve the original conversation; resolve topic roots and verify alternate Bot selection')
     parser.add_argument('--executable', default='cc-connect')
     args = parser.parse_args()
     if args.print_command:
         try:
-            print(json.dumps(sender_command(), ensure_ascii=False))
+            print(json.dumps(sender_command(args.executable,args.data_dir,args.config), ensure_ascii=False))
         except ValueError as exc:
             parser.error(str(exc))
         return
@@ -49,12 +52,20 @@ def main():
             raise ValueError('The project/identity and session/destination must be explicit')
         executable=shutil.which(args.executable)
         if not executable:raise ValueError('cc-connect executable is unavailable on the sending machine')
+        config_path=args.config or str(Path.home()/'.cc-connect/config.toml')
         if args.conversation or conversation:
             from cc_connect_context import inspect_compatible as inspect
             session=conversation['session_key'] if conversation else session
-            config_path=args.config or str(Path.home()/'.cc-connect/config.toml')
-            checked=inspect(project,session,directory,config_path,expected=conversation)
+            try:
+                checked=inspect(project,session,directory,config_path,expected=conversation)
+            except Exception as exc:
+                # A probe failure is definitely before send. Even an unfamiliar
+                # channel response must permit the platform's entry-Bot fallback.
+                raise ValueError('Could not select this notification Bot: '+str(exc)) from None
             if conversation:checked['entry_project']=conversation['entry_project']
+        from cc_connect_context import prepare_compatible
+        prepared=prepare_compatible(project,session,config_path,checked or conversation)
+        session,checked=prepared['session'],prepared['conversation']
         title=str(notice.get('title') or '协作通知')
         if notice.get('run_id'):title+=' · '+str(notice['run_id'])
         lines = [title, str(notice['message'])]
@@ -73,8 +84,8 @@ def main():
                                 encoding='utf-8', capture_output=True, timeout=25)
         if result.returncode:
             raise ValueError('cc-connect send failed: ' + (result.stderr.strip() or str(result.returncode)))
-        print(json.dumps({'delivered': True, 'channel': 'cc-connect', 'reference': notice['id'], **({'conversation':checked} if checked else {})}, ensure_ascii=False))
-    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
+        print(json.dumps({'delivered': True, 'channel': 'cc-connect', 'reference': notice['id'], 'delivery_session_key':session, **({'conversation':checked} if checked else {})}, ensure_ascii=False))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.TimeoutExpired) as exc:
         print(json.dumps({'delivered': False, 'not_sent':not send_attempted, 'error': str(exc)}, ensure_ascii=False))
         raise SystemExit(2)
 

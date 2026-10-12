@@ -39,7 +39,7 @@ class SharedSpaceTests(unittest.TestCase):
         self.b.config('agent',agent_id='papers',agent={'name':'Paper Agent','groups':[],'implementation':implementation})
         self.b.scan();self.a.scan()
         self.assertEqual(self.a.directory()['agents'],[])
-        self.b.config('agent',agent_id='papers',agent={'groups':[g['id']]})
+        self.b.config('agent',agent_id='papers',agent={'groups':[g['id']], 'description':'Find research papers'},task_confirmed=True)
         self.b.last_scan=0
         # Force heartbeat refresh, without starting any CLI.
         member=Path(g['path'])/'members'/(self.b.settings()['instance_id']+'.json');member.unlink()

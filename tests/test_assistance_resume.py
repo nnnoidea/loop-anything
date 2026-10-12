@@ -107,7 +107,7 @@ class AssistanceResumeTests(unittest.TestCase):
                     if remote:
                         config=tool(0,'communication_config',{'operation':'group','path':str(root/'nas'),'create':True})['configuration'];gid=next(iter(config['groups']))
                         tool(1,'communication_config',{'operation':'group','path':str(root/'nas')})
-                        tool(1,'communication_config',{'operation':'agent','agent_id':'research','agent':{'name':'research','groups':[gid],'implementation':implementation}})
+                        tool(1,'communication_config',{'operation':'agent','task_confirmed':True,'agent_id':'research','agent':{'name':'research','description':'Research experimental results','groups':[gid],'implementation':implementation}})
                         case.implementations['init']={'kind':'agent','dispatch':{'location':'group','agent_id':'research'}}
                     else:case.implementations['init']=implementation
                     key=source.publish(case.bp,case.implementations)['key']

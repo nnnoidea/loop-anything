@@ -5,11 +5,14 @@ from loop_anything.runtime.model import Invalid
 
 def summary(request):
     from loop_anything.runtime.communication import clean
-    fields=('id','kind','state','message','message_truncated','source','source_reference','source_summary','parent_request','origin','origin_name','revision',
+    fields=('id','kind','state','message','message_truncated','source','source_reference','source_summary','collaboration','parent_request','origin','origin_name','revision',
             'agent_id','agent_label','executor','executor_name','location','group_id','scope_group_id',
-            'created_at','updated_at','native_session','result','error','progress','session','notification_binding',
+            'created_at','updated_at','deadline','cancellation','selection_decision','native_session','result','error','progress','session','notification_binding',
             'notification_conversation','notification_origin','notification_route','notification_level','notification_policy')
     result=clean({k:request[k] for k in fields if k in request})
+    if request.get('state') in ('pending','offered'):
+        result['next_action']='await_assignment'
+        result['state_hint']='Waiting for assignment, not unavailable. The origin enforces deadline; do not cancel or retry solely because a few seconds or reads show no grant.'
     if len(result.get('message',''))>500:
         result['message']=result['message'][:500];result['message_truncated']=True
     notices=request.get('notifications',[])

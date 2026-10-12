@@ -24,7 +24,7 @@ const {spawn,execFileSync}=require('node:child_process'),{chromium}=require('pla
   assert((await page.locator('#comm-detail-result').textContent()).includes('浏览器本机外援完成'));
   await page.waitForFunction(()=>document.querySelector('#comm-detail-logs')?.textContent.includes('LOG-END'));
   const output=await page.locator('#comm-detail-logs').textContent();assert.equal(output.split('LOG-BEGIN').length,2);assert(output.includes('x'.repeat(20000)+'LOG-END'));
-  const runs=await (await page.request.get(base+'/api/runs')).json();assert.equal(runs.length,0);
+  const runs=await (await page.request.get(base+'/api/runs')).json();assert.equal(runs.length,1);await page.locator('[data-collaboration-run]').waitFor();assert.equal(await page.locator('[data-collaboration-run]').getAttribute('data-collaboration-run'),runs[0].id);
   await page.screenshot({path:path.join(root,'request.png'),fullPage:true});await page.locator('#communication-dialog [data-comm-close]').click();
   const nas=path.join(root,'nas');fs.mkdirSync(nas);
   await page.locator('#communication-space [name=path]').fill(nas);await page.locator('#communication-space [name=name]').fill('协作空间');await page.locator('#communication-space button').click();
@@ -43,7 +43,7 @@ const {spawn,execFileSync}=require('node:child_process'),{chromium}=require('pla
   await page.locator('#communication-discover').click();await page.locator('[data-comm-join]:not([disabled])').waitFor();
   assert.equal(Object.keys((await workspaceRead()).configuration.groups).length,1,'Discovery must not join');
   await page.locator('[data-comm-join]:not([disabled])').click();await page.waitForFunction(()=>document.querySelectorAll('[data-comm-leave]').length===2);
-  await page.locator('[data-comm-edit]').click();await page.locator(`#communication-agent-form [name=groups][value="${gid}"]`).check();await page.locator('#communication-agent-form button.primary').click();await page.locator('#communication-dialog').waitFor({state:'hidden'});
+  await page.locator('[data-comm-edit]').click();await page.locator(`#communication-agent-form [name=groups][value="${gid}"]`).check();await page.locator('#communication-agent-form [name=description]').fill('检索论文并返回链接及方法比较');await page.locator('#communication-agent-form button.primary').click();await page.waitForFunction(()=>document.querySelector('#toast').textContent.includes('Ask the user'));assert.deepEqual(Object.values((await workspaceRead()).configuration.agents)[0].groups,[]);await page.locator('#communication-agent-form [name=task_confirmed]').check();await page.locator('#communication-agent-form button.primary').click();await page.locator('#communication-dialog').waitFor({state:'hidden'});
   assert.deepEqual(Object.values((await workspaceRead()).configuration.agents)[0].groups,[gid]);
   await page.waitForFunction(()=>document.querySelector('#communication-members')?.textContent.includes('本机论文助手'));
   await page.screenshot({path:path.join(root,'onboarding.png'),fullPage:true});

@@ -25,7 +25,7 @@ class CommunicationTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def agent(self, comm, ident='papers', groups=(), local=True):
-        comm.config('agent', agent_id=ident, agent={'name':'论文助手','description':'查论文','capabilities':['papers'],
+        comm.config('agent', agent_id=ident, task_confirmed=True, agent={'name':'论文助手','description':'查论文','capabilities':['papers'],
                     'local':local,'groups':list(groups),'implementation':{'kind':'agent','command':[sys.executable,'-c','pass']}})
 
     def groups(self):
@@ -33,6 +33,39 @@ class CommunicationTests(unittest.TestCase):
         gid = next(iter(config['groups']))
         for comm in (self.b,self.c):comm.config('group',path=str(self.root/'nas'))
         return gid
+
+    def test_delayed_claim_remains_valid_before_default_acceptance_deadline(self):
+        gid=self.groups();self.agent(self.b,groups=[gid])
+        created=self.a.request({'location':'group','group_id':gid,'agent_id':'papers','message':'help'})['request']
+        self.assertAlmostEqual(created['deadline']-created['created_at'],300,places=2)
+        self.assertEqual(created['next_action'],'await_assignment')
+        with patch('loop_anything.runtime.communication.time.time',return_value=created['created_at']+29):
+            self.a.tick()
+            self.assertEqual(self.a.get(created['id'])['state'],'pending')
+            self.a.receive({'id':'delayed-claim','kind':'claim','request_id':created['id'],
+                'sender':self.b.settings()['instance_id'],'target':self.a.settings()['instance_id'],
+                'group_id':gid,'assignment_id':None,'payload':{'agent_id':'papers'}})
+        self.assertEqual(self.a.get(created['id'])['state'],'assigned')
+
+    def test_cancelled_request_explains_late_claim_rejection_to_executor(self):
+        gid=self.groups();self.agent(self.b,groups=[gid])
+        created=self.a.request({'location':'group','group_id':gid,'agent_id':'papers','message':'help'})['request']
+        with self.a.store.connection() as db:
+            offer=next(json.loads(r[0]) for r in db.execute('SELECT document FROM communication_outbox') if json.loads(r[0])['kind']=='offer')
+        self.b.receive(offer)
+        cancelled=self.a.control(created['id'],'cancel',reason='User withdrew the task')['request']
+        self.assertEqual(cancelled['cancellation']['previous_state'],'pending')
+        with self.b.store.connection() as db:
+            claim=next(json.loads(r[0]) for r in db.execute('SELECT document FROM communication_outbox') if json.loads(r[0])['kind']=='claim')
+        self.a.receive(claim)
+        with self.a.store.connection() as db:
+            reply=next(json.loads(r[0]) for r in db.execute('SELECT document FROM communication_outbox') if json.loads(r[0])['kind']=='not_selected')
+        self.b.receive(reply)
+        decision=self.b.read(created['id'])['request']['selection_decision']
+        self.assertEqual(decision['reason'],'cancelled')
+        self.assertEqual(decision['source_state'],'cancelled')
+        self.assertEqual(decision['cancellation']['reason'],'User withdrew the task')
+        self.assertTrue(any(e['kind']=='claim_not_selected' for e in self.a.get(created['id'])['history']))
 
     def cycle(self, predicate, timeout=5):
         until = time.monotonic()+timeout
@@ -56,7 +89,8 @@ class CommunicationTests(unittest.TestCase):
         self.assertEqual(self.a.directory()['agents'],[])
         self.agent(self.a)
         result=self.a.request({'location':'local','agent_id':'papers','message':'查论文'})
-        self.assertEqual(self.a.store.list(),[])
+        self.assertEqual(len(self.a.store.list()),1)
+        self.assertIn('collaboration',self.a.store.list()[0])
         with patch('loop_anything.runtime.host_runtime.run_command',side_effect=self.worker):
             self.cycle(lambda:self.a.get(result['request']['id'])['state']=='completed')
         self.assertEqual(self.a.get(result['request']['id'])['result'],{'papers':['one']})
@@ -100,7 +134,8 @@ class CommunicationTests(unittest.TestCase):
             self.cycle(lambda:not self.b.live and not self.c.live)
         self.assertEqual(len(calls),1)
         self.assertEqual(self.a.get(row['id'])['result'],{'papers':['one']})
-        self.assertEqual(self.a.store.list(),[])
+        self.assertEqual(len(self.a.store.list()),1)
+        self.assertIn('collaboration',self.a.store.list()[0])
 
     def test_missing_group_and_ambiguous_local_target_are_explicit(self):
         self.agent(self.a,'one');self.agent(self.a,'two')
