@@ -21,7 +21,6 @@ def deliver_command(adapter, payload, runner):
         raise NotificationConfigurationError(adapter['configuration_error'])
     if not adapter.get('command'):
         raise NotificationConfigurationError('No notification transport configured')
-    if adapter.get('alternate_bot'):payload=dict(payload,alternate_bot=True)
     result=runner(adapter['command'],json.dumps(payload),adapter.get('timeout',30),adapter.get('cwd'))
     try:receipt=json.loads(result.stdout)
     except (ValueError,TypeError):receipt=None
