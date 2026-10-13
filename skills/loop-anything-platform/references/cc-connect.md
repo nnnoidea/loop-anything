@@ -8,6 +8,28 @@
 
 实际渠道能力由桥接及其版本决定。飞书和微信的扫码、机器人配置、发送限制以桥接说明为准，不把接口适配完成当成真实渠道联调成功。
 
+## 本机接入与 Bot 发现
+
+先调用 `read_cc_connect`，读取本机接入配置、revision 和 `bots`。配置只在本机平台用户环境保存，多个工作区共用，不随 Loop 或 NAS 分享；Bot 凭据始终留在 cc-connect 配置文件中。
+
+未配置时，确定正在运行的桥接实际使用的配置文件，再调用：
+
+```json
+{"revision":0,"connection":{"config_path":"/实际路径/config.toml","executable":"/实际路径/cc-connect"}}
+```
+
+工具名为 `configure_cc_connect`。executable 可省略，从 PATH 查找；平台不猜配置文件目录。数据目录读取配置的 `data_dir`；需要覆盖或配置用了相对路径时，显式传绝对 `data_dir`。配置未指定数据目录时，不加 `--data-dir`，由 cc-connect 自身决定默认值。读取配置不代表运行中的桥接已经加载它；配置改动需在桥接中生效。`connection={}` 清除本机接入配置。
+
+`read_cc_connect.bots` 返回 project、platform、label、selectable 及歧义原因；不返回密钥。不需要自行读私密配置、写发送脚本或为每个 Bot 建出口。同一 project 内多个同类型 Bot 目前不能通过 cc-connect send 唯一选择，标记为不可选；可在 cc-connect 中分到不同 project。读取会刷新列表，不安装或启动 Bot，也不发送测试消息。
+
+给具名 Agent 绑定时，从可选 Bot 复制引用：
+
+```json
+{"operation":"agent","agent_id":"papers","agent":{"notification_bot":{"project":"papers","platform":"feishu"},"notification_route":""}}
+```
+
+通过 `communication_config` 保存。`notification_bot=null` 取消映射。旧 `notification_route` 仍兼容；设置任一种映射时自动清除另一种，不可同时指定两个非空映射。更换 Bot 不修改 Agent 执行命令或会话。
+
 ## 自动跟随原聊天
 
 飞书通知来源与 Agent 原生 session 分开保存；普通通知不需要 register_agent_session。自动续跑及登记方式见[入口 Agent 与 session 登记](communication.md#入口-agent-与-session-登记)。
@@ -16,7 +38,7 @@
 
 - 私聊：入口 Bot 回复原私聊。
 - 群聊：请求由入口 Bot 提示；具名 Agent 的执行确认、结果优先由其对应 Bot 回复原群/原话题。没有映射、离线或发送前检查不通过时，由入口 Bot 代发。
-- `通信 → 具名 Agent → 编辑 → 对应 Bot 的通知出口`，或 `communication_config(operation=agent, agent={notification_route:出口ID})` 建立映射。不同 Agent 可映射不同 project。通知出口继续使用 cc-connect 适配器，identity 是该 Bot 的 project；接收位置在此路径由原会话覆盖，不取该出口预设的其他群。其他适配器必须明确支持 `conversation` 输入和 `not_sent` 回执后才能用于此映射。
+- 具名 Agent 通过上面的 `notification_bot` 直接映射 Bot。接收位置由原会话提供，不需为该 Agent 预设固定群。兼容的其他适配器必须支持 `conversation` 输入和 `not_sent` 回执。
 - 嵌套外援和追问继承原始会话，不将中转机器的聊天当新入口；无 Loop、本机具名 Agent 同样支持。
 - 每条通知保存来源、选中 Bot、回退原因和送达回执。仅适配器明确返回 `delivered=false, not_sent=true`（从未调用发送）才能回退；CLI 已启动后失败、超时或平台重启一律不自动改投。远端已入队但失联也不会贸然切换。
 
@@ -32,13 +54,13 @@
 2. 缺少根消息时，复用发送机 cc-connect 项目配置中的 Bot 凭据，通过[获取会话历史消息](https://open.feishu.cn/document/server-docs/im-v1/message/list)的 `container_id_type=thread` 查询原话题，核对返回的群和话题并取得根消息。没有可用结果或权限不足则记录通知失败，不阻断业务任务。
 3. 调用原有 `cc-connect send --session 渠道:群ID:root:根消息ID`。回执分别记录原会话和 `delivery_session_key`；根消息信息写回会话绑定，供后续通知复用。
 
-话题转换要求运行中的桥接配置 `thread_isolation=true`，且 `reply_to_trigger` 为 `true` 或省略。适配器读取同一配置，明确关闭或缺少话题隔离时不发送，避免已知的群时间线降级。配置改动需在 cc-connect 中生效；读取本地配置不能证明运行实例已经加载它。现有 `root:` 目标、普通私聊及未知会话格式沿用原样传递，不基于 ID 前缀猜测有效性。
+话题转换要求运行中的桥接配置 `thread_isolation=true`，且 `reply_to_trigger` 为 `true` 或省略。适配器读取同一配置，明确关闭或缺少话题隔离时不发送，避免已知的群时间线降级。配置改动需在 cc-connect 中生效；读取本地配置不能证明运行实例已经加载它。已有 `root:` 同样检查这些发送选项，然后原样发送，且不查询消息历史。普通私聊及未知会话格式沿用原样传递，不基于 ID 前缀猜测有效性。
 
 **候选 Bot 的选择**仍只核实必要群聊、成员/发言权限；未知字段、配置或探测失败表示不能选用候选，平台回退入口 Bot。入口 Bot 不重复候选检查，但需要的话题解析仍会执行。
 
 配置和密钥留在发送机，消息正文与凭据不会写入查询结果回执。读取 TOML 需要 Python 3.11+ 的 `tomllib` 或已有 `tomli`；适配器沿用可用解释器发现机制。Bot 查询群历史需要消息读取及 `im:message.group_msg` 权限；已经保存根消息时不查询飞书历史。
 
-平台按 `channel=cc-connect` 和入口 project 的 identity 查找本地适配器。同一 Bot 的多个接收位置可共用相同 command/cwd；接收位置始终使用原会话。多个不同适配器配置仍须显式选择，以免平台猜测发送命令。自定义 `--executable`、`--data-dir` 和用于话题解析和候选核实的 `--config` 在发送机配置一次；call.py 只传入口元数据。
+平台优先使用本机接入配置按入口 project 选发送方。尚未配置新接入的机器兼容已有 `channel=cc-connect`、identity=入口 project 的命令出口；多个不同命令仍报告歧义。两种配置都没有时，通知进入等待配置，业务继续。已经选定的通知保留当时的发送配置，重试不换 Bot。
 
 业务 Run/外援不因通知失败而被阻断；发送结果以 cc-connect 的实际回执为准。
 
@@ -58,22 +80,19 @@ chat_type 可选（p2p/group），未提供时保持 unknown，不从 session �
 
 ## 平台命名出口
 
-平台「通知出口」选择 cc-connect，发送身份填已配置的 project，接收位置填 session。也可用 read_notification_channels 返回的 cc_connect_command 配合 set_notification_channels 保存同样配置。适配器从通知的 outlet.identity / destination 读取实际目标；命令中的旧 project/session 仅在未提供这些字段时使用。命令可追加 --executable 和 --data-dir 指定既有安装位置。
+直接 Agent Bot 映射和原聊天回复无需命名出口。只有固定接收位置（例如没有聊天来源时的群组通知）需要出口：先 `read_notification_channels` 取得 revision 和现有 channels，再 `set_notification_channels` 保留现有条目并添加：
 
-### 接入自己的 cc-connect
+```json
+{"revision":0,"channels":{"research-updates":{"label":"研究通知","cc_connect":{"project":"research","platform":"feishu"},"destination":"飞书原始会话标识"}}}
+```
 
-使用现成二进制，无需修改或重编译 cc-connect。前提是项目、Bot 已配置并且桥接正在运行；安装一个二进制本身不会创建这些资源。
+不填 command、cwd、identity 或 channel；平台根据 Bot 引用解析。通用命令出口仍可使用原有契约。群组绑定规则见[群组通知优先级](communication.md#群组按机器绑定出口与通知优先级)。
 
-- 默认位置：适配器在 PATH 中查找 `cc-connect`，使用 `~/.cc-connect` 数据目录和 `~/.cc-connect/config.toml`。
-- 非默认位置：在平台通知出口的发送命令中追加 `--executable /实际路径/cc-connect`、`--data-dir /实际数据目录`、`--config /实际配置文件`。这些是**发送机**的路径，必须与运行中的桥接实例一致；Windows 同样可指定 `.exe` 路径。
-- 身份：出口的 `identity` 填自己的 cc-connect project 名。聊天入口的 project/session 由 `call.py` 随请求携带；固定出口则显式配置 destination。
-- 话题：在运行桥接中启用上述话题回复配置；仅在缺根消息时需要历史读取权限。
-
-无聊天来源时可按机器绑定群组出口，规则见[群组通知优先级](communication.md#群组按机器绑定出口与通知优先级)。
-
-消息中的询问可以在网页回复，或让当前聊天的 Agent 读取 Timeline 后调用 send_event；本适配器只负责发送，不另外接管聊天入口。
+Agent 可读取 Timeline 后调用 send_event 提交用户对询问的回复；本适配器只负责发送，不另外接管聊天入口。
 
 ## 生成当前聊天的发送命令
+
+仅用于兼容已有的显式发送命令流程。新接入优先使用上述平台工具。
 
 在目标聊天唤起的 Agent 中，从本 Skill 根目录执行：
 
@@ -81,7 +100,7 @@ chat_type 可选（p2p/group），未提供时保持 unknown，不从 session �
 python3 scripts/notify_cc_connect.py --print-command > notification-command.json
 ```
 
-此操作不发送消息：读取 CC_PROJECT、CC_SESSION_KEY 和可选 CC_DATA_DIR，生成保存目标与本机路径的 JSON argv。非默认安装可追加上节的 --executable、--data-dir、--config；缺少项目、会话或可执行文件时会报错，不猜测目标。
+此操作不发送消息：读取 CC_PROJECT、CC_SESSION_KEY 和可选 CC_DATA_DIR，生成保存目标与本机路径的 JSON argv。可显式追加 --executable、--data-dir、--config；缺少项目、会话或可执行文件时会报错，不猜测目标。
 
 然后通过通用工具配置本 Run：
 

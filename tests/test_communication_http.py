@@ -27,6 +27,9 @@ def call(tool,a):
  assert result.get("ok"),result
  return result
 print("执行进度：正在检查",flush=True)
+identity=call("communication_status",{})
+assert identity["self"]==c["self"],identity
+assert identity["instance_id"]==c["self"]["workspace_id"],identity
 call("native_session",{"provider":"custom","id":sys.argv[2] if len(sys.argv)>2 else "session-"+c["request_id"]})
 call("progress",{"message":"已读取任务"})
 if c["kind"]=="node_execution":
@@ -101,7 +104,7 @@ class CommunicationHTTPTests(unittest.TestCase):
                 rid=accepted['request']['id']
                 for _ in range(150):
                     state=tool(1,'read_assistance',{'request_id':rid,'include_details':True},admin=False)['request']
-                    if state['state']=='completed' and any(n.get('status')=='fault' for n in state.get('notifications',[])):break
+                    if state['state']=='completed' and any(n.get('status')=='waiting_configuration' for n in state.get('notifications',[])):break
                     time.sleep(.05)
                 else:self.fail(str(state))
                 self.assertEqual(state['result']['message'],'works without notification bridge')

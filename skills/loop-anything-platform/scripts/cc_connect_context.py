@@ -12,15 +12,35 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
-def config_options(config_path, project, platform):
+def read_config(config_path):
     try:
         import tomllib
     except ImportError:
-        try:
-            import tomli as tomllib
-        except ImportError:
-            raise ValueError('Reading cc-connect configuration needs Python 3.11+ or tomli on the sending machine')
-    config = tomllib.loads(Path(config_path).expanduser().read_text(encoding='utf-8'))
+        try:import tomli as tomllib
+        except ImportError:raise ValueError('Reading cc-connect configuration needs Python 3.11+ or tomli')
+    try:return tomllib.loads(Path(config_path).expanduser().read_text(encoding='utf-8'))
+    except Exception:raise ValueError('Cannot read or parse the selected cc-connect config file') from None
+
+
+def catalog(config_path):
+    config=read_config(config_path)
+    bots=[]
+    for project in config.get('projects',[]):
+        name=project.get('name','')
+        platforms=project.get('platforms',[])
+        for platform in platforms:
+            kind=platform.get('type','')
+            unique=sum(p.get('name')==name for p in config.get('projects',[]))==1 and sum(p.get('type')==kind for p in platforms)==1
+            bots.append({'project':name,'platform':kind,'label':name+' · '+kind,'selectable':bool(name and kind and unique),
+                         **({} if unique else {'error':'Multiple Bots share this project/platform; cc-connect send cannot select one reliably'})})
+    directory=config.get('data_dir')
+    if isinstance(directory,str):directory=re.sub(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}',lambda m:os.environ.get(m[1],m[0]),directory)
+    if directory and (not isinstance(directory,str) or '${' in directory):raise ValueError('Resolve data_dir in the selected cc-connect configuration')
+    return {'bots':bots,'data_dir':directory or None}
+
+
+def config_options(config_path, project, platform):
+    config=read_config(config_path)
     projects = [p for p in config.get('projects', []) if p.get('name') == project]
     if len(projects) != 1:
         raise ValueError('The cc-connect project is missing or ambiguous in the configured file')
@@ -62,7 +82,7 @@ def api(base, path, token=None, data=None):
     return result
 
 
-def inspect(project, session, directory, config_path, expected=None):
+def inspect(project, session, directory, config_path, expected=None, alternate=False):
     """Original entry is opaque passthrough; probes only decide alternate Bot use."""
     if not isinstance(session,str) or not session or not isinstance(project,str) or not project:
         raise ValueError('The original session and sending project must be explicit')
@@ -74,7 +94,7 @@ def inspect(project, session, directory, config_path, expected=None):
         'chat_type':'unknown', 'session_key':session, 'entry_project':project}
     # No parsing, config reads, API access, socket checks or TOML interpreter
     # discovery may stand between the original entry and cc-connect send.
-    if project == context.get('entry_project'):
+    if project == context.get('entry_project') and not alternate:
         return context
     if context.get('chat_type') == 'p2p':
         raise ValueError('Only the entry Bot may reply to this private chat')
@@ -101,19 +121,23 @@ def prepare_delivery(project, session, config_path, expected=None):
     if context.get('session_key') != session:
         raise ValueError('The destination no longer matches the original conversation')
     parts=session.split(':',3)
-    if len(parts)!=4 or parts[0] not in ('feishu','lark') or parts[2]!='thread' or not parts[3]:
+    if len(parts)!=4 or parts[0] not in ('feishu','lark') or parts[2] not in ('thread','root') or not parts[3]:
         return {'session':session,'conversation':context}
-    platform,chat,_,thread=parts
-    if context.get('platform',platform)!=platform or context.get('chat_id',chat) not in ('',chat) or context.get('thread_id',thread)!=thread:
+    platform,chat,scope,identifier=parts
+    thread=identifier if scope=='thread' else context.get('thread_id')
+    if context.get('platform',platform)!=platform or context.get('chat_id',chat) not in ('',chat) or (scope=='thread' and context.get('thread_id',thread)!=thread):
         raise ValueError('Thread metadata does not match the original conversation')
-    context.update(platform=platform,chat_id=chat,thread_id=thread)
+    context.update(platform=platform,chat_id=chat)
+    if thread:context['thread_id']=thread
     options=config_options(config_path,project,platform)
     # These options control ReplyInThread in the supported bridge, not ID validity.
     if options.get('thread_isolation') is not True or options.get('reply_to_trigger') is False:
         raise ValueError('Topic delivery requires cc-connect thread_isolation=true and reply_to_trigger=true (or omitted); apply the configuration to the running bridge')
-    root=context.get('thread_root')
+    root=identifier if scope=='root' else context.get('thread_root')
+    if scope=='root' and context.get('thread_root') not in (None,'',root):
+        raise ValueError('Root metadata does not match the original conversation')
     # Older records incorrectly stored the thread ID in thread_root.
-    if not root or root==thread:
+    if not root or (scope=='thread' and root==thread):
         base='https://open.larksuite.com' if platform=='lark' else 'https://open.feishu.cn'
         token=tenant_token(base,options)
         query=urlencode({'container_id_type':'thread','container_id':thread,'page_size':20,'sort_type':'ByCreateTimeAsc'})
@@ -135,7 +159,8 @@ def prepare_delivery(project, session, config_path, expected=None):
 
 def prepare_compatible(project, session, config_path, expected=None):
     parts=session.split(':',3)
-    if len(parts)==4 and parts[0] in ('feishu','lark') and parts[2]=='thread' and parts[3]:
+    if len(parts)==4 and parts[0] in ('feishu','lark') and parts[2] in ('thread','root') and parts[3]:
+        if not config_path:raise ValueError('Known topic delivery requires the actual cc-connect config; configure_cc_connect or supply --config')
         try:
             import tomllib
         except ImportError:
@@ -148,11 +173,11 @@ def capture():
     from notify_cc_connect import sender_command
     command = sender_command()
     project, session = os.environ['CC_PROJECT'], os.environ['CC_SESSION_KEY']
-    directory = str(Path(os.environ.get('CC_DATA_DIR') or Path.home() / '.cc-connect').expanduser().resolve())
-    config_path = str(Path(os.environ.get('CC_CONFIG_PATH') or Path.home() / '.cc-connect/config.toml').expanduser().resolve())
+    directory = os.environ.get('CC_DATA_DIR','')
+    config_path = os.environ.get('CC_CONFIG_PATH','')
     context = inspect(project, session, directory, config_path)
     return {'operation':'conversation','conversation':context,
-            'notification_command':command + ['--config', config_path, '--conversation']}
+            'notification_command':command + ['--conversation']}
 
 
 def toml_python():
@@ -176,20 +201,26 @@ def capture_arguments():
     return capture()
 
 
-def inspect_compatible(project, session, directory, config_path, expected=None):
-    if not expected or project == expected.get('entry_project'):
+def inspect_compatible(project, session, directory, config_path, expected=None, alternate=False):
+    if not alternate and (not expected or project == expected.get('entry_project')):
         return inspect(project,session,directory,config_path,expected)
     try:
         import tomllib
     except ImportError:
         try:import tomli
-        except ImportError:return helper(['--inspect',project,session,directory,config_path],expected)
-    return inspect(project,session,directory,config_path,expected)
+        except ImportError:return helper(['--inspect-alternate' if alternate else '--inspect',project,session,directory or '',config_path or ''],expected)
+    return inspect(project,session,directory,config_path,expected,alternate=alternate)
 
 
 if __name__ == '__main__':
     try:
-        if sys.argv[1:2]==['--inspect']:value=inspect(*sys.argv[2:],expected=json.load(sys.stdin))
+        if sys.argv[1:2]==['--catalog']:
+            try:value=catalog(sys.argv[2])
+            except ValueError as exc:
+                if 'Python 3.11+' not in str(exc):raise
+                value=helper(['--catalog',sys.argv[2]])
+        elif sys.argv[1:2]==['--inspect-alternate']:value=inspect(*sys.argv[2:],expected=json.load(sys.stdin),alternate=True)
+        elif sys.argv[1:2]==['--inspect']:value=inspect(*sys.argv[2:],expected=json.load(sys.stdin))
         elif sys.argv[1:2]==['--prepare']:value=prepare_delivery(*sys.argv[2:],expected=json.load(sys.stdin))
         else:value=capture()
         print(json.dumps(value, ensure_ascii=False))

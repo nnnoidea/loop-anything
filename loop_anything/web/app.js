@@ -149,11 +149,11 @@ function renderRun() {
   $('run-title').textContent = run.title;
   renderRunOutlet();
   $('run-key').textContent = (run.loop_definition.name || run.loop_definition.id) + ' · v' + run.loop_definition.version;
-  $('run-status').innerHTML = badge(run.status);
+  $('run-status').innerHTML = badge(run.status)+(run.identity_read_only?' · 只读历史副本，不接管原执行':'');
   $('run-id').textContent = run.id;
   const simulation = Object.values(run.implementations).some(entry => Object.values(implementationOptions(entry)).some(b => b.kind === 'mock' || b.simulation));
   $('simulation-label').hidden = !simulation;
-  const ended = run.schema_version!==2 || !run.operator_protocol || ['completed','terminated'].includes(run.status);
+  const ended = run.identity_read_only || run.schema_version!==2 || !run.operator_protocol || ['completed','terminated'].includes(run.status);
   $('settings-form').querySelectorAll('input,textarea,select,button').forEach(el=>el.disabled=ended);
   $('pause-run').textContent = run.status === 'paused' ? '▷ 恢复' : 'Ⅱ 暂停';
   $('pause-run').disabled = $('stop-run').disabled = ended;

@@ -1,7 +1,6 @@
 """Conversation provenance and explicitly mapped Agent notification identities."""
 import copy
 import json
-import sys
 from loop_anything.runtime.model import Invalid, Conflict, digest
 from loop_anything.runtime.store import uid
 
@@ -36,7 +35,11 @@ def register(comm, args):
 
 def entry_sender(comm,context):
     """Resolve local adapter configuration independently of the chat destination."""
-    from loop_anything.paths import platform_skill_directory
+    from loop_anything.runtime.cc_connect import configuration, sender as bridge_sender
+    if configuration()['connection']:
+        sender=bridge_sender({'project':context['entry_project'],'platform':context['platform']},context['session_key'])
+        sender.update(identity=context['entry_project'],destination=context['session_key'],channel='cc-connect',timeout=60)
+        return sender
     candidates=[s for s in comm.store.notification_channels()['channels'].values()
                 if s.get('channel')=='cc-connect' and s.get('identity')==context['entry_project'] and s.get('command')]
     transports={digest({k:s[k] for k in ('command','cwd') if k in s}):s for s in candidates}
@@ -44,7 +47,8 @@ def entry_sender(comm,context):
         sender=copy.deepcopy(next(iter(transports.values())))
         sender['timeout']=max(s.get('timeout',30) for s in candidates)
     elif transports:sender={'configuration_error':'Multiple adapters are configured for the entry Bot; choose an explicit notification route'}
-    else:sender={'command':[sys.executable,str(platform_skill_directory()/'scripts/notify_cc_connect.py'),'--conversation']}
+    else:
+        sender=bridge_sender({'project':context['entry_project'],'platform':context['platform']},context['session_key'])
     sender.update(identity=context['entry_project'],destination=context['session_key'],channel='cc-connect',timeout=max(60,sender.get('timeout',30)))
     return sender
 
@@ -118,11 +122,18 @@ def resolve(comm, ident, include_sender=False, refresh_sender=False):
 
 
 def bot_binding(comm,agent,group_id=None,freeze=False):
+    bot=agent.get('notification_bot')
     route=agent.get('notification_route')
-    if not route:return None
-    sender=comm.store.notification_channels()['channels'].get(route)
+    if bot:
+        from loop_anything.runtime.cc_connect import sender as bridge_sender
+        sender=bridge_sender(bot)
+    elif route:
+        from loop_anything.runtime.notifications import resolve_outlet
+        config=comm.store.notification_channels()['channels'].get(route)
+        sender=resolve_outlet(config) if config else None
+    else:return None
     if not sender or not sender.get('command'):return None
-    sender=dict(sender,timeout=max(60,sender.get('timeout',30)))
+    sender=dict(sender,timeout=max(60,sender.get('timeout',30)),alternate_bot=True)
     binding={'group_id':group_id,'enabled':True,'sender_instance':comm.settings()['instance_id'],
              'agent_id':agent['id'],'level':'key','route':route,
              **{k:sender.get(k,'') for k in ('channel','identity','label')}}

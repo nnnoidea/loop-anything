@@ -48,7 +48,7 @@ python3 /平台Skill/scripts/call.py read_task --arguments '{"run_id":"RUN_ID","
 
 「网页使用的 Agent」可沿用已有 Agent 候选，或填写用户自己的命令、工作目录、可选超时与唤醒提示词。命令按参数逐项填写，例如三行 `codex`、`exec`、`-`；模型、权限和其他参数仍由用户选择。网页命令与节点实现独立，不随 Loop 包分享。保持平台运行后，可直接在网页讨论、明确要求初始化并启动，随后查看同一 Run 的过程、回复和通知。
 
-每条消息调用一次配置的本机命令，prompt 携带本页对话与限定到当前准备页／Run 的工具地址。沿用 Skill 的调用脚本和既有 Timeline 工具；读取不取得操作权，修改时按页面选择的范围取得操作权并检查版本，最后 finish。创建 Run、绑定准备页和取得初始化操作权在同一次事务中完成。具体操作见 [平台运行 Skill](../skills/loop-anything-platform/references/run.md#在网页对话中操作)。
+每条消息调用一次配置的本机命令，prompt 携带本页对话与限定到当前准备页／Run 的工具地址。沿用 Skill 的调用脚本和既有 Timeline 工具；读取不取得操作权，修改时按页面选择的范围取得操作权并检查版本，最后 finish。创建 Run、绑定准备页和取得初始化操作权在同一次事务中完成。具体操作见 [平台运行 Skill](../skills/loop-anything-platform/references/scoped-entry.md)。
 
 当前网页回复在命令退出后整体显示，不提供逐字输出或独立模型配置。网页历史用于对话连续性，业务事实仍由 Timeline 保存；不会把 Agent 的普通回复当成任务结果。后台节点继续按各自候选实现执行。关闭网页不停止命令；平台中断且无法确认旧命令停止时，保留操作权，确认停止后才恢复。
 
@@ -120,7 +120,7 @@ python3 /平台Skill/scripts/call.py read_task --arguments '{"run_id":"RUN_ID","
 
 ## 聊天入口通知（0.5.7）
 
-飞书入口经 Skill 客户端自动保存原会话；私聊由入口 Bot 回复，群聊的执行确认和结果优先使用具名 Agent 的 `notification_route` 所映射 Bot，并保持原话题。发送前明确不可用才回退入口，发送结果未知不自动换 Bot。嵌套外援继承原来源；显式通知出口覆盖，无聊天来源保留按机器优先级。配置入口在具名 Agent 编辑界面。完整前提、只读权限及 API 用法见平台 Skill 的 `references/cc-connect.md`；话题需开启 cc-connect 话题隔离并保留 root session key。
+飞书入口经 Skill 客户端自动保存原会话；私聊由入口 Bot 回复，群聊的执行确认和结果优先使用具名 Agent 的 `notification_bot={project,platform}` 所映射 Bot（旧 notification_route 兼容），并保持原话题。发送前明确不可用才回退入口，发送结果未知不自动换 Bot。嵌套外援继承原来源；显式通知出口覆盖，无聊天来源保留按机器优先级。先用 read_cc_connect/configure_cc_connect 接入本机桥接并发现 Bot，再用 communication_config 设置具名 Agent 的映射；无需自行拼接命令。完整前提、只读权限及 API 用法见平台 Skill 的 `references/cc-connect.md`；话题需开启 cc-connect 话题隔离并保留 root session key。
 
 ## Loop 编辑保护
 

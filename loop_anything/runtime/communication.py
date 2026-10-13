@@ -101,6 +101,8 @@ def read_message(path):
 
 class Communication:
     def __init__(self, store):
+        from loop_anything.runtime.machine_identity import MachineIdentity, workspace_id
+        self.machine_identity = MachineIdentity()
         self.store, self.engine = store, None
         self.lock = threading.RLock()
         self.live = {}
@@ -121,16 +123,21 @@ class Communication:
                   WHERE sent=0 OR json_extract(document,'$.kind')!='ack';
             ''')
             db.execute('INSERT OR IGNORE INTO communication_settings VALUES (1,?)', (json.dumps({
-                'instance_id': uid('machine'), 'name': socket.gethostname(), 'revision': 1, 'agents': {},
+                'instance_id': workspace_id(), 'name': socket.gethostname(), 'revision': 1, 'agents': {},
                 'groups': {}, 'contexts': {}, 'loop_groups': {}, 'heartbeat_seconds': 5, 'offline_seconds': 30}),))
             db.commit()
         with self.transaction() as db:
             config=self.settings(db)
-            location={'host':socket.gethostname(),'database':str(Path(store.filename).resolve())}
-            self.identity_conflict=bool(config.get('identity_location') and config['identity_location']!=location)
-            if not config.get('identity_location'):
-                config['identity_location']=location
+            self.identity_error = self.machine_identity.claim(config['instance_id'], store.filename,
+                config.get('machine_id'), config.get('identity_location'))
+            self.identity_conflict = bool(self.identity_error)
+            if not self.identity_conflict:
+                config['machine_id'] = self.machine_identity.read()['machine_id']
+                config.pop('identity_location', None)
                 db.execute('UPDATE communication_settings SET document=? WHERE id=1',(json.dumps(config),))
+
+    def self_info(self):
+        return dict(self.machine_identity.read(), workspace_id=self.settings()['instance_id'])
 
     @contextmanager
     def transaction(self):
@@ -203,10 +210,18 @@ class Communication:
             if operation == 'identity':
                 config['name'] = a['name']
                 if a.get('regenerate'):
-                    if not self.identity_conflict:raise Conflict('Identity regeneration is only for a detected copied/moved workspace')
-                    config['instance_id']=uid('machine')
-                    config['identity_location']={'host':socket.gethostname(),'database':str(Path(self.store.filename).resolve())}
-                    self.identity_conflict=False
+                    if not self.identity_conflict:raise Conflict('Workspace identity regeneration is only for a detected copy')
+                    from loop_anything.runtime.machine_identity import workspace_id
+                    # Preserve historical execution ownership; this copy may start
+                    # new Runs but cannot resume or resend the original work.
+                    db.execute("UPDATE runs SET document=json_set(document,'$.identity_read_only',1,'$.source_workspace_id',?)", (config['instance_id'],))
+                    db.execute("UPDATE communication_requests SET document=json_set(document,'$.identity_read_only',1)")
+                    db.execute("UPDATE communication_deliveries SET document=json_set(document,'$.identity_read_only',1)")
+                    config['instance_id']=workspace_id()
+                    config['machine_id']=self.machine_identity.read()['machine_id']
+                    config.pop('identity_location', None)
+                    self.machine_identity.claim(config['instance_id'], self.store.filename, config['machine_id'])
+                self.machine_identity.rename(a['name'])
             elif operation == 'agent':
                 from loop_anything.runtime.implementations import validate_implementation
                 ident = identifier(a.get('agent_id') or uid('agent'))
@@ -214,7 +229,9 @@ class Communication:
                 if 'task_confirmation' in a['agent']:
                     raise Invalid('Confirm the main task with the user through task_confirmed, not stored metadata')
                 agent = dict(old, **a['agent'], id=ident)
-                if set(agent) - {'id', 'name', 'description', 'capabilities', 'local', 'enabled', 'groups', 'capacity', 'implementation', 'notification_route', 'task_confirmation'}:
+                if a['agent'].get('notification_bot') and 'notification_route' not in a['agent']:agent['notification_route']=''
+                if a['agent'].get('notification_route') and 'notification_bot' not in a['agent']:agent['notification_bot']=None
+                if set(agent) - {'id', 'name', 'description', 'capabilities', 'local', 'enabled', 'groups', 'capacity', 'implementation', 'notification_route', 'notification_bot', 'task_confirmation'}:
                     raise Invalid('Unsupported named Agent setting')
                 if not isinstance(agent.get('name'),str) or not agent['name'].strip() or not isinstance(agent.get('description', ''), str):
                     raise Invalid('Named Agent needs name and description text')
@@ -243,6 +260,12 @@ class Communication:
                     if type(agent.get(key, True)) is not bool:
                         raise Invalid(key + ' must be boolean')
                 if not isinstance(agent.get('notification_route',''),str):raise Invalid('Agent notification_route must be a local outlet ID')
+                if agent.get('notification_bot'):
+                    if agent.get('notification_route'):raise Invalid('Select notification_bot or legacy notification_route, not both')
+                    if agent['notification_bot'] != old.get('notification_bot'):
+                        from loop_anything.runtime.cc_connect import validate_bot
+                        validate_bot(agent['notification_bot'])
+                elif agent.get('notification_bot') is not None:raise Invalid('notification_bot must be a Bot reference or null to unmap')
                 config['agents'][ident] = agent
                 if a['agent'].get('enabled') is True:config.get('agent_errors',{}).pop(ident,None)
             elif operation == 'group':
@@ -297,6 +320,9 @@ class Communication:
             config['revision'] += 1
             db.execute('UPDATE communication_settings SET document=? WHERE id=1', (json.dumps(config),))
         self.last_scan = 0
+        if operation == 'identity' and a.get('regenerate'):
+            self.identity_conflict=False
+            self.identity_error=None
         return {'configuration': config}
 
     def run_group(self, run, config=None):
@@ -322,14 +348,17 @@ class Communication:
                 rows.append(dict(agent, group_id=peer['group_id'], location='group',
                                  online=time.time() - peer['seen_at'] < config['offline_seconds']))
         loops=[dict(ref,group_id=peer['group_id']) for peer in peers if (not group_id or peer['group_id']==group_id) and config['groups'].get(peer['group_id'],{}).get('enabled') for ref in peer.get('loops',[])]
-        return {'instance_id': config['instance_id'], 'agents': rows, 'loops':loops,
+        return {'self': self.self_info(), 'instance_id': config['instance_id'],
+                'identity_conflict':self.identity_conflict, 'identity_error':self.identity_error, 'agents': rows, 'loops':loops,
                 'groups': [{k: v for k, v in g.items() if k != 'path'} for g in config['groups'].values()]}
 
     def public_agent(self, agent, config, location, group_id=None, freeze=False):
         running = self.agent_load(agent['id'])
+        identity = self.self_info()
         from loop_anything.runtime.communication_conversations import bot_binding
         return {k: agent.get(k, '' if k in ('name', 'description') else []) for k in ('name', 'description', 'capabilities')} | {
-            'id': agent['id'], 'instance_id': config['instance_id'], 'machine': config['name'], 'location': location,
+            'id': agent['id'], 'instance_id': config['instance_id'], **identity,
+            'machine': identity['machine_name'], 'location': location,
             'notification_binding':bot_binding(self,agent,group_id,freeze),
             'online': True, 'enabled': agent.get('enabled', True) and (location=='local' or self.task_confirmed(agent,group_id)),
             'task_confirmed': self.task_confirmed(agent,group_id), 'busy': running >= agent.get('capacity', 1),
@@ -352,7 +381,7 @@ class Communication:
         return count
 
     def request(self, a, node=None, continuation_from=None):
-        if self.identity_conflict:raise Conflict('Copied/moved platform identity: explicitly create a new instance identity before executing')
+        if self.identity_conflict:raise Conflict('Copied workspace or mismatched machine identity: explicitly create a new workspace identity before executing')
         config = self.settings()
         source = copy.deepcopy(a.get('source') or {})
         if a.get('collaboration_id') and (source.get('run_id') or a.get('_parent_request')):
@@ -368,6 +397,7 @@ class Communication:
         if source.get('run_id'):
             from loop_anything.runtime.task_scope import owner_for, require_scope
             run = self.store.get(source['run_id'])
+            if run.get('identity_read_only'):raise Conflict('Copied Run is inspect-only; start a new Run for new assistance')
             owner = owner_for(run, a.get('token'))
             if not owner:
                 raise Conflict('Run-linked requests need current Agent operation rights')
@@ -571,8 +601,9 @@ class Communication:
         result = clean(request) if include_details else request_summary(request)
         # Transport bookkeeping embeds raw output too; detailed reads fetch logs separately.
         for field in ('logs','last_sent','terminal'):result.pop(field,None)
-        result['can_control']=not request.get('mirror') and request['origin']==self.settings()['instance_id']
-        result['can_retry_notification']=request.get('notification_origin',request['origin'])==self.settings()['instance_id']
+        mutable=not self.identity_conflict and not request.get('identity_read_only')
+        result['can_control']=mutable and not request.get('mirror') and request['origin']==self.settings()['instance_id']
+        result['can_retry_notification']=mutable and request.get('notification_origin',request['origin'])==self.settings()['instance_id']
         if result['can_control'] and request['kind']=='node_execution':
             run=self.store.get(request['source']['run_id'])
             attempt=next(e for e in run['executions'] if e['id']==request['source']['execution_id'])
@@ -587,14 +618,18 @@ class Communication:
         return {'request': result}
 
     def authorized(self, a, worker=False):
+        if self.identity_conflict:return False
         try:
             row = self.get(a.get('request_id'))
+            if row.get('identity_read_only'):return False
             key = 'worker_token' if worker else 'access_token'
             return bool(a.get('token') and secrets.compare_digest(a['token'], row.get(key, '')))
         except (Invalid, TypeError):
             return False
 
     def control(self, ident, action, **a):
+        if self.identity_conflict or self.get(ident).get('identity_read_only'):
+            raise Conflict('Copied workspace requests are inspect-only; start new work under the new identity')
         if action == 'followup':
             old = self.get(ident)
             if old.get('mirror') or old['origin']!=self.settings()['instance_id']:raise Conflict('Control belongs to the request source platform')
@@ -677,8 +712,10 @@ class Communication:
                 db.execute('UPDATE execution_sessions SET document=? WHERE id=?',(json.dumps(doc),terminal['id']))
 
     def recover(self):
+        if self.identity_conflict:return
         with self.transaction() as db:
             for row in self.requests(db):
+                if row.get('identity_read_only'):continue
                 for notice in row.get('notifications',[]):
                     if notice['status']=='sending':notice.update(status='fault',error='Interrupted delivery: outcome unknown; verify before retry')
                 for call in row.get('rpc', {}).values():
@@ -702,6 +739,7 @@ class Communication:
         self.resume_dispatches()
         config = self.settings()
         for row in self.requests():
+            if row.get('identity_read_only'):continue
             if row.get('mirror'):continue
             if row['origin'] == config['instance_id'] and row.get('executor') not in (None,config['instance_id']) and row['state'] in ('assigned','starting','running','unknown','cancelling'):
                 with self.store.connection() as db:
@@ -747,7 +785,7 @@ class Communication:
 
     def resume_dispatches(self):
         for run in self.store.list():
-            if run['status'] != 'running':continue
+            if run['status'] != 'running' or run.get('identity_read_only'):continue
             for e in run.get('executions',[]):
                 if not e['implementation'].get('dispatch') or e['status'] != 'executing':continue
                 with self.store.connection() as db:
@@ -866,7 +904,7 @@ class Communication:
         from loop_anything.runtime.task_scope import owner_for
         for summary in self.store.list():
             run = self.store.get(summary['id'])
-            if run['status'] != 'running':continue
+            if run['status'] != 'running' or run.get('identity_read_only'):continue
             for task in run.get('tasks',{}).values():
                 wait = task.get('assistance_wait')
                 if not wait:continue
@@ -927,7 +965,7 @@ class Communication:
                         for run in self.store.list():
                             if config['loop_groups'].get('run:'+run['id'],run.get('communication_group'))==gid:
                                 loops.append({'instance_id':config['instance_id'],'loop_key':run['loop_key'],'name':run['loop_definition'].get('name',run['loop_key']),'run_id':run['id'],'title':run['title']})
-                    atomic_json(me, {'instance_id': config['instance_id'], 'revision': uid('heartbeat'), 'agents': agents,'loops':loops})
+                    atomic_json(me, {'instance_id': config['instance_id'], **self.self_info(), 'revision': uid('heartbeat'), 'agents': agents,'loops':loops})
                 for peerpath in (root / 'members').glob('*.json'):
                     try:
                         peer = json.loads(peerpath.read_text())
@@ -1207,6 +1245,7 @@ class Communication:
         context['platform_client']=str(platform_skill_directory()/'scripts/call.py')
         context['platform_guide']=str(platform_skill_directory()/'references/communication.md')
         context.update(row['source'])
+        context['self'] = self.self_info()
         if row.get('collaboration'):context['collaboration']=copy.deepcopy(row['collaboration'])
         if row.get('source_reference'):context['source_reference']=row['source_reference']
         context.update({k:row['context'][k] for k in ('handbook','inputs','scope_task','loop_key','node_id','parameters','resource_root','assistance_results','assistance_resume') if k in row['context']})
@@ -1223,6 +1262,7 @@ class Communication:
                   'For optional help on this executor, call communication_status/request_assistance/read_assistance directly on this client. These use the executor local directory or this request group. Source calls return a call handle: only state=completed confirms acceptance; poll source_result if pending. '
                   'For a node waiting on assistance, call source wait_assistance with task_id/request_ids/seconds, then source finish and complete with an empty result. The platform continues the same Task with replies; do not keep a CLI occupied just to poll. '
                   'read_context reads associated Loop/task context without granting writes, including for assistance; it may return a pending call handle. '
+                  'The self field identifies this executor machine and workspace, not the source platform; instance_id routing uses workspace_id. '
                   'Use native_session to register {"provider":...,"id":...} if available.\n' + json.dumps(context, ensure_ascii=False))
         if 'prompt' in row['launch']:
             prompt=row['launch']['prompt'].replace('{{context}}',json.dumps(context,ensure_ascii=False))

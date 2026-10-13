@@ -61,6 +61,7 @@ def attach(comm, request, key, collaboration_id, db):
     from loop_anything.runtime.timeline_plan import add_task
     if collaboration_id:
         run = comm.store._load(db, collaboration_id)
+        if run.get('identity_read_only'):raise Conflict('Copied collaboration is inspect-only; start a new collaboration')
         if not run.get('collaboration'):
             raise Invalid('collaboration_id must identify a built-in collaboration Run')
         if comm.run_group(run, comm.settings(db)) != request.get('scope_group_id'):
@@ -134,7 +135,7 @@ def start(comm, arguments):
     from loop_anything.runtime.native_sessions import resume_config, bind, active_native
     from loop_anything.interfaces.agent_tasks import acquire_in_run
     if not comm.engine:raise Invalid('Collaboration requires the platform service')
-    if comm.identity_conflict:raise Conflict('Resolve the copied/moved platform identity before starting collaboration')
+    if comm.identity_conflict:raise Conflict('Resolve the copied workspace or mismatched machine identity before starting collaboration')
     message = arguments['message']
     if not isinstance(message, str) or not message.strip():raise Invalid('Describe the collaboration task')
     config = comm.settings()

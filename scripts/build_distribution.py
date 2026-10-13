@@ -29,14 +29,14 @@ with tempfile.TemporaryDirectory() as folder:
         archive.write(wheel, prefix + wheel.name)
         readme = (root / 'README.md').read_text(encoding='utf-8')
         installation = readme.split('## 安装平台\n', 1)[1].split('## 本地预览\n', 1)[0]
-        archive.writestr(prefix + 'README.md', '# Loop Anything\n\n## 安装平台\n' + installation)
+        archive.writestr(prefix + 'README.md', '# Loop Anything\n\n网页操作见[工作台使用说明](docs/user-guide.md)。\n\n## 安装平台\n' + installation)
         for name in ('install.py', 'pyproject.toml'):
             archive.write(root / name, prefix + name)
         for directory in ('loop_anything', 'skills'):
             for source in sorted((root / directory).rglob('*')):
                 if source.is_file() and '__pycache__' not in source.parts and source.suffix in ('.py', '.md', '.json', '.html', '.css', '.js', '.txt'):
                     archive.write(source, prefix + source.relative_to(root).as_posix())
-        for name in ('agent-integration.md', 'timeline.md', 'loop-packages.md', 'implementation-selection.md', 'development.md'):
+        for name in ('agent-integration.md', 'timeline.md', 'loop-packages.md', 'implementation-selection.md', 'development.md', 'user-guide.md'):
             archive.write(root / 'docs' / name, prefix + 'docs/' + name)
     print(filename)
     # Static entry and Skills can be read before installing or running the platform.

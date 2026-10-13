@@ -4,21 +4,41 @@
 
 构建时先将需求对应到下列机制，再设计业务节点和实现。activation=automatic 表示平台自动执行；declared/configured 需要作者声明或使用者配置；operator 需要显式操作。
 
+## machine_identity
+
+- 生效方式：automatic
+- 平台承担：按需生成并持久保存完整机器 UUID，独立于工作区；communication_status.self 与唤醒上下文直接提供当前机器和工作区身份。
+- 作者提供：读取 self；按成员返回的 instance_id 与 agent_id 寻址，不从 MAC、主机名或会话推断身份。
+- 配置入口：`communication_status.self`、`context.self`、`communication_config(operation=identity)`
+- 边界：身份属于连接的平台用户环境。instance_id 是 workspace_id 的兼容别名。移动/改名不改身份；副本显式建立新工作区身份，历史不接管。身份存储不要随业务数据库复制到另一机器。
+- 工具入口：communication_status、communication_workspace、communication_config
+- 详细说明：[references/communication.md](communication.md)
+
 ## loop_edit_protection
 
 - 生效方式：configured
 - 平台承担：可选编辑口令按Loop身份保护定义、节点实现、手册及随包资源；草稿和版本共用，导出导入携带校验信息。
-- 作者提供：按需set_loop_password，受保护编辑使用loop_password或浏览器对此Loop解锁。
+- 作者提供：按需set_loop_password，受保护编辑提供对应Loop的loop_password。
 - 配置入口：`set_loop_password`、`copy_loop`、`publish_loop`、`export_loop`
 - 边界：日常Run、通信和终端不需要全局解锁；平台自动处理普通操作执行标识，实际worker仍受执行范围、版本和过期结果校验。
 - 工具入口：set_loop_password、read_loop、copy_loop、publish_loop、export_loop
 - 详细说明：[references/connection.md](connection.md)
 
+## cc_connect
+
+- 生效方式：configured/operator
+- 平台承担：本机共用 cc-connect 接入配置，读取已有 Bot 列表，不返回凭据；具名 Agent 直接选择 Bot。
+- 作者提供：read_cc_connect 发现；缺接入时 configure_cc_connect 指定实际配置文件和可执行文件，按返回 project/platform 建立 notification_bot 映射。固定目的地才建 cc_connect 引用出口。
+- 配置入口：`read_cc_connect`、`configure_cc_connect`、`agent.notification_bot`、`channels.*.cc_connect`
+- 边界：不猜配置文件目录、不为每个 Bot 写命令、不安装/启动 Bot。列表不证明在线或在群；同项目同渠道歧义不可选。路径和密钥留本机。
+- 工具入口：read_cc_connect、configure_cc_connect、communication_config、read_notification_channels、set_notification_channels
+- 详细说明：[references/cc-connect.md](cc-connect.md)
+
 ## conversation_notifications
 
 - 生效方式：automatic/configured
 - 平台承担：飞书入口调用默认回复原会话；私聊由入口Bot回复，群聊优先具名Agent对应Bot并保持原话题。
-- 作者提供：Skill call.py 只携带 chat_context；平台持久保存并复用来源，发送适配器保存原入口，话题用根消息调用cc-connect，缺根消息由适配器查询补齐；换Bot时核实候选；agent.notification_route 映射本机Bot出口。嵌套外援继承来源，不需要Agent重新拼接通知命令。
+- 作者提供：Skill call.py 只携带 chat_context；平台持久保存并复用来源，发送适配器保存原入口，话题用根消息调用cc-connect，缺根消息由适配器查询补齐；换Bot时核实候选；agent.notification_bot 直接映射本机已发现Bot，旧notification_route兼容。嵌套外援继承来源，不需要Agent重新拼接通知命令。
 - 配置入口：`request_assistance.chat_context`、`start_run.chat_context`、`communication_config(operation=agent)`、`兼容已有conversation_id`
 - 边界：通知接入失败不阻断业务任务；发送前确认不可用才回退入口Bot，发送后失败或未知不改投。原始session_key保留；适配器将明确话题目标转换为同群同话题的root发送目标，查询失败不降级群时间线。显式出口优先；无聊天来源沿用群组按机器出口。
 - 工具入口：communication_config、request_assistance、start_run、read_assistance
@@ -159,8 +179,8 @@
 - 生效方式：automatic/configured
 - 平台承担：为后台 Agent 每次执行持久化实时输出；可选交互终端连接同一 CLI 进程，转发键盘和窗口尺寸，finish 后关闭会话。
 - 作者提供：提供 CLI 命令、工作目录、登录与权限配置；交互命令用 {{prompt}} 或 {{prompt_file}} 接收任务上下文。
-- 配置入口：`implementations.*.terminal`、`implementations.*.command`、`任务详情 → 执行终端`
-- 边界：普通命令只读；交互终端当前支持 macOS/Linux。进程重启后只保留历史并按既有操作权恢复，不保证恢复 CLI 会话。终端不需要Loop编辑解锁，session身份和执行状态仍校验，结果仍须 report_task/finish；不要重复构建日志页。
+- 配置入口：`implementations.*.terminal`、`implementations.*.command`、`read_capabilities(agent_terminal)`
+- 边界：普通命令只读；交互终端当前支持 macOS/Linux。进程重启后只保留历史并按既有操作权恢复，不保证恢复 CLI 会话。终端不需要Loop编辑解锁，session身份和执行状态仍校验，结果仍须 report_task/finish；不要重复构建日志查看与交互通道。
 - 工具入口：set_implementation、read_task
 - 详细说明：[references/terminal.md](terminal.md)
 
@@ -389,16 +409,17 @@
 {
   "use_when": "用户在飞书私聊或群话题中请求本机/远端外援，结果需要回到这段对话。",
   "capabilities": [
+    "cc_connect",
     "conversation_notifications",
     "agent_communication",
     "notifications"
   ],
   "configuration": [
     "通过 Skill call.py 发起 request_assistance 或 start_run，只随业务请求携带 chat_context；平台保存来源及可用thread_root，适配器补齐根消息并投递，换Bot时核实候选。",
-    "在具名 Agent 的 notification_route 选择本机 Bot 出口；群内执行确认和结果优先该 Bot，私聊仍由入口回复。",
+    "通过 read_cc_connect 发现 Bot，在具名 Agent 的 notification_bot 直接选择 project/platform；群内执行确认和结果优先该 Bot，私聊仍由入口回复。",
     "保存原始session_key和话题信息；发送时优先使用thread_root，缺失时适配器查询原话题，核对后调用cc-connect root目标，Agent无需自己构建查询。话题转换需要桥接启用话题回复；候选Bot的群聊和成员/发言权限无法确认就回退原入口；发送已开始后的未知结果不自动重发，通知失败不阻断任务。"
   ],
-  "author_provides": "具名Agent对应Bot的本机出口映射；复用已有cc-connect配置及只读权限。",
+  "author_provides": "具名Agent对应Bot引用（notification_bot）；复用已有cc-connect配置及只读权限。",
   "verification": [
     "read_assistance",
     "communication_workspace"
@@ -421,7 +442,7 @@
     "notifications"
   ],
   "configuration": [
-    "在 A、B 各自配置本机通知出口，使用平台 cc_connect_command 和明确的 project / 聊天 session。",
+    "在 A、B 各自通过 read_cc_connect / configure_cc_connect 接入桥接；固定出口使用 cc_connect={project,platform} 和明确 destination，无需拼接命令。",
     "各机器调用 communication_config operation=group_notifications；修改需带本机当前 binding_id，互不覆盖其他机器。",
     "communication_status 返回按机器索引的 notification_bindings；请求省略 notification_route，执行/返回事件优先 B，无 B 入口回退 A，均无入口只记录。"
   ],
