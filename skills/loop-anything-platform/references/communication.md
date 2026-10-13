@@ -40,6 +40,8 @@
 5. **pending/offered 表示仍在等待接单，不能判断为无人接单。** 默认接单期限为 300 秒，以发起端记录的 deadline 为准；几秒钟无 grant、目录暂时无成员或几次查询仍 pending，都不能作为取消/重建请求的依据。可以继续其他工作，或用 wait_assistance 挂起；非托管外部会话可结束本轮对话并保留请求，等待通知。只有平台返回 unavailable 等终态才按该结果处理；用户撤回或任务已无需要时仍可显式取消，并可填写 reason。
 6. `control_assistance` 可 cancel、input、followup。followup 默认要求继续准确记录的 session；明确 `resume: false` 才新建。取消已发出不等于远端已经停止。
 
+接单拒绝会返回 selection_decision：包含 reason、发起端当时的 source_state、deadline 以及可用的取消原因或已分配执行者。not_selected 本身不等于“被取消”；旧版本空回执仍需查发起端详情。
+
 对话默认群组通过 context_id 引用，单次 group_id 可覆盖，但不能绕过 Run 群组和执行范围。没有原生 session ID 也可以发送普通协助请求。可信工作区可按 request_id 读取或控制请求；worker 写回必须使用本次执行身份。
 
 目录提供 instance_id 和 agent_id，跨机器同名或自定义 ID 重复时一并指定，不能猜测目标。外援执行端可通过限定入口的 `read_context` 按需读取关联 Loop 和 Task 上下文；这是只读授权，不授予原节点结果写入权。独立请求没有 Loop 时返回请求方提供的上下文。
@@ -54,9 +56,24 @@ Loop 包资源经受限 `read_asset` 调用取回到执行端请求资源目录�
 
 ## 独立协作：内置 Loop
 
-读取 `read_capabilities({"capability":"standalone_collaboration"})` 和实时工具 schema。一次完整协作对应一个 Run；后续求援传返回的 `collaboration_id`，追问 `control_assistance(action: followup)` 自动延续原 Run。消息、日志和进度不会各建一个 Run。
+### 入口 Agent 与 session 登记
 
-- **只求援并取结果**：直接 `request_assistance`。平台自动创建内置 Run 和事件等待 Task，外援结束后结果写入 Timeline。请求立即返回；`wait_seconds` 是等待承接的期限，不是工具阻塞时间。用 `read_run`/`read_assistance` 查看；通知沿原入口规则发送。没有原会话恢复信息时，不承诺自动续跑发起方。
+“把这次工作交给平台管理等待和续跑”指关联一次具体执行与原生 CLI session，不是把飞书 Bot 或当前 Agent 注册为长期接单成员。按实际需求选择：
+
+| 场景 | 使用方式 | 当前 Agent 需要什么 |
+|---|---|---|
+| 飞书/终端入口请求外援，结果通知回来或稍后读取 | `request_assistance` | 不需要自身 execution_id、原生 session 登记或具名成员注册；平台自动建立结果跟踪 Run |
+| 当前入口 Agent 暂停，结果到达后自动恢复原会话继续 | `start_collaboration(caller=…)` | 提供真实 session、当前 Agent 进程 PID 和恢复配置；平台创建并返回 execution_id，随后沿用其 Run/Task/token |
+| 已在平台节点中执行，需补充当前 CLI 的真实 session ID | `register_agent_session` | 使用当前唤醒上下文中的自身 execution_id 和操作身份 |
+| 希望其他成员以后能向本机 Agent 发布任务 | `communication_config(operation=agent)` | 配置具名 Agent 及开放范围；向群组开放前由用户确认主要任务 |
+
+没有 execution_id 的入口不可遍历其他 Run 选择无关执行挂接。cc-connect 不会自动调用 start_collaboration；由入口 Agent/集成按需提供真实运行信息，用户无需手工登记，无法交接进程时使用普通求援与通知。
+
+Codex 的 `CODEX_THREAD_ID` 属于原生 Agent session，用于恢复上下文；飞书的 chat_id、thread_id、thread_root 用于通知定位。保存飞书通知来源不需要调用 register_agent_session，这两组标识不能互换。
+
+读取 `read_capabilities({"capability":"standalone_collaboration"})` 和实时工具 schema。一次完整协作对应一个 Run；后续求援用返回的 `run_id`（或 `request.collaboration.run_id`）填写 `collaboration_id`，追问 `control_assistance(action: followup)` 自动延续原 Run。消息、日志和进度不会各建一个 Run。
+
+普通求援的返回结果通过内置事件等待 Task 写入 Timeline。`request_assistance` 立即返回；`wait_seconds` 是承接期限，不是工具阻塞时间。以下仅用于需要协调 Agent 持续推进的场景：
 - **让平台启动协调 Agent**：`start_collaboration({"message":"完整协作任务","agent_id":"本机已开放的具名 Agent ID","group_id":"已加入群组"})`。返回 Run/Task；平台启动协调 Agent，它用普通节点工具提交、等待和恢复。纯本机协作可省略 group_id。
 - **承接当前正在对话的 Agent**：入口适配器或当前 Agent 在同一机器调用 `start_collaboration`，提供 `caller.implementation`（本机 CLI 启动/准确恢复配置）、`caller.native_session`（实际 provider/id，可带 cwd）和 `caller.process_id`（当前 Agent 进程 PID，不是执行工具的临时子进程）。不能从聊天 ID 猜 session，不能使用最近会话或另一台机器的 PID。平台登记现有执行并返回 run_id/task_id/execution_id/token，不重复启动 Agent。
 
@@ -66,23 +83,15 @@ Loop 包资源经受限 `read_asset` 调用取回到执行端请求资源目录�
 
 ## 等待回复后继续
 
-先检查 `read_capabilities(capability: assistance_session_resume)`。依赖原会话续跑的 Loop 应声明 `requires: ["assistance_session_resume"]`，防止安装到仅支持重新唤醒 Task 的旧平台。
+需要自动续跑时检查 `assistance_session_resume` 能力；依赖它的 Loop 应声明 `requires: ["assistance_session_resume"]`。
 
-节点 Agent 可以继续其他工作并稍后查询；确实需要暂停时，先登记实际原生 session，再调用 `wait_assistance(run_id, token, task_id, request_ids, seconds)`。该操作会检查是否有准确的 session 和恢复命令；只有成功后才调用 finish。远端节点还需在来源 finish 已接受后 complete 执行请求。
+1. 已在平台执行的节点登记真实原生 session，并配置准确恢复命令，见[保存 ID 与恢复命令](terminal.md#保存真实原生-id)。已通过 start_collaboration 接入的 caller 沿用返回的执行身份。
+2. 调用 `wait_assistance(run_id, token, task_id, request_ids, seconds)`。只有成功后才 `finish` 并退出；远端节点还需在来源 finish 被接受后 complete 执行请求。
+3. 回复到达或等待到期后，平台在原进程退出、操作权释放后恢复**同一 CLI session、同一 Task**，提供 `assistance_results` 和新凭据。远端固定原机器、具名 Agent、工作目录及恢复配置；原 token 作废，不添加业务图节点，也不把等待当完成。
 
-回复到达或等待期限结束后，平台恢复等待前的**同一个 CLI session**，以最新任务状态、`assistance_results` 和新的操作凭据继续同一个 Task。CLI 会话保留原推理上下文，历史 token 全部过期。远端续跑固定原机器和具名 Agent，沿用原工作目录及恢复配置；不会由其他机器重建一个对话。不添加业务图节点，也不把等待当成完成。
+缺少 session/恢复配置时 wait_assistance 拒绝；旧等待任务缺此信息时也不能通过通用重试新开会话。进程状态未知、会话文件丢失或 CLI 恢复失败时明确阻塞/失败，不能改用新会话。CLI 存储须保留在原机器；目前自动恢复使用 macOS/Linux 交互终端后端。
 
-旧版等待任务若缺少原 session 恢复信息，自动续跑和通用“重试”都会阻止；应先修复原会话关联，不能用重试隐式新开对话。
-
-本机制适用于平台托管的 Agent CLI。通过 `register_agent_session`（普通节点）或 `native_session`（限定执行客户端）登记真实 ID；可识别的 CLI 输出也会自动记录。Codex/Claude 可使用平台已有的准确 ID 恢复命令；自定义 CLI 或需要额外模型/权限参数时须显式配置 `resume_command`，含 `{{session_id}}` 和 `{{prompt}}` / `{{prompt_file}}`。当前自动恢复使用已有 macOS/Linux 交互终端后端。
-
-暂停接新任务或退出群组不会把这项已承接的工作转交他人；原机器仍可为同一 Task 恢复原会话。取消 Task、终止 Run 或暂停 Run 会阻止自动继续；未知的旧进程仍需先确认停止。
-
-缺少 session 或恢复配置时，wait_assistance 明确拒绝，Agent 不应先退出。旧版本留下的等待若没有可恢复身份，会保留等待并显示原因。原进程停止状态未知时不继续；会话文件丢失或 CLI 恢复失败时明确失败，**不退回新会话**。CLI 自身的会话存储必须保留在原执行机器。
-
-回复在 `assistance_results` 中提供。缺少可选外援时由请求方自行处理或继续；固定节点缺执行者不能伪造完成。Run 暂停时不唤醒，终止后保存迟到回复但不推进。
-
-普通外部对话只保证结果持久保存、可查询及通知；不会无条件向任意聊天窗口注入回复。
+Run 暂停或 Task 取消时不自动续跑，Run 终止后保留迟到结果但不推进。停用 Agent 或退出群组只影响新工作，已承接任务仍由原机器恢复。可选外援不可用由请求方判断如何继续；固定节点缺执行者不能伪造完成。
 
 ## 控制通信上下文大小
 
@@ -125,7 +134,11 @@ python3 /实际客户端路径/communication.py --context 请求上下文.json c
 
 对未知执行发送取消只记录取消意图，不能证明旧进程已停。核实后使用 confirm_stopped；远端请求须等执行端确认，本机相关终端的占用记录也会同步释放。
 
-共享目录发布完整消息或分块消息，单个逻辑消息上限 32 MiB；大业务数据使用产物引用。未确认消息保留重发，日志按序号单独持久化。当前保留历史记录，不自动删除仍可能被引用的内容。大规模归档时需关注目录与本地数据库占用。
+共享目录发布完整消息或分块消息，单个逻辑消息上限 32 MiB；大业务数据使用产物引用。未确认消息保留重发，日志按序号单独持久化。
+
+平台自动分离待收消息与历史：`messages/<机器ID>/` 是待收区，`messages/broadcast/` 保留等待认领的公告，已确认消息进入 `archive/<日期>/<接收方>/`，普通轮询不扫描归档。接收确认只表示消息已持久化，不代表任务完成；公告由发起方在分配、取消或到期后归档。ACK 发布后停止定时重发，重复原消息可触发同一回执补发。归档失败保留待办和诊断，重启继续，不阻断其他消息；历史及去重记录继续保留，不自动按日期删除。Agent 使用已有通信工具，无需自己搬移文件或编写清理脚本。
+
+为兼容在途消息，保留旧传输路径和消息格式；服务启动或切换挂载后会一次性检查待收目录中的旧记录，只归档本机有权处理且已确认的内容。各机器升级后才能完整停止旧版 ACK 的定时重发。本机数据库仍保留历史，真实多机 NAS 的性能与故障恢复需在安装环境验收。
 
 通知使用已有命名出口，独立请求默认 workspace，节点执行可沿用 Run 出口。通信消息统一显示请求 ID；首条实际生成的通知包含请求正文（即使请求很快进入执行或完成），后续通知引用同一 ID，保留状态、结果摘要或错误，不重复原请求。cc-connect 对通信消息不另附内部通知 ID，投递和重试回执仍按通知记录保存。飞书/微信只用于通知；未配置时不猜接收人，不承担请求和正式结果传输。
 
@@ -151,9 +164,9 @@ python3 /实际客户端路径/communication.py --context 请求上下文.json c
 
 通知档位支持 attention（仅需处理）、key（默认关键进展）、detailed（含进度摘要）。可选外援无人承接时 attention 不一律报警。失败回执通过 control_assistance(action: retry_notification, notification_id: ...) 显式重试；结果未知先核实。真实 NAS、多机、模型及渠道送达仍在安装时分别验收。
 
-## 聊天入口通知（0.5.7）
+## 聊天入口通知
 
-飞书入口由 Skill 客户端随请求提交原会话元数据，平台保存来源，适配器在发送机核实并投递；私聊由入口 Bot 回复，群聊的执行确认和结果优先使用具名 Agent 的 `notification_route` 所映射 Bot，并保持原话题。发送前明确不可用才回退入口，发送结果未知不自动换 Bot。嵌套外援继承原来源；显式通知出口覆盖，无聊天来源保留按机器优先级。配置入口在具名 Agent 编辑界面。完整前提、只读权限及 API 用法见平台 Skill 的 `references/cc-connect.md`；平台保存完整原 session_key；有根消息时直接复用，只有话题 ID 时由适配器查询补齐后使用 root 发送目标。未知会话格式继续透传。
+有聊天来源时通知跟随原会话；显式出口覆盖，无来源时使用上面的群组/Run 路由。飞书入口采集、Bot 映射、根消息保存与回退细则集中在 [cc-connect](cc-connect.md#自动跟随原聊天)。
 
 ## 目录查询与操作凭据
 
@@ -166,7 +179,3 @@ python3 /实际客户端路径/communication.py --context 请求上下文.json c
 - worker token：承接者写回本次外援的进度和结果，不能操作其他请求；限定 worker 入口只能查看其相关请求。
 
 原生 CLI session ID 只用于恢复上下文。任务认领依赖具名 Agent、实例与群组匹配，session 不决定认领；过期执行写回仍校验。平台托管节点须沿用唤醒入口和身份，不能借公开工作区入口扩大范围。
-
-通知出口边界：普通原入口不做格式预检。根消息随入口自动保存；仅有话题 ID 时由发送适配器补齐根消息并确认话题回复配置，无法补齐就记录通知失败，不降级到群时间线。选择其他 Bot 时核实群聊及成员权限，无法核实就回退原入口；发出后结果未知不换 Bot 重发。详见[cc-connect](cc-connect.md)。
-
-接单拒绝会返回 selection_decision：包含 reason、发起端当时的 source_state、deadline 以及可用的取消原因或已分配执行者。not_selected 本身不等于“被取消”；旧版本空回执仍需查发起端详情。

@@ -21,7 +21,7 @@ install.py           独立环境安装器
 pyproject.toml       包元数据与 CLI 入口
 ```
 
-`.local-history/` 保存本地历史资料，`.semantic-alignment/` 保存研发语义记录；它们均不提交。`.loop-anything/`、旧 `.state-loop/` 和用户数据目录中的运行数据不属于源码发布内容。
+`SEMANTICS.md` 是当前产品语义入口，`semantics/` 按主题保存权威正文；二者作为本地研发记录不提交。`.local-history/` 保存研发历史与一次性迁移备份，旧 `.semantic-alignment/` JSON 记录已退出日常读取。`.loop-anything/`、旧 `.state-loop/` 和用户数据目录中的运行数据不属于源码发布内容。
 
 macOS 安装器默认使用 launchd 用户服务；测试或临时环境安装加 `--no-service`，避免注册真实登录项。`service` 命令只调用系统服务管理器；配置使用原生 plist。收到 SIGTERM 与 Ctrl+C 一样走平台退出清理。Windows/Linux 当前仍为前台启动。
 

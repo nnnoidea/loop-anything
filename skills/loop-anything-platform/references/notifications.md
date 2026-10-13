@@ -24,7 +24,7 @@ Loop 的「任务关系」图显示等待条件与通知标记，「执行状态
 
 ## 主动通知与询问
 
-`notify` 参数：run_id、稳定 key、message；可选 task_id、route、reply。Agent 提供持有的 token；支线 Agent 必须指定自己范围内的 task_id。脚本提供上下文里的 token、task_id 和 execution_id。网页和用户 CLI 使用平台编辑授权；未解锁时不能发送。
+`notify` 参数：run_id、稳定 key、message；可选 task_id、route、reply。Agent 提供持有的 token；支线 Agent 必须指定自己范围内的 task_id。脚本提供上下文里的 token、task_id 和 execution_id。可信工作区的网页和用户 CLI 可按授权调用，无需 Loop 编辑口令；平台托管节点仍须沿用自身操作范围。
 
 ```json
 {"run_id":"RUN_ID","token":"TOKEN","task_id":"TASK_ID","key":"TASK_ID:progress-1","message":"阶段结果已记录","route":"default"}
@@ -89,10 +89,10 @@ Loop 的「任务关系」图显示等待条件与通知标记，「执行状态
 - 脚本和 Agent 可以主动 notify；作者可配置转移通知，用户可配置前后或转移 Hooks。
 - Engine 正常进入完成终态生成一次完成通知；未选出口且没有旧发送命令时，使用平台通知区；用户主动 terminate 不冒充成功。
 - Agent 连续失败三次的暂停通知使用同一出口，不额外唤醒模型来发送。
-- 新通知入队时固定出口与发送配置，重试保留原目的地。尚未配置的出口进入 waiting_configuration，补配后显式重试；历史通知在首次发送时固定配置。
+- 新通知入队时固定出口与发送配置，后续修改只影响新通知，重试保留原目的地。尚未配置的出口进入 waiting_configuration，补配后显式重试，不计入 runtime unexpected、不唤醒兜底；历史通知在首次发送时固定配置。
 - `retry_notification` 带 run_id、notification_id；持有全局操作权时再带 token。Run 已结束也可单独重试通知，不重开 Run。
 - 超时可能表示消息已发出但回执未收到。重试前先核实；桥接支持幂等键时可使用通知 ID 去重，平台不承诺跨系统恰好一次送达。
 
 适配器只需要遵守上述契约，无需实现聊天历史、Timeline 副本或另一套 Agent 调度。
 
-命名出口在通知入队时固定实际发送配置；之后修改出口只影响新通知，重试仍使用原目的地。未配置的出口显示“等待配置”，不计入 runtime unexpected，不反复唤醒兜底 Agent，也不随意换其他渠道。真实发送失败仍记录 fault、回执及显式重试入口。平台通知区保留所有发送记录；外部渠道的网络不确定性仍须检查回执，不承诺跨渠道严格恰好送达一次。
+真实发送失败记录 fault 和回执，平台通知区保留所有发送记录；由用户核实后使用显式重试入口。
