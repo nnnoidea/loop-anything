@@ -62,7 +62,7 @@
 
 - Codex：自动识别 `codex exec --json` 的 `thread.started.thread_id`，以及普通输出中的明确 `session id:` 行。平台不会擅自追加 `--json`。
 - Claude Code：识别 JSON/stream-json 中的 `session_id`；交互启动可以显式配置 `command: ["claude","--session-id","{{session_id}}","{{prompt}}"]`，平台在每次执行生成新的 UUID 并替换占位符。
-- Agent 可调用 `register_agent_session(execution_id, provider, session_id, cwd)` 记录自己当前 CLI 的真实会话 ID。例如 Codex 的工具进程可读取 `CODEX_THREAD_ID`；拿不到真实 ID 时不猜测。手动接入的 Agent 应同时提供实际工作目录。只能登记自己持权的当前执行，不能覆盖另一个已关联的 ID。
+- 已在平台执行中的 Agent 可调用 `register_agent_session(execution_id, provider, session_id, cwd)` 记录自己当前 CLI 的真实会话 ID。例如 Codex 的工具进程可读取 `CODEX_THREAD_ID`；拿不到真实 ID 时不猜测。只能登记自己持权的当前执行，不能覆盖另一个已关联的 ID。没有自身 execution_id 的外部入口先按[入口 Agent 与 session 登记](communication.md#入口-agent-与-session-登记)选择方式，不借用其他 Run 的执行。
 - 旧执行可从其自身已保存的启动输出识别 ID；没有记录时由用户在恢复面板明确补充。平台不扫描无关 CLI 历史，也不使用 `--last`。
 
 直接命令的 `codex` / `claude` 可自动识别；包装脚本通过候选字段 `agent_cli: "codex" | "claude" | "custom"` 显式说明。

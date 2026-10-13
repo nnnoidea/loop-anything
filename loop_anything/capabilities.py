@@ -2,7 +2,7 @@
 import hashlib
 from pathlib import Path
 
-VERSION = '0.6.6'
+VERSION = '0.6.7'
 API_REVISION = 2
 CAPABILITIES = {
     'loop_edit_protection': ('Optional editing password follows one Loop identity across drafts, versions and package export/import. Routine Run and communication operations need no workspace unlock. Internal execution scope, freshness and receipt checks remain.', ['set_loop_password','read_loop','copy_loop','publish_loop','export_loop'], 'references/connection.md'),
@@ -13,7 +13,7 @@ CAPABILITIES = {
     'confirmed_agent_directory': ('Group-exposed Agents require a user-confirmed main task description and group scope. Ask the user before task_confirmed=true; never infer confirmation. Old unconfirmed members cannot accept new group work.', ['communication_config','communication_status'], 'references/communication.md'),
     'assistance_session_resume': ('Waiting Agent tasks resume their exact native CLI session with assistance results and fresh credentials; remote work stays on the original instance/Agent and never silently starts a new conversation.', ['wait_assistance','register_agent_session','communication_execute','read_assistance'], 'references/communication.md'),
     'group_notifications': ('Communication group notification bindings, per-machine outlets and one selected delivery machine, existing cc-connect outlets, durable NAS forwarding and delivery receipts.', ['communication_status','communication_config','read_notification_channels','set_notification_channels','read_assistance','control_assistance'], 'references/communication.md'),
-    'agent_communication': ('Owner-configured shared NAS spaces, explicit group discovery/joining and portable join instructions; named local Agents and NAS groups; standalone assistance, remote Agent nodes, durable reports and optional assistance waits. Directory discovery is public; request creation, configuration and writes still require workspace or scoped operation authority. Ordinary sessions are not automatically exposed.', ['communication_workspace','communication_status','communication_config','request_assistance','read_assistance','control_assistance','wait_assistance','communication_execute'], 'references/communication.md'),
+    'agent_communication': ('Owner-configured shared NAS spaces, explicit group discovery/joining and portable join instructions; named local Agents and NAS groups; standalone assistance, remote Agent nodes, durable reports and optional assistance waits. Confirmed transport messages are archived outside the hot scan; receipts stop periodic retransmission and can be replayed on duplicate input. Directory discovery is public; request creation, configuration and writes still require workspace or scoped operation authority. Ordinary sessions are not automatically exposed.', ['communication_workspace','communication_status','communication_config','request_assistance','read_assistance','control_assistance','wait_assistance','communication_execute'], 'references/communication.md'),
     'timeline_storage': ('Persistent Timeline, versioned records, execution history and atomic local writes.', ['read_timeline','read_record','read_run'], 'references/run.md'),
     'task_scheduler': ('Automatic input/dependency readiness, dispatch, parallelism and pause/scope checks.', ['next_tasks','change_settings'], 'references/run.md'),
     'execution_recovery': ('Persisted execution recovery and explicit handling of unknown process state.', ['read_task','command','change_task'], 'references/build-reference.md'),

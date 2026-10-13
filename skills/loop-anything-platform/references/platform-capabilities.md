@@ -87,7 +87,7 @@
 ## agent_communication
 
 - 生效方式：configured/operator
-- 平台承担：平台提供本机具名Agent目录、NAS群组收发、明确认领、进度结果、会话和等待恢复；独立协作自动使用平台内置 Loop。
+- 平台承担：平台提供本机具名Agent目录、NAS群组收发、明确认领、进度结果、会话和等待恢复；独立协作自动使用平台内置 Loop。待收消息与历史自动分离，确认后归档，回执按需补发；作者无需自建归档或清理脚本。
 - 作者提供：先配置已挂载的共享空间，用 communication_workspace(discover=true) 发现群组并显式加入；再配置具名 Agent 对应的本机 CLI/工作目录/恢复命令及开放群组，支持转交加入说明；Loop绑定群组，节点显式声明群组执行；外援由Agent按需请求；pending/offered表示等待，默认接单期限300秒，不得因几秒无回应而取消或重建，按需挂起等待。
 - 配置入口：`communication_config`、`implementations.*.dispatch`、`request_assistance`、`wait_assistance`
 - 边界：可信工作区配置、请求、查询无需全局编辑解锁；普通操作由平台处理内部标识，worker写回仍校验本次执行范围。原生 session ID 只用于恢复；本地节点只由来源平台执行，群组不是业务Run副本，session不决定认领。失联不自动重跑。NAS实际环境需安装时检查，逐键远程PTY尚不承诺。

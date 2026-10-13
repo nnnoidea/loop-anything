@@ -49,7 +49,8 @@ class GroupNotificationTests(unittest.TestCase):
         self.assertEqual(len(sent),1);self.assertIn('research-project',sent[0]['argv']);self.assertIn('feishu-chat',sent[0]['argv'])
         self.assertIn('实验支持',sent[0]['text'])
         self.assertIn('论文分析完成',sent[0]['text'])  # Fast completion can be the first observed state.
-        packet=next(json.loads(p.read_text()) for p in (self.root/'nas'/'messages'/binding['sender_instance']).glob('*.json') if json.loads(p.read_text()).get('kind')=='notification_deliver')
+        with self.c.store.connection() as db:
+            packet=json.loads(db.execute("SELECT document FROM communication_inbox WHERE json_extract(document,'$.kind')='notification_deliver'").fetchone()[0])
         self.c.receive(packet)
         duplicate=dict(packet,id='duplicate-delivery');self.c.receive(duplicate)
         deliver(self.c)

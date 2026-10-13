@@ -19,6 +19,7 @@ from pathlib import Path
 from loop_anything.runtime.model import Invalid, Conflict, contract, check_schema
 from loop_anything.runtime.store import uid
 from loop_anything.runtime.communication_views import summary as request_summary, continuation_context, log_page
+from loop_anything.runtime.communication_archive import enqueue as archive_message, retire as retire_messages, acknowledge
 
 END = {'completed', 'failed', 'cancelled', 'unavailable', 'not_selected'}
 PRIVATE = {'access_token', 'worker_token', 'source_token', 'launch', 'pending_result', 'sender', 'rpc'}
@@ -104,16 +105,20 @@ class Communication:
         self.lock = threading.RLock()
         self.live = {}
         self.last_scan = 0
+        self.archive_scanned_groups = set()
         with store.connection() as db:
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS communication_settings (id INTEGER PRIMARY KEY, document TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS communication_requests (id TEXT PRIMARY KEY, document TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS communication_outbox (id TEXT PRIMARY KEY, document TEXT NOT NULL, sent REAL NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS communication_inbox (id TEXT PRIMARY KEY, document TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS communication_archive_queue (id TEXT PRIMARY KEY, document TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS communication_peers (id TEXT PRIMARY KEY, document TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS communication_logs (request_id TEXT NOT NULL, sequence INTEGER NOT NULL, text TEXT NOT NULL, PRIMARY KEY(request_id,sequence));
                 CREATE TABLE IF NOT EXISTS communication_notification_bindings (id TEXT PRIMARY KEY, document TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS communication_deliveries (id TEXT PRIMARY KEY, document TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS communication_outbox_pending ON communication_outbox(sent)
+                  WHERE sent=0 OR json_extract(document,'$.kind')!='ack';
             ''')
             db.execute('INSERT OR IGNORE INTO communication_settings VALUES (1,?)', (json.dumps({
                 'instance_id': uid('machine'), 'name': socket.gethostname(), 'revision': 1, 'agents': {},
@@ -549,7 +554,12 @@ class Communication:
                'sender': config['instance_id'], 'target': target, 'kind': kind, 'payload': payload,
                'assignment_id': request.get('assignment_id'), 'at': time.time()}
         if len(json.dumps(msg,ensure_ascii=False).encode())>32*1024*1024:raise Invalid('Communication message exceeds 32 MiB; use artifact references')
-        db.execute('INSERT OR IGNORE INTO communication_outbox(id,document) VALUES (?,?)', (msg['id'], json.dumps(msg)))
+        if kind == 'ack':
+            # Keep the original receipt bytes for an identical ID. A duplicate
+            # message explicitly requeues it; successful publication stops polling.
+            db.execute('INSERT INTO communication_outbox(id,document) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET sent=0', (msg['id'], json.dumps(msg)))
+        else:
+            db.execute('INSERT OR IGNORE INTO communication_outbox(id,document) VALUES (?,?)', (msg['id'], json.dumps(msg)))
         return msg['id']
 
     def read(self, ident, after=0, include_logs=False, include_details=False, offset=0, max_chars=4000):
@@ -623,7 +633,7 @@ class Communication:
                         self.emit(db, row, row['executor'], 'cancel', {})
                 else:
                     row['state'] = 'cancelled'
-                    db.execute("DELETE FROM communication_outbox WHERE json_extract(document,'$.request_id')=? AND json_extract(document,'$.kind')='offer'",(row['id'],))
+                    retire_messages(db, "json_extract(document,'$.request_id')=? AND json_extract(document,'$.kind')='offer'", (row['id'],))
                 self.event(row, 'cancel_requested', row['cancellation'])
             elif action == 'confirm_stopped':
                 if ident in self.live or row['state'] != 'unknown' or not a.get('confirmed_stopped'):
@@ -711,7 +721,7 @@ class Communication:
                     current = self.get(row['id'], db)
                     if current['state'] == 'pending':
                         current['state'] = 'unavailable'
-                        db.execute("DELETE FROM communication_outbox WHERE json_extract(document,'$.request_id')=? AND json_extract(document,'$.kind')='offer'",(row['id'],))
+                        retire_messages(db, "json_extract(document,'$.request_id')=? AND json_extract(document,'$.kind')='offer'", (row['id'],))
                         self.event(current, 'unavailable', {'message': 'No Agent accepted before the deadline'})
                         self.save(db, current)
             if row.get('executor') == config['instance_id'] and row['state'] == 'assigned':
@@ -894,11 +904,15 @@ class Communication:
         if now - self.last_scan < .4:
             return
         self.last_scan = now
+        self.transport_error = None
         for gid, group in config['groups'].items():
             root = Path(group['path'])
             try:
                 if not root.is_dir() or json.loads((root / 'group.json').read_text()).get('id') != gid:
                     raise Invalid('Group mount missing or identity changed')
+                from loop_anything.runtime.communication_archive import reconcile_legacy, drain
+                reconcile_legacy(self, root, gid, config['instance_id'])
+                drain(self, root, gid)
                 from loop_anything.runtime.communication_notifications import refresh
                 refresh(self,gid,group)
                 me = root / 'members' / (config['instance_id'] + '.json')
@@ -929,13 +943,18 @@ class Communication:
                         peer.update(group_id=gid, seen_at=old.get('seen_at', now) if old.get('revision') == peer['revision'] else now)
                         db.execute('INSERT INTO communication_peers VALUES (?,?) ON CONFLICT(id) DO UPDATE SET document=excluded.document', (peerkey, json.dumps(peer)))
                 with self.store.connection() as db:
-                    outgoing = [(r[0], json.loads(r[1])) for r in db.execute('SELECT id,document FROM communication_outbox WHERE sent<?', (now - 3,))]
+                    outgoing = [(r[0], json.loads(r[1])) for r in db.execute("SELECT id,document FROM communication_outbox WHERE (sent=0 OR json_extract(document,'$.kind')!='ack') AND sent<?", (now - 3,))]
                 for mid, message in outgoing:
                     if message['group_id'] != gid or message['sender'] != config['instance_id']:
                         continue
-                    publish_message(root / 'messages' / identifier(message['target']) / (mid + '.json'), message)
-                    with self.transaction() as db:
-                        db.execute('UPDATE communication_outbox SET sent=? WHERE id=?', (now, mid))
+                    with self.lock:
+                        # ACK/cancellation may have retired a snapshotted message
+                        # while this scan was publishing an earlier one.
+                        with self.store.connection() as db:
+                            if not db.execute('SELECT 1 FROM communication_outbox WHERE id=?', (mid,)).fetchone():continue
+                        publish_message(root / 'messages' / identifier(message['target']) / (mid + '.json'), message)
+                        with self.transaction() as db:
+                            db.execute('UPDATE communication_outbox SET sent=? WHERE id=?', (now, mid))
                 for target in ('broadcast', config['instance_id']):
                     for file in (root / 'messages' / target).glob('*.json'):
                         try:
@@ -954,6 +973,7 @@ class Communication:
                                     except (Invalid,KeyError):row=None
                                     if row and message.get('sender') in (row['origin'],row.get('executor')) and message.get('assignment_id')==row.get('assignment_id'):
                                         self.emit(db,row,message['sender'],'rejected',{'message_id':message['id'],'error':str(exc)})
+                drain(self, root, gid)
             except (OSError, ValueError, Invalid) as exc:
                 self.transport_error = str(exc)
 
@@ -970,6 +990,7 @@ class Communication:
                 if previous.get('rejected') and previous.get('message')==msg:return
                 if previous != msg:
                     raise Conflict('Message ID reused with different content')
+                if msg['kind'] == 'ack':archive_message(db, msg)
                 if msg['kind'] != 'ack' and msg['target'] != 'broadcast':
                     # A lost receipt must be reproducible without repeating its business effect.
                     self.emit(db, {'id':msg['request_id'],'group_id':msg['group_id'],'assignment_id':msg.get('assignment_id')},msg['sender'],'ack',{'message_id':msg['id']})
@@ -977,7 +998,8 @@ class Communication:
             kind, payload = msg['kind'], msg['payload']
             gid = msg['group_id']
             if kind == 'ack':
-                db.execute('DELETE FROM communication_outbox WHERE id=? AND json_extract(document,\'$.target\')=?', (payload['message_id'], msg['sender']))
+                acknowledge(db, msg)
+                archive_message(db, msg)
             elif kind in ('notification_deliver','notification_receipt'):
                 from loop_anything.runtime.communication_notifications import accept, receive_receipt
                 if gid not in config['groups'] or msg['target']!=config['instance_id']:raise Invalid('Wrong notification group/target')
@@ -1006,7 +1028,7 @@ class Communication:
                         if len(matches)>1:
                             row.update(state='unavailable',error='Agent ID is ambiguous; select an instance_id')
                             self.save(db,row)
-                            db.execute("DELETE FROM communication_outbox WHERE json_extract(document,'$.request_id')=? AND json_extract(document,'$.kind')='offer'",(row['id'],))
+                            retire_messages(db, "json_extract(document,'$.request_id')=? AND json_extract(document,'$.kind')='offer'", (row['id'],))
                     if row['origin'] != config['instance_id'] or row['state'] != 'pending' or row['deadline'] < time.time():
                         if row['origin']==config['instance_id']:
                             reason=('cancelled' if row['state'] in ('cancelled','cancelling') else
@@ -1027,7 +1049,7 @@ class Communication:
                     row.update(agent_label=payload.get('agent_label',row['agent_id']),executor_name=payload.get('executor_name',msg['sender']))
                     self.emit(db, row, msg['sender'], 'grant', {'agent_id': row['agent_id']})
                     # Stop repeatedly broadcasting an assigned offer.
-                    db.execute("DELETE FROM communication_outbox WHERE json_extract(document,'$.request_id')=? AND json_extract(document,'$.kind')='offer'", (row['id'],))
+                    retire_messages(db, "json_extract(document,'$.request_id')=? AND json_extract(document,'$.kind')='offer'", (row['id'],))
                 elif kind == 'grant':
                     if msg['sender'] != row['origin'] or row['state'] != 'offered' or payload['agent_id'] != row['proposed_agent']:
                         raise Conflict('Grant does not match offer')
@@ -1050,7 +1072,7 @@ class Communication:
                         raise Conflict('Stale or different assignment')
                     if kind=='rejected' and msg['sender'] in (row['origin'],row.get('executor')):
                         self.event(row,'communication_rejected',payload)
-                        db.execute('DELETE FROM communication_outbox WHERE id=? AND json_extract(document,\'$.target\')=?',(payload['message_id'],msg['sender']))
+                        acknowledge(db, msg)
                     elif kind in ('progress', 'rpc'):
                         if msg['sender'] != row.get('executor') or row['origin'] != config['instance_id']:
                             raise Conflict('Report is not from the assigned executor')

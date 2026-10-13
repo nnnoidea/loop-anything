@@ -3,6 +3,8 @@
 .state-loop/
 .local-history/
 .semantic-alignment/
+/SEMANTICS.md
+/semantics/
 
 # Generated distributions and build caches
 dist/
