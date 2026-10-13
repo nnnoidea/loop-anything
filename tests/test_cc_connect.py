@@ -60,7 +60,8 @@ class CCConnectTests(unittest.TestCase):
         sent=json.loads(self.capture.read_text())
         self.assertEqual(sent['args'],['send','--project','papers','--session',context['session_key'],'--data-dir',str(self.root/'actual-data'),'--stdin'])
         with self.assertRaises(Conflict):self.connect()
-        with self.assertRaises(Invalid):self.tools.call('communication_config',{'operation':'agent','agent_id':'papers','agent':{'notification_bot':{'project':'missing','platform':'feishu'}}})
+        self.tools.call('communication_config',{'operation':'agent','agent_id':'papers','agent':{'notification_bot':{'project':'explicit-name','platform':'feishu'}}})
+        self.assertEqual(comm.settings()['agents']['papers']['notification_bot']['project'],'explicit-name')
         self.write_config(extra='\n[[projects.platforms]]\ntype="feishu"\n')
         info=self.tools.call('read_cc_connect',{})
         self.assertFalse(next(b for b in info['bots'] if b['project']=='papers')['selectable'])
@@ -84,22 +85,24 @@ class CCConnectTests(unittest.TestCase):
         self.assertEqual(repaired['sender']['destination'],'opaque')
         self.assertFalse(self.capture.exists())
 
-    def test_root_target_rejects_known_downgrade_without_sending(self):
+    def test_config_and_credentials_are_not_rechecked_at_delivery(self):
         self.connect()
+        self.config.unlink()  # The running bridge still owns its loaded config and secrets.
+        # Explicit mappings remain editable even if discovery cannot read the file.
+        self.tools.call('set_notification_channels',{'revision':0,'channels':{'entry':{'cc_connect':{'project':'entry','platform':'feishu'},'destination':'opaque'}}})
         from loop_anything.runtime.cc_connect import sender
         command=sender({'project':'entry','platform':'feishu'})['command']
-        self.write_config(options='thread_isolation=true\nreply_to_trigger=false')
-        result=subprocess.run(command,input=json.dumps({'id':'n','message':'never send','outlet':{'identity':'entry','destination':'feishu:chat:root:message'}}),text=True,capture_output=True,timeout=30)
-        self.assertNotEqual(result.returncode,0)
-        self.assertTrue(json.loads(result.stdout)['not_sent'])
-        self.assertFalse(self.capture.exists())
+        result=subprocess.run(command,input=json.dumps({'id':'n','message':'send through bridge','outlet':{'identity':'entry','destination':'feishu:chat:root:message'}}),text=True,capture_output=True,timeout=30)
+        self.assertEqual(result.returncode,0,result.stdout)
+        self.assertTrue(json.loads(result.stdout)['delivered'])
+        self.assertTrue(self.capture.exists())
 
-    def test_bridge_owns_default_directory_and_bot_cannot_switch_platform(self):
+    def test_bridge_owns_default_directory_and_session_interpretation(self):
         self.config.write_text(self.config.read_text().split('\n',1)[1])
         self.connect()
         info=self.tools.call('read_cc_connect',{})
         self.assertIsNone(info['data_dir'])
-        self.assertNotIn('data_dir',info['connection'])
+        self.assertIsNone(info['connection']['data_dir'])
         from loop_anything.runtime.cc_connect import sender
         command=sender({'project':'entry','platform':'feishu'})['command']
         self.assertNotIn('--data-dir',command)
@@ -114,16 +117,14 @@ class CCConnectTests(unittest.TestCase):
         result=subprocess.run(command,input=json.dumps(fixed),text=True,capture_output=True,timeout=30)
         self.assertEqual(result.returncode,0,result.stdout)
         self.assertIn('workspace:feishu:chat:user',json.loads(self.capture.read_text())['args'])
-        self.capture.unlink()
-        payload['conversation']['platform']='lark'
-        result=subprocess.run(command,input=json.dumps(payload),text=True,capture_output=True,timeout=30)
-        self.assertTrue(json.loads(result.stdout)['not_sent'])
-        self.assertFalse(self.capture.exists())
 
     def test_config_refresh_relative_directory_and_secret_parse_failure(self):
         self.connect()
         self.config.write_text('data_dir="relative"\n')
-        self.assertIn('absolute',self.tools.call('read_cc_connect',{})['error'])
+        self.assertEqual(self.tools.call('read_cc_connect',{})['connection']['data_dir'],str(self.root/'actual-data'))
+        self.config.write_text('data_dir="${BRIDGE_ONLY_DATA_DIR_FOR_TEST}"\n')
+        info=self.tools.call('configure_cc_connect',{'revision':1,'connection':{'executable':str(self.cli),'config_path':str(self.config),'data_dir':str(self.root/'explicit-data')}})
+        self.assertEqual(info['connection']['data_dir'],str(self.root/'explicit-data'))
         self.config.write_text('app_secret = SECRET-DO-NOT-EXPOSE invalid syntax')
         info=self.tools.call('read_cc_connect',{})
         self.assertIn('error',info);self.assertNotIn('SECRET',json.dumps(info))

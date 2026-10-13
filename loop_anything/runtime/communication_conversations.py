@@ -133,7 +133,7 @@ def bot_binding(comm,agent,group_id=None,freeze=False):
         sender=resolve_outlet(config) if config else None
     else:return None
     if not sender or not sender.get('command'):return None
-    sender=dict(sender,timeout=max(60,sender.get('timeout',30)),alternate_bot=True)
+    sender=dict(sender,timeout=max(60,sender.get('timeout',30)))
     binding={'group_id':group_id,'enabled':True,'sender_instance':comm.settings()['instance_id'],
              'agent_id':agent['id'],'level':'key','route':route,
              **{k:sender.get(k,'') for k in ('channel','identity','label')}}

@@ -6,7 +6,7 @@ from loop_anything.runtime.model import Invalid
 T, O, B = {'type': 'string'}, {'type': 'object'}, {'type': 'boolean'}
 
 
-CHAT_CONTEXT=object_schema({'platform':{'type':'string','enum':['feishu','lark']},'entry_project':T,'session_key':T,'chat_type':{'type':'string','enum':['p2p','group']},'chat_id':T,'thread_id':T,'thread_root':{'type':'string','description':'Actual root message ID from the entrance event; never substitute a thread ID. Adapter resolves it if absent.'}},['platform','entry_project','session_key'])
+CHAT_CONTEXT=object_schema({'platform':{'type':'string','enum':['feishu','lark']},'entry_project':T,'session_key':T,'chat_type':{'type':'string','enum':['p2p','group']},'chat_id':T,'thread_id':T,'thread_root':{'type':'string','description':'Actual root message ID from the entrance event; never substitute a thread ID. If absent, the original session is passed to cc-connect; no history lookup or credential preflight.'}},['platform','entry_project','session_key'])
 CALLER=object_schema({'implementation':O,
     'native_session':object_schema({'provider':{'type':'string','enum':['codex','claude','custom']},'id':T,'cwd':T},['provider','id']),
     'process_id':{'type':'integer','minimum':2}})

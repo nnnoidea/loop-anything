@@ -37,7 +37,7 @@ python3 scripts/call.py read_capabilities --arguments '{"capability":"authoring"
 - 先查平台已有能力，再决定业务脚本需要做什么；平台已提供调度、持久化、通信、等待恢复和结果查看。
 - 当前身份直接读取唤醒上下文或 `communication_status` 的 `self`，包含 machine_id、machine_name、workspace_id；它标识所连接的平台，寻址规则见[当前身份](references/communication.md#当前连接的是谁)。
 - 通知接入先 `read_cc_connect` 发现本机 Bots，缺配置用 `configure_cc_connect`；具名 Agent 直接绑定 `notification_bot`，固定目的地再配置命名出口，无需自建发送脚本。
-- cc-connect 飞书入口用 `call.py` 自动携带通知来源，Agent 无需自行查询消息或拼接发送命令；Bot 映射、根消息与显式出口规则见[原聊天通知](references/cc-connect.md#自动跟随原聊天)。
+- cc-connect 飞书入口用 `call.py` 自动携带通知来源，Agent 无需自行查询消息或拼接发送命令；通知直接交给 cc-connect，不补飞书凭据、不作群成员/权限/话题预检；Bot 映射、根消息与显式出口规则见[原聊天通知](references/cc-connect.md#自动跟随原聊天)。
 - 外援 pending/offered 是等待接单，不是无人可用；不得因几秒未回应就取消、重建或缩短接单期限。使用平台挂起或保留请求等通知；用户明确撤回仍可取消。
 - 查询外援默认只读状态与结果。只有排错才请求日志，并沿返回游标按需读取；不反复携带完整日志、通知历史或旧请求。
 - 在已有授权范围内执行；发现能力不代表用户授权新建任务、发送通知或启动任意远端工作。

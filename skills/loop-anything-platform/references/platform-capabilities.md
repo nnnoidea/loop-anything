@@ -30,7 +30,7 @@
 - 平台承担：本机共用 cc-connect 接入配置，读取已有 Bot 列表，不返回凭据；具名 Agent 直接选择 Bot。
 - 作者提供：read_cc_connect 发现；缺接入时 configure_cc_connect 指定实际配置文件和可执行文件，按返回 project/platform 建立 notification_bot 映射。固定目的地才建 cc_connect 引用出口。
 - 配置入口：`read_cc_connect`、`configure_cc_connect`、`agent.notification_bot`、`channels.*.cc_connect`
-- 边界：不猜配置文件目录、不为每个 Bot 写命令、不安装/启动 Bot。列表不证明在线或在群；同项目同渠道歧义不可选。路径和密钥留本机。
+- 边界：不猜配置文件目录、不为每个 Bot 写命令、不安装/启动 Bot。列表不证明在线或在群；目录歧义不自动选择；明确填写引用可保存，不作可用性预检。路径和密钥留本机。
 - 工具入口：read_cc_connect、configure_cc_connect、communication_config、read_notification_channels、set_notification_channels
 - 详细说明：[references/cc-connect.md](cc-connect.md)
 
@@ -38,9 +38,9 @@
 
 - 生效方式：automatic/configured
 - 平台承担：飞书入口调用默认回复原会话；私聊由入口Bot回复，群聊优先具名Agent对应Bot并保持原话题。
-- 作者提供：Skill call.py 只携带 chat_context；平台持久保存并复用来源，发送适配器保存原入口，话题用根消息调用cc-connect，缺根消息由适配器查询补齐；换Bot时核实候选；agent.notification_bot 直接映射本机已发现Bot，旧notification_route兼容。嵌套外援继承来源，不需要Agent重新拼接通知命令。
+- 作者提供：Skill call.py 只携带 chat_context；平台持久保存并复用来源，发送适配器保存原入口，话题用根消息调用cc-connect，缺根消息原样交给cc-connect；不查飞书权限或凭据；agent.notification_bot 直接映射本机已发现Bot，旧notification_route兼容。嵌套外援继承来源，不需要Agent重新拼接通知命令。
 - 配置入口：`request_assistance.chat_context`、`start_run.chat_context`、`communication_config(operation=agent)`、`兼容已有conversation_id`
-- 边界：通知接入失败不阻断业务任务；发送前确认不可用才回退入口Bot，发送后失败或未知不改投。原始session_key保留；适配器将明确话题目标转换为同群同话题的root发送目标，查询失败不降级群时间线。显式出口优先；无聊天来源沿用群组按机器出口。
+- 边界：通知接入失败不阻断业务任务；发送前确认不可用才回退入口Bot，发送后失败或未知不改投。原始session_key保留；适配器将明确话题目标转换为同群同话题的root发送目标，不自行改投群时间线；实际投递由cc-connect负责。显式出口优先；无聊天来源沿用群组按机器出口。
 - 工具入口：communication_config、request_assistance、start_run、read_assistance
 - 详细说明：[references/cc-connect.md](cc-connect.md)
 
@@ -415,11 +415,11 @@
     "notifications"
   ],
   "configuration": [
-    "通过 Skill call.py 发起 request_assistance 或 start_run，只随业务请求携带 chat_context；平台保存来源及可用thread_root，适配器补齐根消息并投递，换Bot时核实候选。",
+    "通过 Skill call.py 发起 request_assistance 或 start_run，只随业务请求携带 chat_context；平台保存来源及可用thread_root，适配器复用根消息直接调用cc-connect，不作渠道预检。",
     "通过 read_cc_connect 发现 Bot，在具名 Agent 的 notification_bot 直接选择 project/platform；群内执行确认和结果优先该 Bot，私聊仍由入口回复。",
-    "保存原始session_key和话题信息；发送时优先使用thread_root，缺失时适配器查询原话题，核对后调用cc-connect root目标，Agent无需自己构建查询。话题转换需要桥接启用话题回复；候选Bot的群聊和成员/发言权限无法确认就回退原入口；发送已开始后的未知结果不自动重发，通知失败不阻断任务。"
+    "保存原始session_key和话题信息；发送时优先使用thread_root，缺失时原样交给cc-connect，Agent无需查飞书、补密钥或配置预检。桥接负责实际话题回复和发送权限；发送已开始后的未知结果不自动重发，通知失败不阻断任务。"
   ],
-  "author_provides": "具名Agent对应Bot引用（notification_bot）；复用已有cc-connect配置及只读权限。",
+  "author_provides": "具名Agent对应Bot引用（notification_bot）；复用已有cc-connect接入；Loop不需要Bot凭据。",
   "verification": [
     "read_assistance",
     "communication_workspace"
