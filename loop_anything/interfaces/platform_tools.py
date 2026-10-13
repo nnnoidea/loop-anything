@@ -82,7 +82,9 @@ class PlatformTools:
             ('validate_parameters', 'Validate prospective Task parameters against both node and selected candidate contracts, without creating a Task. Returns valid/errors. Reads the exact same schemas as execution; never injects defaults or filters fields.', {'draft_id':TEXT,'key':TEXT,'node_id':TEXT,'implementation_id':TEXT,'parameters':OBJ}, ['node_id','parameters'], True),
             ('test_loop', 'Run saved or supplied author scenarios in a throwaway database with real Engine dispatch, input resolution and report routing. Commands/models/notification transports are intercepted. Each scenario requires name, steps and assertions; reports select task_id/ref/node. Assertions use the existing deterministic expression over status/task_count/counts/by_ref/by_id/records/route_count. Returns passed, step errors, assertions and resolved tasks. Does not install, start or modify a real Run. Read references/testing.md via read_capabilities for complete examples.', {'draft_id':TEXT,'key':TEXT,'scenarios':SCENARIOS}, [], True),
             ('read_capabilities', 'Discover platform mechanisms beyond tools: automatic responsibilities, author obligations, activation, configuration, limits and composable examples, plus service version/build and supported schema keywords. Optional capability selects one guide. Use the live tool catalog as the interface contract.', {'capability': TEXT}, [], True),
-            ('read_notification_channels', 'Read named notification outlets stored on this platform; not part of Loop packages.', {}, [], True),
+            ('read_cc_connect', 'Discover this machine cc-connect connection and configured Bots without sending or starting Agents. Bots have project, platform, selectable and optional ambiguity errors; configuration presence is not proof the daemon loaded it or a Bot joined a chat. Credentials are never returned. Use this before mapping an Agent or creating a cc-connect outlet; do not write wrapper scripts or inspect secrets.', {}, [], True),
+            ('configure_cc_connect', 'Save one machine-level cc-connect connection shared by local workspaces. First read_cc_connect for revision. connection={config_path:absolute actual running config, executable:optional local binary/PATH, data_dir:optional absolute override}; data_dir is read from that config when present, otherwise cc-connect owns its default. No guessed config directory. {} disconnects. Does not restart the bridge or send. Map agent.notification_bot={project,platform} from the discovered catalog; named outlets can use cc_connect={project,platform} plus destination instead of a command.', {'revision':{'type':'integer'},'connection':OBJ}, ['revision','connection'], False),
+            ('read_notification_channels', 'Read named notification outlets and this machine cc_connect Bot catalog. A cc-connect outlet uses cc_connect={project,platform}, destination and optional label; no per-Bot adapter command or directory. Not part of Loop packages.', {}, [], True),
             ('set_notification_channels', 'Replace local notification outlets using the current revision. Commands use the existing notification adapter stdin/receipt contract. Does not send messages.', {'revision':{'type':'integer'},'channels':OBJ}, ['revision','channels'], False),
             ('list_loops', 'List installed Loops and editable drafts. Does not start anything.', {}, [], True),
             ('smoke_runtime', 'Explicit runtime check of an installed Loop. Starts configured Agent commands (may call models), including fallback candidates, with a minimal startup prompt and bounded timeout. Simulates external lifecycle reports in a temporary Timeline; never calls business submit/observe commands. Optional node_id/implementation_id select candidates. cases supplies node, implementation, state, event and optional attempt/inputs/parameters/settings/detail/expected for conditional transitions. Does not start or change a business Run.', {'key': TEXT, 'node_id': TEXT, 'implementation_id': TEXT, 'timeout': {'type': 'number'}, 'cases': {'type': 'array', 'items': OBJ}}, ['key'], False),
@@ -347,10 +349,15 @@ class PlatformTools:
         if name == 'read_capabilities':
             from loop_anything.capabilities import discover
             return discover(a.get('capability'))
+        if name == 'read_cc_connect':
+            from loop_anything.runtime.cc_connect import read
+            return read()
+        if name == 'configure_cc_connect':
+            from loop_anything.runtime.cc_connect import configure
+            return configure(**a)
         if name == 'read_notification_channels':
-            import sys
-            from loop_anything.paths import platform_skill_directory
-            return dict(self.store.notification_channels(),cc_connect_command=[sys.executable,str(platform_skill_directory()/'scripts/notify_cc_connect.py')])
+            from loop_anything.runtime.cc_connect import read
+            return dict(self.store.notification_channels(),cc_connect=read())
         if name == 'set_notification_channels':return self.store.notification_channels(a['channels'],a['revision'])
         if name == 'list_loops':
             from loop_anything.interfaces.edit_access import policy

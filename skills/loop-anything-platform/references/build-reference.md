@@ -18,7 +18,7 @@
 - **Agent 命令**：用 `set_implementation` 设置 kind="agent" 和用户提供的 command，例如 `["codex", "exec", "-"]`；cwd/timeout 按实际需要明确设置；Agent 留空 timeout 时不限时，脚本命令默认 60 秒。平台向标准输入传入任务 prompt，原样执行命令；模型、工具和权限沿用用户配置。无需专用启动器或工具注册。
 - **检查与交付**：`validate_loop` 检查结构并单列缺失实现。修正错误后继续保存草稿；用户要求本机可用版本或启动该版本时，`publish_loop` 安装为一个版本，auto_version:true 自动管理版本并复用相同内容，返回最新 draft_id/revision；`export_loop` 导出包含附件的包，客户端 `--output 文件.loop.zip` 保存它。
 
-新建 Loop 默认提供无输入、无强制输出的 Agent 入口。用户与 Agent 讨论后，Agent 通过 start_run 接管入口，将目标、要求和约束写入完成报告的 settings，再按需安排任务并 finish。无需把对话复制到 request 表单，也不需要人为生成一条初始化结果；业务确需输入或共享初始结果时，用 put_node 明确添加端口。没有 command 的 Agent 候选由当前用户 Agent 操作；网页若需自动唤醒，仍需配置用户选择的 Agent 命令。
+新建 Loop 默认提供无输入、无强制输出的 Agent 入口。用户与 Agent 讨论后，Agent 通过 start_run 接管入口，将目标、要求和约束写入完成报告的 settings，再按需安排任务并 finish。无需把对话复制到 request 表单，也不需要人为生成一条初始化结果；业务确需输入或共享初始结果时，用 put_node 明确添加端口。没有 command 的 Agent 候选由当前用户 Agent 操作；自动唤醒仍需配置用户选择的 Agent 命令。
 
 每次编辑带上 `draft_id` 和刚返回的 `revision`。出现版本冲突，重新 `read_loop` 后再决定修改，不盲目覆盖。工具返回当前验证结果；未完整连接的草稿可保存，但必须修正结构错误才能发布。
 
@@ -34,7 +34,7 @@
 
 ## 事件触发任务
 
-作者先定义 plan，再用 `put_node` 的 `routes` 绑定源节点。省略 routes 保留原值，传数组整体替换，`[]` 清除。网页节点面板的“事件触发任务”提供对应字段。以下绑定将研究结果的两组参数展开为两项实验及一个汇总任务；research 节点必须声明 requests 数组输出。
+作者先定义 plan，再用 `put_node` 的 `routes` 绑定源节点。省略 routes 保留原值，传数组整体替换，`[]` 清除。以下绑定将研究结果的两组参数展开为两项实验及一个汇总任务；research 节点必须声明 requests 数组输出。
 
 ```json
 {
@@ -88,30 +88,30 @@
 
 条件在 `build_plan` 时判断一次，作用于整个步骤，在 `each` 展开之前判断；不读取运行时结果或单个 item，不是运行过程中重新判断的分支。缺字段、非法表达式、非布尔结果会报错，不能当作 false。显式 `steps.<步骤>.skip=true` 优先表示本次不安排。
 
-若下游仍引用被省略步骤的输出，构建会拒绝，必须显式复用已有输入或同时不安排该下游。仅有先后依赖的步骤沿用原省略语义，不为省略项占位。网页模板步骤中的“何时安排”可填写布尔字段或自定义表达式；安排预览和工具回执列出未安排原因。业务输出中名为 status 的字段不会改变平台 Task 状态。
+若下游仍引用被省略步骤的输出，构建会拒绝，必须显式复用已有输入或同时不安排该下游。仅有先后依赖的步骤沿用原省略语义，不为省略项占位。安排预览和工具回执列出未安排原因。业务输出中名为 status 的字段不会改变平台 Task 状态。
 
 ## 给运行时 Agent 提供简洁入口
 
 结果触发模板任务优先用 routes；只有业务入口适配或临时组合操作确有重复时，才封装为随包脚本。用已有 `put_asset` 添加脚本及其说明，通过节点 `skills[].path` 绑定说明入口；不需要注册新工具。Skill 内写清命令、参数、回执和出错后的处理，业务规则由作者负责。
 
-封装调用同一个平台 HTTP 接口或 Skill 中的 `scripts/call.py`。从本次唤醒上下文取得实际地址、Run、Task 和令牌，不写死本机路径或另存一份 Timeline。后台节点使用 `platform_url` 并传 run_id/token；网页 Agent 使用 `tool_url`，其接口已绑定身份，参数中不再传 run_id/token。Skill 的 `resolved_path` 可直接读取，其 references、scripts 路径相对该文件所在目录解析。
+封装调用同一个平台 HTTP 接口或 Skill 中的 `scripts/call.py`。从本次唤醒上下文取得实际地址、Run、Task 和令牌，不写死本机路径或另存一份 Timeline。后台节点使用 `platform_url` 并传 run_id/token；上下文提供 `tool_url` 时，按[限定工具入口](scoped-entry.md)调用，其接口已绑定身份，参数中不再传 run_id/token。Skill 的 `resolved_path` 可直接读取，其 references、scripts 路径相对该文件所在目录解析。
 
 封装负责重新读取所需版本、检查每步回执，并返回实际提交结果。成组任务编辑可复用 edit_tasks 的预览与原子提交。结果报告和任务编辑之间的多次调用不是一个事务：例如 complete_task 成功后 build_plan 失败，不能直接从头重跑已结束的完成步骤。为安排使用稳定 key，保留已完成操作的回执，恢复时读取当前任务和计划并跳过已提交步骤。少量已知的后续 Task 可随完成报告的 envelope.tasks 一起提交；批量模板后继可通过 routes 与报告原子提交；独立工具调用按其实际边界恢复。完成任务仍需提交必需输出，最后释放操作权。权限范围、版本冲突和输出校验由平台照常执行。
 
-Agent 候选支持 `prompt` 字符串，与 command 一起保存、分享；已有候选可用 `set_implementation` 单独修改 prompt，无需重填命令。网页在节点候选中可编辑、恢复默认和预览。例如：
+Agent 候选支持 `prompt` 字符串，与 command 一起保存、分享；已有候选可用 `set_implementation` 单独修改 prompt，无需重填命令。例如：
 
 ```text
 读取本次上下文中 skills 的作者说明，按说明使用随包脚本完成工作。
 {{context}}
 ```
 
-只有 `{{context}}` 会替换为 JSON；其他文本原样发送，没有隐藏追加指令。不填写 prompt 时使用平台默认；显式空字符串就是空提示词。默认内容引导使用作者入口，平台手册仅在直接操作通用工具时按需读取。后台上下文含 run_id、execution_id、task_id、token、scope_task、platform_url、platform_client、platform_guide、loop_key、handbook、node_id、instructions 和 skills。网页上下文使用 tool_url，并提供 preparation、run_id、scope_task、start_requested 和 messages；网页 prompt 与节点候选单独配置。
+只有 `{{context}}` 会替换为 JSON；其他文本原样发送，没有隐藏追加指令。不填写 prompt 时使用平台默认；显式空字符串就是空提示词。默认内容引导使用作者入口，平台手册仅在直接操作通用工具时按需读取。后台上下文含 run_id、execution_id、task_id、token、scope_task、platform_url、platform_client、platform_guide、loop_key、handbook、node_id、instructions 和 skills。限定入口的额外上下文见[限定工具入口](scoped-entry.md)。
 
 ## 结果的通用展示
 
-界面按结果结构展示文本、字段和表格。可在输入输出 schema 中提供 `title`、`description` 解释字段，平台不识别业务字段名称。轮次由运行时 `round` 明确提供，没有轮次的 Loop 无需填写。
+平台按结果结构提供文本、字段和表格展示，无需作者另建结果展示功能。可在输入输出 schema 中提供 `title`、`description` 解释字段，平台不识别业务字段名称。轮次由运行时 `round` 明确提供，没有轮次的 Loop 无需填写。
 
-文件输出使用 `schema: {"type":"string","format":"file"}`，结果值填写实际文件路径。相对路径以该次执行的工作目录为基准；没有工作目录时以安装的 Loop 包目录为基准。文件必须位于该目录内。图片可预览，其他文件通过浏览器查看或下载；文件不存在时会报错，不把普通字符串当文件，也不复制或保存外部文件历史。要保留旧产物，请每次执行使用不同文件名。
+文件输出使用 `schema: {"type":"string","format":"file"}`，结果值填写实际文件路径。相对路径以该次执行的工作目录为基准；没有工作目录时以安装的 Loop 包目录为基准。文件必须位于该目录内。平台提供图片预览及文件访问；文件不存在时会报错，不把普通字符串当文件，也不复制或保存外部文件历史。要保留旧产物，请每次执行使用不同文件名。
 
 ## 修改既有设计
 
@@ -140,7 +140,7 @@ Agent 候选支持 `prompt` 字符串，与 command 一起保存、分享；已�
 
 `set_implementation` 只修改传入字段。即使重复传 kind，也保留未传的 prompt、cwd、timeout、lifecycle 等字段；编辑既有候选不暗中改变默认选择，切换默认用 default:true。清除可选配置用 `clear:["timeout","prompt"]`，不能同时清除和设置同一个字段；空 prompt 表示发送空提示词，clear prompt 才表示恢复平台默认提示词。
 
-候选实现可声明可选的 `parameter_schema`（type 为 object），约束该实现接收的 Task parameters；节点的 parameter_schema 继续表达公共要求，同一份参数必须同时满足两者。read_loop 定向读取候选可查看契约，网页在候选的“此实现的任务参数”中编辑。set_implementation 未传则保留，clear:["parameter_schema"] 明确清除。只做校验，不在服务端补参数默认值。
+候选实现可声明可选的 `parameter_schema`（type 为 object），约束该实现接收的 Task parameters；节点的 parameter_schema 继续表达公共要求，同一份参数必须同时满足两者。read_loop 定向读取候选可查看契约。set_implementation 未传则保留，clear:["parameter_schema"] 明确清除。只做校验，不在服务端补参数默认值。
 
 新增、批量安排、修改与重试任务按有效实现校验参数，选择优先级仍是 Task 指定、Run 默认、Loop 默认。后续切换 Run 默认实现时，未执行且不满足新契约的任务会等待修正，不会带错参数启动；已派发执行保留原契约。没有选定实现时仍允许安排任务，选定后再检查。兜底候选由平台以空参数创建，因此不能要求必填的私有参数，应通过 Timeline 工具读取上下文。
 
@@ -150,11 +150,11 @@ Agent 候选支持 `prompt` 字符串，与 command 一起保存、分享；已�
 
 包文件用 read_loop 的 asset_path 读取，再用 put_asset 的 content 写回；未传 executable 会保留已有权限。删除用 `put_asset(..., path="包内路径", remove=true)`，不同时传 content 或 executable。删除不级联删除节点和 Skill，草稿可暂时存在缺失引用，修正后再发布；检查 references 及作者脚本中的实际使用位置。
 
-删除节点或输出时，保存草稿会清理本次失去最后一个输出引用的自动生成记录类型（节点ID.端口名）；共享类型保留，已发布版本和已有 Run 不变。validate_loop 的 unused_records 列出其他未引用类型；核对后可用 set_loop 的 remove_records 数组删除，工具拒绝删除仍被引用的类型。网页在模板下列出这些类型并提供清理按钮。
+删除节点或输出时，保存草稿会清理本次失去最后一个输出引用的自动生成记录类型（节点ID.端口名）；共享类型保留，已发布版本和已有 Run 不变。validate_loop 的 unused_records 列出其他未引用类型；核对后可用 set_loop 的 remove_records 数组删除，工具拒绝删除仍被引用的类型。
 
-模板输入未指定时保持缺失，不自动填空值。节点输入可查看每个模板步骤的实际来源；缺失或已删除的上游以提示色标出，点击输入或校验结果的“定位修正”直接编辑对应端口。校验只检查已声明的契约，业务是否还需要其他数据由作者判断。
+模板输入未指定时保持缺失，不自动填空值。通过 read_loop 查看各步骤的输入来源，根据校验回执中的位置修正缺失或已删除的上游引用。校验只检查已声明的契约，业务是否还需要其他数据由作者判断。
 
-`remove_step` 要求先处理消费者；删除模板最后一步前还须移除引用该模板的 routes，`remove_node` 要求先移除引用它的步骤。网页删除会列出引用，可定位修改或明确确认断开。网页编辑自动保留草稿，主按钮“保存”统一校验并更新本机可用版本，留在编辑页；相同内容重复保存复用版本。打包分享位于“更多 → 文件与打包”，日常保存无需导出。
+`remove_step` 要求先处理消费者；删除模板最后一步前还须移除引用该模板的 routes，`remove_node` 要求先移除引用它的步骤。工具会拒绝仍被引用的删除操作；先修改关联再删除。持续更新同一草稿，用 publish_loop 更新可用版本；分享时才调用 export_loop。
 
 循环自动生成通过节点 routes 声明；脚本主动安排范围通过 plan_nodes 声明，运行任务依赖仍不能成环。可缺实现地构建、分享、安装和创建 Run；实际执行时才检查实现选择。业务脚本和环境配置由作者提供，不自动修复路径或依赖。构建完成后按 [run.md](run.md) 操作 Run；编辑 Loop 定义与修改正在运行的 Timeline 是不同操作。
 
@@ -168,7 +168,7 @@ Agent 候选支持 `prompt` 字符串，与 command 一起保存、分享；已�
 
 ## 执行生命周期与附属监控
 
-同步/异步由候选实现决定，同一节点可切换实现。`set_implementation` 保存候选时会填入明确的 `lifecycle: {initial, transitions}` 初始模板；`read_loop` 可查看，网页候选中可查看图示、编辑转移矩阵。模板不是业务决策。没有 lifecycle 的旧包保留原文；查看时展示对应初始模板，派发时将实际规则保存到执行快照。
+同步/异步由候选实现决定，同一节点可切换实现。`set_implementation` 保存候选时会填入明确的 `lifecycle: {initial, transitions}` 初始模板；`read_loop` 可查看，通过 set_implementation 更新转移矩阵。模板不是业务决策。没有 lifecycle 的旧包保留原文；查看时展示对应初始模板，派发时将实际规则保存到执行快照。
 
 转移行是 `{from, event, to}`，同一状态/事件可以有多行，但每行必须声明不同的 `when` 条件，运行时必须恰好命中一行；不按行顺序选择。`when` 使用现有确定性表达式，读取 inputs、parameters、settings、detail、outputs、attempt（执行次数，从 1 开始）和 task_revision。状态和事件 ID 使用字母、数字、下划线或连字符。`initial` 指定执行开始时的阶段；completed、fault、retry、agent 是本次执行的出口，不能作为普通阶段继续向外转移。retry 会让同一 Task 开始下一次执行；agent 交给运行已配置的兜底 Agent，未配置时保留异常。进入 completed 只能报告 completed 并一次提交全部输出，通过节点的输出和 assertions 校验。生命周期状态表示这次执行的阶段；任务仍可能在执行之前等待输入、权限或暂停点。
 
@@ -230,11 +230,11 @@ python3 scripts/call.py validate_loop --arguments '{"draft_id":"实际草稿ID"}
 
 监控到达 completed、fault、retry 或 agent 后，本次监控停止。已经在途的报告可能收到 `stale: true, accepted: false`：平台只保留证据，不改变任务、结果或失败次数；不要为此安排新 Task 或重复提交外部工作。
 
-在界面的「Agent 兜底」启用开关并选择节点及候选实现。未配置命令的 Agent 只能等待外部接管，不能自动唤醒。运行前检查会列出实际工作目录、程序/脚本缺项及 Agent 信任/登录未验证项；作者应在该目录确认 Agent 可以非交互运行。平台不会自动切换 cwd 或修改信任设置。
+通过 `set_loop.fallback_node` 配置兜底节点，再用 set_implementation 配置该节点候选；Run 选用关系遵循现有绑定契约。未配置命令的 Agent 只能等待外部接管，不能自动唤醒。运行前检查会列出实际工作目录、程序/脚本缺项及 Agent 信任/登录未验证项；作者应在该目录确认 Agent 可以非交互运行。平台不会自动切换 cwd 或修改信任设置。
 
 ## 平台等待节点
 
-网页可直接添加「等时间」或「等事件 / 回复」。工具路径仍是 put_node + set_implementation，不需要守候脚本或常驻 Agent。
+通过 put_node + set_implementation 添加时间或事件等待，不需要守候脚本或常驻 Agent。
 
 - 时间等待：`kind="timer"`，wait 提供且只提供 seconds 或 until。seconds 是等待秒数，until 是带时区的 ISO 日期，例如 `2026-10-01T09:00:00+08:00`。相对时间从本次 Task 开始等待时计算，期限保存后重启不重算。一般没有业务输出；若节点声明输出，显式配置 wait.outputs。
 - 事件等待：`kind="event"`，event 为事件名称；wait.key 为关联标识，省略时沿用 Task parameters.event_key。可填 wait.timeout 作为最多等待秒数。收到匹配事件后，以 payload 作为节点全部输出，按原契约检查并提交。事件可先于等待到达；同一个事件只被一个等待执行消费。

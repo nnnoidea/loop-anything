@@ -188,6 +188,7 @@ def recover(comm,db):
     if comm.identity_conflict:return
     for record in db.execute('SELECT document FROM communication_deliveries').fetchall():
         row=json.loads(record[0])
+        if row.get('identity_read_only'):continue
         if row['status']=='sending':
             row.update(status='fault',error='Interrupted delivery: outcome unknown; verify before retry')
             save(db,row);reply(comm,db,row)
@@ -199,6 +200,7 @@ def deliver(comm):
     with comm.store.connection() as db:
         pending=[json.loads(r[0]) for r in db.execute("SELECT document FROM communication_deliveries WHERE json_extract(document,'$.status')='queued'")]
     for item in pending:
+        if item.get('identity_read_only'):continue
         with comm.transaction() as db:
             row=json.loads(db.execute('SELECT document FROM communication_deliveries WHERE id=?',(item.get('delivery_key',item['id']),)).fetchone()[0])
             if row['status']!='queued':continue

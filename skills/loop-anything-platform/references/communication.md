@@ -2,22 +2,38 @@
 
 本机具名外援和群组远端外援使用同一请求接口。独立协作由平台内置 Loop 承接，无需用户构建 Loop。先调用 `read_capabilities` 检查 `agent_communication`，再读取当前服务工具 schema；不要为业务 Loop 自建 NAS 队列、心跳、轮询或回报脚本。
 
+## 当前连接的是谁
+
+先确认服务支持 `machine_identity` 能力；旧服务只有 instance_id 时，它仍只是工作区寻址标识，需要升级才能提供独立机器身份，不要自行生成替代值。
+
+直接调用 `communication_status`，读取返回的 `self`；平台唤醒节点、具名外援或限定入口 Agent 时，上下文也提供同样的字段：
+
+```json
+{"self":{"machine_id":"machine-完整UUID","machine_name":"训练服务器","workspace_id":"工作区ID"}}
+```
+
+`self` 指当前连接的平台所在机器及工作区。连接远端平台时，它不一定是发出工具调用的电脑；远端外援的唤醒上下文标识实际执行端，不是任务来源。无需自己找 MAC、读数据库或从聊天记忆猜 ID。
+
+机器 UUID 缺失时按需生成并保存，复用同一平台用户环境的多个工作区共享 machine_id。每个工作区独立寻址；顶层 `instance_id` 是 `self.workspace_id` 的兼容别名，发请求继续使用成员返回的 instance_id 和 agent_id，不把 machine_id 填进 instance_id。旧工作区可能保留 machine- 前缀的历史 instance_id，前缀不改变它的工作区含义。
+
+`communication_config(operation=identity, name=...)` 修改显示名称，不改变 ID。重启、升级及正常移动数据库保留身份。发现副本或机器归属不符时，`identity_conflict` / `identity_error` 给出原因；明确为副本配置 `regenerate=true` 才建立新工作区身份。复制过来的 Run 和请求保留为只读历史，新工作应创建新 Run，不接管原执行。无机器身份的旧库首次升级如果原主机不同，需明确处理归属，不能猜测为改名。
+
 ## 首次组网：共享空间 → 群组 → 具名 Agent
 
-安装后打开“Agent 通信”，按四步配置；可信工作区可直接配置，无需Loop编辑口令；远端worker限定入口不能修改组网配置。
+安装后通过平台工具配置；可信工作区可直接配置，无需Loop编辑口令；远端worker限定入口不能修改组网配置。
 
 1. **配置共享空间**：先在每台机器挂载同一个 NAS 目录，再调用 `communication_config`，参数如 `{"operation":"space","path":"/本机挂载目录/协作空间","name":"研究协作"}`。目录必须已存在；平台保存空间 ID 和本机路径，做本机读写检查，不代替 NAS 挂载或真实双机验收。首台写入空间标识，其他机器读取同一 ID；本机路径不同也可加入。
 2. **发现或创建群组**：`communication_workspace({"discover":true})` 返回 `shared_spaces`，每个空间包含群组名称、用途、`id`、`relative_path`、是否已加入和读取错误。发现仅扫描该空间的 `groups/` 直接子目录，不自动加入，不扫描整台机器。创建调用 `communication_config({"operation":"group","space_id":"返回的空间ID","create":true,"name":"论文协作","description":"用途说明"})`；创建者同时加入。其他机器加入时传 `operation: group`、`space_id`、发现结果中的 `relative_path` 和 `group_id`，不用复制另一台机器的绝对路径。
 3. **选择开放的 Agent**：每个具名 Agent 映射执行机器本地的 `implementation.command`、`cwd`、`resume_command`；用 `operation: agent` 保存，再在 `agent.groups` 中明确选择群组。不选择即不对群组开放，加入群组本身不会公开任何 Agent。可以只调用别人而不提供服务；配置不会启动模型。
 4. **查看与使用**：`communication_status` 查看已开放成员及状态，随后给 Loop / Run 绑定群组，或设置普通对话默认群组。目录通过平台心跳更新，名称可重复，调用使用 `instance_id` 与 `agent_id` 消歧。
 
-“复制加入说明”或 `communication_workspace({"group_id":"群组ID"})` 返回可转交的纯文本，包含空间/群组 ID、相对目录和配置步骤，不含 CLI 命令、凭据或本机绝对路径。NAS 地址和访问权限需由空间提供者另行提供。群组 ID 用于核对身份，不是邀请凭据；当前没有管理员审批入群机制。
+`communication_workspace({"group_id":"群组ID"})` 返回可转交的纯文本，包含空间/群组 ID、相对目录和配置步骤，不含 CLI 命令、凭据或本机绝对路径。NAS 地址和访问权限需由空间提供者另行提供。群组 ID 用于核对身份，不是邀请凭据；当前没有管理员审批入群机制。
 
-同一空间更换本机挂载路径时，再保存新目录即可按空间 ID 更新路径；由该空间发现并加入的群组会校验身份后更新本机路径，保留开放范围和历史。目录缺失、空间身份变化或某个群组损坏会显示错误，不自动在缺失挂载位置创建新空间。此前直接配置的独立群组目录继续使用“直接加入已有群组目录”，不自动迁移。
+同一空间更换本机挂载路径时，再保存新目录即可按空间 ID 更新路径；由该空间发现并加入的群组会校验身份后更新本机路径，保留开放范围和历史。目录缺失、空间身份变化或某个群组损坏会显示错误，不自动在缺失挂载位置创建新空间。此前直接配置的独立群组目录仍可用 operation=group、path 加入，不自动迁移。
 
 ## 配置（平台所有者）
 
-在“Agent 通信”页面配置本机具名 Agent 的名称、能力、CLI argv、cwd、接单上限及开放范围。`communication_config` 提供相同操作：
+用 `communication_config` 配置本机具名 Agent 的名称、能力、CLI argv、cwd、接单上限及开放范围：
 
 - **开放群组前先询问用户主要任务**，将用户回答整理成简短 description（适合什么任务、需要什么输入、返回什么结果），并确认开放群组。只有用户已明确确认该说明和开放范围，才能传顶层 `task_confirmed: true`；不要根据模型/CLI 或 Agent 自拟文字代替用户回答。说明修改或新增开放群组须重新确认。旧配置缺确认记录会显示待确认并停止接收新群组任务，已承接工作保留。
 - `operation: agent`：`agent_id` 可省略生成；`agent` 包含 name、description、capabilities（字符串数组）、local、enabled、groups、capacity、implementation。implementation 使用现有 `kind: agent` 命令契约。
@@ -103,7 +119,7 @@ Run 暂停或 Task 取消时不自动续跑，Run 终止后保留迟到结果但
 {"request_id":"请求ID","include_logs":true,"max_chars":4000}
 ```
 
-每页日志默认最多 4000 字符，可设置 1–16000。返回 `logs`、`log_cursor`、`log_offset` 和 `log_more`。需要继续时用 `after=log_cursor`、`offset=log_offset`；单个日志块也可以跨页，不会因截断丢字。不要每次从零重读，定位问题后停止获取多余日志。浏览器日志区使用同一分页方式。
+每页日志默认最多 4000 字符，可设置 1–16000。返回 `logs`、`log_cursor`、`log_offset` 和 `log_more`。需要继续时用 `after=log_cursor`、`offset=log_offset`；单个日志块也可以跨页，不会因截断丢字。不要每次从零重读，定位问题后停止获取多余日志。
 
 需要原始业务上下文、完整通知与历史时使用 `include_details:true`；它不自动打开日志，仍需 `include_logs:true`。详细诊断可能较大，仅在当前问题确实需要时读取。结构化业务结果保持完整，不做自动语义裁剪；大业务产物仍应通过文件或共享引用交付。
 
@@ -174,8 +190,10 @@ python3 /实际客户端路径/communication.py --context 请求上下文.json c
 
 可信工作区的配置、请求、状态读取和取消/追问无需编辑口令或 request_token。读取结果默认只返回精简状态；日志和完整上下文按需读取。旧 request_token 参数保留兼容，不承担工作区登录作用。
 
-- Loop 编辑口令/浏览器 cookie：只保护对应 Loop 的定义、实现、手册和随包资源，不能用来选择任务执行者。
+- Loop 编辑口令：只保护对应 Loop 的定义、实现、手册和随包资源，不能用来选择任务执行者。
 - Run/Task token：平台为实际执行 Agent 提供的操作范围标识，退出或恢复时沿用既有生命周期。普通用户操作可省略，平台自动处理临时范围；显式错误 token 仍拒绝。
 - worker token：承接者写回本次外援的进度和结果，不能操作其他请求；限定 worker 入口只能查看其相关请求。
 
 原生 CLI session ID 只用于恢复上下文。任务认领依赖具名 Agent、实例与群组匹配，session 不决定认领；过期执行写回仍校验。平台托管节点须沿用唤醒入口和身份，不能借公开工作区入口扩大范围。
+
+cc-connect 接入用 `read_cc_connect` / `configure_cc_connect`；具名 Agent 直接绑定 Bot，固定接收位置才建立 `cc_connect={project,platform}` 通知出口。见[本机接入与 Bot 发现](cc-connect.md#本机接入与-bot-发现)。

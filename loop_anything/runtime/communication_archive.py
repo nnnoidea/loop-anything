@@ -61,8 +61,11 @@ def drain(comm, root, group_id):
     """Archive from durable content first, then remove the hot copy, then the journal."""
     from loop_anything.runtime.communication import identifier, read_message
     with comm.store.connection() as db:
+        instance = comm.settings(db)['instance_id']
         messages = [json.loads(r[0]) for r in db.execute(
-            "SELECT document FROM communication_archive_queue WHERE json_extract(document,'$.group_id')=?", (group_id,))]
+            """SELECT document FROM communication_archive_queue WHERE json_extract(document,'$.group_id')=?
+            AND ((json_extract(document,'$.kind')='ack' AND json_extract(document,'$.target')=?)
+              OR (json_extract(document,'$.kind')!='ack' AND json_extract(document,'$.sender')=?))""", (group_id, instance, instance))]
     for message in messages:
         try:
             if message['kind'] == 'ack':

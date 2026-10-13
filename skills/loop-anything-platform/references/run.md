@@ -2,15 +2,17 @@
 
 本页是直接使用通用工具的参考，不是运行时必读流程。作者已提供封装时，按其节点 Skill 操作；封装内部仍调用这些工具。业务要求见 Loop 作者说明；处理节点任务时通过 `read_task` 读取该节点绑定的作者 Skill。已被唤醒的 Agent 使用现有 Run 和令牌。
 
+上下文提供 `tool_url` 时，先读[限定工具入口](scoped-entry.md)；本页普通入口示例的 run_id/token 参数不能直接套用。
+
 ## 查看任务推进还是执行阶段
 
 read_timeline/next_tasks 用于查看任务是否已安排、为何等待和哪些问题需处理；read_task 的 execution_state 与 last_transition 用于查看当前执行的阶段、报告和实际转移。任务的 status 与执行的 lifecycle_state 属于这两个层次，不能相互替代。
 
-网页任务关系图展示当前 Task 及依赖；选中 Task 后查看关系与等待原因，再从执行记录选择某次尝试，查看该次参数、实现、生命周期和转移历史。重试保留原 Task，新一轮安排产生新 Task。完成报告提交结果后，平台重新检查已有下游任务；finish 只释放 Agent 操作权。
+通过 `read_task` 读取任务依赖、等待原因和当前执行，通过 `read_run` 按执行 ID 查历次参数、实现、生命周期及转移历史。重试保留原 Task，新一轮安排产生新 Task。完成报告提交结果后，平台重新检查已有下游任务；finish 只释放 Agent 操作权。
 
 ## 从任意入口继续已有 Run
 
-终端、网页、微信、飞书里的 Agent 连接同一个平台实例，读取同一条 Timeline。Run 不属于聊天会话；换入口不新建 Run，也不要求读取之前的聊天历史。
+不同入口的 Agent 连接同一个平台实例，读取同一条 Timeline。Run 不属于聊天会话；换入口不新建 Run，也不要求读取之前的聊天历史。
 
 1. 已知 Run ID 就直接读取；否则用 `list_runs`，可传 query 按名称、Run ID、Loop 名称或目标筛选，或传 status 按运行状态筛选。返回列表按创建时间从新到旧；多个候选无法区分时请用户选择，不猜测“最近一个”就是目标。
 2. 无需 token，调用 `read_timeline` 查看最新目标、要求、指导、授权、记录索引、任务和异常。需要时用 `next_tasks`、`read_task`、`read_record`、`read_plans` 读取详情；完整事实和变更历史由 `read_run` 读取。查看状态不取得操作权，其他 Agent 可以继续工作。
@@ -26,16 +28,6 @@ python3 scripts/call.py read_timeline --arguments '{"run_id":"RUN_ID"}'
 `read_timeline` 返回 `read_only: true` 时只是查看，不授予写入权；此时 scope_task 的 null 不能理解为有全局权限。带有效 token 读取时，`read_only: false`，scope_task 才表示本次操作范围；写入仍受 Run 终态及已派发任务的保护。显式传入过期或错误令牌会报错，不会默默切成只读。
 
 把影响后续工作的已确认目标、约束和决定写入现有 settings、任务安排或任务结果，分别使用 change_settings、change_task/build_plan/add_task、report_task；不要只在聊天里说“记住了”。无需另外维护一份跨入口摘要或复制全部聊天记录。通知接收位置独立于操作入口；换聊天不会自动更改它。
-
-## 在网页对话中操作
-
-网页 prompt 提供 `tool_url` 时，所有调用都用这个地址覆盖 `--url`，先 `list` 查看本次可用工具。这个入口已绑定所选准备页或 Run，并代管本次 token；参数中不传 run_id 或 token；`acquire_run` 也不传 task_id，操作范围由网页选择。`read_task` 等任务工具仍需具体 task_id。下文普通终端示例中的 run_id/token 应省略，不能换回默认平台地址绕过范围限制。
-
-- 启动前：`read_loop` 读取作者说明，`read_preparation` 读取页面选项与 revision。讨论确定的输入和候选用 `change_preparation`（revision、change）保存，用户会看到更新；不会因此执行业务工作。
-- 用户明确要求启动时：`start_prepared_run`（revision）创建并取得同一个 Run 的操作权，返回 run_id、entry_task_id。再次 `list` 获取运行工具，然后按入口契约初始化并安排工作，最后 `finish`。脚本入口交给 Engine 执行。普通讨论不调用启动工具；启动后不重新创建 Run。
-- 运行中：只读工具直接读取最新 Timeline。需要写入才 `acquire_run`，范围由用户在网页中选择；取得后重新读取版本再改动，完成后 `finish`。冲突时告知用户，不能抢占其他 Agent。
-
-最终标准输出作为网页回复；业务结果仍必须由工具提交。网页对话记录保存在本机，其他入口仍通过 Timeline 获取已确认的业务事实。网页 Agent 的命令、目录、超时和唤醒提示词单独保存在本机，修改它不改变节点的候选实现。每条消息重新调用一次命令；当前回复在命令退出后整体显示。
 
 ## 被平台命令唤醒时
 
@@ -82,7 +74,7 @@ python3 scripts/call.py finish --arguments '{"run_id":"RUN_ID","token":"TOKEN"}'
 1. 通过 `list_loops` 找到用户选择的 Loop，取得实际 key，显式传给 `read_loop`，了解所选 Loop 的作者说明、入口要求和节点实现，与用户讨论并确认目标和授权。
 2. 调用 `start_run`，提供 `key`、`title`、已讨论的 `inputs` 和自然语言 `authorization`。返回 `run_id`、`token`、`entry_task_id`。当前 Agent 已取得操作权，Engine 不会抢先重复初始化。
 3. 调用 `read_task`，带 run_id/token/task_id=entry_task_id，读取初始化要求和 `task_version`。
-4. 入口选择 Agent 实现时，用 `report_task`（event=completed） 提交完整 `envelope.outputs` 和讨论确定的 `envelope.settings`。遵循 read_task 返回的契约，不能凭空添加字段。入口结果在界面保留。若入口选择脚本实现，则由 Engine 执行，读取其结果，不代写脚本输出。
+4. 入口选择 Agent 实现时，用 `report_task`（event=completed） 提交完整 `envelope.outputs` 和讨论确定的 `envelope.settings`。遵循 read_task 返回的契约，不能凭空添加字段。入口结果持久保存。若入口选择脚本实现，则由 Engine 执行，读取其结果，不代写脚本输出。
 5. 使用后面的当前任务与问题/构建工具继续处理，最后 `finish`。
 
 已被 Engine 唤醒的 Agent 已有 Run 和令牌，跳过创建步骤；操作范围由 prompt 和 read_timeline 的 scope_task 确定。
@@ -158,11 +150,11 @@ python3 scripts/call.py finish --arguments '{"run_id":"RUN_ID","token":"TOKEN"}'
 
 ## 配置通知出口
 
-使用 read_notification_channels 查看平台已配置出口，在 start_run.notification_route 或 change_settings.change.notification_route 中选择本 Run 的默认出口。workspace 表示平台通知区。终端、网页和聊天入口共用该设置，切换聊天不会自动更换接收位置。个人发送配置只保存在平台与 Run，不放在 Loop 定义中。
+使用 read_notification_channels 查看平台已配置出口，在 start_run.notification_route 或 change_settings.change.notification_route 中选择本 Run 的默认出口。workspace 表示平台通知区。所有入口共用该设置，切换聊天不会自动更换接收位置。个人发送配置只保存在平台与 Run，不放在 Loop 定义中。
 
 通知、询问、回复和适配器参数见 [notifications.md](notifications.md)。Agent 调用 notify 时沿用当前操作权，支线关联自己的 task_id；不要为了发消息再安排一个业务 Task。重复请求保持 key 和内容一致。询问不会暂停其他工作，需要答案时安排等待节点，完成当前工作后 finish 释放 Agent，不持权守候。
 
-read_task.execution_state.wait 显示实际等待时刻、事件关联和截止时间。网页能回复询问，也能在等待详情提交事件；其他入口通过 send_event 提交。使用稳定 event_id，回复的 payload 必须符合等待节点输出契约；重复事件不重复推进。时间和事件等待可通过现有 change_task cancel 取消，已完成输出不会被撤回。
+read_task.execution_state.wait 显示实际等待时刻、事件关联和截止时间。通过 `send_event` 提交回复或事件。使用稳定 event_id，回复的 payload 必须符合等待节点输出契约；重复事件不重复推进。时间和事件等待可通过现有 change_task cancel 取消，已完成输出不会被撤回。
 
 ## Agent 异常退出与通知
 
@@ -177,7 +169,7 @@ read_task.execution_state.wait 显示实际等待时刻、事件关联和截止�
 
 ## 统一报告事件与结果
 
-`report_task` 参数包含 task_id、event、稳定 report_id。Agent 先 read_task，读取实际生命周期、当前执行阶段及 last_transition，附带最新 task_version；脚本/监控使用本次上下文的 execution_id。普通工作区入口传 run_id，token 可省略；平台唤醒的节点必须带 prompt 中的 token，网页 scoped 入口自动提供身份。completed 报告的 envelope 包含全部 outputs，初始化时还包含 settings；progress 等报告只带 detail，不提前发布结果或安排任务。
+`report_task` 参数包含 task_id、event、稳定 report_id。Agent 先 read_task，读取实际生命周期、当前执行阶段及 last_transition，附带最新 task_version；脚本/监控使用本次上下文的 execution_id。普通工作区入口传 run_id，token 可省略；平台唤醒的节点必须带 prompt 中的 token，限定的 tool_url 入口自动提供身份。completed 报告的 envelope 包含全部 outputs，初始化时还包含 settings；progress 等报告只带 detail，不提前发布结果或安排任务。
 
 ```json
 {"task_id":"任务ID","task_version":"read_task返回的版本","report_id":"这次交付的稳定ID","event":"completed","envelope":{"outputs":{"result":"实际结果"}}}
@@ -232,7 +224,7 @@ Run 默认实现或输入记录的变化不直接改写 Task 声明，因此不�
 
 ## 发现已有能力与任务引用
 
-`read_capabilities` 返回当前服务能力及对应工具/文档，不需要取得操作权。实际可调用工具以当前入口的 list 为准；网页运行 Agent 的入口以运行操作为主，构建工具从平台作者入口调用。后台唤醒上下文的 platform 字段提供版本和能力标识。
+`read_capabilities` 返回当前服务能力及对应工具/文档，不需要取得操作权。实际可调用工具以当前入口的 list 为准；限定入口只允许其工具目录提供的操作，不换地址绕过范围限制。后台唤醒上下文的 platform 字段提供版本和能力标识。
 
 有稳定 ref 的 Task 可用 `resolve_refs` 查找 Task ID 和输出 record 引用。add_task 的 ref/after_refs 和 task_ref/task_refs 输入来源在写入时解析为真实依赖；build_plan/route 回执也返回 references。详细语义见 [contracts.md](contracts.md)。
 

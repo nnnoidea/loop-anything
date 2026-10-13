@@ -22,7 +22,7 @@ metadata:
 
 ## 连接并发现
 
-在本 Skill 目录执行，其他目录使用脚本绝对路径：
+通过工具调用和结构化回执操作平台。若唤醒上下文提供 `tool_url`，先按[限定工具入口](references/scoped-entry.md)调用；否则在本 Skill 目录执行，其他目录使用脚本绝对路径：
 
 ```sh
 python3 scripts/call.py check
@@ -35,6 +35,8 @@ python3 scripts/call.py read_capabilities --arguments '{"capability":"authoring"
 
 - 向群组开放 Agent 前，由用户确认主要任务和开放范围，再设置 `task_confirmed=true`；已有明确回答可复用，Agent 自拟说明不等于用户确认。字段见[通信配置](references/communication.md#配置平台所有者)。
 - 先查平台已有能力，再决定业务脚本需要做什么；平台已提供调度、持久化、通信、等待恢复和结果查看。
+- 当前身份直接读取唤醒上下文或 `communication_status` 的 `self`，包含 machine_id、machine_name、workspace_id；它标识所连接的平台，寻址规则见[当前身份](references/communication.md#当前连接的是谁)。
+- 通知接入先 `read_cc_connect` 发现本机 Bots，缺配置用 `configure_cc_connect`；具名 Agent 直接绑定 `notification_bot`，固定目的地再配置命名出口，无需自建发送脚本。
 - cc-connect 飞书入口用 `call.py` 自动携带通知来源，Agent 无需自行查询消息或拼接发送命令；Bot 映射、根消息与显式出口规则见[原聊天通知](references/cc-connect.md#自动跟随原聊天)。
 - 外援 pending/offered 是等待接单，不是无人可用；不得因几秒未回应就取消、重建或缩短接单期限。使用平台挂起或保留请求等通知；用户明确撤回仍可取消。
 - 查询外援默认只读状态与结果。只有排错才请求日志，并沿返回游标按需读取；不反复携带完整日志、通知历史或旧请求。

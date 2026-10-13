@@ -278,6 +278,7 @@ class Store:
             result = []
             for row in db.execute('SELECT document FROM runs'):
                 run = json.loads(row[0])
+                if run.get('identity_read_only'):continue
                 pending = any(n['status'] == 'pending' for n in run.get('notifications', []))
                 if run.get('_storage') == 2:
                     pending = any(json.loads(r[0])['status'] == 'pending' for r in db.execute(
@@ -292,6 +293,8 @@ class Store:
             if _db is None:
                 db.execute('BEGIN IMMEDIATE')
             run = self._load(db, run_id)
+            if run.get('identity_read_only'):
+                raise Conflict('Copied Run is inspect-only; start a new Run in this workspace instead of taking over the original execution')
             before = copy.deepcopy(run)
             yield run
             if run == before:

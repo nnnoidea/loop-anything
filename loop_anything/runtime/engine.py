@@ -38,8 +38,9 @@ class Engine:
         return run
 
     def tick(self, run_id):
+        if self.store.get(run_id).get('identity_read_only'):return
         if self.communication.identity_conflict:
-            raise Invalid('Copied/moved platform identity; configure a new instance before running copied work')
+            raise Invalid('Copied workspace or mismatched machine identity; configure a new workspace identity before starting new work')
         self.current(run_id)
         return self.timeline_runtime.tick(run_id)
 
@@ -63,10 +64,11 @@ class Engine:
             receive_event(run, event_id, name, payload, key)
 
     def recover(self):
+        if self.communication.identity_conflict:return
         self.terminals.recover()
         self.communication.recover()
         for summary in self.store.list():
-            if summary.get('schema_version') != 2:
+            if summary.get('schema_version') != 2 or summary.get('identity_read_only'):
                 continue
             with self.store.edit(summary['id']) as run:
                 self.timeline_runtime.recover(run)

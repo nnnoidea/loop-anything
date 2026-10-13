@@ -56,6 +56,7 @@ class ConversationTests(unittest.TestCase):
             group=self.completed(self.entry(),gid)
             self.cycle(lambda:self.a.get(group).get('notifications',[{}])[-1].get('status')=='delivered')
             self.assertEqual(self.sent[-1]['outlet']['identity'],'papers-bot')
+            self.assertTrue(self.sent[-1]['alternate_bot'])
             self.assertEqual(self.sent[-1]['conversation']['session_key'],'feishu:oc_chat:root:om_topic')
             self.assertEqual(self.sent[-1]['outlet']['destination'],'feishu:oc_chat:root:om_topic')
         shared=''.join(p.read_text() for p in (self.root/'nas').rglob('*.json'))
@@ -186,9 +187,9 @@ class ConversationTests(unittest.TestCase):
             row=self.a.get(created['id'],db);row.update(state='completed',result={'answer':42});self.a.save(db,row)
         def unavailable(command,text,*args):return subprocess.CompletedProcess(command,2,json.dumps({'delivered':False,'not_sent':True,'error':'cc-connect unavailable'}),'')
         with patch('loop_anything.runtime.host_runtime.run_command',side_effect=unavailable):
-            self.cycle(lambda:self.a.get(created['id']).get('notifications',[{}])[-1].get('status')=='fault')
+            self.cycle(lambda:self.a.get(created['id']).get('notifications',[{}])[-1].get('status')=='waiting_configuration')
         current=self.a.get(created['id']);self.assertEqual(current['state'],'completed');self.assertEqual(current['result'],{'answer':42})
-        self.assertIn('cc-connect unavailable',current['notifications'][-1]['error'])
+        self.assertIn('configure_cc_connect',current['notifications'][-1]['error'])
         self.assertEqual(current['notification_conversation']['conversation']['thread_root'],'om_topic')
 
     def test_untyped_private_context_learned_from_receipt_then_uses_entry_bot(self):
@@ -270,7 +271,8 @@ class ConversationTests(unittest.TestCase):
             run=self.a.store.get(started['run_id']);self.assertIn('notification_conversation_id',run)
             notice=enqueue(self.a.store,run,'test-notice',{'message':'result'})
             self.assertEqual(notice['conversation']['session_key'],context['session_key'])
-            self.assertEqual(notice['sender']['identity'],'entrance')
+            self.assertEqual(notice['status'],'waiting_configuration')
+            self.assertIn('configure_cc_connect',notice['error'])
             explicit=tools.call('start_run',dict(key=key,title='explicit',authorization='test',chat_context=context,notification_route='workspace'))
             self.assertNotIn('notification_conversation_id',self.a.store.get(explicit['run_id']))
         finally:case.tearDown()
@@ -317,6 +319,7 @@ class ConversationTests(unittest.TestCase):
         import test_timeline_runtime as runtime
         from loop_anything.interfaces.platform_tools import PlatformTools
         from loop_anything.runtime.notifications import enqueue
+        self.a.store.notification_channels({'entry':{'channel':'cc-connect','identity':'entrance','command':[sys.executable,'fake-sender']}},revision=0)
         case=runtime.RuntimeTests();case.setUp()
         try:
             key=self.a.store.publish(case.bp,case.implementations)['key']
@@ -354,6 +357,29 @@ class BridgePreflightTests(unittest.TestCase):
         patcher=patch.object(bridge,'prepare_compatible',side_effect=bridge.prepare_delivery)
         patcher.start();self.addCleanup(patcher.stop)
 
+    def test_same_project_name_on_another_machine_is_still_an_alternate_bot(self):
+        context={'platform':'feishu','chat_id':'chat','chat_type':'group',
+                 'session_key':'feishu:chat:root:message','entry_project':'shared-name'}
+        def api(base,path,*args,**kwargs):
+            if 'tenant_access_token' in path:return {'tenant_access_token':'test'}
+            if 'is_in_chat' in path:return {'data':{'is_in_chat':False}}
+            return {'data':{'chat_mode':'group','moderation_permission':'all_members'}}
+        with patch.object(bridge,'config_options',return_value={'app_id':'test','app_secret':'test'}),patch.object(bridge,'api',side_effect=api):
+            with self.assertRaisesRegex(ValueError,'may post'):
+                bridge.inspect('shared-name',context['session_key'],None,'unused',context,alternate=True)
+        # The normal entry still bypasses candidate-only checks.
+        with patch.object(bridge,'config_options',side_effect=AssertionError('No candidate check')):
+            self.assertEqual(bridge.inspect('shared-name',context['session_key'],None,'unused',context),context)
+
+    def test_python310_alternate_helper_accepts_unspecified_data_directory(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            config=Path(folder)/'config.toml'
+            config.write_text('[[projects]]\nname="same"\n[[projects.platforms]]\ntype="feishu"\n')
+            context={'platform':'feishu','chat_id':'chat','chat_type':'group','session_key':'feishu:chat:user','entry_project':'same'}
+            with patch.dict(sys.modules,{'tomllib':None,'tomli':None}),self.assertRaisesRegex(ValueError,'credentials are unavailable'):
+                bridge.inspect_compatible('same',context['session_key'],None,str(config),context,alternate=True)
+
     def test_http_permission_error_preserves_code_and_required_scope_without_credentials(self):
         from urllib.error import HTTPError
         from io import BytesIO
@@ -386,10 +412,10 @@ class BridgePreflightTests(unittest.TestCase):
     def test_original_entry_bypasses_all_channel_and_format_probes(self):
         import notify_cc_connect as adapter
         from io import StringIO
-        for session in ('feishu:oc_chat:ou_user','feishu:oc_chat:root:om_root','opaque-future-key/with/different:syntax'):
+        for session in ('feishu:oc_chat:ou_user','opaque-future-key/with/different:syntax'):
             origin={'platform':'feishu','chat_id':'','chat_type':'unknown','session_key':session,'entry_project':'entry'}
             payload={'id':'n','message':'result','conversation':origin}
-            with patch.object(sys,'argv',['adapter','--project','entry','--config','/missing/config']),patch.object(sys,'stdin',StringIO(json.dumps(payload))),patch.object(sys,'stdout',new_callable=StringIO) as out,patch.object(bridge,'config_options',side_effect=AssertionError('No config read')),patch.object(bridge,'api',side_effect=AssertionError('No API')),patch.object(bridge,'helper',side_effect=AssertionError('No interpreter probe')),patch.object(adapter.shutil,'which',return_value='/fake/cc-connect'),patch.object(adapter.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'','')) as send:
+            with patch.object(sys,'argv',['adapter','--project','entry','--config','/missing/config','--data-dir','/explicit/data']),patch.object(sys,'stdin',StringIO(json.dumps(payload))),patch.object(sys,'stdout',new_callable=StringIO) as out,patch.object(bridge,'config_options',side_effect=AssertionError('No config read')),patch.object(bridge,'api',side_effect=AssertionError('No API')),patch.object(bridge,'helper',side_effect=AssertionError('No interpreter probe')),patch.object(adapter.shutil,'which',return_value='/fake/cc-connect'),patch.object(adapter.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'','')) as send:
                 adapter.main()
             self.assertEqual(send.call_args.args[0][5],session)
             self.assertTrue(json.loads(out.getvalue())['delivered'])
@@ -442,7 +468,7 @@ class BridgePreflightTests(unittest.TestCase):
         import notify_cc_connect as adapter
         from io import StringIO
         payload={'id':'n','message':'result','outlet':{'identity':'bot','destination':''},'conversation':{'session_key':'feishu:oc_chat:root:om_root','entry_project':'bot'}}
-        with patch.object(sys,'argv',['adapter']),patch.object(sys,'stdin',StringIO(json.dumps(payload))),patch.object(sys,'stdout',new_callable=StringIO) as out,patch.object(bridge,'inspect_compatible',return_value=payload['conversation'].copy()),patch.object(adapter.shutil,'which',return_value='/fake/cc-connect'),patch.object(adapter.subprocess,'run',side_effect=subprocess.TimeoutExpired('send',25)):
+        with patch.object(bridge,'config_options',return_value={'thread_isolation':True}),patch.object(sys,'argv',['adapter']),patch.object(sys,'stdin',StringIO(json.dumps(payload))),patch.object(sys,'stdout',new_callable=StringIO) as out,patch.object(bridge,'inspect_compatible',return_value=payload['conversation'].copy()),patch.object(adapter.shutil,'which',return_value='/fake/cc-connect'),patch.object(adapter.subprocess,'run',side_effect=subprocess.TimeoutExpired('send',25)):
             with self.assertRaises(SystemExit):adapter.main()
             self.assertFalse(json.loads(out.getvalue())['not_sent'])
 
@@ -475,7 +501,7 @@ class BridgePreflightTests(unittest.TestCase):
         origin={'platform':'feishu','chat_id':'oc_chat','chat_type':'group','session_key':'feishu:oc_chat:root:om_root','thread_root':'om_root','entry_project':'entrance'}
         payload={'id':'n','message':'result','outlet':{'identity':'papers-bot','destination':'wrong old destination'},'conversation':origin}
         checked=dict(origin,entry_project='papers-bot')
-        with patch.object(sys,'argv',['adapter']),patch.object(sys,'stdin',StringIO(json.dumps(payload))),patch.object(sys,'stdout',new_callable=StringIO) as out,patch.object(bridge,'inspect_compatible',return_value=checked) as inspect,patch.object(adapter.shutil,'which',return_value='/fake/cc-connect'),patch.object(adapter.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'','')) as send:
+        with patch.object(bridge,'config_options',return_value={'thread_isolation':True}),patch.object(sys,'argv',['adapter']),patch.object(sys,'stdin',StringIO(json.dumps(payload))),patch.object(sys,'stdout',new_callable=StringIO) as out,patch.object(bridge,'inspect_compatible',return_value=checked) as inspect,patch.object(adapter.shutil,'which',return_value='/fake/cc-connect'),patch.object(adapter.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'','')) as send:
             adapter.main()
         self.assertEqual(inspect.call_args.args[:2],('papers-bot',origin['session_key']))
         self.assertEqual(send.call_args.args[0][:5],['/fake/cc-connect','send','--project','papers-bot','--session'])
@@ -522,7 +548,7 @@ class BridgePreflightTests(unittest.TestCase):
                 self.assertNotIn('/messages/omt_',path)
                 return {'data':{'items':[{'chat_id':'oc_chat','thread_id':'omt_topic','message_id':'om_reply','root_id':'om_real'}]}}
             payload={'id':'n','message':'result','conversation':origin}
-            with patch.object(sys,'argv',['adapter','--project','entry','--executable','/custom/cc-connect','--config','/custom/config.toml']),patch.object(sys,'stdin',StringIO(json.dumps(payload))),patch.object(sys,'stdout',new_callable=StringIO) as out,patch.object(bridge,'config_options',return_value={'thread_isolation':True,'app_id':'id','app_secret':'secret'}) as config,patch.object(bridge,'api',side_effect=api),patch.object(adapter.shutil,'which',side_effect=lambda p:p),patch.object(adapter.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'','')) as send:
+            with patch.object(sys,'argv',['adapter','--project','entry','--executable','/custom/cc-connect','--config','/custom/config.toml','--data-dir','/custom/data']),patch.object(sys,'stdin',StringIO(json.dumps(payload))),patch.object(sys,'stdout',new_callable=StringIO) as out,patch.object(bridge,'config_options',return_value={'thread_isolation':True,'app_id':'id','app_secret':'secret'}) as config,patch.object(bridge,'api',side_effect=api),patch.object(adapter.shutil,'which',side_effect=lambda p:p),patch.object(adapter.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'','')) as send:
                 adapter.main()
             argv=send.call_args.args[0]
             self.assertEqual(argv[0],'/custom/cc-connect');self.assertEqual(argv[5],f'{platform}:oc_chat:root:om_real')

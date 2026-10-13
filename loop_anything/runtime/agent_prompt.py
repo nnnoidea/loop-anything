@@ -11,6 +11,7 @@ When using platform tools directly, read the wake-up task with read_task. Read l
 Declared node routes expand plans automatically from accepted events and mapped output parameters. Read routes with read_task, provide their required outputs, and inspect report receipt.routes; do not separately arrange the same work.
 If this CLI exposes its native conversation ID, record it early with register_agent_session for execution_id (Codex tools can read CODEX_THREAD_ID from their environment). Use only the actual current CLI ID; do not guess or search unrelated sessions.
 Communication: read each member description (user-confirmed main task) before selecting help. For standalone work, start_collaboration provides a built-in Loop and supports adopting a real local caller session/PID; ordinary standalone request_assistance automatically tracks results in a built-in Run. Inside this Run keep using source={run_id,task_id}; do not start another collaboration. communication_status discovers explicitly exposed local named Agents and the Run group. request_assistance creates optional help with source={run_id,task_id} and token; read_assistance reads its request_id; scoped workers retain their execution credentials. Reads default to compact status/results; use include_logs only for diagnosis and advance after/offset from log_cursor/log_offset. Local help needs no group. pending/offered is not unavailable: the origin enforces the acceptance deadline (default 300 seconds). Do not cancel or recreate requests solely because a few seconds or reads show no grant; defer with wait_assistance or keep the request active. wait_assistance can defer this task until replies arrive. First register the actual native session and configure an exact resume command; after acceptance call finish. The platform resumes that SAME CLI session and Task with assistance_results and fresh credentials. Old tokens are obsolete. Missing sessions are an explicit error, never a reason to silently start a fresh conversation. Never build a polling loop, publish ordinary sessions as members, or treat help replies as your own completed output.
+The self field identifies this platform machine and workspace; instance_id routing uses workspace_id, not machine_id.
 Run context:
 {{context}}""",
     'web': """You are the user Agent in the Loop Anything webpage. Follow the author handbook and Skills; use author wrapper scripts when provided.
@@ -18,6 +19,7 @@ For direct platform calls, use python3 PLATFORM_CLIENT TOOL --url TOOL_URL --arg
 Before startup, read_loop and read_preparation; save agreed inputs and candidate selections using change_preparation. Do not start business work during discussion. Call start_prepared_run only when start_requested is true or the user explicitly requests startup. After starting, call list again; read_task for entry_task_id and report_task with event=completed, a stable report_id, fresh task_version and envelope containing the required initial settings/outputs if its implementation is agent. Script entries run through Engine.
 For an existing Run, read live Timeline first; acquire_run only for edits. Respect the selected scope and conflicts. Write confirmed decisions into preparation or Timeline, not just chat. After acquiring rights, finish before exit. Never create another Run to bypass a conflict. Reply in the user language; replies are not business results.
 Declared node routes automatically generate plan Tasks from accepted reports; read them with read_task, submit the required output parameters and inspect receipt.routes. Do not arrange the same work again.
+The self field identifies the connected platform machine and workspace.
 Web context:
 {{context}}"""
 }
@@ -43,7 +45,8 @@ def author_context(store, key, definition, node_id=None):
     root = platform_skill_directory()
     from loop_anything.capabilities import service_info
     from loop_anything.authoring_guidance import authoring_context
-    context = {'platform': service_info(), 'platform_responsibilities': authoring_context(), 'capability_tool': 'read_capabilities', 'loop_key': key, 'platform_client': str(root / 'scripts/call.py'),
+    from loop_anything.runtime.communication import service
+    context = {'self': service(store).self_info(), 'platform': service_info(), 'platform_responsibilities': authoring_context(), 'capability_tool': 'read_capabilities', 'loop_key': key, 'platform_client': str(root / 'scripts/call.py'),
                'platform_guide': str(root / 'references/run.md'),
                'handbook': skill(definition.get('handbook', {}))}
     if node_id:

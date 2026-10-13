@@ -6,25 +6,19 @@
 
 ## 配置平台出口
 
-用 `read_notification_channels` 获取 `revision`、已有 `channels` 和本机 `cc_connect_command`。然后用 `set_notification_channels` 传入最新 revision 和修改后的完整 channels；保留不需要修改的出口。配置只保存在当前平台，不进入 Loop 包，也不会立即发送。
+用 `read_notification_channels` 获取 `revision`、已有 `channels` 和本机 `cc_connect` Bot 列表。然后用 `set_notification_channels` 传入最新 revision 和修改后的完整 channels；保留不需要修改的出口。配置只保存在当前平台，不进入 Loop 包，也不会立即发送。
 
 每个出口有独立 ID，以及 label、channel、identity、destination、command（argv）、可选 cwd 和 timeout。command 使用下文的通用发送契约；平台内置的 workspace 出口无需配置。身份和目的地由适配器解释，不能只给任意脚本填写这些字段就假定它会采用。
 
-使用 cc-connect 时，command 可采用工具返回的 cc_connect_command；identity 填已配置的 project，destination 填明确的 session。适配器用这两个字段选择实际目标。非默认安装可在 argv 追加 `--executable` 和 `--data-dir`，不需要更改 Engine。已有连接方式见 [cc-connect.md](cc-connect.md)。
+使用 cc-connect 时先通过 `read_cc_connect` / `configure_cc_connect` 接入本机桥接。出口使用 `cc_connect={project,platform}` 和明确的 `destination`，不填写 command/identity/channel。仅做具名 Agent Bot 映射时不需要创建出口，直接设置 agent.notification_bot。见 [cc-connect.md](cc-connect.md)。
 
-`start_run.notification_route` 或 `change_settings.change.notification_route` 选择本次运行的默认出口 ID，也可选 workspace。切换聊天入口不改变出口。网页侧栏「通知出口」配置平台出口；启动准备和运行设置选择本次使用哪个。
+`start_run.notification_route` 或 `change_settings.change.notification_route` 选择本次运行的默认出口 ID，也可选 workspace。切换聊天入口不改变出口。
 
 Loop 中的通知只能选择 default（本次 Run 出口）或 workspace（平台通知区），不得写入个人出口。旧 implementations.$notifications 已停用；导入或分享旧 Loop 前先将发送配置移到本地通知出口，再从草稿移除该字段。Run 的 notification_command 仍是本地调用配置，不随 Loop 分享。
 
-## 网页中的选择与查看
-
-启动准备页顶部显示本次出口，「选择出口」定位到本次运行设置；选择保存在该准备页，其他人的 Run 不受影响。运行页标题下显示实际出口，并提供「修改出口」和「通知安排与记录」。侧栏「通知出口」管理当前平台的命名出口。
-
-Loop 的「任务关系」图显示等待条件与通知标记，「执行状态机」直接按所选实现展示实际矩阵；「通知发生在什么时候」列出节点、状态/事件、条件、消息及通用出口。运行页还会列出本 Run 的通知 Hooks；脚本/Agent 临时发送的消息以实际运行通知记录为准。
-
 ## 主动通知与询问
 
-`notify` 参数：run_id、稳定 key、message；可选 task_id、route、reply。Agent 提供持有的 token；支线 Agent 必须指定自己范围内的 task_id。脚本提供上下文里的 token、task_id 和 execution_id。可信工作区的网页和用户 CLI 可按授权调用，无需 Loop 编辑口令；平台托管节点仍须沿用自身操作范围。
+`notify` 参数：run_id、稳定 key、message；可选 task_id、route、reply。Agent 提供持有的 token；支线 Agent 必须指定自己范围内的 task_id。脚本提供上下文里的 token、task_id 和 execution_id。可信工作区的用户 Agent 可按授权调用，无需 Loop 编辑口令；平台托管节点仍须沿用自身操作范围。
 
 ```json
 {"run_id":"RUN_ID","token":"TOKEN","task_id":"TASK_ID","key":"TASK_ID:progress-1","message":"阶段结果已记录","route":"default"}
@@ -38,7 +32,7 @@ Loop 的「任务关系」图显示等待条件与通知标记，「执行状态
 {"event":"reply","key":"question-1","schema":{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}}
 ```
 
-询问本身不暂停运行；需要答案时安排同 event/key 的等待节点，其输出契约应与回复 schema 一致。网页可直接回复；聊天中的 Agent 通过 read_run 查看通知、read_task 查看等待节点，再调用 `send_event`，提供稳定 event_id、name、key、payload，可带 notification_id 检查回复 schema。支线 Agent 还需指定自己范围内的等待 task_id；用户授权的外部入口可直接提交事实，不需要占用 Agent 会话。发送通知的渠道和提交回复的入口可以不同。
+询问本身不暂停运行；需要答案时安排同 event/key 的等待节点，其输出契约应与回复 schema 一致。Agent 通过 read_run 查看通知、read_task 查看等待节点，再调用 `send_event`，提供稳定 event_id、name、key、payload，可带 notification_id 检查回复 schema。支线 Agent 还需指定自己范围内的等待 task_id；用户授权的外部入口可直接提交事实，不需要占用 Agent 会话。发送通知的渠道和提交回复的入口可以不同。
 
 ## 作者和用户选择时机
 
@@ -50,7 +44,7 @@ Loop 的「任务关系」图显示等待条件与通知标记，「执行状态
 
 保留矩阵其他行；notify 支持上述 message/route/reply，引用使用已有的 inputs、parameters、settings、detail、outputs、attempt 上下文。一次报告的转移与通知入队共同保存，重报相同 report_id 不再产生通知。
 
-用户可以通过 change_settings 调整原 hooks：notify 除 before/after 外支持 phase=transition，可按 event、from、to 筛选，target 仍选择 node 或 tasks。once 表示本 Hook 在 Run 中仅一次；always 对每次不同的匹配转移生效。修改现有 Hook 的定义需换新 ID，停用可改 enabled=false。网页「通知与控制」提供这些表单。
+用户可以通过 change_settings 调整原 hooks：notify 除 before/after 外支持 phase=transition，可按 event、from、to 筛选，target 仍选择 node 或 tasks。once 表示本 Hook 在 Run 中仅一次；always 对每次不同的匹配转移生效。修改现有 Hook 的定义需换新 ID，停用可改 enabled=false。
 
 ## 输入：stdin JSON
 
@@ -96,3 +90,5 @@ Loop 的「任务关系」图显示等待条件与通知标记，「执行状态
 适配器只需要遵守上述契约，无需实现聊天历史、Timeline 副本或另一套 Agent 调度。
 
 真实发送失败记录 fault 和回执，平台通知区保留所有发送记录；由用户核实后使用显式重试入口。
+
+cc-connect 接入用 `read_cc_connect` / `configure_cc_connect`；具名 Agent 直接绑定 Bot，固定接收位置才建立 `cc_connect={project,platform}` 通知出口。见[本机接入与 Bot 发现](cc-connect.md#本机接入与-bot-发现)。

@@ -17,7 +17,10 @@ class GroupNotificationTests(unittest.TestCase):
     setUp=fixtures.CommunicationTests.setUp
     tearDown=fixtures.CommunicationTests.tearDown
     groups=fixtures.CommunicationTests.groups
-    cycle=fixtures.CommunicationTests.cycle
+    def cycle(self, predicate, timeout=35):
+        # Real adapter processes may use the 30-second delivery budget; the
+        # in-memory fixture's five seconds is too short on a busy host.
+        return fixtures.CommunicationTests.cycle(self, predicate, timeout)
     agent=fixtures.CommunicationTests.agent
 
     def configure(self, sender=None, level='key'):

@@ -21,6 +21,7 @@ def deliver_command(adapter, payload, runner):
         raise NotificationConfigurationError(adapter['configuration_error'])
     if not adapter.get('command'):
         raise NotificationConfigurationError('No notification transport configured')
+    if adapter.get('alternate_bot'):payload=dict(payload,alternate_bot=True)
     result=runner(adapter['command'],json.dumps(payload),adapter.get('timeout',30),adapter.get('cwd'))
     try:receipt=json.loads(result.stdout)
     except (ValueError,TypeError):receipt=None
@@ -64,11 +65,23 @@ def validate_channels(channels):
     for key, value in channels.items():
         if not re.fullmatch(r'[a-zA-Z0-9_-]+', key) or key in ('workspace', 'default', 'user', 'external'):
             raise Invalid('Use a non-reserved channel ID')
-        if not isinstance(value, dict) or set(value) - {'label', 'channel', 'identity', 'destination', 'command', 'cwd', 'timeout'}:
-            raise Invalid('Channel supports label, channel, identity, destination, command, cwd, timeout')
+        if not isinstance(value, dict) or set(value) - {'label', 'channel', 'identity', 'destination', 'command', 'cwd', 'timeout', 'cc_connect'}:
+            raise Invalid('Channel supports label/channel/identity/destination, command/cwd/timeout or cc_connect={project,platform}')
         for field in ('label', 'channel', 'identity', 'destination'):
             if not isinstance(value.get(field, ''), str):raise Invalid('Channel metadata must be text')
-        validate_implementation(dict(value, kind='command'))
+        if 'cc_connect' in value:
+            if any(k in value for k in ('command','cwd','identity','channel','timeout')):raise Invalid('cc_connect selects the Bot; omit command/cwd/identity/channel/timeout')
+            from loop_anything.runtime.cc_connect import validate_bot
+            validate_bot(value['cc_connect'])
+        else:validate_implementation(dict(value, kind='command'))
+
+
+def resolve_outlet(config):
+    if 'cc_connect' not in config:return copy.deepcopy(config)
+    from loop_anything.runtime.cc_connect import sender
+    result=sender(config['cc_connect'],config.get('destination',''))
+    if config.get('label'):result['label']=config['label']
+    return result
 
 
 def sender_for(store, run, route):
@@ -95,7 +108,7 @@ def sender_for(store, run, route):
         return route, copy.deepcopy(sender)
     config = store.notification_channels()['channels'].get(route)
     if config is None:raise NotificationConfigurationError('Notification outlet is not configured: ' + route)
-    return route, copy.deepcopy(config)
+    return route, resolve_outlet(config)
 
 
 def enqueue(store, run, key, notice, task_id=None, execution_id=None):

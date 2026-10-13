@@ -448,7 +448,7 @@ context.task 修复验证：37 项通信、跨实例 HTTP、原 session 恢复�
 
 ## 聊天入口通知（0.5.7）
 
-飞书入口经 Skill 客户端自动保存原会话；私聊由入口 Bot 回复，群聊的执行确认和结果优先使用具名 Agent 的 `notification_route` 所映射 Bot，并保持原话题。发送前明确不可用才回退入口，发送结果未知不自动换 Bot。嵌套外援继承原来源；显式通知出口覆盖，无聊天来源保留按机器优先级。配置入口在具名 Agent 编辑界面。完整前提、只读权限及 API 用法见平台 Skill 的 `references/cc-connect.md`；话题需开启 cc-connect 话题隔离并保留 root session key。
+飞书入口经 Skill 客户端自动保存原会话；私聊由入口 Bot 回复，群聊的执行确认和结果优先使用具名 Agent 的 `notification_bot={project,platform}` 所映射 Bot（旧 notification_route 兼容），并保持原话题。发送前明确不可用才回退入口，发送结果未知不自动换 Bot。嵌套外援继承原来源；显式通知出口覆盖，无聊天来源保留按机器优先级。先用 read_cc_connect/configure_cc_connect 接入本机桥接并发现 Bot，再用 communication_config 设置具名 Agent 的映射；无需自行拼接命令。完整前提、只读权限及 API 用法见平台 Skill 的 `references/cc-connect.md`；话题需开启 cc-connect 话题隔离并保留 root session key。
 
 ## 2026-10-12：独立协作统一
 
