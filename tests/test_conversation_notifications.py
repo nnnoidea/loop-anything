@@ -118,10 +118,13 @@ class ConversationTests(unittest.TestCase):
 
     def test_local_presend_rejection_uses_entry_without_duplicate_delivery(self):
         self.bot(self.a);self.sent=[]
+        cli=self.root/'offline-cc-connect'
+        cli.write_text('#!'+sys.executable+'\nimport sys\nprint("Error: cc-connect is not running (socket not found: /offline/run/api.sock)",file=sys.stderr)\nsys.exit(1)\n')
+        cli.chmod(0o700)
         def send(command,text,*args):
             p=json.loads(text)
             if p['outlet']['identity']=='papers-bot':
-                return subprocess.CompletedProcess(command,2,json.dumps({'delivered':False,'not_sent':True}),'')
+                return subprocess.run([sys.executable,str(SCRIPTS/'notify_cc_connect.py'),'--executable',str(cli)],input=text,text=True,capture_output=True,timeout=10)
             return self.receipt(command,text,*args)
         with patch('loop_anything.runtime.host_runtime.run_command',side_effect=send):
             ident=self.completed(self.entry())
@@ -426,6 +429,33 @@ class BridgeDeliveryTests(unittest.TestCase):
                 receipt=json.loads(out.getvalue())
                 self.assertFalse(receipt['delivered']);self.assertFalse(receipt['not_sent'])
                 self.assertEqual(send.call_count,1)
+
+    def test_socket_connection_failure_is_unsent_but_send_failure_is_unknown(self):
+        import notify_cc_connect as adapter
+        from io import StringIO
+        from loop_anything.runtime.notifications import deliver_command, NotificationNotSent
+        errors={
+            'Error: cc-connect is not running (socket not found: /data/run/api.sock)':True,
+            'Error: failed to connect: Post "http://unix/send": dial unix /data/run/api.sock: connect: connection refused':True,
+            'Error: failed to connect: Post "http://unix/send": dial unix /data/run/api.sock: connect: no such file or directory':True,
+            'Error: failed to connect: Post "http://unix/send": dial unix /data/run/api.sock: connect: permission denied':True,
+            'Error: project "removed-bot" not found':True,
+            'Error: feishu: reply failed code=230002 msg=Bot/User can NOT be out of the chat.':True,
+            'Error: lark: send failed code=230002 msg=The bot can not be outside the group.':True,
+            'Error: feishu: reply failed code=999999 msg=unknown failure':False,
+            'Error: failed to connect: Post "http://unix/send": EOF':False,
+            'Error: failed to connect: Post "http://unix/send": read unix /data/run/api.sock: connection reset by peer':False,
+            'Error: feishu reply failed: connection refused':False,
+        }
+        payload={'id':'n','message':'result','outlet':{'identity':'helper','destination':'feishu:chat:root:message'}}
+        for error,unsent in errors.items():
+            with self.subTest(error=error),patch.object(sys,'argv',['adapter']),patch.object(sys,'stdin',StringIO(json.dumps(payload))),patch.object(sys,'stdout',new_callable=StringIO) as out,patch.object(adapter.subprocess,'run',return_value=subprocess.CompletedProcess([],1,'',error)) as send:
+                with self.assertRaises(SystemExit):adapter.main()
+                self.assertEqual(json.loads(out.getvalue())['not_sent'],unsent)
+                self.assertEqual(send.call_count,1)
+                if unsent:
+                    with self.assertRaises(NotificationNotSent):
+                        deliver_command({'command':['adapter']},payload,lambda *args:subprocess.CompletedProcess([],2,out.getvalue(),''))
 
 
 if __name__=='__main__':unittest.main()

@@ -12,7 +12,7 @@ MECHANISMS = {
     'assistance_session_resume': ('configured/operator', '等待外援前检查原生 session 和准确恢复命令；回复或期限到达后恢复同一会话与 Task，携带结果和新操作凭据。', '配置托管 CLI 与 resume_command，登记真实 session；wait_assistance 成功后再 finish，远端还需完成执行请求。', ['wait_assistance','register_agent_session','implementations.*.resume_command'], '原机器/Agent/session 固定；缺失或恢复失败时明确阻塞，不新建对话。当前恢复使用 macOS/Linux 终端，CLI 自身的会话文件须保留。'),
     'group_notifications': ('configured/operator', '各机器独立绑定群组通知入口；来源持久生成通知，选定机器复用 cc-connect 等适配器并写回回执。', '在各机器配置本地命名出口，再用 group_notifications 绑定该机器的群组入口。', ['communication_config(operation=group_notifications)','platform notification channels'], '命令和凭据不写入 NAS；已生成通知固定出口。旧策略请求按原策略完成；未知送达须核实后显式重试。'),
     'cc_connect': ('configured/operator', '本机共用 cc-connect 接入配置，读取已有 Bot 列表，不返回凭据；具名 Agent 直接选择 Bot。', 'read_cc_connect 发现；缺接入时 configure_cc_connect 指定实际配置文件和可执行文件，按返回 project/platform 建立 notification_bot 映射。固定目的地才建 cc_connect 引用出口。', ['read_cc_connect','configure_cc_connect','agent.notification_bot','channels.*.cc_connect'], '不猜配置文件目录、不为每个 Bot 写命令、不安装/启动 Bot。列表不证明在线或在群；目录歧义不自动选择；明确填写引用可保存，不作可用性预检。路径和密钥留本机。'),
-    'conversation_notifications': ('automatic/configured', '飞书入口调用默认回复原会话；私聊由入口Bot回复，群聊优先具名Agent对应Bot并保持原话题。', 'Skill call.py 只携带 chat_context；平台持久保存并复用来源，发送适配器保存原入口，话题用根消息调用cc-connect，缺根消息原样交给cc-connect；不查飞书权限或凭据；agent.notification_bot 直接映射本机已发现Bot，旧notification_route兼容。嵌套外援继承来源，不需要Agent重新拼接通知命令。', ['request_assistance.chat_context','start_run.chat_context','communication_config(operation=agent)','兼容已有conversation_id'], '通知接入失败不阻断业务任务；发送前确认不可用才回退入口Bot，发送后失败或未知不改投。原始session_key保留；适配器将明确话题目标转换为同群同话题的root发送目标，不自行改投群时间线；实际投递由cc-connect负责。显式出口优先；无聊天来源沿用群组按机器出口。'),
+    'conversation_notifications': ('automatic/configured', '飞书入口调用默认回复原会话；私聊由入口Bot回复，群聊优先具名Agent对应Bot并保持原话题。', 'Skill call.py 只携带 chat_context；平台持久保存并复用来源，发送适配器保存原入口，话题用根消息调用cc-connect，缺根消息原样交给cc-connect；不查飞书权限或凭据；agent.notification_bot 直接映射本机已发现Bot，旧notification_route兼容。嵌套外援继承来源，不需要Agent重新拼接通知命令。', ['request_assistance.chat_context','start_run.chat_context','communication_config(operation=agent)','兼容已有conversation_id'], '通知接入失败不阻断业务任务；适配器明确确认未投递（未启动、未连接或明确拒绝）时才回退入口Bot；其他失败或结果未知不改投。原始session_key保留；适配器将明确话题目标转换为同群同话题的root发送目标，不自行改投群时间线；实际投递由cc-connect负责。显式出口优先；无聊天来源沿用群组按机器出口。'),
     'group_notification_priority': ('automatic/configured', '无聊天来源时，群组通知逐条优先动作发生方，再回退本次请求的直接发起方；均无入口则仅平台记录。', '按机器绑定入口；省略请求 notification_route 使用优先级。嵌套外援按子请求直接发起方回退。', ['communication_config(operation=group_notifications)','communication_status.groups[].notification_bindings','read_assistance.notifications[].routing'], '缺入口或明确停用才回退；离线、失败及送达未知不自动改投。显式出口优先，通知重试固定原绑定。'),
     'timeline_storage': ('automatic', '持久化 Run、Task、执行尝试、版本化结果、事件和历史；正式写入使用同一数据库事务。', '定义业务结果 schema，并通过正式报告提交事实。', ['nodes.*.outputs','records','report_task.envelope'], '外部系统的副作用不属于本地事务；平台不会代替外部服务提供 exactly-once 提交。'),
     'task_scheduler': ('automatic', '检查输入与 after 依赖、暂停点、实现选择、并发额度和操作范围，派发就绪任务。', '声明任务、数据来源和依赖；需要后继自动生成时配置 routes。', ['plans.*.steps.*.inputs','plans.*.steps.*.after','settings.max_parallel','nodes.*.routes'], '依赖连线仅推进已有任务；默认不会推断缺失业务任务。'),
@@ -53,7 +53,7 @@ def authoring_context():
             'interaction': '原生等待、暂停点、通知回执、显式 Run 收口，以及结构/任务/结果/历史工作台、实时 Agent 输出、可选交互终端及原生会话恢复。',
         },
         'author_provides': ['业务意图与方法、需要交付的结果和允许的动作。', '节点契约、候选实现及真实外部接口适配。', '声明式依赖/路由/恢复策略、凭据与环境配置、验收预期。'],
-        'construction_rule': '先将用户需求对应到这些机制，按 activation 和 configuration 配置使用。新增脚本前说明它承担的业务或外部接口职责；确有机制缺口时给出具体用例和缺失语义。节点数量按实际业务职责决定。',
+        'construction_rule': '讨论新 Loop 或调整方案时，结合用户目标主动推荐会改变流程组织的相关能力，并说明实际帮助，融入方案讨论；无需等用户询问。已有方案合适或用户已有明确选择时直接继续，不逐项宣读、不为展示能力增加节点，不增加检查、打分、审批或确认门槛。按需参考能力地图开头的特性与构建思路，再读取相关机制的 activation/configuration；新增脚本承担业务或外部接口职责，真实机制缺口如实说明。',
         'details': {'tool':'read_capabilities','arguments':{},'reference':'references/platform-capabilities.md'},
     }
 
@@ -147,7 +147,20 @@ def render_guide():
     from loop_anything.capabilities import CAPABILITIES
     lines=['# 平台已承担的能力与作者分工', '',
            '由平台能力定义生成；运行服务的 read_capabilities 为实际可用能力依据。可传 capability 按需读取详细机制与组合示例。', '',
-           '构建时先将需求对应到下列机制，再设计业务节点和实现。activation=automatic 表示平台自动执行；declared/configured 需要作者声明或使用者配置；operator 需要显式操作。', '']
+           '## 特性如何改变 Loop 的组织方式', '',
+           '讨论构建方案时，主动选择与用户目标相关、会影响工作组织的特性，说明可以怎样组织及其帮助。用户无需先知道这些能力。下表提供构建思路，按需使用；已有方案合适时直接继续，不逐项宣读、不强制覆盖所有特性，不增加检查或确认步骤。', '',
+           '| 用户目标中的线索 | 可利用的特性 | 可以提出的构建建议 | 按需深入 |',
+           '| --- | --- | --- | --- |',
+           '| 耗时训练、排队、等待外部结果 | Agent 只在需要判断时出现 | 拆开方案制定、自动执行与等待、结果分析。平台按时调用短查询脚本，或接收完成事件，随后推进到下一个决策点。 | [生命周期与监控](#lifecycle)、[持久等待](#waits) |',
+           '| 实验数量、分支或下一轮方案依赖结果 | 后续任务可以根据结果生成 | 先定义可复用的工作模板，让 Agent 提交本轮参数，平台展开任务并汇总结果；按明确条件决定下一轮或结束。 | [结果触发](#event_routes)、[批量任务](#plans)、[结束条件](#termination) |',
+           '| 工作持续多天、需要换会话或换入口继续 | 工作状态独立于聊天会话保存 | 把长期工作划成阶段，目标、进度和结果存入 Timeline；后续 Agent 读取当前状态继续处理。 | [持久状态](#timeline_storage)、[执行恢复](#execution_recovery) |',
+           '| 工作需要不同的工具、算力或机器环境 | 一个 Loop 可组合多种执行方式 | 按职责与资源拆分：本机脚本准备数据，外部平台训练，显式指定的远端 Agent 分析。 | [候选实现](#implementation_selection)、[远端协作](#agent_communication) |',
+           '| 分析中偶尔需要查论文或咨询其他专长 | 专业 Agent 可以作为临时外援 | 必需步骤留在主流程；偶发协助由执行中的 Agent 按需请求，必要时挂起，结果回来后恢复原会话继续。 | [具名外援](#agent_communication)、[原会话续跑](#assistance_session_resume) |',
+           '| 研究、排障过程中会产生新信息或改变方向 | 运行中可以调整后续安排 | 保存已发生的事实与结果，按新目标修改后续任务、参数或依赖；不要求第一次规划就确定全部路径。 | [任务编辑](#task_edits)、[运行控制](#run_control) |', '',
+           '这些建议要结合实际接入条件：外部系统需要提交/查询脚本或事件回传；动态任务需要模板、触发规则和结束条件；远端执行需要已配置的群组与成员；恢复原会话需要真实 session 和恢复命令。Timeline 保存业务状态，不等于自动恢复任意聊天上下文。每次查询结束后由平台等待，不需要 Agent 或脚本常驻循环；事件与轮询双通道兜底需另行明确设计，并非默认组合。', '',
+           '例如用户说“持续跑实验”：可建议“提出参数 → 展开实验 → 平台等待训练 → Agent 分析 → 按结果决定下一轮”。若用户只要求汇总一份现成结果，则直接处理相应任务，不凭空增加循环、外援或等待节点。', '',
+           '## 机制详情', '',
+           '需要落实方案时再读取对应机制。activation=automatic 表示平台自动执行；declared/configured 需要作者声明或使用者配置；operator 需要显式操作。', '']
     for name in CAPABILITIES:
         row=mechanism_details(name)
         lines += ['## '+name, '', '- 生效方式：'+row['activation'], '- 平台承担：'+row['platform_handles'],
