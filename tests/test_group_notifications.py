@@ -83,9 +83,28 @@ class GroupNotificationTests(unittest.TestCase):
         for text in sent:
             self.assertEqual(text.count(ident),1)
             self.assertNotIn('通知：notice-',text)
+            self.assertNotIn('独立协助',text)
+            self.assertNotIn('结果摘要：{',text)
         self.assertIn('开始执行',sent[1])
         self.assertIn('找到三篇相关论文',sent[2])
         self.assertEqual(self.a.get(ident)['message'],message)
+
+    def test_notification_does_not_dump_or_truncate_structured_results(self):
+        self.configure();ident=self.completed_request()
+        result={'workflows':[{'name':'完整业务内容'*200,'details':{'status':'unknown'}}]}
+        with self.a.transaction() as db:
+            row=self.a.get(ident,db);row.update(result=result,agent_label='Wiki Agent',executor_name='long-machine-name',
+                source_summary={'loop_name':'研究','run_title':'研究','node_label':'核对','run_id':'run-internal-id'})
+            self.a.save(db,row)
+        self.cycle(lambda:any(n['status']=='delivered' for n in self.a.get(ident).get('notifications',[])))
+        text=json.loads(self.log.read_text().splitlines()[0])['text']
+        self.assertTrue(text.startswith('Wiki Agent · 执行完成\n'))
+        self.assertIn('结果已返回。',text)
+        self.assertNotIn('workflows',text);self.assertNotIn('long-machine-name',text)
+        self.assertEqual(text.count('任务：'),1);self.assertIn('任务：研究 / 核对',text)
+        self.assertNotIn('run-internal-id',text)
+        self.assertEqual(self.a.read(ident)['request']['result'],result)
+        self.assertEqual(self.a.get(ident)['notifications'][0]['payload']['result'],result)
 
     def test_offline_sender_waits_and_binding_changes_do_not_redirect_existing_work(self):
         binding=self.configure();ident=self.completed_request()
@@ -100,6 +119,20 @@ class GroupNotificationTests(unittest.TestCase):
         self.cycle(lambda:self.a.get(ident)['notifications'][0]['status']=='delivered')
         self.assertEqual(len(self.log.read_text().splitlines()),1)
         self.assertEqual(self.a.get(ident)['notifications'][0]['group_binding']['id'],binding['id'])
+
+    def test_optional_summary_display_never_changes_business_result(self):
+        self.configure()
+        for summary in ('', {'nested':'not text'}, '长'*601, '短'*600):
+            with self.subTest(summary_type=type(summary).__name__,length=len(summary)):
+                ident=self.completed_request()
+                result={'summary':summary,'details':['complete evidence']*100}
+                with self.a.transaction() as db:
+                    row=self.a.get(ident,db);row['result']=result;self.a.save(db,row)
+                self.cycle(lambda:any(n['status']=='delivered' for n in self.a.get(ident).get('notifications',[])))
+                text=json.loads(self.log.read_text().splitlines()[-1])['text']
+                self.assertIn(summary if isinstance(summary,str) and len(summary)==600 else '结果已返回。',text)
+                self.assertNotIn('details',text)
+                self.assertEqual(self.a.read(ident)['request']['result'],result)
 
     def test_failure_explicit_retry_and_sender_restart_never_blindly_resends(self):
         self.configure();self.fail_file.touch();ident=self.completed_request()

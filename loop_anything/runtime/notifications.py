@@ -12,7 +12,7 @@ class NotificationConfigurationError(Invalid):
 
 
 class NotificationNotSent(Invalid):
-    """The authorized adapter confirms that no send was attempted."""
+    """The adapter confirms no delivery: not attempted or explicitly rejected."""
 
 
 def deliver_command(adapter, payload, runner):

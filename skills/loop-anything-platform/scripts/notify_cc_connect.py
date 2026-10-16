@@ -3,9 +3,19 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
+
+
+def definitely_not_sent(error):
+    """Known CLI connection failures and explicit rejections, never generic failures."""
+    return bool(re.fullmatch(r'Error: cc-connect is not running \(socket not found: [^\n]+\)', error) or
+                re.fullmatch(r'Error: failed to connect: Post "http://unix/send": dial unix [^\n]+: connect: (?:no such file or directory|connection refused|permission denied)', error) or
+                re.fullmatch(r'Error: project "[^\n]+" not found', error) or
+                # Feishu 230002: the bot is outside the chat; the API rejected delivery.
+                re.fullmatch(r'Error: (?:feishu|lark): (?:reply|send) failed code=230002 msg=[^\n]*', error))
 
 
 def sender_command(executable=None, data_dir=None, config_path=None):
@@ -57,9 +67,9 @@ def main():
         prepared=prepare_delivery(session,conversation)
         session,checked=prepared['session'],prepared['conversation']
         title=str(notice.get('title') or '协作通知')
-        if notice.get('run_id'):title+=' · '+str(notice['run_id'])
+        if notice.get('run_id') and not notice.get('request_id'):title+=' · '+str(notice['run_id'])
         lines = [title, str(notice['message'])]
-        if notice.get('task_label'):
+        if notice.get('task_label') and not notice.get('request_id'):
             labels = {'completed': '已完成', 'executing': '执行中', 'fault': '失败', 'ready': '就绪', 'held': '暂停等待'}
             lines.append('任务：' + notice['task_label'] + ' · ' + labels.get(notice.get('task_status'), notice.get('task_status', '')))
         if notice.get('reason'):
@@ -73,11 +83,13 @@ def main():
             result = subprocess.run([executable, 'send', '--project', project, '--session', session,
                                      *(['--data-dir', directory] if directory else []), '--stdin'], input='\n'.join(lines), text=True,
                                     encoding='utf-8', capture_output=True, timeout=25)
-        except FileNotFoundError:
+        except (FileNotFoundError, PermissionError):
             send_attempted=False
             raise
         if result.returncode:
-            raise ValueError('cc-connect send failed: ' + (result.stderr.strip() or str(result.returncode)))
+            error=result.stderr.strip()
+            if definitely_not_sent(error):send_attempted=False
+            raise ValueError('cc-connect send failed: ' + (error or str(result.returncode)))
         print(json.dumps({'delivered': True, 'channel': 'cc-connect', 'reference': notice['id'], 'delivery_session_key':session, **({'conversation':checked} if checked else {})}, ensure_ascii=False))
     except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.TimeoutExpired) as exc:
         print(json.dumps({'delivered': False, 'not_sent':not send_attempted, 'error': str(exc)}, ensure_ascii=False))

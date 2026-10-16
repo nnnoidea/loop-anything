@@ -1707,19 +1707,25 @@ class Communication:
                 else:
                     current['notified_signature']=signature
                     summary=row.get('source_summary',{})
-                    scope=' / '.join(str(summary[k]) for k in ('loop_name','run_title','node_label') if summary.get(k)) or '独立协助'
-                    actor=str(row.get('agent_label') or row.get('agent_id') or row.get('capability') or '待承接成员')
-                    machine=str(row.get('executor_name') or row.get('origin_name') or '')
+                    scope=' / '.join(dict.fromkeys(str(summary[k]) for k in ('loop_name','run_title','node_label') if summary.get(k)))
+                    actor=str(row.get('agent_label') or row.get('agent_id') or row.get('capability') or '协作 Agent')
                     result_value=row.get('result')
                     if row['kind']=='node_execution' and state=='completed':
                         result_value=next((c['arguments'].get('envelope',{}).get('outputs') for c in reversed(list(row.get('rpc',{}).values()))
                             if c['state']=='completed' and c['tool'] in ('report_task','complete_task') and c.get('result',{}).get('accepted') and (c['tool']=='complete_task' or c['arguments'].get('event')=='completed')),result_value)
-                    text=scope+'\n'+actor+' · '+machine+' · '+labels[state]+('（外援回复）' if row['kind']=='assistance' and state=='completed' else '')+'\n请求：'+row['id']
-                    if not any(n['status']!='skipped' for n in current.get('notifications',[])):text+='\n'+row['message'][:300]
-                    if result_value:text+='\n结果摘要：'+json.dumps(result_value,ensure_ascii=False)[:600]
-                    if row.get('error'):text+='\n'+str(row['error'])[:300]
+                    title=('向 '+actor+' 请求协助') if state=='pending' else actor+' · '+labels[state]
+                    lines=['任务：'+scope] if scope else []
+                    if not any(n['status']!='skipped' for n in current.get('notifications',[])):
+                        lines.append('事项：'+row['message'][:300]+('…' if len(row['message'])>300 else ''))
+                    if state=='completed':
+                        excerpt=result_value.get('summary') if isinstance(result_value,dict) else None
+                        lines.append(excerpt.strip() if isinstance(excerpt,str) and 0<len(excerpt.strip())<=600 else '结果已返回。')
+                    if row.get('error'):
+                        error=str(row['error']);lines.append('原因：'+error[:300]+('…' if len(error)>300 else ''))
+                    lines.append('请求：'+row['id'])
+                    text='\n\n'.join(lines)
                     notice={'id':uid('notice'),'state':state,'event_signature':signature,'status':'sending','attempt':1,'requested_route':row['notification_route'],
-                            'payload':{'request_id':row['id'],'source':row['source'],'agent_id':row.get('agent_id'),'title':summary.get('run_title','独立协助'),'run_id':summary.get('run_id'),'task_label':summary.get('node_label',''),
+                            'payload':{'request_id':row['id'],'source':row['source'],'agent_id':row.get('agent_id'),'title':title,'run_id':summary.get('run_id'),'task_label':summary.get('node_label',''),
                             'message':text,
                             'result':result_value,'progress':row.get('progress'),'error':row.get('error')}}
                     if row.get('notification_policy')=='conversation':
