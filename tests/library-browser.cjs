@@ -157,52 +157,20 @@ assert [n for n in z.namelist() if n.endswith('/SKILL.md')]==['platform/loop-any
     assert.equal(manualRun.records[manualRun.tasks.first.spec.outputs.result.id][0].value,'已提交的人工结果');
     assert.equal(run.inputs.request,'用户的实际目标');assert.equal(run.inputs.budget,4);assert.equal(run.inputs.enabled,false);assert.deepEqual(run.inputs.extra,['kept']);assert.deepEqual(run.inputs.settings,{region:'changed'});
     assert.equal(writes.filter(u=>/\/api\/conversations\/[^/]+\/start$/.test(u)).length,1);
-    // Author descriptions are editable without JSON and survive save/reopen.
-    await page.locator('#loop_definitions-nav').click();
-    await page.locator(`[data-loop="${keys[2]}"]`).first().click();
-    await page.locator('[data-loop-tab="prepare"]').click();
-    await page.locator('[data-setup-node="initialize"]').first().click();
-    await page.locator('#loop_definition-editor').waitFor({state:'visible'});
-    assert((await page.locator('#property-title').innerText()).includes('initialize'));
-    await page.locator('.guide-author > summary').filter({hasText:'给使用者的说明'}).click();
-    await page.locator('[data-guide="purpose"]').fill('修改后的用户说明');
-    const unsavedURL=page.url();
-    assert(unsavedURL.includes('#edit/'));
-    await page.locator('#editor-back').click();
-    await page.locator('#loop-detail').waitFor({state:'visible'});
-    assert.equal(await page.locator('[data-loop-tab="prepare"]').getAttribute('aria-pressed'),'true');
-    await page.goBack();await page.locator('#loop_definition-editor').waitFor({state:'visible'});
-    assert.equal(await page.locator('[data-guide="purpose"]').inputValue(),'修改后的用户说明');
-    await page.goForward();await page.locator('#loop-detail').waitFor({state:'visible'});
-    await page.goBack();await page.locator('#loop_definition-editor').waitFor({state:'visible'});
-    await page.locator('.guide-author > summary').filter({hasText:'Loop 操作手册'}).click();
-    await page.locator('#handbook-instructions').fill('启动前：与用户讨论。节点执行：读写状态，安排后续任务。');
-    await page.locator('#editor-save-status').filter({hasText:'已保存'}).waitFor();
-    const drafts=await (await page.request.get(url+'/api/drafts')).json();assert.equal(drafts[0].loop_definition.guide.purpose,'修改后的用户说明');
-    assert(page.url().includes('#edit/'+drafts[0].id));
-    await page.reload();await page.locator('#loop_definition-editor').waitFor({state:'visible'});
-    assert.equal(await page.locator('[data-guide="purpose"]').inputValue(),'修改后的用户说明');
-    assert.equal(drafts[0].loop_definition.handbook.instructions,'启动前：与用户讨论。节点执行：读写状态，安排后续任务。');
-    // A delayed validation of an earlier autosave must not replace the latest draft result.
-    await page.evaluate(()=>saveEditor());
-    let releaseValidation,validationCaptured;
-    const validationHeld=new Promise(resolve=>validationCaptured=resolve);
-    const releaseHeld=new Promise(resolve=>releaseValidation=resolve);
-    let held=false;
-    await page.route('**/api/tools',async route=>{
-      if(route.request().postDataJSON()?.tool!=='validate_loop'||held){await route.continue();return;}
-      held=true;const response=await route.fetch();validationCaptured();await releaseHeld;await route.fulfill({response});
-    });
-    await page.locator('.guide-author > summary').filter({hasText:'Loop 操作手册'}).click();
-    await page.locator('#handbook-instructions').fill('');
-    await page.evaluate(()=>{window.delayedSave=saveEditor();});
-    await validationHeld;
-    await page.locator('#handbook-instructions').fill('启动前：与用户讨论。节点执行：读写状态，安排后续任务。');
-    await page.evaluate(()=>saveEditor());
-    assert(await page.locator('#editor-report').evaluate(el=>el.classList.contains('success')));
-    releaseValidation();await page.evaluate(()=>window.delayedSave);
-    assert(await page.locator('#editor-report').evaluate(el=>el.classList.contains('success')),'Old validation replaced the current draft result');
-    await page.unroute('**/api/tools');
+    // Light metadata editing must preserve the authored guide, handbook and implementation.
+    await page.locator('#loop_definitions-nav').click();await page.locator(`[data-loop="${keys[2]}"]`).first().click();
+    await page.locator('[data-loop-tab="prepare"]').click();await page.locator('[data-setup-node="initialize"]').first().click();
+    await page.locator('#editor-detail-path a').first().click();await page.locator('#reader-light > summary').click();
+    const beforeReader=(await (await page.request.get(url+'/api/drafts')).json())[0];
+    await page.locator('#bp-description').fill('修改后的简短描述');await page.waitForFunction(()=>!editor.dirty);
+    const drafts=await (await page.request.get(url+'/api/drafts')).json();
+    assert.equal(drafts[0].loop_definition.description,'修改后的简短描述');
+    assert.deepEqual(drafts[0].loop_definition.handbook,beforeReader.loop_definition.handbook);
+    assert.deepEqual(drafts[0].loop_definition.guide,beforeReader.loop_definition.guide);
+    assert.deepEqual(drafts[0].implementations,beforeReader.implementations);
+    await page.reload();await page.locator('#reader-light > summary').click();
+    assert.equal(await page.locator('#bp-description').inputValue(),'修改后的简短描述');
+    assert.equal(await page.locator('#handbook-instructions,[data-guide]').count(),0);
 
     assert.equal((await (await page.request.get(url+'/api/catalog')).json()).find(c=>c.key===keys[2]).loop_definition.guide.purpose,'<script>不可执行的作者说明</script>');
     // Import does not start; successful installation lands on preparation.
@@ -279,41 +247,23 @@ assert [n for n in z.namelist() if n.endswith('/SKILL.md')]==['platform/loop-any
     await page.locator('#pause-run').click();assert((await responseEvent).ok());await waitRun(run.id,s=>s.status==='running');
     page.once('dialog',d=>d.accept());responseEvent=page.waitForResponse(r=>r.url().endsWith('/command'));
     await page.locator('#stop-run').click();assert((await responseEvent).ok());await waitRun(run.id,s=>s.status==='terminated');
-    // Fresh editor structures come from the same author tools.
+    // Complex construction uses Agent tools; the browser keeps the resulting detail readable.
     await page.locator('#loop_definitions-nav').click();await page.locator('#new-loop_definition').click();
-    await page.locator('#loop_definition-editor').waitFor({state:'visible'});
-    assert.equal(await page.locator('#handbook-instructions').inputValue(),'');
-    await page.locator('#add-node').click();await page.locator('#property-title').filter({hasText:'node_1'}).waitFor();
-    const authored=await (await page.request.get(url+'/api/drafts')).json();
-    const fresh=authored.find(d=>d.loop_definition.nodes.node_1);assert(fresh);
-    assert.equal(fresh.loop_definition.nodes.node_1.outputs.result.record_type,'node_1.result');
-    // Configure a real fallback node, disable it for a launch, then explicitly enable it.
-    await page.locator('.guide-author > summary').filter({hasText:'Agent 兜底'}).click();
-    await page.locator('#add-fallback-node').click();
-    await page.locator('#property-title').filter({hasText:'fallback'}).waitFor();
-    assert.equal(await page.locator('#bp-fallback').inputValue(),'fallback');
-    assert(await page.locator('#bp-fallback-enabled').isChecked());
-    assert.equal(await page.locator('#editor-canvas .edge.recovery').count(),0);
-    const candidates={default:'first',options:{first:{kind:'agent'},chosen:{kind:'agent'}}};
-    await page.locator('#add-author-candidate').click();
-    await page.locator('[data-candidate-id]').fill('chosen');
-    await page.locator('#author-default').selectOption('chosen');
-    await page.locator('.lifecycle-edit > summary').click();
-    await page.locator('[data-transition-add]').click();
-    const transition=page.locator('.transition-row').last();
-    await transition.locator('[data-transition-from]').fill('executing');
-    await transition.locator('[data-transition-event]').fill('reviewed');
-    await transition.locator('[data-transition-to]').fill('executing');
-    await page.locator('[data-candidate-prompt] summary').click();
-    await page.locator('[data-candidate-prompt] [data-agent-prompt]').fill('作者脚本入口\n{{context}}');
-    await page.locator('[data-candidate-prompt] [data-prompt-preview]').click();
-    await page.locator('#prompt-preview').waitFor({state:'visible'});
-    const nodeContext=JSON.parse((await page.locator('#prompt-preview pre').innerText()).split('作者脚本入口\n')[1]);
-    assert.equal(nodeContext.node_id,'fallback');
-    await page.locator('#prompt-preview button').click();
-
-    await page.locator('.guide-author > summary').filter({hasText:'Loop 操作手册'}).click();
-    await page.locator('#handbook-instructions').fill('Read current issues and use the selected fallback Agent.');
+    await page.locator('.reader-agent-dialog').waitFor({state:'visible'});await page.locator('.reader-agent-dialog [aria-label="关闭"]').click();
+    const authorTool=async(tool,args)=>{const result=await (await page.request.post(url+'/api/tools',{headers,data:{tool,arguments:args}})).json();assert(result.ok,JSON.stringify(result));return result;};
+    let authored=await authorTool('create_loop',{name:'Fallback reader scenario'});
+    const authorEdit=async(tool,args)=>authored=await authorTool(tool,{draft_id:authored.draft_id,revision:authored.revision,...args});
+    await authorEdit('put_node',{node_id:'node_1',label:'Work',inputs:[],outputs:[{name:'result',type:'string'}]});
+    await authorEdit('put_node',{node_id:'fallback',label:'Agent 兜底',inputs:[],outputs:[]});
+    await authorEdit('set_implementation',{node_id:'fallback',implementation_id:'first',kind:'agent'});
+    await authorEdit('set_implementation',{node_id:'fallback',implementation_id:'chosen',kind:'agent',default:true,prompt:'作者脚本入口\n{{context}}'});
+    let fresh=(await authorTool('read_loop',{draft_id:authored.draft_id})).loop;
+    const lifecycle=structuredClone(fresh.implementations.fallback.options.chosen.lifecycle);
+    lifecycle.transitions.push({from:'executing',event:'reviewed',to:'executing'});
+    await authorEdit('set_implementation',{node_id:'fallback',implementation_id:'chosen',lifecycle});
+    await authorEdit('set_loop',{fallback_node:'fallback',handbook:'Read current issues and use the selected fallback Agent.'});
+    await page.goto(url+'/#edit/'+authored.draft_id+'/node/fallback/implementation/chosen');
+    await page.locator('.reader-candidate').waitFor();assert.equal(await page.locator('[data-candidate-prompt]').count(),0);
     await page.locator('#editor-save').click();await page.locator('#editor-save-status a').waitFor();
   assert(await page.locator('#loop_definition-editor').isVisible());
   const savedVersions=await (await page.request.get(url+'/api/catalog')).json();

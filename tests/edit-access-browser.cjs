@@ -32,15 +32,15 @@ print(json.dumps({'key':key,'a':a,'b':b,'loop_id':bp['id']}))`,db],{encoding:'ut
   await stop();await start();await page.reload();await page.locator('#edit-access-button').filter({hasText:'锁定此 Loop'}).waitFor();assert.equal((await status(fixture.loop_id)).expires_at,unlocked.expires_at);
   await page.locator('#edit-access-button').click();await page.locator('#edit-access-button').filter({hasText:'解锁此 Loop'}).waitFor();assert(await page.locator('#bp-name').isDisabled());
   // Selecting/rerendering a locked node must keep its controls read-only.
-  await page.locator('[data-drag-node]').first().click();
-  assert(await page.locator('#loop_definition-editor').evaluate(root=>[...root.querySelectorAll('input,textarea,select')].every(el=>el.id==='author-plan-select'||el.disabled)));
+  await page.locator('[data-editor-layer="nodes"]').click();await page.locator('[data-drag-node]').first().click();
+  assert(await page.locator('#loop_definition-editor').evaluate(root=>[...root.querySelectorAll('input,textarea,select')].every(el=>['editor-state-node','editor-state-implementation'].includes(el.id)||el.disabled)));
   const viewBefore=await page.evaluate(()=>JSON.stringify({definition:editor.loop_definition,dirty:editor.dirty}));
   const head=page.locator('[data-drag-node]').first(),box=await head.boundingBox();await page.mouse.move(box.x+10,box.y+10);await page.mouse.down();await page.mouse.move(box.x+70,box.y+60);await page.mouse.up();
   assert.equal(await page.evaluate(()=>JSON.stringify({definition:editor.loop_definition,dirty:editor.dirty})),viewBefore);
-  await page.locator('.editor-more').click();await page.locator('#editor-json').click();assert(await page.locator('#editor-import').isDisabled());assert(await page.locator('#editor-json-value').evaluate(el=>el.readOnly));await page.locator('#editor-json-dialog .close-dialog').click();
+  await page.locator('.editor-more').click();await page.locator('#editor-json').click();assert.equal(await page.locator('#editor-import').count(),0);assert(await page.locator('#editor-json-value').evaluate(el=>el.readOnly));await page.locator('#editor-json-dialog .close-dialog').click();
   await page.locator('#loop_definition-editor [data-editor-implementation]:visible').first().click();await page.waitForFunction(()=>document.querySelector('#loop_definition-editor').classList.contains('editor-implementation-page'));
-  assert(await page.locator('#author-candidates input').first().isDisabled());await page.locator('#editor-detail-path a').first().click();await page.waitForFunction(()=>!document.querySelector('#loop_definition-editor').classList.contains('editor-detail-page'));
-  await page.locator('.editor-more summary').click();await page.locator('#loop-package').click();assert(await page.locator('#package-assets').isDisabled());
+  assert.equal(await page.locator('.reader-candidate input,.reader-candidate textarea').count(),0);await page.locator('#editor-detail-path a').first().click();await page.waitForFunction(()=>!document.querySelector('#loop_definition-editor').classList.contains('editor-detail-page'));
+  await page.locator('.editor-more summary').click();await page.locator('#loop-package').click();assert.equal(await page.locator('#package-assets').count(),0);
   const download=page.waitForEvent('download');await page.locator('#package-export').click();await download;assert.equal(await page.evaluate(()=>editor.dirty),false);await page.locator('#package-dialog .close-dialog').click();
   const blocked=await rpc('set_loop',{draft_id:fixture.a.draft_id,revision:fixture.a.revision,name:'blocked'});assert.equal(blocked.status,403);assert.equal(blocked.data.error.loop_id,fixture.loop_id);
   assert.equal((await rpc('copy_loop',{key:fixture.key,new_version:true})).status,403);

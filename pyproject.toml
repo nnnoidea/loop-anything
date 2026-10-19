@@ -20,5 +20,8 @@ loop_anything = ["web/*", "_vendor/*.txt", "_vendor/*/*.txt"]
 "share/loop-anything/skills/loop-anything-platform/references" = ["skills/loop-anything-platform/references/*.md"]
 "share/loop-anything/skills/loop-anything-platform/scripts" = ["skills/loop-anything-platform/scripts/*.py"]
 
+"share/loop-anything/skills/loop-anything-platform/scripts/vendor/answer-me-with-html" = ["skills/loop-anything-platform/scripts/vendor/answer-me-with-html/*"]
+"share/loop-anything/skills/loop-anything-platform/assets" = ["skills/loop-anything-platform/assets/*.md"]
+
 [tool.setuptools.packages.find]
 include = ["loop_anything*"]

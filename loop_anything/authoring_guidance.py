@@ -4,6 +4,7 @@ import json
 
 # activation, platform responsibility, author responsibility, configuration, limits.
 MECHANISMS = {
+    'flow_diagram': ('author-maintained', '随 Skill 提供现成绘图组件和模板，复用包资产保存，整体流程视图展示已保存页面。', '首次完成流程及修改分支、循环或任务生成逻辑后，结合真实定义和脚本编写并更新流程图。', ['scripts/render_flow.py','assets/flow.md','docs/flow.md','docs/flow.html','put_asset'], '绘图需要 Node.js 20+，查看不需要；不改执行规则，不在打开网页或每轮运行时调用 Agent，不作为保存或运行的前置检查。'),
     'machine_identity': ('automatic', '按需生成并持久保存完整机器 UUID，独立于工作区；communication_status.self 与唤醒上下文直接提供当前机器和工作区身份。', '读取 self；按成员返回的 instance_id 与 agent_id 寻址，不从 MAC、主机名或会话推断身份。', ['communication_status.self','context.self','communication_config(operation=identity)'], '身份属于连接的平台用户环境。instance_id 是 workspace_id 的兼容别名。移动/改名不改身份；副本显式建立新工作区身份，历史不接管。身份存储不要随业务数据库复制到另一机器。'),
     'loop_edit_protection': ('configured', '可选编辑口令按Loop身份保护定义、节点实现、手册及随包资源；草稿和版本共用，导出导入携带校验信息。', '按需set_loop_password，受保护编辑提供对应Loop的loop_password。', ['set_loop_password','copy_loop','publish_loop','export_loop'], '日常Run、通信和终端不需要全局解锁；平台自动处理普通操作执行标识，实际worker仍受执行范围、版本和过期结果校验。'),
     'communication_context': ('automatic/operator', '通信查询默认摘要，日志按需分段读取；外援续跑及追问不嵌入完整通信历史，保留业务上下文、结果及原 session。', '优先读状态和结构化结果；排错时请求 include_logs 或 include_details，用返回的 log_cursor/log_offset 继续读取。', ['read_assistance.include_logs','read_assistance.include_details','read_assistance.max_chars','read_assistance.after/offset'], '单页日志默认 4000、最多 16000 字符；完整诊断按需返回，原始日志保留；结构化业务结果不自动删减。'),
@@ -52,6 +53,7 @@ def authoring_context():
             'events': '按声明处理生命周期、报告去重、结果与后继原子提交、重试和已配置兜底。',
             'interaction': '原生等待、暂停点、通知回执、显式 Run 收口，以及结构/任务/结果/历史工作台、实时 Agent 输出、可选交互终端及原生会话恢复。',
         },
+        'flow_diagram': {'tool': 'read_capabilities', 'arguments': {'capability': 'flow_diagram'}, 'reference': 'references/flow-diagram.md', 'guidance': '首次完成流程及修改业务分支或循环后，当前构建 Agent 用随 Skill 提供的 render_flow.py 和模板更新整体流程图；复用包资产保存，不新建绘图服务或强制检查。'},
         'author_provides': ['业务意图与方法、需要交付的结果和允许的动作。', '节点契约、候选实现及真实外部接口适配。', '声明式依赖/路由/恢复策略、凭据与环境配置、验收预期。'],
         'construction_rule': '讨论新 Loop 或调整方案时，结合用户目标主动推荐会改变流程组织的相关能力，并说明实际帮助，融入方案讨论；无需等用户询问。已有方案合适或用户已有明确选择时直接继续，不逐项宣读、不为展示能力增加节点，不增加检查、打分、审批或确认门槛。按需参考能力地图开头的特性与构建思路，再读取相关机制的 activation/configuration；新增脚本承担业务或外部接口职责，真实机制缺口如实说明。',
         'details': {'tool':'read_capabilities','arguments':{},'reference':'references/platform-capabilities.md'},
@@ -155,10 +157,12 @@ def render_guide():
            '| 实验数量、分支或下一轮方案依赖结果 | 后续任务可以根据结果生成 | 先定义可复用的工作模板，让 Agent 提交本轮参数，平台展开任务并汇总结果；按明确条件决定下一轮或结束。 | [结果触发](#event_routes)、[批量任务](#plans)、[结束条件](#termination) |',
            '| 工作持续多天、需要换会话或换入口继续 | 工作状态独立于聊天会话保存 | 把长期工作划成阶段，目标、进度和结果存入 Timeline；后续 Agent 读取当前状态继续处理。 | [持久状态](#timeline_storage)、[执行恢复](#execution_recovery) |',
            '| 工作需要不同的工具、算力或机器环境 | 一个 Loop 可组合多种执行方式 | 按职责与资源拆分：本机脚本准备数据，外部平台训练，显式指定的远端 Agent 分析。 | [候选实现](#implementation_selection)、[远端协作](#agent_communication) |',
+           '| 多种专业职责、阶段说明不同或手册过长 | Loop 与节点可分别绑定 Skill／说明 | 结合目标建议知识分工：Loop 层保存整体目标和共享规则，节点说明各自的方法、工具与输入输出，执行时按需读取。例如共享实验目标，把训练操作与结果评价分别放到对应节点。 | [作者与节点 Skill](#author_skills) |',
            '| 分析中偶尔需要查论文或咨询其他专长 | 专业 Agent 可以作为临时外援 | 必需步骤留在主流程；偶发协助由执行中的 Agent 按需请求，必要时挂起，结果回来后恢复原会话继续。 | [具名外援](#agent_communication)、[原会话续跑](#assistance_session_resume) |',
            '| 研究、排障过程中会产生新信息或改变方向 | 运行中可以调整后续安排 | 保存已发生的事实与结果，按新目标修改后续任务、参数或依赖；不要求第一次规划就确定全部路径。 | [任务编辑](#task_edits)、[运行控制](#run_control) |', '',
            '这些建议要结合实际接入条件：外部系统需要提交/查询脚本或事件回传；动态任务需要模板、触发规则和结束条件；远端执行需要已配置的群组与成员；恢复原会话需要真实 session 和恢复命令。Timeline 保存业务状态，不等于自动恢复任意聊天上下文。每次查询结束后由平台等待，不需要 Agent 或脚本常驻循环；事件与轮询双通道兜底需另行明确设计，并非默认组合。', '',
            '例如用户说“持续跑实验”：可建议“提出参数 → 展开实验 → 平台等待训练 → Agent 分析 → 按结果决定下一轮”。若用户只要求汇总一份现成结果，则直接处理相应任务，不凭空增加循环、外援或等待节点。', '',
+           '说明按职责组织并按需读取，才能减少无关上下文和指令干扰；把全部节点说明一次性塞给 Agent 不会得到这一收益。共享规则保留在 Loop 层，节点引用，避免重复和矛盾。已有说明简短清楚时无需拆分，不强制每个节点新建 Skill，不仅为缩短文件而增加节点，不承诺完全消除上下文漂移。', '',
            '## 机制详情', '',
            '需要落实方案时再读取对应机制。activation=automatic 表示平台自动执行；declared/configured 需要作者声明或使用者配置；operator 需要显式操作。', '']
     for name in CAPABILITIES:

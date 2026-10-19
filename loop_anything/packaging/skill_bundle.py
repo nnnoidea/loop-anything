@@ -38,7 +38,7 @@ def bundle(url, installation_url=None):
     name = 'loop-anything-platform'
     prefix = 'platform/' + name + '/'
     for path in source.rglob('*'):
-        if not path.is_file() or path.suffix not in ('.md', '.py', '.json'):
+        if not path.is_file() or path.suffix not in ('.md', '.py', '.json', '.mjs', '.txt'):
             continue
         files[prefix + path.relative_to(source).as_posix()] = path.read_bytes()
     from loop_anything.authoring_guidance import render_guide

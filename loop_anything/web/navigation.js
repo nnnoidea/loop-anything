@@ -75,7 +75,7 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
     else if(route.type==='prepare'){if(await enterPreparation(route.id)===false)return true;}
     else if(route.type==='editor'){
       editor=session.editor;if(route.node&&!Object.hasOwn(editor.loop_definition.nodes,route.node))throw new Error('节点已不存在，请返回草稿总览。');editSelection=route.node?{node:route.node}:session.selection;connectFrom=null;page='editor';
-      editor.loop_definition.layout ||= {};populateMeta();renderEditor();renderProperties();saveState();
+      populateMeta();renderEditor();renderProperties();saveState();
       if(!route.node)requestAnimationFrame(()=>{$('editor-canvas').parentElement.scrollTo(editor.canvasPosition||{left:0,top:0});});
     }else if(route.type==='run'){
       if(previous.type!=='run' && previous.type!=='home')runReturns.set(route.id,structuredClone(previous));
@@ -104,7 +104,7 @@ function updateNavigationUI(){
   }else if(page==='launch' && conversation){crumbs.push(navLink({type:'loop',key:conversation.launch.key},launchItem()?.loop_definition.name || 'Loop'));crumbs.push('启动准备');
   }else if(page==='editor' && editor){
     if(editor.returnTo?.type==='loop')crumbs.push(navLink(editor.returnTo,'来源 Loop'));
-    crumbs.push(navLink({type:'editor',id:editor.routeId},(editor.loop_definition.name || '草稿')+' · 编辑'));
+    crumbs.push(navLink({type:'editor',id:editor.routeId},(editor.loop_definition.name || '草稿')+' · 查看'));
     if(activeRoute.node)crumbs.push(navLink({type:'editor',id:editor.routeId,node:activeRoute.node},editor.loop_definition.nodes[activeRoute.node]?.label||activeRoute.node));
     if(activeRoute.implementation)crumbs.push(esc(activeRoute.implementation));
     $('editor-back').textContent=editor.returnTo?.type==='loop'?'← 返回 Loop '+(editor.returnTo.tab==='prepare'?'使用准备':'详情'):editor.returnTo?.type==='prepare'?'← 返回启动准备':'← 返回 Loop 库';

@@ -27,6 +27,19 @@ function loopRelationships(bp,fallback=bp.fallback_node){
   if(typeof fallback==='string'&&Object.hasOwn(bp.nodes,fallback))for(const id of Object.keys(bp.nodes))if(id!==fallback)add(id,fallback,'recovery','失败或未覆盖情况仍未解决时，按操作权与运行限制进入已配置兜底；正常等待不触发');
   return edges;
 }
+// Agent-authored explanatory page; execution still comes from the Loop definition.
+function overviewFlowHTML(item){
+  const asset=(item.assets||[]).find(a=>a.path==='docs/flow.html');
+  if(!asset)return '<div class="flow-empty"><h3>尚未绘制整体流程</h3><p>让构建 Agent 根据节点、说明与脚本绘制流程图，保存后即可在这里查看。</p><p class="small muted">平台 Skill 提供现成模板和 render_flow.py；也可通过包文件保存 docs/flow.html。</p></div>';
+  try{
+    const html=new TextDecoder('utf-8',{fatal:true}).decode(Uint8Array.from(atob(asset.base64),c=>c.charCodeAt(0)));
+    // Opaque-origin sandbox: an imported page cannot access platform cookies, DOM or APIs.
+    const policy=`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">`;
+    const style='<style>.am-toolbar,.am-reply-bar,.am-comment-toggle,.am-colophon{display:none!important}body{padding:16px!important}.am-sheet,.am-doc{padding:0!important}.am-head{padding-inline-end:0!important}</style>';
+    return `<iframe class="authored-flow" title="Loop 整体流程图" sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${esc('<!doctype html>'+policy+style+html.replace(/<!doctype[^>]*>/i,''))}"></iframe>`;
+  }catch(error){return '<p class="view-description">流程图文件无法读取，请更新 docs/flow.html。</p>';}
+}
+
 function mapImplementationLabel(item,id,bindings){
   const chosen=Object.hasOwn(bindings,id)?bindings[id]:defaultImplementation(item.implementations[id]);
   const config=implementationOptions(item.implementations[id])[chosen];
@@ -59,7 +72,7 @@ function loopNodePositions(bp,{rowGap=210,maxColumns=3}={}){
 function loopEdgePath(e,a,b,i=0){
   let d,lx,ly;
     if(e.kind==='recovery'){const ay=a.y+(a.height||126),by=b.y+(b.height||126),lane=Math.max(ay,by)+39+(i%3)*10;d=`M ${a.x+160} ${ay} C ${a.x+160} ${lane},${b.x+160} ${lane},${b.x+160} ${by}`;lx=(a.x+b.x)/2+160;ly=lane-8;}
-    else if(e.from===e.to){d=`M ${a.x+40} ${a.y} C ${a.x+10} ${a.y-65},${a.x+185} ${a.y-65},${a.x+160} ${a.y}`;lx=a.x+100;ly=a.y-40;}
+    else if(e.from===e.to){d=`M ${a.x+40} ${a.y} C ${a.x+10} ${a.y-65},${a.x+185} ${a.y-65},${a.x+160} ${a.y}`;lx=a.x+25;ly=a.y-20;}
     else if(e.repeats){const lane=18+(i%3)*12;d=`M ${a.x} ${a.y+45} L ${lane} ${a.y+45} L ${lane} ${lane} L ${b.x+100} ${lane} L ${b.x+100} ${b.y}`;}
     else if(Math.abs(a.y-b.y)>160){const lane=24+(i%3)*12;d=`M ${a.x} ${a.y+45} C ${lane} ${a.y+45},${lane} ${b.y+45},${b.x} ${b.y+45}`;}
     else if(a.y===b.y){const forward=b.x>a.x,sx=forward?a.x+200:a.x,tx=forward?b.x:b.x+200;d=`M ${sx} ${a.y+45} C ${(sx+tx)/2} ${a.y+45},${(sx+tx)/2} ${b.y+45},${tx} ${b.y+45}`;}

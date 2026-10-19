@@ -28,35 +28,34 @@ let recorded;for(let i=0;i<80;i++){recorded=await (await page.request.get(base+'
 await page.locator('[data-tab="decisions"]').click();await page.locator('#inspect [data-complete-wait="waiting"]').click();await page.locator('#event-reply-value input[type=text],#event-reply-value textarea').first().fill('同意，继续');await page.locator('#reply-notice-form > button.primary').click();await page.locator('#notice-dialog').waitFor({state:'hidden'});
 for(let i=0;i<80;i++){recorded=await (await page.request.get(base+'/api/runs/'+runs[0].id)).json();if(recorded.tasks.waiting.status==='completed')break;await page.waitForTimeout(100);}assert.equal(recorded.records.answer[0].value,'同意，继续');assert.equal(recorded.events.length,1);await page.screenshot({path:path.join(root,'delivered.png'),fullPage:true});
 await page.goto(base+'/#run/'+runs[1].id);await page.locator('[data-tab="task-history"]').click();await page.locator('[data-task-row="waiting"]').click();assert(await page.locator('.wait-description').isVisible());await page.locator('[data-task-cancel="waiting"]').click();await page.locator('#task-edit-reason').fill('取消等待验收');await page.locator('#task-edit-submit').click();await page.locator('#task-edit-submit').filter({hasText:'应用修改'}).click();await page.locator('#task-edit-dialog').waitFor({state:'hidden'});assert.equal((await (await page.request.get(base+'/api/runs/'+runs[1].id)).json()).tasks.waiting.status,'cancelled');
-await page.goto(base+'/#loop/'+encodeURIComponent(runs[0].key)+'/flow');await page.locator('[data-version-loop-definition]').click();await page.locator('[data-add-wait="timer"]').click();await page.waitForURL(/implementation\/default$/);const candidate=page.locator('.author-candidate:not([hidden])');await candidate.locator('[data-wait-seconds]').fill('120');await candidate.locator('[data-behavior-rule="1"]').click();const transition=candidate.locator('.selected-transition');await transition.locator('[data-add-transition-notice]').click();await transition.locator('[data-notice-message]').fill('等待结束，可以继续');await page.locator('#editor-save-status').filter({hasText:'草稿已保存'}).waitFor();await page.reload();await candidate.locator('[data-wait-seconds]').waitFor();assert.equal(await candidate.locator('[data-wait-seconds]').inputValue(),'120');const drafts=await (await page.request.get(base+'/api/drafts')).json(),draft=drafts.find(d=>d.loop_definition.id==='research');assert(draft);assert(draft.implementations.wait_1.options.default.lifecycle.transitions.some(r=>r.notify?.[0].message==='等待结束，可以继续'));
-const rulesBefore=structuredClone(draft.implementations.wait_1.options.default.lifecycle.transitions);
-// The common control edits the actual stored rule without changing sibling rules or notifications.
-await candidate.locator('[data-behavior-target="2"]').selectOption('retry');
-await page.locator('#editor-save-status').filter({hasText:'草稿已保存'}).waitFor();await page.reload();await candidate.locator('[data-behavior-target="2"]').waitFor();
-assert.equal(await candidate.locator('[data-behavior-target="2"]').inputValue(),'retry');
-let saved=(await (await page.request.get(base+'/api/drafts')).json()).find(d=>d.id===draft.id);
-const expected=structuredClone(rulesBefore);expected[2].to='retry';assert.deepEqual(saved.implementations.wait_1.options.default.lifecycle.transitions,expected);
-await candidate.locator('[data-behavior-rule="2"]').click();
-const custom=candidate.locator('.selected-transition');await custom.locator('details > summary').filter({hasText:'可选条件'}).click();
-await custom.locator('[data-transition-when]').fill('{"op":"le","args":[{"path":"attempt"},2]}');
-await page.locator('#editor-save-status').filter({hasText:'草稿已保存'}).waitFor();await page.reload();await candidate.locator('[data-behavior-rule="2"]').waitFor();
-// A conditional rule is kept explicit, never flattened by the simple dropdown.
-assert.equal(await candidate.locator('[data-behavior-target="2"]').count(),0);
-saved=(await (await page.request.get(base+'/api/drafts')).json()).find(d=>d.id===draft.id);assert.deepEqual(saved.implementations.wait_1.options.default.lifecycle.transitions[2].when,{op:'le',args:[{path:'attempt'},2]});
-await candidate.locator('.candidate-machine').screenshot({path:path.join(root,'author-behavior.png')});
-await page.setViewportSize({width:390,height:844});await candidate.locator('.candidate-machine').screenshot({path:path.join(root,'author-behavior-mobile.png')});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.setViewportSize({width:1560,height:1080});
-await page.screenshot({path:path.join(root,'author-wait.png'),fullPage:true});
-// Both graph layers use the saved candidate matrix, while the relation canvas retains the wait summary.
+// Agent tools author the wait rules; the browser reads their exact matrix.
+const rpc=async(tool,args)=>{const result=await (await page.request.post(base+'/api/tools',{headers:{'X-Loop-Anything':'workspace'},data:{tool,arguments:args}})).json();assert(result.ok,JSON.stringify(result));return result;};
+let edit=await rpc('copy_loop',{key:runs[0].key,new_version:true});
+edit=await rpc('put_node',{draft_id:edit.draft_id,revision:edit.revision,node_id:'wait_1',label:'等待时间',inputs:[],outputs:[]});
+edit=await rpc('set_implementation',{draft_id:edit.draft_id,revision:edit.revision,node_id:'wait_1',kind:'timer',wait:{seconds:120}});
+let draft=(await rpc('read_loop',{draft_id:edit.draft_id})).loop;
+const lifecycle=structuredClone(draft.implementations.wait_1.options.default.lifecycle);
+lifecycle.transitions[1].notify=[{message:'等待结束，可以继续',route:'demo'}];
+edit=await rpc('set_implementation',{draft_id:edit.draft_id,revision:edit.revision,node_id:'wait_1',lifecycle});
+draft=(await rpc('read_loop',{draft_id:edit.draft_id})).loop;
+await page.goto(base+'/#edit/'+draft.id+'/node/wait_1/implementation/default');
+assert((await page.locator('.reader-candidate').innerText()).includes('120'));
+assert((await page.locator('.reader-candidate .lifecycle-matrix').innerText()).includes('等待结束，可以继续'));
+assert.equal(await page.locator('[data-transition-to],[data-wait-seconds]').count(),0);
+await page.screenshot({path:path.join(root,'reader-wait.png'),fullPage:true});
+// Node details retain wait metadata; the separate state view shows the chosen implementation rules.
 await page.locator('#editor-detail-path a').first().click();
-await page.locator('[data-editor-card="wait_1"] .node-wait').waitFor();
+await page.locator('[data-editor-layer="nodes"]').click();await page.locator('[data-editor-card="wait_1"] .node-wait').waitFor();
 assert((await page.locator('[data-editor-card="wait_1"] .node-wait').innerText()).includes('120'));
 await page.locator('[data-editor-layer="states"]').click();
 await page.locator('#editor-state-overview').waitFor({state:'visible'});
+await page.locator('#editor-state-node').selectOption('wait_1');
 assert.equal(await page.locator('#editor-canvas').isVisible(),false);
 assert(await page.locator('#editor-state-overview .node-notifies').isVisible());
-assert((await page.locator('#editor-edges-list .notice-schedule').innerText()).includes('等待结束，可以继续'));
+assert((await page.locator('#editor-state-overview .lifecycle-matrix').innerText()).includes('等待结束，可以继续'));
+assert(await page.locator('#editor-state-overview .lifecycle-matrix').getAttribute('open')!==null);
 await page.waitForTimeout(200);await page.screenshot({path:path.join(root,'editor-states.png'),fullPage:true});
-await page.locator('[data-editor-layer="relations"]').click();
+await page.locator('[data-editor-layer="nodes"]').click();
 assert.equal(await page.locator('#editor-state-overview').isVisible(),false);
 await page.waitForTimeout(200);await page.screenshot({path:path.join(root,'editor-relations.png'),fullPage:true});
 await page.locator('#editor-save').click();await page.locator('#editor-save-status a').waitFor();

@@ -60,7 +60,7 @@ python3 /平台Skill/scripts/call.py read_task --arguments '{"run_id":"RUN_ID","
 
 后台上下文提供 run_id、execution_id、task_id、token、scope_task、platform_url、platform_client、platform_guide、loop_key、handbook，以及当前节点的 node_id、instructions、skills。安装包中绑定的 Skill 包含实际 resolved_path，可按其目录找到 references 和封装脚本；完整业务状态仍通过作者脚本或平台工具读取。
 
-网页的「唤醒提示词」可编辑、恢复默认、预览。节点候选的提示词随 Loop 分享，修改只影响新版本；既有 Run 及执行保留原配置。网页对话的提示词另存在本机，选用候选命令不会把节点任务提示词带进网页讨论。网页上下文以 tool_url 代替后台身份参数，还包含 preparation、run_id、scope_task、start_requested、messages 和作者 handbook；需要节点 Skill 时可 read_loop/read_task。
+节点候选的唤醒提示词在网页中只读展示，由 Agent 通过平台工具修改，随 Loop 分享；修改只影响新版本，既有 Run 及执行保留原配置。网页对话入口自身的提示词仍可配置、预览。网页对话的提示词另存在本机，选用候选命令不会把节点任务提示词带进网页讨论。网页上下文以 tool_url 代替后台身份参数，还包含 preparation、run_id、scope_task、start_requested、messages 和作者 handbook；需要节点 Skill 时可 read_loop/read_task。
 
 预览不唤醒 Agent，不创建 Run 或取得操作权；尚未生成的运行身份和令牌用占位文字标注。实际唤醒记录保存发送内容，网页在执行尝试或 Agent 回复下可展开查看，平台令牌已遮蔽。以后改提示词不改写旧记录；旧执行没有记录时不从当前模板补造历史。
 
