@@ -4,7 +4,8 @@ import json
 
 # activation, platform responsibility, author responsibility, configuration, limits.
 MECHANISMS = {
-    'flow_diagram': ('author-maintained', '随 Skill 提供现成绘图组件和模板，复用包资产保存，整体流程视图展示已保存页面。', '首次完成流程及修改分支、循环或任务生成逻辑后，结合真实定义和脚本编写并更新流程图。', ['scripts/render_flow.py','assets/flow.md','docs/flow.md','docs/flow.html','put_asset'], '绘图需要 Node.js 20+，查看不需要；不改执行规则，不在打开网页或每轮运行时调用 Agent，不作为保存或运行的前置检查。'),
+    'flow_agent': ('declared', '复用普通 Agent 节点、事件 routes、依赖调度和任务工具；在声明的决策点唤醒，记录实际安排和结果。', '从已有 Skill 提炼阶段，将目标、约束、推进规则和结束条件写入 Loop 说明，流程 Agent 完整读取；声明唤醒事件与可安排工作。', ['Loop.handbook','nodes.*.routes','plans','Loop.global_agent_node','build_plan/edit_tasks/report_task/finish'], '完全确定性流程无需调用流程 Agent。普通节点只操作自身分支；需修改全局设置或其他支线时显式选择 global_agent_node。长期等待交给平台，规则文本自身不会触发唤醒。'),
+    'flow_diagram': ('author-maintained', '随 Skill 提供现成绘图组件和模板，复用包资产保存，整体流程视图展示已保存页面。', '首次完成流程及修改节点、分支、循环或任务生成逻辑后，逐一画出定义中的全部节点，包括按需分支与异常兜底；不以汇总框替代真实节点，保存前对照节点清单并预览。', ['scripts/render_flow.py','assets/flow.md','docs/flow.md','docs/flow.html','put_asset'], '绘图需要 Node.js 20+，查看不需要；不改执行规则，不在打开网页或每轮运行时调用 Agent，不作为保存或运行的前置检查。'),
     'machine_identity': ('automatic', '按需生成并持久保存完整机器 UUID，独立于工作区；communication_status.self 与唤醒上下文直接提供当前机器和工作区身份。', '读取 self；按成员返回的 instance_id 与 agent_id 寻址，不从 MAC、主机名或会话推断身份。', ['communication_status.self','context.self','communication_config(operation=identity)'], '身份属于连接的平台用户环境。instance_id 是 workspace_id 的兼容别名。移动/改名不改身份；副本显式建立新工作区身份，历史不接管。身份存储不要随业务数据库复制到另一机器。'),
     'loop_edit_protection': ('configured', '可选编辑口令按Loop身份保护定义、节点实现、手册及随包资源；草稿和版本共用，导出导入携带校验信息。', '按需set_loop_password，受保护编辑提供对应Loop的loop_password。', ['set_loop_password','copy_loop','publish_loop','export_loop'], '日常Run、通信和终端不需要全局解锁；平台自动处理普通操作执行标识，实际worker仍受执行范围、版本和过期结果校验。'),
     'communication_context': ('automatic/operator', '通信查询默认摘要，日志按需分段读取；外援续跑及追问不嵌入完整通信历史，保留业务上下文、结果及原 session。', '优先读状态和结构化结果；排错时请求 include_logs 或 include_details，用返回的 log_cursor/log_offset 继续读取。', ['read_assistance.include_logs','read_assistance.include_details','read_assistance.max_chars','read_assistance.after/offset'], '单页日志默认 4000、最多 16000 字符；完整诊断按需返回，原始日志保留；结构化业务结果不自动删减。'),
@@ -32,7 +33,7 @@ MECHANISMS = {
     'task_refs': ('declared', '把业务 ref 解析为真实 Task/record 身份，支持同一报告各批次间前向引用。', '提供 Run 内唯一名称及明确的汇总成员；循环名称包含轮次。', ['steps.*.ref','steps.*.after_refs','inputs.*.task_ref/task_refs'], '引用缺失或重复会拒绝提交；没有自动推断成员的任务组调度器。'),
     'record_versions': ('automatic', '任务输出引用固定生产者版本，保存真实输入来源；汇总可读取不同版本的记录。', '通过 task_ref/task_refs 声明来源；需要覆盖版本时明确指定。', ['inputs.*.revision/revisions','resolve_refs'], '普通 record 来源未指定版本时沿用最新值语义；版本固定不校验远端文件内容。'),
     'task_edits': ('operator', '按 revision 和范围检查预览或原子应用有序任务编辑，失败时整组回滚。', '选择本次改动并检查预览。', ['edit_tasks.changes','edit_tasks.preview','Timeline.revision'], '独立工具调用不是跨调用事务；结果和后继一起提交可用 routes。'),
-    'lifecycle': ('declared', '执行明确状态转移、同 Task 重试、停止异常观察、按配置进入兜底；记录未覆盖事件。', '外部适配器报告有限事实；声明转移、重试条件和业务修复方法。', ['implementations.*.lifecycle','implementations.*.command/observe','Loop.fallback_node'], '正常排队或耗时不会自动成为业务失败；重试次数与修复策略按明确配置执行。'),
+    'lifecycle': ('declared', '通用状态机独立计算转移，Timeline 统一保存状态、结果和历史；沿原事务应用同 Task 重试、异常观察与配置的兜底。', '外部适配器报告有限事实；沿用 lifecycle 声明转移、重试条件和业务修复方法，无需业务专属转移函数或状态仓库。', ['implementations.*.lifecycle','implementations.*.command/observe','Loop.fallback_node'], '已有 Loop 无需迁移；waiting 仍带外部任务身份、观察时间及查询错误。正常排队或耗时不会自动成为业务失败；重试、去重与原子提交语义不变。'),
     'waits': ('declared', '原生 timer/event/approval Task 表达等待；外部事件按名称和关联键匹配，状态持久化。', '声明等待时间、事件键或审批任务，以及收到结果后的 routes。', ['implementations.*.kind','implementations.*.wait','implementations.*.event'], '通知本身不暂停运行；等待需有明确 Task。聊天桥接和业务事件来源由适配器接入。'),
     'notifications': ('configured', '按出口排队投递、去重、保存回执；未配置出口显示等待配置，投递失败保留故障。', '配置实际发送命令/目标，声明通知内容和询问关联键。', ['platform notification channels','settings.notification_route','lifecycle.transitions.*.notify','notify.reply'], '本地通知区收录不代表外部送达；平台不会自行安装聊天机器人。'),
     'scopes': ('automatic', '按父子归属保护操作范围，允许不相交支线并行，维护获取和释放操作权。', '让任务归属对应真实责任，完成或明确等待后 finish；全局判断使用明确的全局节点。', ['Task.parent_id','Loop.global_agent_node','acquire_run/finish'], '依赖与归属含义不同；父 Agent 持有范围时，子 Agent 需等待释放。'),
@@ -53,7 +54,8 @@ def authoring_context():
             'events': '按声明处理生命周期、报告去重、结果与后继原子提交、重试和已配置兜底。',
             'interaction': '原生等待、暂停点、通知回执、显式 Run 收口，以及结构/任务/结果/历史工作台、实时 Agent 输出、可选交互终端及原生会话恢复。',
         },
-        'flow_diagram': {'tool': 'read_capabilities', 'arguments': {'capability': 'flow_diagram'}, 'reference': 'references/flow-diagram.md', 'guidance': '首次完成流程及修改业务分支或循环后，当前构建 Agent 用随 Skill 提供的 render_flow.py 和模板更新整体流程图；复用包资产保存，不新建绘图服务或强制检查。'},
+        'flow_agent': {'tool': 'read_capabilities', 'arguments': {'capability': 'flow_agent'}, 'reference': 'references/flow-agent.md', 'guidance': '从已有 Skill 构建时，先让流程 Agent 处理不确定推进，把确定动作及长时间等待交给平台；直接读取完整 Loop 说明，保留运行记录，不要求先穷举所有转移。'},
+        'flow_diagram': {'tool': 'read_capabilities', 'arguments': {'capability': 'flow_diagram'}, 'reference': 'references/flow-diagram.md', 'guidance': '首次完成流程及修改节点、业务分支或循环后，当前构建 Agent 用随 Skill 提供的 render_flow.py 和模板更新整体流程图；逐一展示定义中的全部节点，包括按需分支与异常兜底，不用汇总框替代，保存前核对节点清单；复用包资产保存，不新建绘图服务或强制检查。'},
         'author_provides': ['业务意图与方法、需要交付的结果和允许的动作。', '节点契约、候选实现及真实外部接口适配。', '声明式依赖/路由/恢复策略、凭据与环境配置、验收预期。'],
         'construction_rule': '讨论新 Loop 或调整方案时，结合用户目标主动推荐会改变流程组织的相关能力，并说明实际帮助，融入方案讨论；无需等用户询问。已有方案合适或用户已有明确选择时直接继续，不逐项宣读、不为展示能力增加节点，不增加检查、打分、审批或确认门槛。按需参考能力地图开头的特性与构建思路，再读取相关机制的 activation/configuration；新增脚本承担业务或外部接口职责，真实机制缺口如实说明。',
         'details': {'tool':'read_capabilities','arguments':{},'reference':'references/platform-capabilities.md'},
@@ -67,6 +69,22 @@ def mechanism_details(name):
 
 
 PATTERNS = {
+    'flow_agent_decision': {
+        'use_when': '已有 Skill 的后续动作需要临场判断，先跑通，再逐步固化稳定规则。',
+        'capabilities': ['flow_agent','event_routes','plans','scopes'],
+        'prerequisites': 'Loop handbook 保存目标、约束和已有业务方法，无需穷举所有分支；源节点有 result 对象输出；下列 node 可用 put_node 保存，plan.steps 用 put_step 保存。Agent 候选配置实际 CLI 或群组 dispatch。',
+        'node': {'node_id':'flow_agent','instructions':'完整读取 Loop handbook，结合当前目标与结果判断下一步；提交决策和依据，安排后续后 finish 退出。',
+                 'inputs':[{'name':'trigger','type':'object'},{'name':'result','type':'object'}],
+                 'outputs':[{'name':'decision','type':'object'}]},
+        'source_routes': [{'id':'decide','event':'completed','plan':'decide_next','values':{
+            'record':{'$':'task.outputs.result.id'},
+            'trigger':{'task_id':{'$':'task.id'},'transition':{'$':'transition'}}}}],
+        'plan': {'steps':{'decide':{'node':'flow_agent','inputs':{
+            'trigger':{'literal':{'$':'values.trigger'}},'result':{'record':{'$':'values.record'}}}}}},
+        'execution': '流程 Agent 完整读取 Loop handbook（唤醒上下文或 read_timeline 返回），用 read_task/read_timeline 取当前事实，build_plan/add_task 或 edit_tasks 安排后续；report_task 提交 decision 后 finish 退出。已声明 routes 的后续只提交映射结果，不重复安排。确定的脚本或等待节点完成后可再沿同样路由唤醒流程 Agent。',
+        'scope': '本分支决策沿用普通节点范围；需要改全局目标、收口或调整其他支线时用 set_loop(global_agent_node="flow_agent") 显式配置全局节点。global_agent_node 赋予范围，不自行轮询或触发。不要把正常判断配置为 fallback。',
+        'verification': ['test_loop','read_record'],
+    },
     'shared_space_onboarding': {
         'use_when':'各机器独立安装后，首次寻找共同群组并开放具名 Agent。',
         'capabilities':['agent_communication'],
@@ -153,6 +171,7 @@ def render_guide():
            '讨论构建方案时，主动选择与用户目标相关、会影响工作组织的特性，说明可以怎样组织及其帮助。用户无需先知道这些能力。下表提供构建思路，按需使用；已有方案合适时直接继续，不逐项宣读、不强制覆盖所有特性，不增加检查或确认步骤。', '',
            '| 用户目标中的线索 | 可利用的特性 | 可以提出的构建建议 | 按需深入 |',
            '| --- | --- | --- | --- |',
+           '| 已有 Skill，后续动作需要临场判断 | 自然语言流程 Agent 与确定规则混合推进 | 先把 Skill 中的长任务和等待拆出，已确定转移用规则，其余让流程 Agent 决定；多次运行后依据记录逐步固化。 | [流程 Agent](flow-agent.md) |',
            '| 耗时训练、排队、等待外部结果 | Agent 只在需要判断时出现 | 拆开方案制定、自动执行与等待、结果分析。平台按时调用短查询脚本，或接收完成事件，随后推进到下一个决策点。 | [生命周期与监控](#lifecycle)、[持久等待](#waits) |',
            '| 实验数量、分支或下一轮方案依赖结果 | 后续任务可以根据结果生成 | 先定义可复用的工作模板，让 Agent 提交本轮参数，平台展开任务并汇总结果；按明确条件决定下一轮或结束。 | [结果触发](#event_routes)、[批量任务](#plans)、[结束条件](#termination) |',
            '| 工作持续多天、需要换会话或换入口继续 | 工作状态独立于聊天会话保存 | 把长期工作划成阶段，目标、进度和结果存入 Timeline；后续 Agent 读取当前状态继续处理。 | [持久状态](#timeline_storage)、[执行恢复](#execution_recovery) |',

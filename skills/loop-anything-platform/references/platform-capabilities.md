@@ -8,6 +8,7 @@
 
 | 用户目标中的线索 | 可利用的特性 | 可以提出的构建建议 | 按需深入 |
 | --- | --- | --- | --- |
+| 已有 Skill，后续动作需要临场判断 | 自然语言流程 Agent 与确定规则混合推进 | 先把 Skill 中的长任务和等待拆出，已确定转移用规则，其余让流程 Agent 决定；多次运行后依据记录逐步固化。 | [流程 Agent](flow-agent.md) |
 | 耗时训练、排队、等待外部结果 | Agent 只在需要判断时出现 | 拆开方案制定、自动执行与等待、结果分析。平台按时调用短查询脚本，或接收完成事件，随后推进到下一个决策点。 | [生命周期与监控](#lifecycle)、[持久等待](#waits) |
 | 实验数量、分支或下一轮方案依赖结果 | 后续任务可以根据结果生成 | 先定义可复用的工作模板，让 Agent 提交本轮参数，平台展开任务并汇总结果；按明确条件决定下一轮或结束。 | [结果触发](#event_routes)、[批量任务](#plans)、[结束条件](#termination) |
 | 工作持续多天、需要换会话或换入口继续 | 工作状态独立于聊天会话保存 | 把长期工作划成阶段，目标、进度和结果存入 Timeline；后续 Agent 读取当前状态继续处理。 | [持久状态](#timeline_storage)、[执行恢复](#execution_recovery) |
@@ -26,11 +27,21 @@
 
 需要落实方案时再读取对应机制。activation=automatic 表示平台自动执行；declared/configured 需要作者声明或使用者配置；operator 需要显式操作。
 
+## flow_agent
+
+- 生效方式：declared
+- 平台承担：复用普通 Agent 节点、事件 routes、依赖调度和任务工具；在声明的决策点唤醒，记录实际安排和结果。
+- 作者提供：从已有 Skill 提炼阶段，将目标、约束、推进规则和结束条件写入 Loop 说明，流程 Agent 完整读取；声明唤醒事件与可安排工作。
+- 配置入口：`Loop.handbook`、`nodes.*.routes`、`plans`、`Loop.global_agent_node`、`build_plan/edit_tasks/report_task/finish`
+- 边界：完全确定性流程无需调用流程 Agent。普通节点只操作自身分支；需修改全局设置或其他支线时显式选择 global_agent_node。长期等待交给平台，规则文本自身不会触发唤醒。
+- 工具入口：put_node、put_step、set_implementation、set_loop、read_timeline、read_task、build_plan、edit_tasks、report_task、finish、test_loop
+- 详细说明：[references/flow-agent.md](flow-agent.md)
+
 ## flow_diagram
 
 - 生效方式：author-maintained
 - 平台承担：随 Skill 提供现成绘图组件和模板，复用包资产保存，整体流程视图展示已保存页面。
-- 作者提供：首次完成流程及修改分支、循环或任务生成逻辑后，结合真实定义和脚本编写并更新流程图。
+- 作者提供：首次完成流程及修改节点、分支、循环或任务生成逻辑后，逐一画出定义中的全部节点，包括按需分支与异常兜底；不以汇总框替代真实节点，保存前对照节点清单并预览。
 - 配置入口：`scripts/render_flow.py`、`assets/flow.md`、`docs/flow.md`、`docs/flow.html`、`put_asset`
 - 边界：绘图需要 Node.js 20+，查看不需要；不改执行规则，不在打开网页或每轮运行时调用 Agent，不作为保存或运行的前置检查。
 - 工具入口：read_loop、put_asset
@@ -309,10 +320,10 @@
 ## lifecycle
 
 - 生效方式：declared
-- 平台承担：执行明确状态转移、同 Task 重试、停止异常观察、按配置进入兜底；记录未覆盖事件。
-- 作者提供：外部适配器报告有限事实；声明转移、重试条件和业务修复方法。
+- 平台承担：通用状态机独立计算转移，Timeline 统一保存状态、结果和历史；沿原事务应用同 Task 重试、异常观察与配置的兜底。
+- 作者提供：外部适配器报告有限事实；沿用 lifecycle 声明转移、重试条件和业务修复方法，无需业务专属转移函数或状态仓库。
 - 配置入口：`implementations.*.lifecycle`、`implementations.*.command/observe`、`Loop.fallback_node`
-- 边界：正常排队或耗时不会自动成为业务失败；重试次数与修复策略按明确配置执行。
+- 边界：已有 Loop 无需迁移；waiting 仍带外部任务身份、观察时间及查询错误。正常排队或耗时不会自动成为业务失败；重试、去重与原子提交语义不变。
 - 工具入口：set_implementation、report_task、change_task
 - 详细说明：[references/build-reference.md](build-reference.md)
 
@@ -407,6 +418,88 @@
 - 详细说明：[references/build.md](build.md)
 
 ## 常见组合
+
+### flow_agent_decision
+
+已有 Skill 的后续动作需要临场判断，先跑通，再逐步固化稳定规则。
+
+```json
+{
+  "use_when": "已有 Skill 的后续动作需要临场判断，先跑通，再逐步固化稳定规则。",
+  "capabilities": [
+    "flow_agent",
+    "event_routes",
+    "plans",
+    "scopes"
+  ],
+  "prerequisites": "Loop handbook 保存目标、约束和已有业务方法，无需穷举所有分支；源节点有 result 对象输出；下列 node 可用 put_node 保存，plan.steps 用 put_step 保存。Agent 候选配置实际 CLI 或群组 dispatch。",
+  "node": {
+    "node_id": "flow_agent",
+    "instructions": "完整读取 Loop handbook，结合当前目标与结果判断下一步；提交决策和依据，安排后续后 finish 退出。",
+    "inputs": [
+      {
+        "name": "trigger",
+        "type": "object"
+      },
+      {
+        "name": "result",
+        "type": "object"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "decision",
+        "type": "object"
+      }
+    ]
+  },
+  "source_routes": [
+    {
+      "id": "decide",
+      "event": "completed",
+      "plan": "decide_next",
+      "values": {
+        "record": {
+          "$": "task.outputs.result.id"
+        },
+        "trigger": {
+          "task_id": {
+            "$": "task.id"
+          },
+          "transition": {
+            "$": "transition"
+          }
+        }
+      }
+    }
+  ],
+  "plan": {
+    "steps": {
+      "decide": {
+        "node": "flow_agent",
+        "inputs": {
+          "trigger": {
+            "literal": {
+              "$": "values.trigger"
+            }
+          },
+          "result": {
+            "record": {
+              "$": "values.record"
+            }
+          }
+        }
+      }
+    }
+  },
+  "execution": "流程 Agent 完整读取 Loop handbook（唤醒上下文或 read_timeline 返回），用 read_task/read_timeline 取当前事实，build_plan/add_task 或 edit_tasks 安排后续；report_task 提交 decision 后 finish 退出。已声明 routes 的后续只提交映射结果，不重复安排。确定的脚本或等待节点完成后可再沿同样路由唤醒流程 Agent。",
+  "scope": "本分支决策沿用普通节点范围；需要改全局目标、收口或调整其他支线时用 set_loop(global_agent_node=\"flow_agent\") 显式配置全局节点。global_agent_node 赋予范围，不自行轮询或触发。不要把正常判断配置为 fallback。",
+  "verification": [
+    "test_loop",
+    "read_record"
+  ]
+}
+```
 
 ### shared_space_onboarding
 

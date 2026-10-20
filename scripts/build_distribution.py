@@ -36,7 +36,7 @@ with tempfile.TemporaryDirectory() as folder:
             for source in sorted((root / directory).rglob('*')):
                 if source.is_file() and '__pycache__' not in source.parts and source.suffix in ('.py', '.md', '.json', '.html', '.css', '.js', '.mjs', '.txt'):
                     archive.write(source, prefix + source.relative_to(root).as_posix())
-        for name in ('agent-integration.md', 'timeline.md', 'loop-packages.md', 'implementation-selection.md', 'development.md', 'user-guide.md'):
+        for name in ('installation.md', 'agent-integration.md', 'timeline.md', 'loop-packages.md', 'implementation-selection.md', 'development.md', 'user-guide.md'):
             archive.write(root / 'docs' / name, prefix + 'docs/' + name)
     print(filename)
     # Static entry and Skills can be read before installing or running the platform.

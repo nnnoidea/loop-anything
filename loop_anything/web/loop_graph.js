@@ -126,6 +126,20 @@ function nodeInputsHTML(bp,id,editable=false){
   const rows=nodeInputRows(bp,id);if(!Object.keys(bp.nodes[id].inputs||{}).length)return '';
   return `<section class="node-input-sources"><h4>输入从哪里来</h4>${rows.length?rows.map(row=>`<div class="input-source ${row.missing?'input-gap':''}"><strong>${esc(row.port)}</strong><span>${esc(row.text)}</span><small>${esc(row.plan?row.plan+' / '+row.key:'入口输入')}</small>${editable?`<button type="button" data-input-location="${esc(JSON.stringify(row.plan?['plans',row.plan,'steps',row.key,'inputs',row.port]:['nodes',id,'inputs',row.port]))}">定位输入</button>`:''}</div>`).join(''):'<p class="small muted">尚未加入构建模板；创建具体任务时需提供这些输入。</p>'}</section>`;
 }
+function nodeStateHTML(item,id,config){
+  const bp=item.loop_definition,edges=loopRelationships(bp,effectiveFallback(item));
+  const label=n=>bp.nodes[n]?.label||n;
+  const cards=rows=>rows.map(e=>{const [from,to,condition]=relationshipText(e),tone=e.kind==='recovery'?'failure':e.kind==='planning'?'other':'normal';return `<article class="state-relation tone-${tone}"><span class="transition-tag tone-${tone}">${{dependency:'依赖就绪',routing:'事件创建任务',planning:'可安排任务',recovery:'异常兜底'}[e.kind]}</span><strong>${esc(label(e.from))} → ${esc(label(e.to))}</strong><p>${esc(from)} → ${esc(to)}</p><small>${esc(condition)}</small><details><summary>关系依据</summary><p>${esc(e.details.join('；'))}</p></details></article>`;}).join('');
+  const incoming=edges.filter(e=>e.to===id&&e.from!==id),outgoing=edges.filter(e=>e.from===id&&e.to!==id),self=edges.filter(e=>e.from===id&&e.to===id);
+  const section=(direction,title,rows,empty)=>`<section class="state-direction" data-state-panel="${direction}" hidden><h4>${title}<span>${rows.length} 条关系</span></h4>${cards(rows)||`<p class="small muted">${empty}</p>`}</section>`;
+  return `<div class="node-state-view"><div class="state-direction-tabs" role="group" aria-label="转移方向"><button type="button" data-state-direction="internal" aria-pressed="true">↺ 本节点内</button><button type="button" data-state-direction="outgoing" aria-pressed="false">↗ 转出本节点 · ${outgoing.length}</button><button type="button" data-state-direction="incoming" aria-pressed="false">↙ 转入本节点 · ${incoming.length}</button></div><section class="state-internal" data-state-panel="internal"><h3>↺ 本节点内</h3>${self.length?`<details class="state-self"><summary>再次安排本节点 · ${self.length} 条关系（创建新 Task）</summary>${cards(self)}</details>`:''}${config?lifecycleMatrix(config,undefined,true):'<p class="muted">该节点尚未配置实现。</p>'}</section>${section('outgoing','↗ 从本节点转出',outgoing,'未声明此节点到其他节点的关系。')}${section('incoming','↙ 转入本节点',incoming,'未声明其他节点到此处的关系。')}<p class="small muted" data-state-panel="relations-note" hidden>转入／转出为定义中声明的任务关系：依赖推进已有任务，事件或显式安排可创建新任务；不是一次执行内的状态跳转。运行中由 Agent / 脚本临时安排的关系不在此推断。</p></div>`;
+}
+document.addEventListener('click',event=>{
+  const button=event.target.closest('[data-state-direction]');if(!button)return;
+  const root=button.closest('.node-state-view'),direction=button.dataset.stateDirection;
+  root.querySelectorAll('[data-state-direction]').forEach(b=>b.setAttribute('aria-pressed',String(b===button)));
+  root.querySelectorAll('[data-state-panel]').forEach(p=>p.hidden=p.dataset.statePanel==='relations-note'?direction==='internal':p.dataset.statePanel!==direction);
+});
 function nodeFlowHTML(bp,id,edges,editable=false){
   const related=edges.filter(e=>e.from===id||e.to===id),label=n=>bp.nodes[n]?.label||n;
   return `<section class="node-flow"><h4>任务关系与推进</h4>${related.length?related.map(e=>{const [from,to,condition]=relationshipText(e);return `<div class="flow-relation ${e.kind}" data-related-from="${esc(e.from)}" data-related-to="${esc(e.to)}" data-related-kind="${esc(e.kind)}"><strong>${esc(label(e.from))} → ${esc(label(e.to))}</strong><span>${esc(from)} → ${esc(to)}</span><small>${esc(condition)}</small><small>${esc(e.details.join('；'))}</small></div>`;}).join(''):'<p class="small muted">未声明固定关联；具体工作按运行中明确安排的任务推进。</p>'}${nodeInputsHTML(bp,id,editable)}</section>`;

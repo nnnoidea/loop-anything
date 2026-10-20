@@ -554,38 +554,30 @@ class TimelineRuntime:
             raise Invalid('submitted needs the external task ID')
         if 'envelope' in report and event != 'completed':
             raise Invalid('Only completed reports may commit outputs or arrange tasks')
-        state = e.get('lifecycle_state', lifecycle_definition(e['implementation'])['initial'])
-        rules = lifecycle_definition(e['implementation'])['transitions']
-        candidates = [r for r in rules if r['from'] == state and r['event'] == event]
+        from loop_anything.runtime.transitions import decide_transition, transition_effects
+        lifecycle = lifecycle_definition(e['implementation'])
+        state = e.get('lifecycle_state', lifecycle['initial'])
         context = {'inputs': e['inputs'], 'parameters': e['parameters'], 'settings': run['settings'],
                    'attempt': e['attempt'], 'task_revision': e.get('task_revision'),
                    'detail': report.get('detail', {}), 'outputs': report.get('envelope', {}).get('outputs', {})}
-        matches, issue = [], None
-        try:
-            matches = [r for r in candidates if 'when' not in r or evaluate(r['when'], context) is True]
-        except (KeyError, IndexError, TypeError, ValueError) as exc:
-            issue = 'Invalid transition condition: ' + str(exc)
-        if len(matches) != 1 and issue is None:
-            issue = ('Ambiguous transitions' if len(matches) > 1 else 'No matching transition' if candidates else 'Uncovered transition') + ': ' + state + ' + ' + event
-        rule = matches[0] if len(matches) == 1 and issue is None else None
         task = run['tasks'][e['task_id']]
-        parameters = copy.deepcopy(task['spec'].get('parameters', {}))
-        if rule and rule['to'] == 'retry':
+        decision = decide_transition(lifecycle, state, event, context, task['spec'].get('parameters', {}))
+        rule, matches, issue = decision['rule'], decision['matches'], decision['issue']
+        if rule and rule['to'] == 'retry' and issue is None:
             try:
-                from loop_anything.runtime.timeline_model import expand
-                parameters.update(expand(rule.get('parameters', {}), context))
-                candidate = dict(task['spec'], parameters=parameters)
+                candidate = dict(task['spec'], parameters=decision['parameters'])
                 check_task(run['loop_definition'], candidate)
                 check_selection(run, candidate)
             except (KeyError, IndexError, TypeError, ValueError) as exc:
                 issue = 'Invalid retry parameters: ' + str(exc)
-        notices=[]
+        notices = decision['notices']
         if rule and issue is None:
-            from loop_anything.runtime.timeline_model import expand
-            try:
-                notices=expand(rule.get('notify',[]),context)
-                for notice in notices:validate_notice(notice)
-            except (Invalid,KeyError,IndexError,TypeError,ValueError) as exc:issue='Invalid notification parameters: '+str(exc)
+            issue = decision['notice_issue']
+            if issue is None:
+                try:
+                    for notice in notices:validate_notice(notice)
+                except (Invalid, KeyError, IndexError, TypeError, ValueError) as exc:
+                    issue = 'Invalid notification parameters: ' + str(exc)
         routed_tasks, route_firings = [], []
         if rule and issue is None:
             from loop_anything.runtime.routing import prepare_routes
@@ -599,35 +591,23 @@ class TimelineRuntime:
                     raise
                 # An invalid route on a platform-generated error must itself remain actionable.
                 issue = str(exc)
-        matched = rule is not None and issue is None
-        if event == 'check_error':
-            e['observation_error'] = str(report.get('detail', {}).get('message') or 'Observation failed; external state is unknown')
+        # Decide and apply within the same Store.edit transaction: no stale decision
+        # queue or second state store. Result validation/commit remains the writer's job.
+        effects = transition_effects(decision, report, kind, external_id, delay,
+                                     time.time(), issue=issue)
+        matched, target = effects['accepted'], effects['target']
+        for field in effects['remove_execution']:
+            e.pop(field, None)
+        if effects['complete']:
+            self.commit_in_run(run, e, report.get('envelope', {}))
+        e.update(effects['execution'])
+        task.update(effects['task'])
         if matched:
-            if event != 'check_error':
-                e.pop('observation_error', None)
-            target = rule['to']
-            if target == 'completed':
-                self.commit_in_run(run, e, report.get('envelope', {}))
-            elif target in ('fault', 'retry', 'agent'):
-                e.update(status='fault', error=str(report.get('detail', {}).get('message') or event))
-                task['status'] = 'retrying' if target == 'retry' else 'fault'
-                if target == 'retry':
-                    e['retry'] = {'status': 'pending', 'report_id': report['report_id'], 'parameters': parameters}
-                    task['wait_reasons'] = [{'reason': 'retry_pending', 'detail': 'Waiting for process exit and operation scope before retry'}]
-            else:
-                if kind == 'external' and external_id:
-                    e.update(external_id=external_id, poll_after=delay, wake_at=time.time() + delay)
-                    e['status'] = task['status'] = 'waiting'
-            e['lifecycle_state'] = target
             for spec, origin in routed_tasks:
                 add_task(run, spec, origin)
             for firing in route_firings:
                 Store.log(run, 'route_fired', 'Event expanded plan: ' + firing['plan'], e['id'],
                           dict(firing, task_id=task['id'], report_id=report['report_id'], event=event))
-        else:
-            target = state
-            e.update(status='fault', error=issue or 'Transition did not match')
-            task['status'] = 'fault'
         detail = {'from': state, 'event': event, 'to': target, 'source': source, 'accepted': matched,
                   'report_id': report['report_id'], 'detail': copy.deepcopy(report.get('detail', {})),
                   'rule': copy.deepcopy(rule), 'attempt': e['attempt'], 'task_revision': e.get('task_revision'),

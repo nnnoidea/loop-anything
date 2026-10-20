@@ -30,6 +30,27 @@ test('full transition matrix preserves each condition, parameter update and noti
   assert.equal((html.match(/<tr class=/g)||[]).length,2);
   assert.equal(JSON.stringify(ctx.config),before);
 });
+test('state diagram separates normal self progress from failed monitoring and keeps custom events neutral',()=>{
+  ctx.config={kind:'external',lifecycle:{initial:'waiting',transitions:[
+    {from:'waiting',event:'progress',to:'waiting'},
+    {from:'waiting',event:'check_error',to:'waiting'},
+    {from:'waiting',event:'custom_error_named_but_unknown',to:'waiting'},
+    {from:'waiting',event:'failed',to:'retry'},
+    {from:'waiting',event:'failed',to:'agent'}
+  ]}};
+  const before=JSON.stringify(ctx.config),html=run('lifecycleDiagram(config)');
+  assert.equal((html.match(/data-lifecycle-to="waiting"/g)||[]).length,3);
+  for(const text of ['tone-normal','tone-failure','tone-other','tone-retry','tone-agent','停止检查，等待恢复监控','规则 5'])assert.ok(html.includes(text),text);
+  assert.equal(JSON.stringify(ctx.config),before);
+});
+test('node state view separates incoming, outgoing and new self tasks without inventing transitions or changing the definition',()=>{
+  ctx.item={loop_definition:{schema_version:2,entry:'a',fallback_node:'repair',nodes:{a:{label:'入口',plan_nodes:['b']},b:{label:'工作',plan_nodes:['b'],routes:[{id:'again',event:'completed',plan:'down',when:{eq:[1,1]}}]},c:{label:'下游'},repair:{}},plans:{down:{steps:{b:{node:'b'},c:{node:'c',after:['b']}}}}},implementations:{}};
+  const before=JSON.stringify(ctx.item),html=run('nodeStateHTML(item,"b",config)');
+  for(const text of ['转入本节点','从本节点转出','本节点内','入口 → 工作','工作 → 下游','工作 → repair','创建新 Task','可安排任务','事件创建任务','满足条件时','执行内转移矩阵'])assert.ok(html.includes(text),text);
+  assert.equal(JSON.stringify(ctx.item),before);
+  ctx.item.settings={fallback_node:null};
+  assert.doesNotMatch(run('nodeStateHTML(item,"b",config)'),/工作 → repair/);
+});
 
 const reader=fs.readFileSync('loop_anything/web/authoring.js','utf8').split('const readerAgentDialog=')[0];
 vm.runInContext(reader,ctx);

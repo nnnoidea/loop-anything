@@ -32,7 +32,7 @@ function editorLocked(){return page==='editor'&&editor&&editAccess.loop_id===edi
 function applyEditorLock(){
   const locked=editorLocked(),root=$('loop_definition-editor');if(!root)return;
   const view='.close-dialog,#editor-back,#editor-json,#loop-package,#expand-editor-detail,#canvas-zoom-in,#canvas-zoom-out,#canvas-zoom-reset,#canvas-fit,#canvas-fullscreen,[data-editor-layer],[data-editor-node],[data-edit-edge],[data-editor-implementation],[data-input-location],[data-locate-node],[data-locate-plan],[data-open-scheme-asset],[data-scheme-section],[data-prompt-preview],#reader-agent,#editor-state-node,#editor-state-implementation';
-  const controls=[...root.querySelectorAll('input,textarea,select,button')].filter(el=>!el.matches(view));
+  const controls=[...root.querySelectorAll('input,textarea,select,button')].filter(el=>!el.matches(view+', [data-state-direction]'));
 
   for(const control of controls){
     if(locked){if(!control.hasAttribute('data-loop-lock'))control.dataset.loopLock=String(control.disabled);control.disabled=true;}

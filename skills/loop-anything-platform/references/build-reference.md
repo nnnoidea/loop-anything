@@ -168,6 +168,8 @@ Agent 候选支持 `prompt` 字符串，与 command 一起保存、分享；已�
 
 ## 执行生命周期与附属监控
 
+状态保存和转移计算已分开：Timeline 保存事实、任务状态与历史，通用状态机按 lifecycle 计算转移，平台统一提交状态、结果与命中的后续安排。作者继续使用 set_implementation、routes 和 report_task；已有 Loop 无需迁移，不必编写独立的状态仓库或调用内部计算函数。waiting 的外部任务身份、观察时间及查询错误仍分别保存，不能仅凭状态名称判断是否正在正常观察。
+
 同步/异步由候选实现决定，同一节点可切换实现。`set_implementation` 保存候选时会填入明确的 `lifecycle: {initial, transitions}` 初始模板；`read_loop` 可查看，通过 set_implementation 更新转移矩阵。模板不是业务决策。没有 lifecycle 的旧包保留原文；查看时展示对应初始模板，派发时将实际规则保存到执行快照。
 
 转移行是 `{from, event, to}`，同一状态/事件可以有多行，但每行必须声明不同的 `when` 条件，运行时必须恰好命中一行；不按行顺序选择。`when` 使用现有确定性表达式，读取 inputs、parameters、settings、detail、outputs、attempt（执行次数，从 1 开始）和 task_revision。状态和事件 ID 使用字母、数字、下划线或连字符。`initial` 指定执行开始时的阶段；completed、fault、retry、agent 是本次执行的出口，不能作为普通阶段继续向外转移。retry 会让同一 Task 开始下一次执行；agent 交给运行已配置的兜底 Agent，未配置时保留异常。进入 completed 只能报告 completed 并一次提交全部输出，通过节点的输出和 assertions 校验。生命周期状态表示这次执行的阶段；任务仍可能在执行之前等待输入、权限或暂停点。

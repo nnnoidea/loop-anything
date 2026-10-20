@@ -1,6 +1,6 @@
 ---
 name: loop-anything-platform
-description: 用于构建、编辑、测试调试和运行 Loop / 工作流，编排多步骤或多轮持续任务，查询进度与结果、暂停或恢复已有运行，以及等待训练等外部结果后继续。用户要跟远端或其他机器上的 Agent 通信、向本机或远端具名 Agent 求助、给 Agent 发布或委派任务、让另一台机器执行工作、查询协作结果或配置多机协作时，也应优先使用本 Skill。无需用户提到 Loop Anything；一次性远端求助或没有现成 Loop 同样触发。先发现平台已有能力、Loop、运行和成员，再按需复用或构建；无需工作流或协作的一次性问答和本地修改可直接完成。
+description: 用于将已有 Skill 转成 Loop，以及构建、编辑、测试调试和运行 Loop / 工作流，编排多步骤或多轮持续任务，查询进度与结果、暂停或恢复已有运行，以及等待训练等外部结果后继续。用户要跟远端或其他机器上的 Agent 通信、向本机或远端具名 Agent 求助、给 Agent 发布或委派任务、让另一台机器执行工作、查询协作结果或配置多机协作时，也应优先使用本 Skill。无需用户提到 Loop Anything；一次性远端求助或没有现成 Loop 同样触发。先发现平台已有能力、Loop、运行和成员，再按需复用或构建；无需工作流或协作的一次性问答和本地修改可直接完成。
 metadata:
   provider: loop-anything-platform
 ---
@@ -12,6 +12,7 @@ metadata:
 | 当前需要 | 先做什么 | 按需读取 |
 |---|---|---|
 | 构建、编辑、测试或调试 Loop / 工作流 | 先查已有 Loop 和平台能力，按构建手册复用、编辑并验证；需要执行时再启动 Run | [构建](references/build.md)、[验收](references/testing.md)、[运行](references/run.md) |
+| 将已有 Skill 转成 Loop | 流程 Agent 完整读取 Loop 说明处理不确定推进，确定动作和等待交给平台，保留运行记录 | [流程 Agent](references/flow-agent.md) |
 | 多轮工作、依赖步骤、等待训练或其他外部结果后继续 | 查 `list_loops`、`list_runs`，复用已有工作；确需新流程再构建 | [构建](references/build.md)、[运行](references/run.md) |
 | 跟远端 Agent 通信、求助、发布任务，或请本机具名 Agent 帮忙 | `communication_status` 发现可调用成员，再 `request_assistance`；无需先登记自己的 session 或成为接单成员 | [通信](references/communication.md) |
 | 独立会话需要等待外援后自动续跑 | `start_collaboration` 接入真实原 session/当前 Agent PID/恢复命令，或启动本机具名协调 Agent；再使用 `wait_assistance` | [通信](references/communication.md#独立协作内置-loop) |
@@ -28,7 +29,7 @@ metadata:
 
 当用户目标涉及多种专业职责、不同阶段的操作说明或很长的手册时，主动建议怎样组织 Loop 与节点的 Skill／说明：整体目标和共享规则放在 Loop 层，各节点按职责保留自己的方法、工具用法和输入输出要求，执行时按需读取，减少无关上下文和指令干扰。例如研究 Loop 可共享实验目标，把训练操作与结果评价分别放到对应节点。已有说明简短清楚时无需拆分；不强制每个节点新建 Skill，不复制共享规则，不仅为缩短文件而增加节点，也不承诺拆分能完全消除上下文漂移。
 
-首次构建完整流程、或修改分支／循环／任务生成逻辑后，一并更新给用户看的整体流程图。用[流程图工具与模板](references/flow-diagram.md)编写业务关系并渲染保存；无需手写页面、启动额外 Agent，或把绘图变成保存与运行的强制门槛。
+首次构建完整流程、或修改节点／分支／循环／任务生成逻辑后，一并更新给用户看的整体流程图。图中必须逐一展示 Loop 定义里的每一个节点，包括初始化、按需分支和异常兜底；不能省略节点，也不能用“实验流水线”等汇总框替代多个真实节点。用[流程图工具与模板](references/flow-diagram.md)编写真实业务关系，保存前逐项核对节点清单并预览；图大时调整布局、分组或滚动。无需手写页面、启动额外 Agent，或把绘图变成保存与运行的强制门槛。
 
 ## 连接并发现
 

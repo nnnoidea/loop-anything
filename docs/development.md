@@ -16,7 +16,8 @@ tests/               行为测试及浏览器验收
   scenarios/         主动运行、保留结果的模拟场景验收
 scripts/             构建脚本
 docs/                现行协议和开发说明
-README.md            项目介绍与一次性平台安装说明
+README.md            项目介绍、当前界面截图与安装入口
+docs/installation.md 一次性安装、升级与工作区说明
 install.py           独立环境安装器
 pyproject.toml       包元数据与 CLI 入口
 ```
@@ -28,6 +29,8 @@ pyproject.toml       包元数据与 CLI 入口
 macOS 安装器默认使用 launchd 用户服务；测试或临时环境安装加 `--no-service`，避免注册真实登录项。`service` 命令只调用系统服务管理器；配置使用原生 plist。收到 SIGTERM 与 Ctrl+C 一样走平台退出清理。Windows/Linux 当前仍为前台启动。
 
 平台安装将同一 Skill 资源放在环境的 `share/loop-anything/skills/` 下，供导出及唤醒引用；源码直接使用根目录 `skills/`。
+
+执行生命周期的计算在 `runtime/transitions.py`：`decide_transition` 接收规则、当前阶段、事件、数据上下文与任务参数，返回规则选择及展开结果；`transition_effects` 接收校验结论与调用方提供的时间，返回要应用的状态字段。两者不读写数据库、读取时钟或派发任务。重试参数校验优先于通知错误，保持原错误回执。`TimelineRuntime.report_in_run` 在原事务内完成去重、契约校验、路由准备，再提交结果、应用状态与记录历史。不要缓存计算结果后脱离原事务写入；这些是内部函数，没有新增对外工具或状态覆盖协议。
 
 Skill 客户端只在 `skills/loop-anything-platform/scripts/call.py` 维护；导出直接收集 Skill 目录，不另复制一套不同命名的源码。根目录旧 `examples/simulated_tasks.py` 仅为既有本地运行保留命令路径，不纳入发布。
 

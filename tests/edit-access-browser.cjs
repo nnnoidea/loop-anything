@@ -32,6 +32,13 @@ print(json.dumps({'key':key,'a':a,'b':b,'loop_id':bp['id']}))`,db],{encoding:'ut
   await stop();await start();await page.reload();await page.locator('#edit-access-button').filter({hasText:'锁定此 Loop'}).waitFor();assert.equal((await status(fixture.loop_id)).expires_at,unlocked.expires_at);
   await page.locator('#edit-access-button').click();await page.locator('#edit-access-button').filter({hasText:'解锁此 Loop'}).waitFor();assert(await page.locator('#bp-name').isDisabled());
   // Selecting/rerendering a locked node must keep its controls read-only.
+  await page.locator('[data-editor-layer="states"]').click();
+  for(const direction of ['outgoing','incoming','internal']){
+    const button=page.locator(`[data-state-direction="${direction}"]`);
+    assert(await button.isEnabled());await button.click();
+    assert(await page.locator(`[data-state-panel="${direction}"]`).isVisible());
+    assert(await page.locator('#editor-save').isDisabled());
+  }
   await page.locator('[data-editor-layer="nodes"]').click();await page.locator('[data-drag-node]').first().click();
   assert(await page.locator('#loop_definition-editor').evaluate(root=>[...root.querySelectorAll('input,textarea,select')].every(el=>['editor-state-node','editor-state-implementation'].includes(el.id)||el.disabled)));
   const viewBefore=await page.evaluate(()=>JSON.stringify({definition:editor.loop_definition,dirty:editor.dirty}));

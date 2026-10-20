@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="650" viewBox="0 0 1200 650" role="img" aria-labelledby="title desc">
+<title id="title">Agent 运行长程 Loop 的四个痛点</title>
+<desc id="desc">中心为 Agent 运行长程 Loop，四周为状态漂移、Skill 越读越多运行越来越慢、上下文反复压缩、持续轮询外部长程任务，四个问题均标有叉号。</desc>
+<defs>
+  <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#fafbff"/><stop offset="1" stop-color="#f0f3fc"/></linearGradient>
+  <linearGradient id="core" x2=".9" y2="1"><stop stop-color="#6074ff"/><stop offset=".5" stop-color="#4658df"/><stop offset="1" stop-color="#3734ab"/></linearGradient>
+  <filter id="shadow" x="-30%" y="-50%" width="160%" height="210%"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#27386c" flood-opacity=".07"/></filter>
+  <filter id="glow" x="-40%" y="-80%" width="180%" height="260%"><feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#5059d9" flood-opacity=".26"/></filter>
+</defs>
+<rect width="1200" height="650" rx="32" fill="url(#bg)"/>
+<g fill="none" stroke="#cdd4e7" stroke-width="2"><path d="M600 198V250M600 400V452M380 325H428M772 325H820"/></g>
+<g fill="#fff" stroke="#e0e5f0" filter="url(#shadow)">
+<rect x="430" y="60" width="340" height="138" rx="24"/>
+<rect x="60" y="252" width="320" height="146" rx="24"/>
+<rect x="820" y="252" width="320" height="146" rx="24"/>
+<rect x="390" y="452" width="420" height="138" rx="24"/>
+</g>
+<g fill="#fff0f1"><circle cx="600" cy="95" r="16"/><circle cx="220" cy="286" r="16"/><circle cx="980" cy="286" r="16"/><circle cx="600" cy="487" r="16"/></g>
+<g stroke="#e45d6a" stroke-width="2.8" stroke-linecap="round"><path d="M595 90l10 10m0-10l-10 10M215 281l10 10m0-10l-10 10M975 281l10 10m0-10l-10 10M595 482l10 10m0-10l-10 10"/></g>
+<g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif" text-anchor="middle" fill="#27344b" font-weight="600" font-size="27">
+<text x="600" y="156">状态漂移</text>
+<text x="220" y="333">Skill 越读越多</text><text x="220" y="371" font-size="24" fill="#637089">运行越来越慢</text>
+<text x="980" y="333">上下文</text><text x="980" y="371" font-size="24" fill="#637089">反复压缩</text>
+<text x="600" y="549">持续轮询外部长程任务</text>
+</g>
+<rect x="428" y="250" width="344" height="150" rx="26" fill="url(#core)" filter="url(#glow)"/>
+<rect x="429" y="251" width="342" height="148" rx="25" fill="none" stroke="#ffffff" stroke-opacity=".22"/>
+<g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif" text-anchor="middle" fill="white" font-weight="700"><text x="600" y="310" font-size="28">Agent 运行</text><text x="600" y="357" font-size="34">长程 Loop</text></g>
+</svg>
