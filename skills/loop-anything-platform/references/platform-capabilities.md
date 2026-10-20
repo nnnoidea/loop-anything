@@ -140,8 +140,8 @@
 ## agent_communication
 
 - 生效方式：configured/operator
-- 平台承担：所有派单复用独立 loop-anything-dispatch Skill；仅接单需要运行平台。普通回复直接保存；文件只在确认双方共享访问时传 NAS 路径，飞书原生附件是可选交付能力，过长内联消息自动用附件兜底；Base 状态合并、心跳原地修改、确认消息进入云端历史；请求和结果保留，人工按需清理；客户端不自动复制全文。一个团队链接支持 NAS 或 Base，自动提供成员目录与请求结果视图。名称和 ID 都经目录解析；轻量 wait 由脚本等待，超时不撤单。
-- 作者提供：用 communication_config(operation=team,link=...) 配置接收平台默认团队，用户确认职责后开放具名 Agent。只派单使用独立 Skill 的 join/agents/submit/read/wait/control；Loop 节点沿用限定工具入口登记并发布，需等待时 wait_assistance 后 finish。
+- 平台承担：所有派单复用独立 loop-anything-dispatch Skill；仅接单需要运行平台。普通回复直接保存；文件只在确认双方共享访问时传 NAS 路径，飞书原生附件是可选交付能力，过长内联消息自动用附件兜底；Base 状态合并、心跳原地修改、确认消息进入云端历史；请求和结果保留，人工按需清理；客户端不自动复制全文。一个团队链接支持 NAS 或 Base，自动提供成员目录与请求结果视图。已配置且启用的 Base 优先，NAS 仅在没有 Base 时使用；错误不触发改道重派，旧 Run/请求保持原连接。名称和 ID 都经目录解析；轻量 wait 由脚本等待，超时不撤单。
+- 作者提供：用 communication_config(operation=team,link=...) 配置接收平台默认团队，用户确认职责后开放具名 Agent。只派单使用独立 Skill 的 join/leave/agents/submit/read/wait/control；Loop 节点沿用限定工具入口登记并发布，需等待时 wait_assistance 后 finish。
 - 配置入口：`communication_config`、`implementations.*.dispatch`、`request_assistance`、`wait_assistance`
 - 边界：发布前固定唯一机器与 Agent，接收方持久化后执行，不再等来源 grant。旧在途协议兼容；业务 Run 仍由来源拥有。会话恢复固定原 session，失联不自动重跑。真实 NAS/Base 验收需实际环境。
 - 工具入口：communication_workspace、communication_status、communication_config、request_assistance、read_assistance、control_assistance、wait_assistance、communication_execute
@@ -512,7 +512,7 @@
     "agent_communication"
   ],
   "configuration": [
-    "接单平台用 communication_config(operation=team,link=团队Base链接或NAS目录)，返回默认团队ID；首次创建NAS加create=true，Base内部表自动管理。",
+    "接单平台用 communication_config(operation=team,link=团队Base链接或NAS目录)，返回加入的团队ID及当前默认团队；Base优先，NAS作备用；首次创建NAS加create=true，Base内部表自动管理。",
     "operation=agent 配置本机 CLI、cwd、resume_command 和团队范围；先由用户确认主要任务。连接团队不自动开放 Agent。",
     "只派单的人安装独立 loop-anything-dispatch Skill，用同一团队链接join，不需要运行平台。",
     "Loop绑定团队，调用沿用限定入口；网页用于查看成员、任务和结果。旧NAS空间/群组配置继续兼容。"

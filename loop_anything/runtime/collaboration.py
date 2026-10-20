@@ -145,7 +145,8 @@ def start(comm, arguments):
     message = arguments['message']
     if not isinstance(message, str) or not message.strip():raise Invalid('Describe the collaboration task')
     config = comm.settings()
-    group = arguments.get('group_id') or config['contexts'].get(arguments.get('context_id'), {}).get('group_id')
+    group = arguments.get('group_id') or (config['contexts'].get(arguments['context_id'], {}).get('group_id')
+        if arguments.get('context_id') else config.get('default_team'))
     if group and not config['groups'].get(group, {}).get('enabled'):raise Invalid('Choose one joined group')
     caller = arguments.get('caller')
     if bool(caller) == bool(arguments.get('agent_id')):raise Invalid('Choose a local coordinator agent_id or an existing caller session')

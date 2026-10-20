@@ -360,6 +360,14 @@ def connect(config):
     return Base(config) if config.get('transport') == 'feishu_base' else Nas(config)
 
 
+def default_team(teams, preferred=None):
+    """Select configured media, never probe availability or fail over after publishing."""
+    enabled={key:value for key,value in teams.items() if value.get('enabled',True)}
+    candidates={key:value for key,value in enabled.items() if value.get('transport')=='feishu_base'} or enabled
+    if preferred in candidates:return preferred
+    return next(iter(candidates)) if len(candidates)==1 else None
+
+
 def join(link, create=False, name=None, lark_cli='lark-cli', identity='user'):
     parsed = urlparse(link)
     if parsed.scheme in ('http','https'):

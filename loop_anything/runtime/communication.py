@@ -116,7 +116,9 @@ class Communication:
         if db is None:
             with self.store.connection() as db:
                 return self.settings(db)
-        return json.loads(db.execute('SELECT document FROM communication_settings WHERE id=1').fetchone()[0])
+        config=json.loads(db.execute('SELECT document FROM communication_settings WHERE id=1').fetchone()[0])
+        config['default_team']=dispatch_core.default_team(config['groups'],config.get('default_team'))
+        return config
 
     def requests(self, db=None):
         # ponytail: scan retained JSON records for small workspaces; index active requests if archives grow.
@@ -153,7 +155,7 @@ class Communication:
             with self.transaction() as db:
                 config=self.settings(db)
                 config['groups'][team['id']]=dict(config['groups'].get(team['id'],{}),**team)
-                config['default_team']=team['id'];config['revision']+=1
+                config['default_team']=dispatch_core.default_team(config['groups'],config.get('default_team'));config['revision']+=1
                 db.execute('UPDATE communication_settings SET document=? WHERE id=1',(json.dumps(config),))
             self.last_scan=0
             return {'configuration':config,'team':team}
@@ -292,6 +294,7 @@ class Communication:
                 config['loop_groups'][key] = group_id
             else:
                 raise Invalid('Unknown communication configuration operation')
+            config['default_team']=dispatch_core.default_team(config['groups'],config.get('default_team'))
             config['revision'] += 1
             db.execute('UPDATE communication_settings SET document=? WHERE id=1', (json.dumps(config),))
         self.last_scan = 0
@@ -366,7 +369,11 @@ class Communication:
             raise Invalid('A scoped request already belongs to its source; do not also pass collaboration_id')
         source_summary={}
         continuing_node=False
-        group_id = a.get('group_id') or config.get('default_team')
+        group_id = a.get('group_id')
+        if not group_id and a.get('request_id'):
+            with self.store.connection() as db:
+                saved=db.execute('SELECT document FROM communication_requests WHERE id=?',(a['request_id'],)).fetchone()
+            if saved:group_id=json.loads(saved[0]).get('group_id')
         if a.get('collaboration_id') and not source.get('run_id'):
             collaboration_run=self.store.get(a['collaboration_id'])
             if not collaboration_run.get('collaboration'):raise Invalid('Unknown standalone collaboration')
@@ -401,6 +408,8 @@ class Communication:
             if context is None:
                 raise Invalid('Unknown calling context')
             group_id = group_id or context.get('group_id')
+        elif not a.get('collaboration_id'):
+            group_id = group_id or config.get('default_team')
         location = a.get('location', 'local')
         scope_group_id=bound if source.get('run_id') else group_id
         if a.get('_parent_request'):

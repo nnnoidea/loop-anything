@@ -26,7 +26,7 @@
 {"operation":"team","link":"飞书 Base 链接或本机 NAS 团队目录"}
 ```
 
-`communication_config` 保存为默认团队，返回 `team.id`。未单独绑定的新 Run 固定这个默认团队；既有 Run 不改绑，显式解绑也不会被默认值覆盖。NAS 首次创建加 `create:true`，其他机器路径可不同但应指向同一目录。Base 使用本机已认证的 `lark-cli`（默认用户身份，可传 `identity:"bot"` 或自定义 `lark_cli` 路径），内部表和字段自动管理。链接不包含权限，实际需要所用身份能读写这个 Base。无需逐项复制表 ID。旧 `space/group` 配置继续兼容。
+`communication_config` 保留已加入连接，返回 `team.id`，`configuration.default_team` 表示当前默认选择：启用的 Base 优先，没有 Base 才用 NAS；后来加入 NAS 不会覆盖 Base。未单独绑定的新 Run 固定这个选择；既有 Run 不改绑，人工绑定与显式解绑也不会被默认值覆盖。Base 断网、权限不足或找不到目标时不会转 NAS 重派。operation=leave 停用指定团队的新接单/默认选择，已承接工作沿原介质收尾。NAS 首次创建加 `create:true`，其他机器路径可不同但应指向同一目录。Base 使用本机已认证的 `lark-cli`（默认用户身份，可传 `identity:"bot"` 或自定义 `lark_cli` 路径），内部表和字段自动管理。链接不包含权限，实际需要所用身份能读写这个 Base。无需逐项复制表 ID。旧 `space/group` 配置继续兼容。
 
 接着由用户确认本机 Agent 的主要任务、配置本机 CLI / cwd / resume_command，把返回的团队 ID 放入 `agent.groups`。加入团队本身不会公开 Agent，也不会启动模型。`communication_status` 查看成员，`communication_workspace(group_id=...)` 返回可转交的团队链接。仅派单的人安装独立派单 Skill，用同一个链接执行 join 即可。
 

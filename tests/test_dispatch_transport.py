@@ -28,7 +28,7 @@ class DispatchTests(unittest.TestCase):
                 'implementation':{'kind':'agent','command':[sys.executable,'-c','pass']}})
             client=Client(root/'client');client.configure(str(root/'nas'))
             created=client.submit({'agent_id':'papers','message':'Return complete evidence','request_id':'request-portable'})
-            packet=json.loads((root/'client/requests/request-portable.json').read_text())
+            packet=client.request_record('request-portable')
             calls=[]
             def worker(command,prompt,*a,**k):
                 info=json.loads(prompt.split('\n',1)[1]);calls.append(info['request_id'])
@@ -77,7 +77,7 @@ class DispatchTests(unittest.TestCase):
                 'implementation':{'kind':'agent','command':[sys.executable,'-c','pass']}})
             client=Client(root/'client');client.configure(str(root/'nas'))
             request=client.submit({'agent_id':'a','message':'help'})['request']
-            packet=json.loads((root/'client/requests'/(request['id']+'.json')).read_text())
+            packet=client.request_record(request['id'])
             cancel=core.envelope(packet['payload'],'cancel',{'reason':'withdrawn'})
             comm.receive(cancel)
             comm.receive(packet)

@@ -67,7 +67,7 @@ class CommunicationHTTPTests(unittest.TestCase):
                     for _ in range(100):
                         try:
                             with urlopen(url+'/api/platform',timeout=.2):break
-                        except (URLError,TimeoutError):time.sleep(.05)
+                        except (URLError,TimeoutError,socket.timeout):time.sleep(.05)
                     else:self.fail('Platform did not start')
                 def tool(index,name,args):
                     headers={'Content-Type':'application/json','X-Loop-Anything':'workspace'}

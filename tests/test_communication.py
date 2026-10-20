@@ -265,6 +265,7 @@ class CommunicationTests(unittest.TestCase):
         base=fixture.RuntimeTests();base.setUp()
         try:
             gid=self.groups();key=self.a.store.publish(base.bp,base.implementations)['key']
+            self.a.config('bind_loop',loop_key=key,group_id=None)
             runid=self.a.store.create(key,'snapshot')['id']
             self.a.config('bind_loop',loop_key=key,group_id=gid)
             self.assertIsNone(self.a.run_group(self.a.store.get(runid)))

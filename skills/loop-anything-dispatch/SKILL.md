@@ -9,7 +9,7 @@ description: 跟远端或其他机器上的具名 Agent 通信、求助、发布
 
 ## 普通会话
 
-首次保存团队链接，之后不用重复提供。NAS 使用本机挂载目录，各机器路径可不同；飞书使用 Base 链接（含知识库 Base 链接也可以），复用本机已认证的 `lark-cli`，默认用户身份，`identity: "bot"` 可使用应用身份。链接本身不授予访问权限；认证问题沿用 lark-cli 的说明处理，无需复制其他进程的凭据。
+首次保存团队链接，之后不用重复提供。可以先后 join NAS 和 Base，旧连接会保留；默认始终优先已配置、启用的 Base，没有或明确停用 Base 才使用 NAS，不取决于加入顺序。Base 断网、权限不足或找不到目标 Agent 时明确报告问题，不自动改向 NAS 重发。NAS 使用本机挂载目录，各机器路径可不同；飞书使用 Base 链接（含知识库 Base 链接也可以），复用本机已认证的 `lark-cli`，默认用户身份，`identity: "bot"` 可使用应用身份。链接本身不授予访问权限；认证问题沿用 lark-cli 的说明处理，无需复制其他进程的凭据。
 
 ```sh
 python3 scripts/dispatch.py join --arguments '{"link":"团队 Base 链接或 NAS 目录"}'
@@ -37,6 +37,8 @@ python3 scripts/dispatch.py wait --arguments '{"request_ids":["request-A","reque
 
 平台托管的 Loop 节点优先使用 wait_assistance / finish，让 CLI 退出后恢复原 session；不要用轻量 wait 替换既有状态机等待。
 
+需要明确选团队时，agents/submit 使用 `group_id`。同介质多个团队沿用已选项；没有明确选项时须指定。`leave --arguments '{"group_id":"团队 ID"}'` 停止将该连接用于新派单，省略 ID 则停用当前默认连接；重新 join 可启用。旧请求的 read/wait、重试、取消和追问始终沿原连接，默认值改变不影响它们；混合介质的多个请求可以一起 wait。
+
 追问：`control` 参数 `{"request_id":"…","action":"followup","message":"…"}`，默认复用记录的原 session；缺少 session 会明确提示，用户确需新会话时传 `resume:false`。取消用 `action:"cancel"`，交互输入用 `action:"input", message:"…"`。取消提交不代表进程已经结束。
 
 飞书 cc-connect 入口自动携带 `CC_PROJECT` / `CC_SESSION_KEY`；调用方已有 `chat_context`（含真实 `thread_root`）时直接传入。接收平台按既有 Bot 映射和原会话规则通知，不做消息历史或权限预检。消息发送依靠接收平台配置的 cc-connect/通知出口，任务记录和结果不依赖通知成功。
@@ -57,4 +59,4 @@ python3 scripts/dispatch.py submit --tool-url '已有的限定工具 URL' --argu
 
 Base 自动提供“Agent 目录”“请求与结果”和“机器心跳”视图；名称、职责、状态和回复可直接查看，协议 JSON 默认隐藏。目录与接单设置由接单机器发布，改职责通过该机器平台配置；是否在线由工具根据机器心跳计算。Agent 用 agents/read/wait 获取所需记录，不遍历或手动解析整张表。
 
-配置文件默认在 `~/.config/loop-anything-dispatch`，可用 `--config-dir` 或 `LOOP_ANYTHING_DISPATCH_HOME` 指定。它保存团队连接、派单身份和已发布请求，重试、控制与追问沿用这些信息。接入不同团队可用不同配置目录。
+配置文件默认在 `~/.config/loop-anything-dispatch`，可用 `--config-dir` 或 `LOOP_ANYTHING_DISPATCH_HOME` 指定。它同时保存已加入的团队连接、派单身份和每条请求的原连接；旧版单连接配置可直接继续使用。若旧版已覆盖某条请求所需连接，重新 join 原链接恢复，工具不会把它转到新团队。需要彼此独立的派单身份时可使用不同配置目录。

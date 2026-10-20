@@ -11,6 +11,7 @@ spec.loader.exec_module(core)
 connect = core.connect
 join = core.join
 prepare_dispatch = core.prepare_dispatch
+default_team = core.default_team
 
 
 def transport(comm, group):
