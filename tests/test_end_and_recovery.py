@@ -36,9 +36,14 @@ class EndAndRecoveryTests(unittest.TestCase):
             self.tools = RunTools(self.store, self.id, run['agent_sessions'][0]['token'])
 
     def complete(self, id, **envelope):
-        info = self.tools.call('read_task', {'task_id': id})
-        self.tools.call('complete_task', {'task_id': id, 'task_version': info['task_version'],
+        original = self.tools
+        current = self.read() if hasattr(self, 'read') else self.store.get(self.id)
+        claimed = next((o for o in current['agent_sessions'] if o.get('task_id') == id), None)
+        worker = RunTools(self.store, self.id, claimed['token']) if claimed else original
+        info = worker.call('read_task', {'task_id': id})
+        worker.call('complete_task', {'task_id': id, 'task_version': info['task_version'],
                                         'envelope': dict(outputs={'result': 'done'}, **envelope)})
+        if worker.token != original.token:worker.call('finish', {})
 
     def until(self, condition):
         for _ in range(250):
@@ -187,18 +192,27 @@ Path(sys.argv[1]).write_text(sys.argv[2])
 
     def test_successful_recovery_resets_consecutive_failure_count(self):
         marker = self.root / 'calls.txt'
-        script = """import json,sys
+        script = """import json,sys,time
 from pathlib import Path
 from loop_anything.runtime.store import Store
 from loop_anything.interfaces.agent_tasks import RunTools
+from loop_anything.runtime.model import Conflict
 p=Path(sys.argv[1]);n=int(p.read_text())+1 if p.exists() else 1;p.write_text(str(n))
 if n==1: raise SystemExit(2)
 r=json.loads(sys.stdin.read().split('Run context:'+chr(10),1)[1]);t=RunTools(Store(sys.argv[-1]),r['run_id'],r['token'])
-t.call('change_task',{'task_id':'init','operation':'retry','reason':'Previous Agent exited before producing output'})
-i=t.call('read_task',{'task_id':'init'})
-t.call('complete_task',{'task_id':'init','task_version':i['task_version'],'envelope':{'outputs':{'result':'recovered'},'settings':{'objective':'Recovered'}}})
-i=t.call('read_task',{'task_id':r['task_id']})
-t.call('complete_task',{'task_id':r['task_id'],'task_version':i['task_version'],'envelope':{'outputs':{}}})
+if r['task_id']=='init':
+ i=t.call('read_task',{'task_id':'init'})
+ t.call('complete_task',{'task_id':'init','task_version':i['task_version'],'envelope':{'outputs':{'result':'recovered'},'settings':{'objective':'Recovered'}}})
+else:
+ for attempt in range(100):
+  t.call('read_task',{'task_id':'init'})
+  try:
+   t.call('change_task',{'task_id':'init','operation':'retry','reason':'Previous Agent exited before producing output'})
+   break
+  except Conflict:time.sleep(.02)
+ else:raise AssertionError('Old process never released its Task')
+ i=t.call('read_task',{'task_id':r['task_id']})
+ t.call('complete_task',{'task_id':r['task_id'],'task_version':i['task_version'],'basis':i['basis'],'envelope':{'outputs':{}}})
 t.call('finish',{})
 """
         self.implementations['init'] = {'kind': 'agent', 'command': [sys.executable, '-c', script, str(marker), str(self.store.filename)],
@@ -206,7 +220,7 @@ t.call('finish',{})
         enable_fallback(self.bp, self.implementations, self.implementations['init'])
         self.create(owned=False)
         run = self.until(lambda r: r['initialized'] and r['agent_sessions'] == [] and r['agent_failures'] == 0)
-        self.assertEqual(2, agent_calls(run))
+        self.assertEqual(3, agent_calls(run))
         self.assertEqual('recovered', run['records']['init.result'][0]['value'])
         self.assertEqual('running', run['status'])  # No rule or signal inferred from success.
 
@@ -215,7 +229,7 @@ t.call('finish',{})
         old = self.tools.token
         self.engine.recover()
         with self.assertRaises(Conflict):
-            acquire(self.store, self.id)
+            acquire(self.store, self.id, 'init')
         with self.assertRaises(Conflict):
             recover_owner(self.store, self.id, old)
         recover_owner(self.store, self.id, old, confirmed_stopped=True)

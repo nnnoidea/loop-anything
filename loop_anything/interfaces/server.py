@@ -14,8 +14,6 @@ from loop_anything.paths import platform_skill_directory
 
 
 def serve(store, engine, port, initial_run=None, protection=None, open_browser=False, host='127.0.0.1'):
-    from loop_anything.interfaces.edit_access import EditAccess,EditLocked
-    access = EditAccess(store)
     from loop_anything.interfaces.platform_tools import PlatformTools
     platform_tools = PlatformTools(store)
     root = Path(__file__).resolve().parents[1] / 'web'
@@ -57,13 +55,6 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
         def log_message(self, *_):
             pass
 
-        def edit_status(self):
-            ident=parse_qs(urlsplit(self.path).query).get('loop_id',[None])[0]
-            return access.status(ident,self.headers.get('Cookie',''))
-
-        def can_edit_loop(self,ident,password=None):
-            return access.permits(ident,self.headers.get('Cookie',''),self.headers.get('Authorization',''),password)
-
         def may_post(self,parts,body):
             # These handles bind execution reports to a specific live request/turn.
             if len(parts)==5 and parts[0]=='communication' and parts[3:]==['api','tools']:
@@ -72,13 +63,11 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 web_agent.turn(parts[1],parts[2])
             return True
 
-        def send(self, data, status=200, cookie=None):
+        def send(self, data, status=200):
             content = json.dumps(data, ensure_ascii=False).encode()
             self.send_response(status)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
             self.send_header('Cache-Control', 'no-store')
-            if cookie is not None:
-                self.send_header('Set-Cookie', cookie)
             self.send_header('Content-Length', str(len(content)))
             self.end_headers()
             self.wfile.write(content)
@@ -87,7 +76,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             try:
                 self.get()
             except Conflict as exc:
-                self.send({'error': str(exc)}, 409)
+                self.send({'error': str(exc), **({'conflicts': exc.conflicts} if hasattr(exc, 'conflicts') else {})}, 409)
             except Invalid as exc:
                 self.send({'error': str(exc)}, 404)
 
@@ -128,9 +117,6 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             if parts == ['api', 'agent-prompts']:
                 from loop_anything.runtime.agent_prompt import DEFAULTS
                 self.send(DEFAULTS)
-                return
-            if parts == ['api', 'edit-access']:
-                self.send(self.edit_status())
                 return
             if parts == ['api', 'conversations']:
                 self.send(web_agent.list())
@@ -270,10 +256,8 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                     self.send({'error': 'Invalid execution identity', 'code': 'invalid_execution'}, 403)
                     return
                 self.post(parts, body)
-            except EditLocked as exc:
-                self.send({'error':str(exc),'code':'edit_locked','loop_id':exc.loop_id},403)
             except Conflict as exc:
-                self.send({'error': str(exc)}, 409)
+                self.send({'error': str(exc), **({'conflicts': exc.conflicts} if hasattr(exc, 'conflicts') else {})}, 409)
             except (Invalid, KeyError, TypeError, ValueError) as exc:
                 self.send({'error': str(exc)}, 400)
             except Exception:
@@ -300,18 +284,6 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 store.keep_awake(body['enabled'])
                 self.send(power_status())
                 return
-            if parts == ['api', 'edit-access']:
-                ident=body.get('loop_id')
-                if not isinstance(ident,str) or not ident:raise Invalid('Select the Loop to unlock')
-                if body.get('action') == 'lock':
-                    cookie = access.cookie(ident,False)
-                elif body.get('action') == 'unlock' and access.matches(ident,body.get('password')):
-                    cookie = access.cookie(ident,True)
-                else:
-                    self.send({'error': '编辑口令不正确。'}, 403)
-                    return
-                self.send(access.status(ident,cookie),cookie=cookie)
-                return
             if parts == ['api', 'agent-prompts', 'preview']:
                 from loop_anything.runtime.agent_prompt import author_context, render_prompt
                 if body.get('conversation_id') or body.get('run_id'):
@@ -336,7 +308,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 return
             if len(parts) == 5 and parts[0] == 'web' and parts[3:] == ['api', 'tools']:
                 result = web_agent.tool(parts[1], parts[2], body['tool'], body.get('arguments', {}))
-                self.send(result, 200 if result['ok'] else 403 if result['error']['code']=='edit_locked' else 409 if result['error']['code'] == 'conflict' else 400)
+                self.send(result, 200 if result['ok'] else 409 if result['error']['code'] == 'conflict' else 400)
                 return
             if parts == ['api', 'conversations']:
                 self.send(web_agent.create(body.get('key'), body.get('run_id')), 201)
@@ -357,17 +329,13 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 return
             if parts == ['api', 'tools']:
                 from loop_anything.interfaces.platform_tools import PlatformTools
-                result = PlatformTools(store,self.can_edit_loop).respond(body['tool'],body.get('arguments',{}))
-                if body['tool']=='set_loop_password' and result.get('ok'):
-                    self.send(result,cookie=access.cookie(result['loop_id'],result['protected']));return
-                self.send(result, 200 if result['ok'] else 403 if result['error']['code']=='edit_locked' else 409 if result['error']['code'] == 'conflict' else 400)
+                result = PlatformTools(store).respond(body['tool'],body.get('arguments',{}))
+                self.send(result, 200 if result['ok'] else 409 if result['error']['code'] == 'conflict' else 400)
                 return
             if parts == ['api', 'packages', 'export']:
                 from loop_anything.packaging.packages import make_archive, decode_assets
-                from loop_anything.packaging.packages import export_document,require_export
                 assets=decode_assets(body.get('assets',[]))
-                require_export(store,body['document'],assets,lambda ident:self.can_edit_loop(ident,body.get('loop_password')))
-                data=make_archive(export_document(store,body['document']),assets)
+                data=make_archive(body['document'],assets)
                 self.send({'base64': base64.b64encode(data).decode(), 'bytes': len(data)})
             elif parts == ['api', 'packages', 'inspect']:
                 from loop_anything.packaging.packages import read_archive, validate_document, effective_definition
@@ -377,10 +345,10 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                            'assets': [{'path': n, 'base64': base64.b64encode(v[0]).decode(), 'executable': v[1]} for n, v in assets.items()]})
             elif parts == ['api', 'packages', 'install']:
                 from loop_anything.packaging.packages import install
-                self.send(install(store,base64.b64decode(body['base64'],validate=True),edit_access=lambda ident:self.can_edit_loop(ident,body.get('loop_password'))),201)
+                self.send(install(store,base64.b64decode(body['base64'],validate=True)),201)
             elif parts == ['api', 'packages', 'draft']:
                 from loop_anything.packaging.packages import import_draft
-                self.send(import_draft(store,base64.b64decode(body['base64'],validate=True),edit_access=lambda ident:self.can_edit_loop(ident,body.get('loop_password'))),201)
+                self.send(import_draft(store,base64.b64decode(body['base64'],validate=True)),201)
             elif parts == ['api', 'packages', 'read']:
                 from loop_anything.packaging.packages import load_installed, installed_assets, effective_definition
                 document, directory = load_installed(store.filename, body['key'])
@@ -394,9 +362,9 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             elif parts == ['api', 'validate']:
                 self.send(validate(body['loop_definition'], body.get('implementations', {})))
             elif parts == ['api', 'drafts']:
-                self.send(store.save_draft(body['loop_definition'], body['implementations'], body.get('id'), body.get('revision'), body.get('assets'), body.get('checks'),edit_access=lambda ident:self.can_edit_loop(ident,body.get('loop_password'))))
+                self.send(store.save_draft(body['loop_definition'], body['implementations'], body.get('id'), body.get('revision'), body.get('assets'), body.get('checks')))
             elif parts == ['api', 'publish']:
-                self.send(store.publish(body['loop_definition'],body['implementations'],edit_access=lambda ident:self.can_edit_loop(ident,body.get('loop_password'))))
+                self.send(store.publish(body['loop_definition'],body['implementations']))
             elif parts == ['api', 'runs']:
                 self.send(store.create(body['key'], body['title'], body.get('inputs'), authorization=body.get('authorization', ''), acquire=body.get('acquire', False), bindings=body.get('bindings'), fallback_node=body.get('fallback_node'), global_agent_node=body.get('global_agent_node'), notification_command=body.get('notification_command'),notification_route=body.get('notification_route'),conversation_id=body.get('conversation_id'),chat_context=body.get('chat_context')), 201)
             elif len(parts) == 4 and parts[:2] == ['api', 'runs']:
@@ -422,12 +390,12 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                             return
                         arguments=dict(body.get('arguments',{}),run_id=run_id)
                         if 'token' in body:arguments['token']=body['token']
-                        result=PlatformTools(store,self.can_edit_loop).respond(body['tool'],arguments)
-                        self.send(result, 200 if result['ok'] else 403 if result['error']['code']=='edit_locked' else 409 if result['error']['code'] == 'conflict' else 400)
+                        result=PlatformTools(store).respond(body['tool'],arguments)
+                        self.send(result, 200 if result['ok'] else 409 if result['error']['code'] == 'conflict' else 400)
                         return
                 elif action == 'tasks':
                     from loop_anything.interfaces.agent_tasks import edit_tasks
-                    result = edit_tasks(store, run_id, body['changes'], body['revision'], body.get('operator_token'), body.get('preview', False))
+                    result = edit_tasks(store, run_id, body['changes'], body.get('revision'), body.get('operator_token'), body.get('preview', False), body.get('basis'))
                 elif action == 'settings':
                     result = engine.change_settings(run_id, body['revision'], body['change'], body.get('operator_token'))
                 elif action == 'command':

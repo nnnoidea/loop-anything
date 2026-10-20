@@ -51,14 +51,14 @@ class InstallationTests(unittest.TestCase):
             with socket.socket() as listener:
                 listener.bind(('127.0.0.1', 0)); listener.listen()
                 port = listener.getsockname()[1]
-                with patch.dict(os.environ, {'LOOP_ANYTHING_EDIT_PASSWORD': 'shared'}):
-                    config = definition('/application with spaces/venv/bin/python', database, port, '127.0.0.1')
+                config = definition('/application with spaces/venv/bin/python', database, port, '127.0.0.1')
+                config['EnvironmentVariables']['CUSTOM_PLATFORM_ENV'] = 'shared'
                 config = plistlib.loads(plistlib.dumps(config))
                 with patch.dict(os.environ, {}, clear=True):
                     upgraded = definition('/application with spaces/venv/bin/python', previous=config)
                 self.assertEqual(str(database.resolve()), option(upgraded, '--db', None))
                 self.assertEqual(str(port), option(upgraded, '--port', None))
-                self.assertEqual('shared', upgraded['EnvironmentVariables']['LOOP_ANYTHING_EDIT_PASSWORD'])
+                self.assertEqual('shared', upgraded['EnvironmentVariables']['CUSTOM_PLATFORM_ENV'])
                 before = database.read_bytes()
                 with self.assertRaises(Invalid):
                     available(upgraded)

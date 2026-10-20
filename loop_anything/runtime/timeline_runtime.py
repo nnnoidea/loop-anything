@@ -285,7 +285,6 @@ class TimelineRuntime:
                         jobs.append((copy.deepcopy(e), copy.deepcopy(run), True))
                 active = sum(w['status'] in {'executing', 'decision'} or (w['status'] == 'waiting' and
                     (selected(run, w)[1] or {}).get('kind') == 'external') for w in run['tasks'].values())
-                global_waiting = False
                 candidates = sorted(run['tasks'].values(), key=lambda task: scope_for(run, task) is not None)
                 for tasks in candidates:
                     if tasks['status'] not in PENDING:
@@ -307,13 +306,9 @@ class TimelineRuntime:
                             comm=service(self.store)
                             capacity=comm.settings()['agents'].get(coordinator,{}).get('capacity',1)
                             if comm.agent_load(coordinator,running_only=True,exclude_run=run['id'])>=capacity:continue
-                        scope = scope_for(run, tasks)
                         if 'task:' + tasks['id'] in run.get('task_dispositions', {}):
                             continue
-                        if not scope_available(run, scope):
-                            global_waiting = global_waiting or scope is None
-                            continue
-                        if global_waiting and scope is not None:
+                        if not scope_available(run, tasks['id']):
                             continue
                     try:
                         self.check_budget(run, tasks)
@@ -815,7 +810,7 @@ class TimelineRuntime:
         finally:
             with self.store.edit(run_id) as run:
                 current = self.engine.execution(run, e['id'])
-                if current.get('worker_active') == invocation:
+                if current.get('worker_active') == invocation and not (implementation['kind'] == 'agent' and isinstance(exit_error, CommandNotStopped)):
                     current.pop('worker_active', None)
                     current.pop('call_reported', None)
             if e['implementation']['kind'] == 'agent':
@@ -974,10 +969,17 @@ class TimelineRuntime:
         for notice in run.get('notifications', []):
             if waiting_configuration(notice):
                 notice['status'] = 'waiting_configuration'
+        # Terminal recovery already marked unknown processes interrupted. Preserve
+        # their Task claims even when finish released the Agent identity earlier.
+        with self.store.connection() as db:
+            sessions = {row['execution_id']: row['id'] for row in db.execute(
+                'SELECT id, execution_id, document FROM execution_sessions WHERE run_id=? ORDER BY rowid', (run['id'],))
+                if json.loads(row['document'])['state'] in ('starting', 'running', 'interrupted')}
         for attempt in run['executions']:
             if attempt.get('worker_active'):
                 self.block_retry(run, attempt, 'Engine interrupted while process was active; verify stopped before retry')
-            attempt.pop('worker_active', None)
+            if attempt['id'] in sessions:attempt['worker_active'] = sessions[attempt['id']]
+            else:attempt.pop('worker_active', None)
             attempt.pop('call_reported', None)
         for owner in run.get('agent_sessions', []):
             if owner.get('execution_id'):

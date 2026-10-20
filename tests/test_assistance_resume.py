@@ -2,7 +2,6 @@
 
 The test CLI keeps private conversation memory in a session file. No model calls.
 """
-import base64
 import json
 import os
 import socket
@@ -86,7 +85,7 @@ class AssistanceResumeTests(unittest.TestCase):
                     with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
                     log=(root/(str(i)+'.log')).open('w+');logs.append(log)
                     p=subprocess.Popen([sys.executable,'-m','loop_anything','--db',str(root/(str(i)+'.db')),'serve','--port',str(port),'--allow-sleep'],stdout=log,stderr=log,
-                        env=dict(os.environ,LOOP_ANYTHING_EDIT_PASSWORD='test-password'))
+                        env=dict(os.environ))
                     processes.append(p);urls.append('http://127.0.0.1:'+str(port))
                     for _ in range(100):
                         try:
@@ -94,7 +93,7 @@ class AssistanceResumeTests(unittest.TestCase):
                         except (URLError,TimeoutError):time.sleep(.05)
                     else:self.fail('Server did not start')
                 def tool(i,name,args):
-                    request=Request(urls[i]+'/api/tools',data=json.dumps({'tool':name,'arguments':args}).encode(),headers={'Content-Type':'application/json','X-Loop-Anything':'workspace','Authorization':'Basic '+base64.b64encode(b':test-password').decode()})
+                    request=Request(urls[i]+'/api/tools',data=json.dumps({'tool':name,'arguments':args}).encode(),headers={'Content-Type':'application/json','X-Loop-Anything':'workspace'})
                     with urlopen(request,timeout=10) as f:result=json.load(f)
                     self.assertTrue(result.get('ok'),result);return result
                 implementation={'kind':'agent','command':[sys.executable,str(script),str(root/'session.json'),'new','{{session_id}}','{{prompt}}'],

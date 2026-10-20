@@ -30,7 +30,7 @@ RPC_TOOLS = {'read_loop', 'read_task', 'read_timeline', 'read_record', 'read_pla
              'next_tasks', 'report_task', 'complete_task', 'finish', 'build_plan', 'change_task',
              'edit_tasks', 'notify', 'defer_task', 'change_settings', 'register_agent_session',
              'communication_status', 'request_assistance', 'read_assistance', 'wait_assistance', 'read_asset', 'read_context'}
-RPC_TOOLS.update({'resolve_refs','add_task','send_event','command','resolve_request'})
+RPC_TOOLS.update({'read_run','resolve_refs','add_task','send_event','command','resolve_request'})
 
 
 def clean(value):

@@ -78,7 +78,7 @@ python3 /平台Skill/scripts/call.py read_task --arguments '{"run_id":"RUN_ID","
 
 平台不追加模型、工具、权限或其他启动参数，不配置用户的 Agent，也不需要专用 Codex 启动器。用户需要的参数直接写在 command 中。其他 Agent 使用相同方式。
 
-结果通过平台工具提交；最终文字不作为业务结果。平台记录执行与失败，现有 Engine 负责命令超时、退出处理、范围重叠互斥的 Agent 操作权以及已配置的失败恢复。
+结果通过平台工具提交；最终文字不作为业务结果。平台记录执行与失败，现有 Engine 负责命令超时、退出处理、Agent 范围权限、提交版本冲突校验及同 Task 唯一执行保护以及已配置的失败恢复。
 
 候选实现与运行时选择见 [Implementation 与 Binding](implementation-selection.md)。
 
@@ -122,9 +122,9 @@ python3 /平台Skill/scripts/call.py read_task --arguments '{"run_id":"RUN_ID","
 
 飞书入口经 Skill 客户端自动保存原会话；私聊由入口 Bot 回复，群聊的执行确认和结果优先使用具名 Agent 的 `notification_bot={project,platform}` 所映射 Bot（旧 notification_route 兼容），并保持原话题。发送前明确不可用才回退入口，发送结果未知不自动换 Bot。嵌套外援继承原来源；显式通知出口覆盖，无聊天来源保留按机器优先级。先用 read_cc_connect/configure_cc_connect 接入本机桥接并发现 Bot，再用 communication_config 设置具名 Agent 的映射；无需自行拼接命令。接入、直接发送及 API 用法见平台 Skill 的 `references/cc-connect.md`；话题需开启 cc-connect 话题隔离并保留 root session key。
 
-## Loop 编辑保护
+## 编辑与运行范围
 
-可信工作区无需全局编辑解锁。set_loop_password 为具体 Loop ID 设置可选口令，只保护定义、实现、手册及随包资源；修改提供 loop_password 或对此 Loop 解锁。list_loops/read_loop 返回 edit_protected，read_capabilities 的 loop_edit_protection 说明边界。草稿、版本共用保护，包导出/安装/载入草稿保留校验值，明文和本机解锁 Cookie 不打包。Run、外援、通知、终端不受编辑口令限制，实际执行仍校验范围、版本、过期结果和原生会话。
+Loop 编辑可直接使用平台工具，无需口令或解锁。旧包的编辑保护元数据被忽略，新导出不再携带；版本冲突、包完整性和已有 Run 快照继续保留。Timeline 写入仍按实际执行身份检查 Task 子树范围、提交时的版本、冲突和过期结果。
 
 ## 通知接入职责
 

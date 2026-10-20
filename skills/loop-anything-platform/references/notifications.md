@@ -18,7 +18,7 @@ Loop 中的通知只能选择 default（本次 Run 出口）或 workspace（平�
 
 ## 主动通知与询问
 
-`notify` 参数：run_id、稳定 key、message；可选 task_id、route、reply。Agent 提供持有的 token；支线 Agent 必须指定自己范围内的 task_id。脚本提供上下文里的 token、task_id 和 execution_id。可信工作区的用户 Agent 可按授权调用，无需 Loop 编辑口令；平台托管节点仍须沿用自身操作范围。
+`notify` 参数：run_id、稳定 key、message；可选 task_id、route、reply。Agent 提供持有的 token；支线 Agent 必须指定自己范围内的 task_id。脚本提供上下文里的 token、task_id 和 execution_id。可信工作区的用户 Agent 可按授权调用；平台托管节点仍须沿用自身操作范围。
 
 ```json
 {"run_id":"RUN_ID","token":"TOKEN","task_id":"TASK_ID","key":"TASK_ID:progress-1","message":"阶段结果已记录","route":"default"}

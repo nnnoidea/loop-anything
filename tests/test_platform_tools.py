@@ -222,19 +222,24 @@ class PlatformToolTests(unittest.TestCase):
         for _ in range(100):
             self.engine.tick(id)
             tasks = call('next_tasks')['items']
-            if any(t.get('node') == 'finish' for t in tasks):
+            if any(t['spec']['node'] == 'finish' and t['status'] == 'decision' for t in self.store.get(id)['tasks'].values()):
                 break
             time.sleep(.02)
         finish = next(w for w in batch_tasks if w['node'] == 'finish')
+        finish_owner = next(o for o in self.store.get(id)['agent_sessions'] if o.get('task_id') == finish['id'])
+        previous_token=token;token=finish_owner['token']
         info = call('read_task', task_id=finish['id'])
         self.assertEqual('HELLO', info['inputs']['value'])
         call('complete_task', task_id=finish['id'], task_version=info['task_version'], envelope={'outputs': {'result': info['inputs']['value']}})
+        call('finish')
+        token=previous_token
+        call('read_timeline')
         call('finish')
         self.engine.tick(id)
         run = self.store.get(id)
         self.assertEqual('completed', run['status'])
         self.assertEqual({'第1轮'}, {w['spec']['round'] for w in run['tasks'].values() if w['spec']['node'] != 'initialize'})
-        self.assertFalse(any(h['kind'] == 'agent_acquired' and h['detail']['kind'] == 'background' for h in run['history']))
+        self.assertEqual(1,sum(h['kind'] == 'agent_acquired' and h['detail']['kind'] == 'background' for h in run['history']))
         document, _ = load_installed(self.store.filename, key)
         bp = document['loop_definition']
         self.assertEqual('AUTHOR BUSINESS INSTRUCTIONS: transform the given text and report it.', bp['handbook']['instructions'])
@@ -379,8 +384,10 @@ class PlatformToolTests(unittest.TestCase):
             raw = self.tools.call('read_run',{'run_id':rid})
             self.assertNotIn(terminal['token'],json.dumps(raw))
         self.assertEqual(before,self.store.get(rid))
-        with self.assertRaises(Conflict): self.tools.call('acquire_run',{'run_id':rid})
-        self.assertTrue(self.tools.respond('change_settings',{'run_id':rid,'revision':1,'change':{'objective':'User operation without credential gate'}})['ok'])
+        extra=self.tools.call('acquire_run',{'run_id':rid})
+        self.tools.call('finish',{'run_id':rid,'token':extra['token']})
+        self.assertTrue(self.tools.respond('change_settings',{'run_id':rid,'basis':self.tools.call('read_timeline',{'run_id':rid})['basis'],'revision':1,'change':{'objective':'User operation without credential gate'}})['ok'])
+        task=write(terminal,'read_task',task_id=terminal['entry_task_id'])
         write(terminal,'complete_task',task_id=terminal['entry_task_id'],task_version=task['task_version'],
               envelope={'settings':{'objective':'Original objective'},'outputs':{'result':'Evidence from terminal'}})
         batch = write(terminal,'build_plan',name='round',key='one',values={})['tasks']
@@ -420,7 +427,8 @@ class PlatformToolTests(unittest.TestCase):
         self.assertTrue(any(i.get('task_id')=='initialize' for i in work['waiting']))
         token = before['agent_sessions'][0]['token']
         self.assertTrue(any(i.get('task_id')=='initialize' for i in self.tools.call('next_tasks',{'run_id':rid,'token':token})['items']))
-        self.assertEqual(before,self.store.get(rid))
+        after=self.store.get(rid)
+        for name in ('revision','tasks','settings','records','history'):self.assertEqual(before[name],after[name])
         self.assertFalse(self.tools.respond('read_timeline',{'run_id':rid,'token':'invalid'})['ok'])
         self.engine.command(rid,'terminate',operator_token=token)
         snapshot = self.tools.call('read_timeline',{'run_id':rid})

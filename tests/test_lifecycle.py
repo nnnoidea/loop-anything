@@ -277,7 +277,7 @@ assert client.report(context,'progress',report_id='late')['stale']
             sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
         with open(Path(self.base.tmp.name)/'server.log','w+') as log:
             server=subprocess.Popen([sys.executable,'-m','loop_anything','--db',str(self.store.filename),'serve','--port',str(port),'--allow-sleep'],
-                env=dict(os.environ,LOOP_ANYTHING_EDIT_PASSWORD='test-password'),stdout=log,stderr=log)
+                env=dict(os.environ),stdout=log,stderr=log)
             try:
                 for _ in range(100):
                     run=self.store.get(ident)
@@ -357,6 +357,7 @@ assert client.report(context,'progress',report_id='late')['stale']
         self.assertEqual([e['external_id'] for e in attempts],['job-1','job-2','job-3'])
         self.assertEqual(attempts[-1]['lifecycle_state'],'agent')
         fallback=next(e for e in run['executions'] if e['node']=='recover');tools=RunTools(self.store,self.base.id,fallback['token'])
+        tools.call('read_task',{'task_id':'work'})
         tools.call('change_task',{'task_id':'work','operation':'retry','parameters':{'fixed':True},'reason':'Repair original task'})
         info=tools.call('read_task',{'task_id':fallback['task_id']})
         tools.call('complete_task',{'task_id':fallback['task_id'],'task_version':info['task_version'],'envelope':{'outputs':{}}});tools.call('finish',{})
@@ -389,6 +390,8 @@ assert client.report(context,'progress',report_id='late')['stale']
             self.base.initialize([task_spec('work','produce',{'source':{'record':'a'}},{'text':'out'})]);self.settle()
         from loop_anything.interfaces.agent_tasks import acquire
         owner=acquire(self.store,self.base.id)
+        with self.store.edit(self.base.id) as run:
+            next(e for e in run['executions'] if e['task_id']=='work')['worker_active']=True
         self.engine.tick(self.base.id);self.assertEqual(self.base.read()['tasks']['work']['attempts'],1)
         RunTools(self.store,self.base.id,owner['token']).call('finish',{})
         # Simulate restart with an invocation that had not durably confirmed exit.

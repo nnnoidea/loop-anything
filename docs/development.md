@@ -32,6 +32,8 @@ macOS 安装器默认使用 launchd 用户服务；测试或临时环境安装�
 
 执行生命周期的计算在 `runtime/transitions.py`：`decide_transition` 接收规则、当前阶段、事件、数据上下文与任务参数，返回规则选择及展开结果；`transition_effects` 接收校验结论与调用方提供的时间，返回要应用的状态字段。两者不读写数据库、读取时钟或派发任务。重试参数校验优先于通知错误，保持原错误回执。`TimelineRuntime.report_in_run` 在原事务内完成去重、契约校验、路由准备，再提交结果、应用状态与记录历史。不要缓存计算结果后脱离原事务写入；这些是内部函数，没有新增对外工具或状态覆盖协议。
 
+Agent 的 Timeline 乐观提交在 `runtime/optimistic.py`：读取依据随既有 Agent 身份保存，业务修订不包含这些读取元数据。提交在 `Store.edit` 短事务中验证相关 Task／输入／最新记录／设置，失败整组回滚；明确历史记录保持固定版本，日志不影响决策版本。执行身份和 Task 子树资格仍保留，同 Task 及原生 CLI 会话的重复执行保护不依赖 Timeline 排他锁。finish 后尚未退出的恢复终端和远端执行沿原 worker_active／communication_state 保留进程保护；重启从现有终端记录恢复未知状态，确认停止后解除。批量修改和预览同样检查 affected Task 的读取依据。
+
 Skill 客户端只在 `skills/loop-anything-platform/scripts/call.py` 维护；导出直接收集 Skill 目录，不另复制一套不同命名的源码。根目录旧 `examples/simulated_tasks.py` 仅为既有本地运行保留命令路径，不纳入发布。
 
 ## 验证
@@ -49,7 +51,6 @@ node --test tests/library.test.js tests/task-history.test.js
 node tests/library-browser.cjs
 node tests/visual-browser.cjs
 node tests/web-agent-browser.cjs
-node tests/edit-access-browser.cjs
 ```
 
 它使用隔离的临时数据库。普通测试使用模拟结果或本地命令，不调用真实模型。真实 Agent 场景需另外明确模型、环境和业务边界。

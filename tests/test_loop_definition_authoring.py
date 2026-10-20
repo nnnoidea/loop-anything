@@ -52,8 +52,9 @@ class AuthoringTests(unittest.TestCase):
                 engine.tick(run_id)
                 current = self.store.get(run_id)
                 from loop_anything.interfaces.agent_tasks import RunTools
-                tools = RunTools(self.store, run_id, current['agent_sessions'][0]['token'])
                 task_id = bp['seed']['id'] if result == 'hello' else 'finish'
+                owner = next(o for o in current['agent_sessions'] if o.get('task_id') == task_id)
+                tools = RunTools(self.store, run_id, owner['token'])
                 task = tools.call('read_task', {'task_id': task_id})
                 envelope = {'outputs': {'result': result}}
                 if result == 'hello':
@@ -61,6 +62,8 @@ class AuthoringTests(unittest.TestCase):
                         'inputs': {'message': {'record': 'source'}}, 'outputs': {'result': {'id': 'done'}}}])
                 tools.call('complete_task', {'task_id': task_id, 'task_version': task['task_version'], 'envelope': envelope})
             tools.call('finish', {})
+            for owner in self.store.get(run_id)['agent_sessions']:
+                RunTools(self.store, run_id, owner['token']).call('finish', {})
             engine.tick(run_id)
             self.assertEqual(self.store.get(run_id)['status'], 'completed')
             self.assertEqual(self.store.get(run_id)['executions'][1]['inputs']['message'], 'hello')

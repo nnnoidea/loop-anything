@@ -104,6 +104,7 @@ class PlatformLoopTests(unittest.TestCase):
         owner = acquire(self.store, self.id)
         tools = RunTools(self.store, self.id, owner['token'])
         tools.call('command', {'action': 'pause'})
+        tools.call('read_timeline', {})
         decision_record = self.read()['tasks'][old['task_id']]['spec']['outputs']['decision']['id']
         affected = [w['id'] for w in self.read()['tasks'].values() if w['id'] == old['task_id'] or
                     any(v.get('record') == decision_record for v in w['spec']['inputs'].values())]

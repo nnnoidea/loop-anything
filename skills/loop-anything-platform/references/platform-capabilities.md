@@ -57,16 +57,6 @@
 - 工具入口：communication_status、communication_workspace、communication_config
 - 详细说明：[references/communication.md](communication.md)
 
-## loop_edit_protection
-
-- 生效方式：configured
-- 平台承担：可选编辑口令按Loop身份保护定义、节点实现、手册及随包资源；草稿和版本共用，导出导入携带校验信息。
-- 作者提供：按需set_loop_password，受保护编辑提供对应Loop的loop_password。
-- 配置入口：`set_loop_password`、`copy_loop`、`publish_loop`、`export_loop`
-- 边界：日常Run、通信和终端不需要全局解锁；平台自动处理普通操作执行标识，实际worker仍受执行范围、版本和过期结果校验。
-- 工具入口：set_loop_password、read_loop、copy_loop、publish_loop、export_loop
-- 详细说明：[references/connection.md](connection.md)
-
 ## cc_connect
 
 - 生效方式：configured/operator
@@ -153,7 +143,7 @@
 - 平台承担：平台提供本机具名Agent目录、NAS群组收发、明确认领、进度结果、会话和等待恢复；独立协作自动使用平台内置 Loop。待收消息与历史自动分离，确认后归档，回执按需补发；作者无需自建归档或清理脚本。
 - 作者提供：先配置已挂载的共享空间，用 communication_workspace(discover=true) 发现群组并显式加入；再配置具名 Agent 对应的本机 CLI/工作目录/恢复命令及开放群组，支持转交加入说明；Loop绑定群组，节点显式声明群组执行；外援由Agent按需请求；pending/offered表示等待，默认接单期限300秒，不得因几秒无回应而取消或重建，按需挂起等待。
 - 配置入口：`communication_config`、`implementations.*.dispatch`、`request_assistance`、`wait_assistance`
-- 边界：可信工作区配置、请求、查询无需全局编辑解锁；普通操作由平台处理内部标识，worker写回仍校验本次执行范围。原生 session ID 只用于恢复；本地节点只由来源平台执行，群组不是业务Run副本，session不决定认领。失联不自动重跑。NAS实际环境需安装时检查，逐键远程PTY尚不承诺。
+- 边界：可信工作区普通操作由平台处理内部标识，worker写回仍校验本次执行范围。原生 session ID 只用于恢复；本地节点只由来源平台执行，群组不是业务Run副本，session不决定认领。失联不自动重跑。NAS实际环境需安装时检查，逐键远程PTY尚不承诺。
 - 工具入口：communication_workspace、communication_status、communication_config、request_assistance、read_assistance、control_assistance、wait_assistance、communication_execute
 - 详细说明：[references/communication.md](communication.md)
 
@@ -223,7 +213,7 @@
 - 平台承担：为后台 Agent 每次执行持久化实时输出；可选交互终端连接同一 CLI 进程，转发键盘和窗口尺寸，finish 后关闭会话。
 - 作者提供：提供 CLI 命令、工作目录、登录与权限配置；交互命令用 {{prompt}} 或 {{prompt_file}} 接收任务上下文。
 - 配置入口：`implementations.*.terminal`、`implementations.*.command`、`read_capabilities(agent_terminal)`
-- 边界：普通命令只读；交互终端当前支持 macOS/Linux。进程重启后只保留历史并按既有操作权恢复，不保证恢复 CLI 会话。终端不需要Loop编辑解锁，session身份和执行状态仍校验，结果仍须 report_task/finish；不要重复构建日志查看与交互通道。
+- 边界：普通命令只读；交互终端当前支持 macOS/Linux。进程重启后只保留历史并按既有操作权恢复，不保证恢复 CLI 会话。终端session身份和执行状态仍校验，结果仍须 report_task/finish；不要重复构建日志查看与交互通道。
 - 工具入口：set_implementation、read_task
 - 详细说明：[references/terminal.md](terminal.md)
 
@@ -310,9 +300,9 @@
 ## task_edits
 
 - 生效方式：operator
-- 平台承担：按 revision 和范围检查预览或原子应用有序任务编辑，失败时整组回滚。
-- 作者提供：选择本次改动并检查预览。
-- 配置入口：`edit_tasks.changes`、`edit_tasks.preview`、`Timeline.revision`
+- 平台承担：按 basis 和业务范围原子校验并应用有序任务编辑，失败时整组回滚。
+- 作者提供：根据读取依据作决定，冲突后重新判断。
+- 配置入口：`edit_tasks.basis`、`edit_tasks.changes`、`edit_tasks.preview`
 - 边界：独立工具调用不是跨调用事务；结果和后继一起提交可用 routes。
 - 工具入口：edit_tasks、change_task
 - 详细说明：[references/run.md](run.md)
@@ -347,13 +337,23 @@
 - 工具入口：notify、read_notification_channels、set_notification_channels、send_event、retry_notification
 - 详细说明：[references/notifications.md](notifications.md)
 
+## optimistic_edits
+
+- 生效方式：automatic/operator
+- 平台承担：托管身份记录所读版本，提交时沿短事务检查 basis、范围和执行状态；不长期占用 Timeline。
+- 作者提供：无持续 token 的修改携带读取返回的 basis；定点任务用 read_task，集合／缺席判断用 read_timeline/next_tasks，冲突后重新判断。
+- 配置入口：`read_task.basis`、`read_timeline.basis`、`edit_tasks.basis`、`change_task.basis`
+- 边界：不能只换最新版本号原样重试；日志与普通进度不构成冲突。身份、同 Task 唯一执行及原 session 保护继续保留；finish 后退出间隙、历史恢复终端和未结束远端进程也受保护。
+- 工具入口：read_task、read_timeline、next_tasks、edit_tasks、change_task、change_settings
+- 详细说明：[references/run.md](run.md)
+
 ## scopes
 
 - 生效方式：automatic
-- 平台承担：按父子归属保护操作范围，允许不相交支线并行，维护获取和释放操作权。
+- 平台承担：按 Task 归属限定修改范围，不在思考期间互斥；同 Task 保留唯一有效执行者。
 - 作者提供：让任务归属对应真实责任，完成或明确等待后 finish；全局判断使用明确的全局节点。
 - 配置入口：`Task.parent_id`、`Loop.global_agent_node`、`acquire_run/finish`
-- 边界：依赖与归属含义不同；父 Agent 持有范围时，子 Agent 需等待释放。
+- 边界：依赖与归属含义不同；后代满足依赖即可运行，无需等待父 Agent finish。
 - 工具入口：read_timeline、acquire_run、finish、read_task
 - 详细说明：[references/run.md](run.md)
 

@@ -30,7 +30,7 @@ Loop 的节点是能力模板；一个节点可在同一 Run 中对应多项任�
 
 常用入口是用户自己的 Agent 与用户讨论后调用 `start_run`，原子创建 Run 并取得操作权，再完成入口任务。入口保存初始状态，不在每轮重新创建。
 
-同一 Run 的 Agent 按具体 Task 的支线归属操作，不重叠的范围可并发，祖先/后代或全局范围互斥。普通 Agent 可规划自己支线的后续工作；全局 Agent 可处理整个 Run。正常脚本和外部事件仍按自己的契约执行、写回；不同 Run 不互斥。
+同一 Run 的 Agent 按具体 Task 的支线归属操作，各范围可以同时思考，提交时校验相关读取依据和执行状态；同 Task 只保留一个有效执行者。普通 Agent 可规划自己支线的后续工作；全局 Agent 可处理整个 Run。正常脚本和外部事件仍按自己的契约执行、写回；不同 Run 不互斥。
 
 - `read_timeline`：当前目标、设置、候选摘要和任务问题。
 - `read_task`：指定任务的输入、来源、当前实现、输出契约、节点 Skill 和 `task_version`。
@@ -106,7 +106,7 @@ Loop 的可选 `fallback_node` 指向一个真实、可见的非入口节点。�
 
 作者已覆盖的执行、等待和结束状态按既定规则处理；执行失败、非法输入、依赖缺口、未识别事件等确定性检查识别的未覆盖状态进入所选兜底节点。无需逐条枚举异常连线，平台不猜测自然语言业务遗漏。
 
-兜底任务使用正常 Task 派发、Hooks、Agent 操作权和 complete_task。origin 保留进入原因。已有全局 Agent 可以处理该节点；全局范围与其他 Agent 范围互斥。处理或明确等待相关事项后，仍需完成兜底节点自身的输出契约，再 finish。
+兜底任务使用正常 Task 派发、Hooks、Agent 操作权和 complete_task。origin 保留进入原因。其他全局 Agent 可协助处理问题；兜底 Task 自身仍只有一个有效执行者，全局身份与其他支线可同时存在。处理或明确等待相关事项后，仍需完成兜底节点自身的输出契约，再 finish。
 
 `start_run.fallback_node` 可覆盖 Loop 默认，空字符串明确关闭；运行中用 `change_settings.change.fallback_node` 设置节点 ID 或 null。关闭会取消尚未派发的自动兜底任务，已派发调用保留原操作权和实现。未启用时保留问题，不隐式选择其他 Agent。
 
@@ -137,7 +137,7 @@ Hook 包含 `id`、`target:{node或tasks}`、`action:pause或notify`、`phase:be
 
 运行页默认显示实际任务依赖图，可切换实际执行开始时间顺序与作者提供的轮次分组。新执行保留派发 created_at 和开始 started_at，排队时 started_at 为 null；旧执行没有开始时间，明确显示历史派发时间，不补造事实。平台记录自己观察到的执行开始或人工结果提交；用户 Agent 在平台外的准备对话不计时。任务详情展示正式输入输出、所用来源版本、执行尝试及变更记录；定义图在单独的折叠区，不与实际运行任务混淆。
 
-网页通过 `POST /api/runs/{id}/tasks` 提交 `{revision, changes:[{tool, arguments}]}`，tool 限于 `add_task`、`change_task`、`build_plan`。设置 `preview:true` 可在内存副本中展开并校验修改，返回实际任务差异，数据库不变。正式提交复用 Agent 工具参数与同一事务校验；版本冲突或修改范围与其他 Agent 重叠时拒绝提交。未开始任务可调整 inputs、parameters、implementation、after；已派发的脚本及已完成任务受保护。修改展示仅表示明确变更及依赖关联，不自动推断业务失效。
+网页通过 `POST /api/runs/{id}/tasks` 提交 `{revision, changes:[{tool, arguments}]}`，tool 限于 `add_task`、`change_task`、`build_plan`。设置 `preview:true` 可在内存副本中展开并校验修改，返回实际任务差异，数据库不变。正式提交复用 Agent 工具参数与同一事务校验；相关版本变化或与同 Task 的执行状态冲突时拒绝提交，修改资格范围重叠本身不阻塞。未开始任务可调整 inputs、parameters、implementation、after；已派发的脚本及已完成任务受保护。修改展示仅表示明确变更及依赖关联，不自动推断业务失效。
 
 文件输出的声明与路径约定见平台 [构建说明](../skills/loop-anything-platform/references/build-reference.md#结果的通用展示)。结果值及来源保留历史；文件本体不会自动归档，作者应提供不同的产物路径。
 

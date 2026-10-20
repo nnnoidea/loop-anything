@@ -72,9 +72,15 @@ class RunAgentTests(unittest.TestCase):
     def complete(self, id, value='done', **envelope):
         if 'settings' in envelope:
             envelope['settings'].setdefault('completion_rule', {'op': 'and', 'args': [{'op': 'ge', 'args': [{'path': ['completed', 'finish']}, 1]}, {'op': 'eq', 'args': [{'path': 'active_tasks'}, 0]}]})
-        info = self.tools.call('read_task', {'task_id': id})
-        return self.tools.call('complete_task', {'task_id': id, 'task_version': info['task_version'],
+        original = self.tools
+        current = self.read() if hasattr(self, 'read') else self.store.get(self.id)
+        claimed = next((o for o in current['agent_sessions'] if o.get('task_id') == id), None)
+        worker = RunTools(self.store, self.id, claimed['token']) if claimed else original
+        info = worker.call('read_task', {'task_id': id})
+        result = worker.call('complete_task', {'task_id': id, 'task_version': info['task_version'],
             'envelope': dict(outputs={'result': value}, **envelope)})
+        if worker.token != original.token:worker.call('finish', {})
+        return result
 
     def until(self, predicate):
         for _ in range(150):
@@ -96,16 +102,15 @@ class RunAgentTests(unittest.TestCase):
         self.assertEqual(result['token'], owner['token'])
         self.assertEqual('init', result['entry_task_id'])
         with self.assertRaises(Conflict):
-            acquire(self.store, self.id)
+            acquire(self.store, self.id, 'init')
         self.engine.tick(self.id)
         self.assertEqual([], self.read()['executions'])
         other = self.store.create(key, 'Other run')['id']
         self.engine.tick(other)
         self.assertEqual(1, len(self.store.get(other)['executions']))
-        with self.assertRaises(Conflict):
-            self.engine.change_settings(self.id, 1, {'guidance': 'bypass'})
-        with self.assertRaises(Conflict):
-            self.engine.command(self.id, 'pause')
+        self.engine.command(self.id, 'pause')
+        self.assertEqual('paused', self.read()['status'])
+        self.engine.command(self.id, 'resume')
         self.tools = RunTools(self.store, self.id, owner['token'])
         self.tools.call('change_settings', {'revision': 1, 'change': {'guidance': 'User requested change'}})
         self.assertEqual('User requested change', self.tools.call('read_timeline', {})['settings']['guidance'])
@@ -125,7 +130,7 @@ class RunAgentTests(unittest.TestCase):
         def attempt():
             barrier.wait()
             try:
-                return acquire(self.store, self.id)['token']
+                return acquire(self.store, self.id, 'init')['token']
             except Conflict:
                 return None
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -151,19 +156,20 @@ class RunAgentTests(unittest.TestCase):
         self.assertEqual(1, agent_calls(run))
         self.assertFalse(any(e['node'] == 'finish' for e in run['executions']))
 
-    def test_same_agent_handles_multiple_ready_nodes(self):
+    def test_ready_nodes_start_while_global_agent_is_still_active(self):
         self.start()
         self.complete('init', settings={'objective': 'Finish'}, tasks=[task_spec('reason', 'reason'), task_spec('finish', 'finish', {'value': {'record': 'reason.result'}})])
         self.engine.tick(self.id)
-        self.assertEqual(1, len(self.read()['executions']))
-        self.assertEqual(['task:reason'], [t['id'] for t in self.tools.call('next_tasks', {})['items']])
+        self.assertEqual(2, len(self.read()['executions']))
+        self.assertTrue(any(t.get('task_id') == 'reason' for t in self.tools.call('next_tasks', {})['waiting']))
         self.complete('reason')
+        self.tools.call('next_tasks', {})
         self.complete('finish')
         self.tools.call('finish', {})
         self.engine.tick(self.id)
         run = self.read()
         self.assertEqual('completed', run['status'])
-        self.assertEqual(1, agent_calls(run))
+        self.assertEqual(2, agent_calls(run))
         self.assertEqual([], run['agent_sessions'])
 
     def test_fault_in_other_node_is_handled_without_second_agent(self):
@@ -177,11 +183,15 @@ class RunAgentTests(unittest.TestCase):
         self.assertTrue(any(t.get('task_id') == 'script' for t in tasks['items']))
         self.engine.tick(self.id)
         fallback = next(t for t in self.read()['tasks'].values() if t['origin'].get('fallback'))
-        self.assertEqual(1, agent_calls(self.read()))
+        self.assertEqual(2, agent_calls(self.read()))
+        self.tools.call('read_task', {'task_id': 'script'})
+        self.tools.call('read_timeline', {})
         self.tools.call('change_task', {'task_id': 'script', 'operation': 'retry', 'parameters': {'fail': False}, 'reason': 'Known test failure; no side effect occurred'})
         self.until(lambda r: r['tasks']['script']['status'] == 'completed')
-        info = self.tools.call('read_task', {'task_id': fallback['id']})
-        self.tools.call('complete_task', {'task_id': fallback['id'], 'task_version': info['task_version'], 'envelope': {'outputs': {}}})
+        helper = RunTools(self.store, self.id, next(o['token'] for o in self.read()['agent_sessions'] if o.get('task_id') == fallback['id']))
+        info = helper.call('read_task', {'task_id': fallback['id']})
+        helper.call('complete_task', {'task_id': fallback['id'], 'task_version': info['task_version'], 'envelope': {'outputs': {}}})
+        helper.call('finish', {})
         self.complete('finish')
         self.tools.call('finish', {})
         self.engine.tick(self.id)
@@ -340,7 +350,8 @@ print(json.dumps({'outputs':{'result':'fabricated-final-result'}}))
         self.assertEqual('completed', run['tasks']['init']['status'])
         self.assertNotIn('reason.result', run['records'])
         self.assertEqual(2, agent_calls(run))
-        self.assertTrue(task_list(run, self.engine.timeline_runtime)['has_tasks'])
+        view = task_list(run, self.engine.timeline_runtime)
+        self.assertTrue(any(t.get('task_id') == 'reason' for t in view['items'] + view['waiting']))
 
     def test_scripts_and_events_complete_during_agent_operation(self):
         self.start()
@@ -354,9 +365,9 @@ print(json.dumps({'outputs':{'result':'fabricated-final-result'}}))
         self.assertEqual('event-result', run['records']['wait.result'][-1]['value'])
         self.assertEqual('script-result', run['records']['script.result'][-1]['value'])
         self.assertEqual(token, run['agent_sessions'][0]['token'])
-        self.assertEqual(['task:reason'], [i['id'] for i in self.tools.call('next_tasks', {})['items']])
+        self.assertTrue(any(i.get('task_id') == 'reason' for i in self.tools.call('next_tasks', {})['waiting']))
         self.complete('reason')
-        self.assertEqual(1, agent_calls(self.read()))
+        self.assertEqual(2, agent_calls(self.read()))
 
     def test_finish_revokes_token_on_all_write_entry_points(self):
         self.start()
@@ -373,8 +384,7 @@ print(json.dumps({'outputs':{'result':'fabricated-final-result'}}))
     def test_user_request_waits_for_current_owner_and_is_resolved(self):
         from loop_anything.interfaces.agent_tasks import user_request
         self.start()
-        with self.assertRaises(Conflict):
-            user_request(self.store, self.id, 'Change the experiment')
+        user_request(self.store, self.id, 'An independent request during Agent thinking')
         request = user_request(self.store, self.id, 'Change the experiment', operator_token=self.tools.token)
         self.assertTrue(any(t['id'] == request['id'] for t in self.tools.call('next_tasks', {})['items']))
         self.tools.call('resolve_request', {'task_id': request['id']})
@@ -406,7 +416,7 @@ print(json.dumps({'outputs':{'result':'fabricated-final-result'}}))
                 future.result(timeout=5)
         self.assertTrue(self.read()['agent_sessions'][0]['recovery_required'])
         with self.assertRaises(Conflict):
-            acquire(self.store, self.id)
+            acquire(self.store, self.id, 'init')
         self.engine.tick(self.id)
         self.assertEqual(1, agent_calls(self.read()))
 
@@ -417,7 +427,7 @@ print(json.dumps({'outputs':{'result':'fabricated-final-result'}}))
             run['executions'][0]['implementation']['command'] = ['old-harness-process']
         self.engine.recover()
         with self.assertRaises(Conflict):
-            acquire(self.store, self.id)
+            acquire(self.store, self.id, 'init')
         with self.assertRaises(Conflict):
             recover_owner(self.store, self.id, self.tools.token)
         recover_owner(self.store, self.id, self.tools.token, confirmed_stopped=True)

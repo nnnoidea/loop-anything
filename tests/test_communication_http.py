@@ -1,5 +1,4 @@
 """Two real platform processes and CLI subprocesses; no model or external channel calls."""
-import base64
 import json
 import os
 import socket
@@ -58,27 +57,26 @@ class CommunicationHTTPTests(unittest.TestCase):
                     with socket.socket() as s:s.bind(('127.0.0.1',0));port=s.getsockname()[1]
                     log=(root/(name+'.log')).open('w+');logs.append(log)
                     process=subprocess.Popen([sys.executable,'-m','loop_anything','--db',str(root/(name+'.db')),'serve','--port',str(port),'--allow-sleep'],
-                        stdout=log,stderr=log,env=dict(os.environ,LOOP_ANYTHING_EDIT_PASSWORD='test-only-password',PATH=''))
+                        stdout=log,stderr=log,env=dict(os.environ,PATH=''))
                     servers.append(process);url='http://127.0.0.1:'+str(port);urls.append(url)
                     for _ in range(100):
                         try:
                             with urlopen(url+'/api/platform',timeout=.2):break
                         except (URLError,TimeoutError):time.sleep(.05)
                     else:self.fail('Platform did not start')
-                def tool(index,name,args,admin=True):
+                def tool(index,name,args):
                     headers={'Content-Type':'application/json','X-Loop-Anything':'workspace'}
-                    if admin:headers['Authorization']='Basic '+base64.b64encode(b':test-only-password').decode()
                     request=Request(urls[index]+'/api/tools',data=json.dumps({'tool':name,'arguments':args}).encode(),headers=headers)
                     with urlopen(request,timeout=10) as f:value=json.load(f)
                     self.assertTrue(value.get('ok'),value)
                     return value
-                # Trusted workspace operations are open independently of the legacy global env password.
-                discovered=tool(0,'communication_status',{},admin=False)
+                # Trusted workspace operations need no password or login.
+                discovered=tool(0,'communication_status',{})
                 self.assertEqual(discovered['agents'],[])
                 self.assertNotIn('access_token',json.dumps(discovered))
-                self.assertTrue(tool(0,'communication_config',{'operation':'identity','name':'open workspace'},admin=False)['ok'])
-                independent=tool(0,'request_assistance',{'location':'local','agent_id':'not-configured','message':'independent help'},admin=False)
-                self.assertEqual(tool(0,'read_assistance',{'request_id':independent['request']['id']},admin=False)['request']['state'],'unavailable')
+                self.assertTrue(tool(0,'communication_config',{'operation':'identity','name':'open workspace'})['ok'])
+                independent=tool(0,'request_assistance',{'location':'local','agent_id':'not-configured','message':'independent help'})
+                self.assertEqual(tool(0,'read_assistance',{'request_id':independent['request']['id']})['request']['state'],'unavailable')
                 group=tool(0,'communication_config',{'operation':'group','path':str(root/'nas'),'create':True})
                 gid=next(iter(group['configuration']['groups']))
                 tool(1,'communication_config',{'operation':'group','path':str(root/'nas')})
@@ -91,7 +89,7 @@ class CommunicationHTTPTests(unittest.TestCase):
                 else:self.fail('Group notification binding was not discovered')
                 tool(1,'communication_config',{'operation':'agent','task_confirmed':True,'agent_id':'papers','agent':{'description':'查找研究论文','name':'论文助手','local':True,'groups':[gid],
                      'implementation':{'kind':'agent','command':[sys.executable,str(worker)],'agent_cli':'custom','resume_command':[sys.executable,str(worker),'{{prompt}}','{{session_id}}']}}})
-                public=tool(1,'communication_status',{'group_id':gid},admin=False)
+                public=tool(1,'communication_status',{'group_id':gid})
                 local=next(a for a in public['agents'] if a['location']=='local' and a['id']=='papers')
                 self.assertNotIn('implementation',local)
                 self.assertNotIn('command',json.dumps(public))
@@ -103,7 +101,7 @@ class CommunicationHTTPTests(unittest.TestCase):
                 self.assertEqual(response.returncode,0,response.stderr);accepted=json.loads(response.stdout);self.assertTrue(accepted['ok'])
                 rid=accepted['request']['id']
                 for _ in range(150):
-                    state=tool(1,'read_assistance',{'request_id':rid,'include_details':True},admin=False)['request']
+                    state=tool(1,'read_assistance',{'request_id':rid,'include_details':True})['request']
                     if state['state']=='completed' and any(n.get('status')=='waiting_configuration' for n in state.get('notifications',[])):break
                     time.sleep(.05)
                 else:self.fail(str(state))
@@ -113,16 +111,16 @@ class CommunicationHTTPTests(unittest.TestCase):
                     business_context={'task':'分析实验结果并查找相关论文'}
                     created=tool(origin,'request_assistance',{'location':location,'group_id':gid,'agent_id':'papers','message':'查论文','context':business_context})
                     args={'request_id':created['request']['id'],'token':created['request_token']}
-                    self.assertTrue(tool(origin,'read_assistance',{'request_id':args['request_id']},admin=False)['ok'])
+                    self.assertTrue(tool(origin,'read_assistance',{'request_id':args['request_id']})['ok'])
                     for _ in range(100):
-                        result=tool(origin,'read_assistance',args,admin=False)['request']
+                        result=tool(origin,'read_assistance',args)['request']
                         if result['state'] in ('completed','failed'):break
                         time.sleep(.15)
                     self.assertEqual(result['state'],'completed',result)
                     self.assertEqual(result['result']['papers'],['example'])
                     self.assertEqual(result['result']['context'],business_context)
                     for _ in range(100):
-                        result=tool(origin,'read_assistance',args,admin=False)['request']
+                        result=tool(origin,'read_assistance',args)['request']
                         if any(n['state']=='completed' and n['status']=='delivered' for n in result.get('notifications',[])):break
                         time.sleep(.1)
                     else:self.fail('Group notification receipt was not returned')
@@ -130,9 +128,9 @@ class CommunicationHTTPTests(unittest.TestCase):
                     self.assertEqual(result['native_session']['provider'],'custom')
                     self.assertNotIn('worker_token',result)
                     if location=='local':
-                        resumed=tool(origin,'control_assistance',dict(args,action='followup',message='继续解释',resume=True),admin=False)
+                        resumed=tool(origin,'control_assistance',dict(args,action='followup',message='继续解释',resume=True))
                         for _ in range(100):
-                            continued=tool(origin,'read_assistance',{'request_id':resumed['request']['id'],'token':resumed['request_token']},admin=False)['request']
+                            continued=tool(origin,'read_assistance',{'request_id':resumed['request']['id'],'token':resumed['request_token']})['request']
                             if continued['state'] in ('completed','failed'):break
                             time.sleep(.1)
                         self.assertEqual(continued['state'],'completed',continued)
@@ -142,7 +140,7 @@ class CommunicationHTTPTests(unittest.TestCase):
                 for i,ids in standalone_runs.items():
                     self.assertTrue(ids)
                     for rid in ids:self.assertIn('collaboration',tool(i,'read_run',{'run_id':rid})['run'])
-                self.assertTrue(tool(0,'communication_workspace',{},admin=False)['ok'])
+                self.assertTrue(tool(0,'communication_workspace',{})['ok'])
                 import test_timeline_runtime as fixture
                 from loop_anything.runtime.store import Store
                 definition=fixture.RuntimeTests();definition.setUp()

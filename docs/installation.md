@@ -55,4 +55,4 @@ python3 -m loop_anything --db /绝对路径/runs.sqlite3 serve --host 0.0.0.0
 
 macOS 首次后台安装使用 `python3 install.py --host 0.0.0.0`；已有后台服务先 `service stop`，再 `service install --host 0.0.0.0`。未指定的工作区和端口沿用已有配置。
 
-共享访问面向可信内部环境。Loop 编辑口令见[连接说明](../skills/loop-anything-platform/references/connection.md)，多机 Agent 协作见[通信说明](../skills/loop-anything-platform/references/communication.md)。
+共享访问面向可信内部环境。多机 Agent 协作见[通信说明](../skills/loop-anything-platform/references/communication.md)。

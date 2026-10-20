@@ -1,4 +1,4 @@
-"""Task ancestry and overlapping Agent operation scopes; not scheduling dependencies."""
+"""Task permissions and single-executor claims; scopes do not lock Timeline planning."""
 import copy
 from loop_anything.runtime.model import Conflict, Invalid
 
@@ -27,10 +27,6 @@ def contains(run, scope, task_id):
     return False
 
 
-def overlap(run, left, right):
-    return contains(run, left, right) or contains(run, right, left)
-
-
 def owner_for(run, token):
     return next((o for o in run.get('agent_sessions', []) if o['token'] == token), None)
 
@@ -44,7 +40,21 @@ def scope_for(run, task):
 
 
 def scope_available(run, scope, token=None):
-    return not any(o['token'] != token and overlap(run, o.get('scope_task'), scope) for o in run.get('agent_sessions', []))
+    if scope is None:return True
+    if any(o['token'] != token and o.get('task_id') == scope for o in run.get('agent_sessions', [])):return False
+    return not any((not token or e.get('token') != token) and (process_active(e) or owner_for(run, e.get('token')))
+                   for e in run['executions'] if e['task_id'] == scope)
+
+
+def process_active(execution):
+    if execution.get('worker_active'):return True
+    if execution.get('collaboration_caller_pid'):
+        from loop_anything.runtime.collaboration import caller_active
+        if caller_active(execution):return True
+    if execution.get('communication_id'):
+        from loop_anything.runtime.communication import END
+        return execution.get('communication_state') not in END
+    return False
 
 
 def require_scope(run, owner, task_id=None):

@@ -51,6 +51,7 @@ class RoutingTests(unittest.TestCase):
         started = self.platform.call('start_run', {'key':self.key,'title':'Parameters only','authorization':'Run the requested work'})
         self.id = started['run_id'];self.task_id=started['entry_task_id']
         self.tools = RunTools(self.store,self.id,started['token'])
+        self.tools.call('read_task', {'task_id': self.task_id})
 
     def initial_report(self, requests, **fields):
         info=self.tools.call('read_task',{'task_id':self.task_id})

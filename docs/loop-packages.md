@@ -7,8 +7,8 @@
 
 ## 包内内容
 
-根文件 `loop.json` 保存 loop_definition、可选 implementations、可选 checks、能力要求 requires、可选 edit_protection 以及格式与资源清单。
-edit_protection 只包含算法、成本、盐和校验值，不含明文。平台导出/安装/载入草稿均保留同一Loop的保护；修改需该Loop口令，不影响查看或运行。新Loop身份可独立设置。
+根文件 `loop.json` 保存 loop_definition、可选 implementations、可选 checks、能力要求 requires 以及格式与资源清单。
+旧包中的 edit_protection 和 loop_edit_protection 要求已废弃，导入时忽略；新导出不携带编辑口令元数据。
 手册和节点 Skill 如果已内嵌 loop_definition，会原样保留。其它脚本/文档/资源必须明确选择附带。
 文件清单包含内容校验值和可执行标记；同一内容可重复安装，不覆盖已有文件。
 内容不同的部分/完整实现可以并存，即使其 loop_definition.id/version 相同。

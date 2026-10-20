@@ -57,11 +57,18 @@ class PlanTests(unittest.TestCase):
         self.tools = RunTools(self.store, self.run_id, self.e['token'])
 
     def complete(self, task_id, outputs, settings=None):
-        task = self.tools.call('read_task', {'task_id': task_id})
+        original = self.tools
+        run = self.store.get(self.run_id)
+        owner = next((o for o in run['agent_sessions'] if o.get('task_id') == task_id), None)
+        worker = RunTools(self.store, self.run_id, owner['token']) if owner else original
+        if 'task_sets' in next(o for o in run['agent_sessions'] if o['token'] == worker.token).get('observed', {}):worker.call('next_tasks', {})
+        task = worker.call('read_task', {'task_id': task_id})
         envelope = {'outputs': outputs}
         if settings is not None:
             envelope['settings'] = dict(settings, completion_rule={'op': 'and', 'args': [{'op': 'ge', 'args': [{'path': ['completed', 'judge']}, 1]}, {'op': 'eq', 'args': [{'path': 'active_tasks'}, 0]}]})
-        return self.tools.call('complete_task', {'task_id': task_id, 'task_version': task['task_version'], 'envelope': envelope})
+        result = worker.call('complete_task', {'task_id': task_id, 'task_version': task['task_version'], 'envelope': envelope})
+        if worker.token != original.token:worker.call('finish', {})
+        return result
 
     def commit(self):
         self.complete('init', {'data': 'cached-data'}, {'objective': 'Test'})
@@ -71,7 +78,7 @@ class PlanTests(unittest.TestCase):
             self.engine.tick(self.run_id)
             r = self.store.get(self.run_id)
             self.assertFalse(any(w['status'] == 'fault' for w in r['tasks'].values()), r['executions'])
-            found = [w for w in r['tasks'].values() if w['spec']['node'] == 'judge' and w['status'] == 'ready']
+            found = [w for w in r['tasks'].values() if w['spec']['node'] == 'judge' and w['status'] in ('ready', 'decision')]
             if found:
                 return r, [self.tools.call('read_task', {'task_id': w['id']}) for w in found]
             time.sleep(.02)
@@ -129,8 +136,8 @@ class PlanTests(unittest.TestCase):
         self.start()
         args = {'name': 'round', 'key': 'empty', 'values': {'experiments': ['a'], 'enabled': False}}
         before = self.store.get(self.run_id)
-        with self.assertRaises(Conflict):
-            edit_tasks(self.store, self.run_id, [{'tool': 'build_plan', 'arguments': dict(args, parent_id='')}], before['revision'], preview=True)
+        preview = edit_tasks(self.store, self.run_id, [{'tool': 'build_plan', 'arguments': dict(args, parent_id='')}], before['revision'], preview=True)
+        self.assertEqual([], preview['changes'])
         self.assertEqual(self.store.get(self.run_id), before)
         result = self.tools.call('build_plan', args)
         self.assertEqual(result['tasks'], [])

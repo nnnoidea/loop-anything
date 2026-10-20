@@ -105,14 +105,14 @@ class WebAgentTests(unittest.TestCase):
         self.assertEqual('用户要求修改', self.store.get(run_id)['settings']['guidance'])
         self.assertEqual(1, len(self.store.list()))
 
-    def test_read_does_not_take_rights_and_write_cannot_steal_them(self):
+    def test_read_does_not_claim_and_edit_can_coexist_with_another_identity(self):
         doc = self.turn('start', True); run_id = doc['run_id']
         owner = acquire(self.store, run_id)
         doc = self.turn('read');self.assertEqual('completed',doc['messages'][-1]['status'])
         self.assertIn('True', doc['messages'][-1]['text'])
-        doc = self.turn('edit');self.assertEqual('error',doc['messages'][-1]['status'])
+        doc = self.turn('edit');self.assertEqual('completed',doc['messages'][-1]['status'],doc['messages'][-1])
         self.assertEqual(owner['token'], self.store.get(run_id)['agent_sessions'][0]['token'])
-        self.assertNotEqual('用户要求修改',self.store.get(run_id)['settings']['guidance'])
+        self.assertEqual('用户要求修改',self.store.get(run_id)['settings']['guidance'])
 
     def test_interrupted_turn_preserves_rights_and_requires_confirmed_recovery(self):
         ident = self.doc['id']

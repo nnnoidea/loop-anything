@@ -20,7 +20,7 @@
 
 ## 首次组网：共享空间 → 群组 → 具名 Agent
 
-安装后通过平台工具配置；可信工作区可直接配置，无需Loop编辑口令；远端worker限定入口不能修改组网配置。
+安装后通过平台工具配置；可信工作区可直接配置；远端worker限定入口不能修改组网配置。
 
 1. **配置共享空间**：先在每台机器挂载同一个 NAS 目录，再调用 `communication_config`，参数如 `{"operation":"space","path":"/本机挂载目录/协作空间","name":"研究协作"}`。目录必须已存在；平台保存空间 ID 和本机路径，做本机读写检查，不代替 NAS 挂载或真实双机验收。首台写入空间标识，其他机器读取同一 ID；本机路径不同也可加入。
 2. **发现或创建群组**：`communication_workspace({"discover":true})` 返回 `shared_spaces`，每个空间包含群组名称、用途、`id`、`relative_path`、是否已加入和读取错误。发现仅扫描该空间的 `groups/` 直接子目录，不自动加入，不扫描整台机器。创建调用 `communication_config({"operation":"group","space_id":"返回的空间ID","create":true,"name":"论文协作","description":"用途说明"})`；创建者同时加入。其他机器加入时传 `operation: group`、`space_id`、发现结果中的 `relative_path` 和 `group_id`，不用复制另一台机器的绝对路径。
@@ -49,7 +49,7 @@
 
 ## 调用外援
 
-1. `communication_status` 查看显式开放的本机成员和群组目录，无需编辑口令或任务/请求 token。Loop 调用带 run_id；此时只显示其群组范围。查询不授权启动工作。
+1. `communication_status` 查看显式开放的本机成员和群组目录，无需任务/请求 token。Loop 调用带 run_id；此时只显示其群组范围。查询不授权启动工作。
 2. `request_assistance` 传 `location: local` 和 agent_id；或 `location: group`、明确 group_id 和 agent_id/capability。无默认群组时先选择，不跨组广播；同名目标以稳定 ID 消歧。
 3. 提供 message、需要分享的 context，以及可选 result_schema（默认 object）。context 顶层须为 JSON 对象，内部业务字段可为文字、数组、null 等 JSON 值；例如 `{"task":"查找相关论文"}` 合法，不要求把 context.task 包装成平台 Task 对象。节点内调用带 `source: {run_id, task_id}`；托管节点使用当前操作 token，普通工作区操作可省略，由平台处理。独立请求可不传 source，平台创建内置协作 Run，调用方无需成为接单成员；已有协作继续传 collaboration_id。若已用 start_collaboration 承接当前 Agent，则沿用其 source 和 token。
 4. 返回精简 request 摘要、request.collaboration（独立协作的 run_id/task_id）、request.id 和兼容旧客户端的 request_token。之后 `read_assistance(request_id)` 默认只取状态、结构化结果和最近通知状态，不附带日志、原始上下文及完整历史；读取不会启动 Agent。
@@ -186,11 +186,10 @@ python3 /实际客户端路径/communication.py --context 请求上下文.json c
 
 ## 目录查询与操作凭据
 
-`communication_status` 是公开的只读发现接口，独立会话无需先创建 Run、获取 token 或解锁编辑即可发现已开放成员。目录不包含 CLI 命令、本机挂载路径及操作凭据。
+`communication_status` 是公开的只读发现接口，独立会话无需先创建 Run、获取 token 即可发现已开放成员。目录不包含 CLI 命令、本机挂载路径及操作凭据。
 
-可信工作区的配置、请求、状态读取和取消/追问无需编辑口令或 request_token。读取结果默认只返回精简状态；日志和完整上下文按需读取。旧 request_token 参数保留兼容，不承担工作区登录作用。
+可信工作区的配置、请求、状态读取和取消/追问无需 request_token。读取结果默认只返回精简状态；日志和完整上下文按需读取。旧 request_token 参数保留兼容，不承担工作区登录作用。
 
-- Loop 编辑口令：只保护对应 Loop 的定义、实现、手册和随包资源，不能用来选择任务执行者。
 - Run/Task token：平台为实际执行 Agent 提供的操作范围标识，退出或恢复时沿用既有生命周期。普通用户操作可省略，平台自动处理临时范围；显式错误 token 仍拒绝。
 - worker token：承接者写回本次外援的进度和结果，不能操作其他请求；限定 worker 入口只能查看其相关请求。
 

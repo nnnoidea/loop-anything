@@ -6,6 +6,9 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import subprocess
+from threading import Event
+from unittest.mock import patch
 from loop_anything.runtime.engine import Engine
 from loop_anything.runtime.store import Store
 from loop_anything.runtime.native_sessions import Capture, preparation, resume
@@ -72,6 +75,29 @@ print('RESUMED-EXACT',flush=True);input();t.call('finish',{});time.sleep(60)
         state=self.engine.terminals.read(self.rid,self.eid,response['session_id'])['session'];self.assertEqual(0,state['returncode']);self.assertTrue(state['finished_by_tool'])
 
     @unittest.skipUnless(os.name=='posix','PTY requires POSIX')
+    def test_finish_keeps_resumed_process_claim_until_actual_exit(self):
+        from loop_anything.interfaces.agent_tasks import acquire
+        self.initial();released, exit_allowed = Event(), Event()
+        self.addCleanup(exit_allowed.set)
+        def command(argv, prompt, *args):
+            context=json.loads(prompt.split('Run context:\n',1)[1])
+            RunTools(self.store,self.rid,context['token']).call('finish',{})
+            released.set();exit_allowed.wait(5)
+            return subprocess.CompletedProcess(argv,0,'','')
+        args=dict(provider='codex',native_session_id='native-exact-123',message='Explain',
+                  command=[sys.executable,'{{session_id}}','{{prompt}}'])
+        with patch('loop_anything.runtime.native_sessions.run_command',side_effect=command):
+            resume(self.engine,self.rid,self.eid,args)
+            self.assertTrue(released.wait(5))
+            self.assertFalse(self.store.get(self.rid)['agent_sessions'])
+            with self.assertRaises(Conflict):acquire(self.store,self.rid,'init')
+            # Another Task/global decision may proceed while this CLI exits.
+            other=acquire(self.store,self.rid)
+            RunTools(self.store,self.rid,other['token']).call('finish',{})
+            exit_allowed.set()
+            for future in list(self.engine.futures):future.result(8)
+        self.assertTrue(acquire(self.store,self.rid,'init')['token'])
+
     def test_missing_native_session_is_failure_not_a_fresh_task(self):
         self.initial();info=preparation(self.engine,self.rid,self.eid)
         args=dict(revision=info['revision'],provider='codex',native_session_id='native-exact-123',message='Explain',command=[sys.executable,'-c',"import sys;print('session not found');sys.exit(4)",'{{session_id}}','{{prompt}}'])

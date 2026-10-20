@@ -27,14 +27,12 @@ async function newLoopDefinition(source=null,versionOnly=false){
     const reusable=drafts.find(d=>d.loop_definition.id===source.loop_definition.id&&!catalog.some(c=>c.loop_definition.id===d.loop_definition.id&&c.loop_definition.version===d.loop_definition.version));
     if(reusable){editor={...reusable,dirty:false};await openEditor();return true;}
   }
-  if(source&&versionOnly){const status=await api('edit-access?loop_id='+encodeURIComponent(source.loop_definition.id));if(!status.unlocked){await navigateTo({type:'loop',key:source.key});toast('请先解锁这个 Loop 的编辑口令');return false;}}
   const result=source?await platformCall('copy_loop',{key:source.key,new_version:versionOnly}):await platformCall('create_loop',{name:'我的新 Loop'});
   const loaded=(await platformCall('read_loop',{draft_id:result.draft_id})).loop;
   editor={...loaded,dirty:false};
   await openEditor();
 }
 async function editWithTool(tool,values){
-  if(editorLocked())throw new Error('请先解锁这个 Loop 的编辑口令');
   if(editorOperation)await editorOperation;
   const operation=performEditorEdit(tool,values);editorOperation=operation;
   try{return await operation;}finally{if(editorOperation===operation)editorOperation=null;}
@@ -95,7 +93,7 @@ function renderEditor(){
   $('editor-overview-summary').innerHTML=`<span>${Object.keys(b.nodes).length} 个节点 · ${Object.values(b.nodes).reduce((n,v)=>n+Object.keys(v.inputs||{}).length,0)} 个输入端口</span><small>节点配置、整体流程与执行规则分开查看。</small>`;
   $('editor-flow-overview').innerHTML=overviewFlowHTML(editor,editorPage.querySelector('.editor-left').clientWidth);renderEditorStateOverview();
   $('editor-edges-list').innerHTML=readerPlansHTML(b);
-  setEditorLayer(editor.viewLayer||'flow');applyEditorLock();
+  setEditorLayer(editor.viewLayer||'flow');
 
 }
 
@@ -125,8 +123,8 @@ function renderEditorDetail(){
   if(editor.validation)renderReport(editor.validation);else{report.className='editor-report';report.textContent='查看与切换方案不会修改定义。轻量修改保存后供新运行使用。';}
   if(node){const base={type:'editor',id:editor.routeId};editorPage.querySelector('.editor-layout').insertAdjacentHTML('beforebegin',`<div id="editor-detail-path">${navLink(base,'← 返回 Loop')}<span>/</span>${navLink({...base,node:route.node},node.label||route.node)}${implementation?'<span>/</span><strong>'+esc(implementation)+'</strong>':''}</div>`);}
 }
-function renderProperties(){renderAuthorProperties();renderEditorDetail();applyEditorLock();}
-function collectAll(){if(editorLocked())return;collectMeta();}
+function renderProperties(){renderAuthorProperties();renderEditorDetail();}
+function collectAll(){collectMeta();}
 function selectEditor(selection){if(activeRoute.node&&selection.node!==activeRoute.node){safely(async()=>{if(await navigateTo({type:'editor',id:editor.routeId,...(selection.node?{node:selection.node}:{})})&&selection.edge)selectEditor(selection);});return;}collectAll();editSelection=selection;connectFrom=null;renderEditor();renderProperties();}
 async function saveEditor(){
   clearTimeout(dirty.timer);const target=editor;
@@ -177,7 +175,7 @@ document.addEventListener('click',event=>safely(async()=>{
 
     case 'new-loop_definition':showReaderAgentHelp();break;
     case 'editor-save':await saveLoop();break;
-    case 'editor-json':el.closest('details').open=false;collectAll();$('editor-json-value').value=pretty({loop_definition:editor.loop_definition,implementations:editor.implementations});jsonDialog.showModal();applyEditorLock();break;
+    case 'editor-json':el.closest('details').open=false;collectAll();$('editor-json-value').value=pretty({loop_definition:editor.loop_definition,implementations:editor.implementations});jsonDialog.showModal();break;
     case 'editor-export':{const content=$('editor-json-value').value;JSON.parse(content);const url=URL.createObjectURL(new Blob([content],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=(editor.loop_definition.id || 'loop_definition')+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);break;}
   }
 }));
@@ -189,7 +187,6 @@ editorPage.addEventListener('pointerdown',e=>{
   try{collectAll();}catch(error){toast(error.message);return;}
   editSelection={node:id};renderProperties();
   editorPage.querySelectorAll('.editor-node').forEach(c=>c.classList.toggle('picked',c.dataset.editorCard===id));
-  if(editorLocked())return;
   const p=editor.viewPositions[id];dragState={id,x:e.clientX,y:e.clientY,startX:p.x,startY:p.y,moved:false};head.setPointerCapture(e.pointerId);
 });
 editorPage.addEventListener('pointermove',e=>{

@@ -4,12 +4,12 @@ const {spawn,execFileSync}=require('node:child_process'),{chromium}=require('pla
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'loop-communication-browser-')),db=path.join(root,'workspace.db');
  const probe=net.createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r));
  const python=process.env.PYTHON || 'python3';
- const server=spawn(python,['-m','loop_anything','--db',db,'serve','--port',String(port),'--allow-sleep'],{env:{...process.env,LOOP_ANYTHING_EDIT_PASSWORD:'communication-test',PYTHONPYCACHEPREFIX:'/tmp/loop-comm-pycache'},stdio:['ignore','pipe','pipe']});let browser,logs='';server.stderr.on('data',x=>logs+=x);
+ const server=spawn(python,['-m','loop_anything','--db',db,'serve','--port',String(port),'--allow-sleep'],{env:{...process.env,PYTHONPYCACHEPREFIX:'/tmp/loop-comm-pycache'},stdio:['ignore','pipe','pipe']});let browser,logs='';server.stderr.on('data',x=>logs+=x);
  try{
   await new Promise((r,j)=>{const t=setTimeout(()=>j(Error(logs)),10000);server.stdout.on('data',x=>{if(String(x).includes('workspace:')){clearTimeout(t);r();}});});
   browser=await chromium.launch({channel:'chrome',headless:true});const page=await browser.newPage({viewport:{width:1450,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));page.setDefaultTimeout(12000);
   const base='http://127.0.0.1:'+port;await page.goto(base);
-  const lockedDiscovery=await page.request.post(base+'/api/tools',{data:{tool:'communication_workspace',arguments:{discover:true}},headers:{'X-Loop-Anything':'workspace'}});assert.equal(lockedDiscovery.status(),200,'Discovery needs no workspace unlock');
+  const discovery=await page.request.post(base+'/api/tools',{data:{tool:'communication_workspace',arguments:{discover:true}},headers:{'X-Loop-Anything':'workspace'}});assert.equal(discovery.status(),200,'Discovery is directly available');
   await page.locator('#communication-nav').click();try{await page.locator('#communication-page h1').waitFor();}catch(e){console.error(await page.evaluate(()=>({toast:document.querySelector('#toast').textContent,html:document.querySelector('#communication-page')?.outerHTML,page:page,route:activeRoute})),errors,logs);throw e;}
   assert.equal(await page.locator('#communication-page h1').textContent(),'Agent 通信');
   const bridgeConfig=path.join(root,'cc-connect.toml');fs.writeFileSync(bridgeConfig,'[[projects]]\nname="papers"\n[[projects.platforms]]\ntype="feishu"\n[projects.platforms.options]\nthread_isolation=true\n');

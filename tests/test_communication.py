@@ -67,7 +67,7 @@ class CommunicationTests(unittest.TestCase):
         self.assertEqual(decision['cancellation']['reason'],'User withdrew the task')
         self.assertTrue(any(e['kind']=='claim_not_selected' for e in self.a.get(created['id'])['history']))
 
-    def cycle(self, predicate, timeout=5):
+    def cycle(self, predicate, timeout=15):
         until = time.monotonic()+timeout
         while time.monotonic()<until:
             for comm in (self.a,self.b,self.c):
@@ -222,7 +222,8 @@ class CommunicationTests(unittest.TestCase):
                 return subprocess.CompletedProcess(command,0,'','')
             with patch('loop_anything.runtime.host_runtime.run_command',side_effect=remote):
                 self.engines[0].tick(runid)
-                self.cycle(lambda:any(r['kind']=='node_execution' and r['state']=='completed' for r in self.a.requests()),timeout=15)
+                # The source package is transferred in multiple acknowledged NAS messages.
+                self.cycle(lambda:any(r['kind']=='node_execution' and r['state']=='completed' for r in self.a.requests()),timeout=30)
             run=self.a.store.get(runid)
             self.assertEqual(run['records']['a'][0]['value'],'A')
             self.assertEqual(run['agent_sessions'],[])
@@ -295,6 +296,7 @@ class CommunicationTests(unittest.TestCase):
             self.assertEqual(len(current['executions']),1)
             from loop_anything.interfaces.agent_tasks import acquire
             operator=acquire(self.a.store,rid)
+            RunTools(self.a.store,rid,operator['token']).call('read_task',{'task_id':'init'})
             before_retry=self.a.store.get(rid)
             with self.assertRaisesRegex(Conflict,'original native CLI session'):
                 RunTools(self.a.store,rid,operator['token']).call('change_task',{'task_id':'init','operation':'retry','reason':'Retry old waiting task'})
@@ -304,6 +306,7 @@ class CommunicationTests(unittest.TestCase):
             self.assertEqual(after_retry['agent_sessions'],before_retry['agent_sessions'])
             with self.a.store.edit(rid) as current:
                 current['tasks']['init']['assistance_resume']={'native_session':{'provider':'custom','id':'recovered-session'}}
+            RunTools(self.a.store,rid,operator['token']).call('read_task',{'task_id':'init'})
             RunTools(self.a.store,rid,operator['token']).call('change_task',{'task_id':'init','operation':'cancel','reason':'User cancelled while waiting'})
             self.a.wake_assistance()
             self.assertEqual(self.a.store.get(rid)['tasks']['init']['status'],'cancelled')

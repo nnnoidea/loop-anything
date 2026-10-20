@@ -16,7 +16,7 @@ python3 scripts/call.py TOOL --arguments @参数.json
 
 `connection.json` 保存平台地址；非默认地址或唤醒 prompt 提供了实际 `platform_url` 时，加 `--url 实际地址`。源码、安装资源和导出的 Skill 使用同一份脚本。
 
-可信工作区的查看、运行、通信、通知和终端操作不需要全局解锁。只有修改受保护 Loop 的定义、实现、手册或资源才会返回 `edit_locked` 和对应 loop_id；使用当前 Loop 的 `loop_password` 参数或环境变量 `LOOP_ANYTHING_LOOP_PASSWORD`（兼容旧名 `LOOP_ANYTHING_EDIT_PASSWORD`）。不要把明文口令写进 Loop 定义、Skill 或提示词。可用 `set_loop_password` 设置、修改或清除保护；导出导入携带校验信息，同一 Loop ID 的草稿和版本共用。
+Loop 编辑和日常运行、通信均无需口令或解锁。旧包中的编辑保护元数据已废弃并被忽略；定义修改仍有 revision 冲突检查，运行任务仍校验操作范围、版本与执行身份。
 
 首次使用先检查连接，再读取工具目录及其中的 instructions；read_capabilities 返回运行服务的版本、能力到工具的映射、文档入口和支持的 schema 关键字。服务报告 restart_required 时，源码与正在执行的版本不同；不能把磁盘上新增能力当成服务已可用。目录列出当前服务实际开放的机制和参数；手册提到但目录缺失的字段应核对服务版本，不绕过到数据库或内部模块补写。参数可用 JSON 或 `@UTF8文件`；沿用工具返回的 ID、修订号和令牌。具体 Loop 的 key 从 `list_loops` 取得。连接检查不调用模型或创建业务 Run。
 

@@ -45,14 +45,17 @@ class RuntimeTests(unittest.TestCase):
         key = self.store.publish(self.bp, self.implementations)['key']
         self.id = self.store.create(key, 'Neutral')['id']
         self.engine.tick(self.id)
-        return self.read()['executions'][0]
+        first = self.read()['executions'][0]
+        RunTools(self.store, self.id, first['token']).call('read_task', {'task_id': first['task_id']})
+        return first
 
     def read(self):
         return self.store.get(self.id)
 
     def task(self, task_id):
         run = self.read()
-        tools = RunTools(self.store, self.id, run['agent_sessions'][0]['token'])
+        owner = next((o for o in run['agent_sessions'] if o.get('task_id') == task_id), run['agent_sessions'][0])
+        tools = RunTools(self.store, self.id, owner['token'])
         info = tools.call('read_task', {'task_id': task_id})
         return dict(task_id=task_id, id=info['task'].get('execution_id'), token=tools.token,
                     inputs=info['inputs'], sources=info['sources'], settings_revision=run['settings']['revision'])
@@ -61,6 +64,9 @@ class RuntimeTests(unittest.TestCase):
         if 'settings' in envelope:
             envelope['settings'].setdefault('completion_rule', {'op': 'and', 'args': [{'op': 'ge', 'args': [{'path': ['completed', 'join']}, 1]}, {'op': 'eq', 'args': [{'path': 'active_tasks'}, 0]}]})
         tools = RunTools(self.store, self.id, e['token'])
+        owner = next((o for o in self.read()['agent_sessions'] if o['token'] == tools.token), None)
+        if owner is None:raise Conflict('Agent execution has already finished')
+        if 'task_sets' in owner.get('observed', {}):tools.call('next_tasks', {})
         info = tools.call('read_task', {'task_id': e['task_id']})
         tools.call('complete_task', {'task_id': e['task_id'], 'task_version': info['task_version'], 'envelope': envelope})
         if not tools.call('next_tasks', {})['has_tasks']:
@@ -148,10 +154,8 @@ class RuntimeTests(unittest.TestCase):
         from loop_anything.interfaces.agent_tasks import RunTools
         self.initialize([self.join(policy='current')])
         e = self.task('join')
-        with self.assertRaises(Conflict):
-            self.engine.change_settings(self.id, 1, {'guidance': 'New instructions'})
+        self.engine.change_settings(self.id, 1, {'guidance': 'New instructions'})
         tools = RunTools(self.store, self.id, e['token'])
-        tools.call('change_settings', {'revision': 1, 'change': {'guidance': 'New instructions'}})
         self.assertEqual(2, tools.call('read_timeline', {})['settings']['revision'])
         self.submit(e, {'outputs': {'ok': True}})
         self.assertTrue(self.read()['records']['done'][-1]['value'])
@@ -178,7 +182,7 @@ class RuntimeTests(unittest.TestCase):
         self.store = Store(Path(self.tmp.name) / 'runs.db')
         self.engine = engine.Engine(self.store)
         self.engine.recover()
-        self.assertEqual(e['token'], self.read()['executions'][-1]['token'])
+        self.assertEqual(e['token'], next(x['token'] for x in self.read()['executions'] if x['id'] == e['id']))
         self.engine.command(self.id, 'terminate', operator_token=e['token'])
         with self.assertRaises(Conflict):
             self.submit(e, {'outputs': {'ok': True}})
@@ -237,7 +241,7 @@ class RuntimeTests(unittest.TestCase):
         for future in self.engine.futures:
             future.result()
         self.assertEqual('waiting_configuration', self.read()['notifications'][0]['status'])
-        self.assertEqual('ready', self.read()['tasks']['join']['status'])
+        self.assertEqual('decision', self.read()['tasks']['join']['status'])
         self.engine.command(self.id, 'retry_notification', notification_id='failed:join', operator_token=self.read()['agent_sessions'][0]['token'])
         self.engine.tick(self.id)
         for future in self.engine.futures:

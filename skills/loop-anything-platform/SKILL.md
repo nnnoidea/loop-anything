@@ -40,7 +40,7 @@ python3 scripts/call.py check
 python3 scripts/call.py read_capabilities --arguments '{"capability":"authoring"}'
 ```
 
-按任务选择 capability，如 `authoring`、`task_scheduler`、`agent_communication`；通过 `list` 读取实际工具 schema，再用 `scripts/call.py TOOL --arguments @参数.json` 调用。连接地址在 `connection.json`，可用 `--url` 覆盖。连接失败先诊断，不另建平台或 Run。安装、更新与编辑口令见[连接说明](references/connection.md)；日常运行和通信无需全局解锁。以运行服务的能力为准，检查回执的 `ok`、`accepted`。
+按任务选择 capability，如 `authoring`、`task_scheduler`、`agent_communication`；通过 `list` 读取实际工具 schema，再用 `scripts/call.py TOOL --arguments @参数.json` 调用。连接地址在 `connection.json`，可用 `--url` 覆盖。连接失败先诊断，不另建平台或 Run。安装、更新与连接方式见[连接说明](references/connection.md)。以运行服务的能力为准，检查回执的 `ok`、`accepted`。Timeline 修改在提交时检查版本：托管身份自动记录读取依据，无持续 token 的修改携带读取返回的 `basis`；冲突后重新判断，见[运行](references/run.md#思考不占用提交检查版本)。
 
 ## 使用原则
 

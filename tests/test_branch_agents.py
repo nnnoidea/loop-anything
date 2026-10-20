@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from loop_anything.runtime.store import Store
 from loop_anything.runtime.engine import Engine
-from loop_anything.interfaces.agent_tasks import RunTools, acquire, edit_tasks, recover_owner
+from loop_anything.interfaces.agent_tasks import RunTools, acquire, edit_tasks, recover_owner, release_in_run
 from loop_anything.runtime.model import Conflict, Invalid
 from test_run_agent import definition, task_spec, enable_fallback
 
@@ -70,18 +70,17 @@ class BranchTests(unittest.TestCase):
         child_b = b.call('add_task', {'key': 'next', 'node_id': 'reason', 'inputs': {}})['tasks'][0]
         self.assertNotEqual(child_a['id'], child_b['id'])
         self.assertEqual('a', self.read()['tasks'][child_a['id']]['parent_id'])
+        a.call('read_task', {'task_id': child_a['id']})
         a.call('change_task', {'task_id': child_a['id'], 'operation': 'update', 'parameters': {'topic': 'changed'}, 'reason': 'my branch'})
-        with self.assertRaises(Conflict):
-            acquire(self.store, self.id, 'init')
+        extra = acquire(self.store, self.id, 'init')
+        with self.store.edit(self.id) as run:release_in_run(run, extra['token'])
         self.complete(a, 'a');a.call('finish', {})
         self.assertEqual([b.token], [o['token'] for o in self.read()['agent_sessions']])
         self.engine.tick(self.id)
         scopes = {o['scope_task'] for o in self.read()['agent_sessions']}
-        self.assertEqual({'b', child_a['id']}, scopes)
-        with self.assertRaises(Conflict):
-            acquire(self.store, self.id, 'a')
-        with self.assertRaises(Conflict):
-            acquire(self.store, self.id)
+        self.assertEqual({'b', child_a['id'], child_b['id']}, scopes)
+        extra = acquire(self.store, self.id)
+        with self.store.edit(self.id) as run:release_in_run(run, extra['token'])
         self.complete(b, 'b');b.call('finish', {})
 
     def test_scope_recovery_keeps_other_operators_and_global_node_waits(self):
@@ -96,9 +95,9 @@ class BranchTests(unittest.TestCase):
         self.assertEqual([b.token], [o['token'] for o in self.read()['agent_sessions']])
         # A confirmed exit changes only its scope's counter, not another branch's.
         self.assertEqual(0, self.read().get('agent_failures', 0))
-        # Explicit recovery releases only the confirmed operator; its task is still unresolved.
-        with self.assertRaises(Conflict):
-            acquire(self.store, self.id)
+        # Global thinking does not block b, nor claim a second execution of it.
+        extra = acquire(self.store, self.id)
+        with self.store.edit(self.id) as run:release_in_run(run, extra['token'])
         resumed = acquire(self.store, self.id, 'a')
         a = RunTools(self.store, self.id, resumed['token'])
         self.complete(a, 'a');a.call('finish', {})

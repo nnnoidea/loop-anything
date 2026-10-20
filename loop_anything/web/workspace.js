@@ -67,7 +67,7 @@ function resultWithSchema(value,schema={},attempt,port,parts=[]){
 }
 function taskWaitReasons(task){
   if(['skipped','cancelled'].includes(task.status)||!task.wait_reasons?.length)return '';
-  const text=r=>r.reason==='order_dependency'?`等待前置任务 ${(run.tasks[r.action]?taskLabel(run.tasks[r.action]):r.action)} 完成`:r.reason==='missing_record'?`输入 ${r.input} 等待结果 ${r.record}`:r.reason==='missing_implementation'?'尚未选用可执行的实现':r.reason==='invalid_parameters'?'参数不满足所选实现的要求':r.reason==='invalid_input'?`输入 ${r.input} 尚不可用`:r.reason==='retry_pending'?'等待上次进程结束并释放操作权，再重试原任务':r.detail||r.reason;
+  const text=r=>r.reason==='order_dependency'?`等待前置任务 ${(run.tasks[r.action]?taskLabel(run.tasks[r.action]):r.action)} 完成`:r.reason==='missing_record'?`输入 ${r.input} 等待结果 ${r.record}`:r.reason==='missing_implementation'?'尚未选用可执行的实现':r.reason==='invalid_parameters'?'参数不满足所选实现的要求':r.reason==='invalid_input'?`输入 ${r.input} 尚不可用`:r.reason==='retry_pending'?'等待同一任务的旧进程确认结束，再重试原任务':r.detail||r.reason;
   return `<div class="wait-reasons"><strong>当前等待原因</strong><ul>${task.wait_reasons.map(r=>`<li>${esc(text(r))}</li>`).join('')}</ul><details><summary>查看详细条件</summary>${resultView(task.wait_reasons)}</details></div>`;
 }
 function taskFlowHTML(item){
@@ -114,7 +114,7 @@ function taskEditFields(nodeId,spec={}){
 function openTaskEdit(kind,id=null){
   if(!run.operator_protocol||['completed','terminated'].includes(run.status)){toast('这次运行仅供查看');return;}
   const monitorRetry=kind==='retry'&&run.executions.some(e=>e.id===run.tasks[id]?.execution_id&&e.observation_error);
-  taskEdit={monitorRetry,kind,id,runId:run.id,revision:run.revision,key:randomKey(),changes:null};$('task-edit-error').textContent=(run.agent_sessions||[]).length?'Agent 正在处理工作；只有重叠范围的编辑需等待。':'';
+  taskEdit={monitorRetry,kind,id,runId:run.id,revision:run.revision,key:randomKey(),changes:null};$('task-edit-error').textContent=(run.agent_sessions||[]).length?'Agent 正在处理工作；提交时检查版本，同一任务仍受重复执行保护。':'';
   $('task-edit-title').textContent=kind==='add'?'添加后续任务':kind==='batch'?'按模板安排工作':kind==='cancel'?'取消任务':kind==='retry'?(monitorRetry?'恢复监控':'重试任务'):'编辑后续工作';
   $('task-edit-fields').hidden=false;$('task-edit-review').hidden=true;$('task-edit-back').hidden=true;$('task-edit-submit').textContent='预览修改';
   if(kind==='batch'){$('task-edit-fields').innerHTML=`<label>构建模板<select id="batch-plan">${Object.keys(run.loop_definition.plans).map(id=>`<option>${esc(id)}</option>`).join('')}</select></label>${parentTaskField('batch-parent')}<label>轮次名称（可选）<input id="batch-round"></label><div id="batch-fields"></div>`;renderBatchFields();}

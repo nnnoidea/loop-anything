@@ -41,7 +41,7 @@ key=s.publish(bp,impl)['key'];run=s.create(key,'终端会话验收');draft=s.sav
 print(json.dumps({'run':run['id'],'draft':draft['id']}))`;
  const info=JSON.parse(execFileSync(process.env.PYTHON || 'python3',['-c',seed,db],{encoding:'utf8'}));
  const probe=net.createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r));
- const server=spawn(process.env.PYTHON || 'python3',['-m','loop_anything','--db',db,'serve','--port',String(port)],{env:{...process.env,PYTHONUNBUFFERED:'1',PYTHONPYCACHEPREFIX:'/tmp/loop-pycache',LOOP_ANYTHING_EDIT_PASSWORD:'terminal-test'},stdio:['ignore','pipe','pipe']});let browser,logs='';server.stderr.on('data',x=>logs+=x);
+ const server=spawn(process.env.PYTHON || 'python3',['-m','loop_anything','--db',db,'serve','--port',String(port)],{env:{...process.env,PYTHONUNBUFFERED:'1',PYTHONPYCACHEPREFIX:'/tmp/loop-pycache'},stdio:['ignore','pipe','pipe']});let browser,logs='';server.stderr.on('data',x=>logs+=x);
  try{
   await new Promise((r,j)=>{const t=setTimeout(()=>j(Error(logs)),10000);server.stdout.on('data',x=>{if(String(x).includes('workspace:')){clearTimeout(t);r();}});});
   browser=await chromium.launch({channel:'chrome',headless:true});const page=await browser.newPage({viewport:{width:1500,height:1050}}),errors=[];page.on('pageerror',e=>errors.push(e.message));page.setDefaultTimeout(12000);const base='http://127.0.0.1:'+port;

@@ -17,7 +17,7 @@ function showPackage(authoring){
   $('package-author').hidden=!authoring;$('package-result').textContent='';
   if(authoring)renderPackageAssets();
   uploadedPackage=null;$('package-upload').value='';$('package-edit').disabled=$('package-install').disabled=true;
-  $('package-summary').textContent='先选择包查看内容；不会自动安装或启动。';packageDialog.showModal();applyEditorLock();
+  $('package-summary').textContent='先选择包查看内容；不会自动安装或启动。';packageDialog.showModal();
 }
 function renderPackageAssets(){
   $('package-asset-list').innerHTML=(editor.assets||[]).map(a=>`<p>${esc(a.path)}</p>`).join('')||'<p class="muted small">未附带资源文件。</p>';
@@ -71,5 +71,5 @@ document.addEventListener('click',event=>safely(async()=>{
   if(editor!==draft||page!=='editor')return;
   const file=result.value;
   schemeFileDialog.innerHTML=`<div class="dialog-heading"><h2>${esc(file.path)}</h2><button type="button" class="close-dialog" aria-label="关闭">×</button></div><p class="small muted">包文件内容 · 只读；修改由 Agent 完成。</p><p class="small muted">${file.bytes} bytes · ${file.executable?'可执行':'普通文件'} · ${result.references.length} 处直接引用</p>${file.encoding==='utf-8'?`<textarea aria-label="包文件内容" spellcheck="false" readonly>${esc(file.content)}</textarea>`:'<p>二进制文件，可导出 Loop 包查看。</p>'}<details><summary>直接引用位置</summary><pre>${esc(pretty(result.references))}</pre></details><button type="button" class="close-dialog">关闭</button>`;
-  schemeFileDialog.showModal();applyEditorLock();
+  schemeFileDialog.showModal();
 }));

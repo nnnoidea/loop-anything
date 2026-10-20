@@ -182,6 +182,9 @@ def confirm_stopped(engine, run_id, execution_id, session_id):
             owners=[o for o in run.get('agent_sessions',[]) if o.get('resume_session')==session_id or (not o.get('resume_session') and o.get('execution_id')==execution_id)]
             doc.update(state='released',error=None,stop_confirmed_at=time.time())
             for owner in owners:recover_owner(engine.store,run_id,owner['token'],confirmed_stopped=True,_db=db)
+            with engine.store.edit(run_id,_db=db) as current:
+                attempt=engine.execution(current,execution_id)
+                if attempt.get('worker_active')==session_id:attempt.pop('worker_active')
             db.execute('UPDATE execution_sessions SET document=? WHERE id=?',(json.dumps(doc),session_id));db.commit()
     return {'confirmed':True}
 
@@ -268,6 +271,7 @@ def resume(engine, run_id, execution_id, arguments):
                 metadata={'mode':'resume','native_session':copy.deepcopy(native),'command':list(command),'cwd':cwd},_db=db)
             execution['resume_command']=list(command)
             execution['resume_cwd']=cwd
+            execution['worker_active']=session_id
             Store.log(run,'agent_resume','User resumed the CLI conversation',execution_id,{'session_id':session_id,'native_session':dict(native),'message':message})
             token=owner['token']
         db.commit()
@@ -304,6 +308,9 @@ def resume(engine, run_id, execution_id, arguments):
         finally:
             with engine.store.edit(run_id) as latest:
                 owner=owner_for(latest,token)
+                attempt=engine.execution(latest,execution_id)
+                if not isinstance(error,CommandNotStopped) and attempt.get('worker_active')==session_id:
+                    attempt.pop('worker_active')
                 if owner:
                     if isinstance(error,CommandNotStopped):owner['recovery_required']=True
                     else:release_in_run(latest,token)
@@ -311,7 +318,9 @@ def resume(engine, run_id, execution_id, arguments):
     try:engine.futures.add(engine.pool.submit(execute))
     except RuntimeError:
         from loop_anything.interfaces.agent_tasks import release_in_run
-        with engine.store.edit(run_id) as run:release_in_run(run,token)
+        with engine.store.edit(run_id) as run:
+            release_in_run(run,token)
+            engine.execution(run,execution_id).pop('worker_active',None)
         session.doc.update(state='error',error='Platform is stopping',ended_at=time.time());session.save()
         raise Conflict('Platform is stopping')
     return {'session_id':session_id,'attached':False}

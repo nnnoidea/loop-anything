@@ -16,18 +16,28 @@ read_timeline/next_tasks 用于查看任务是否已安排、为何等待和哪�
 
 1. 已知 Run ID 就直接读取；否则用 `list_runs`，可传 query 按名称、Run ID、Loop 名称或目标筛选，或传 status 按运行状态筛选。返回列表按创建时间从新到旧；多个候选无法区分时请用户选择，不猜测“最近一个”就是目标。
 2. 无需 token，调用 `read_timeline` 查看最新目标、要求、指导、授权、记录索引、任务和异常。需要时用 `next_tasks`、`read_task`、`read_record`、`read_plans` 读取详情；完整事实和变更历史由 `read_run` 读取。查看状态不取得操作权，其他 Agent 可以继续工作。
-3. 普通工作区操作可直接调用写入工具并传 run_id，无需额外口令或手动 token；平台获取临时操作范围并在调用结束后释放。已有交互操作范围可继续使用。实际后台节点持有重叠范围时仍返回冲突，不能抢占或声称修改已生效。
-4. 按最新 `read_timeline` / `read_task` 的修订和 task_version 落实用户要求。需要连续持有某支线时仍可显式 acquire_run（task_id 指定支线），使用新 token 并在完成后 finish。平台唤醒的节点使用 prompt 身份，不能通过普通入口扩大范围。既有执行记录和结果保留；改变目标不自动作废旧任务。
+3. 普通工作区操作可直接调用写入工具并传 run_id，无需额外口令或手动 token；平台为本次调用建立独立临时身份并在结束后释放。提交携带读取结果中的 basis，平台只在提交事务中检查相关版本与当前执行状态，不等待其他 Agent 结束思考。
+4. 按最新 `read_timeline` / `read_task` 的修订和 task_version 落实用户要求。需要持续执行身份时可显式 acquire_run（task_id 指定支线），使用新 token 并在完成后 finish。平台唤醒的节点使用 prompt 身份，不能通过普通入口扩大范围。既有执行记录和结果保留；改变目标不自动作废旧任务。
 
 ```sh
 python3 scripts/call.py list_runs --arguments '{"query":"研究","status":"running"}'
 python3 scripts/call.py read_timeline --arguments '{"run_id":"RUN_ID"}'
-# 普通操作无需 acquire_run；长操作或支线执行按需显式获取范围
+# 普通操作携带读取的 basis；持续执行可按需 acquire_run
 ```
 
 `read_timeline` 返回 `read_only: true` 时只是查看，不授予写入权；此时 scope_task 的 null 不能理解为有全局权限。带有效 token 读取时，`read_only: false`，scope_task 才表示本次操作范围；写入仍受 Run 终态及已派发任务的保护。显式传入过期或错误令牌会报错，不会默默切成只读。
 
 把影响后续工作的已确认目标、约束和决定写入现有 settings、任务安排或任务结果，分别使用 change_settings、change_task/build_plan/add_task、report_task；不要只在聊天里说“记住了”。无需另外维护一份跨入口摘要或复制全部聊天记录。通知接收位置独立于操作入口；换聊天不会自动更改它。
+
+## 思考不占用，提交检查版本
+
+父子、全局与其他支线 Agent 可以同时思考，权限范围仍按 Task 归属限定；相同 Task 和同一 CLI 会话仍不能重复执行。finish 释放身份后进程可能仍在退出；同 Task 的历史恢复终端、仍存活的已登记外部调用者及未结束的远端执行同样阻止重复启动，其他任务继续推进。read_task.execution_state 可查看 worker_active 和 communication_state；未知进程需走已有确认停止入口。不要靠 acquire_run 阻塞其他 Agent，也无需等待它们 finish 才修改自己的工作。
+
+读取结果带 `basis`。托管 Agent 沿 prompt token 调用 read_task/read_timeline/next_tasks/read_record/read_run 等工具时，平台自动记住所读版本；后续修改自动校验。没有持续 token 的普通工作区调用，要把这次决策读取的 `basis` 原样放入 add_task/build_plan/change_task/edit_tasks/change_settings/command 等修改参数。显式 basis 也可选择这次操作实际依赖的定点读取，而不使用先前较宽的工作列表。设置仍需 settings.revision，结果仍需同次读取的 task_version 和稳定 report_id。
+
+只修改一个任务时优先 read_task；依据“没有下一轮”“所有任务都结束”作决定时，应读取对应任务集合，不能只检查某个 Task。读取整个 Timeline 会检查更广的相关变化，定点读取不会因无关支线完成或新增日志而失败。最新 read_record 的值会参与校验；明确指定固定 revision 则保持该历史值。
+
+`edit_tasks` 携带 basis 可整组预览或提交；旧 revision 参数继续提供整个 Run 的保守校验。冲突返回 `error.code=conflict` 和 `conflicts` 中的变化字段，失败不部分写入。读取变化、重新判断后再提交，不能只换上最新版本号原样重试。自身成功修改自动推进已观察版本；网络重试使用相同 report_id / 稳定任务 key，不重建任务。
 
 ## 被平台命令唤醒时
 
@@ -45,10 +55,10 @@ python3 scripts/call.py read_task --arguments '{"run_id":"RUN_ID","token":"TOKEN
 
 ### 一次调用怎样才算完成
 
-1. 带本次操作令牌 `read_timeline`，确认 `read_only` 为 false；此时 `scope_task` 为 null 可操作全局，否则只可修改该 Task 及其后代。再 `read_task` 读取当前 `task_version`、`outputs` 中每个端口的契约、输入与作者 Skill。
+1. 带本次操作令牌 `read_task` 读取当前 `task_version`、`outputs` 中每个端口的契约、输入与作者 Skill。按任务上下文中的 `scope_task` 限定修改范围：null 为全局，否则仅该 Task 及其后代。需要全局指导、记录目录或工作列表时再 read_timeline / next_tasks；定点工作无需先读取整个 Timeline。
 2. 按作者要求完成工作。先读 read_task.routes：已有规则时只需提供所需结果/参数，平台接受事件后自动生成任务；检查回执 routes，勿再次创建同一批工作。临时工作仍可用 add_task / build_plan 安排，但安排任务本身不提交当前结果。
 3. `report_task`（event=completed）：带上稳定的 `report_id` 和刚读取的 `task_version`，一次提交当前任务的全部 `envelope.outputs`。节点有 routes 时，结果与命中规则产生的任务一起校验并提交。只有工具返回 `ok: true` 且 `accepted: true` 才算写入成功；失败时按错误修正当前提交，不要重复创建后续任务。
-4. `next_tasks`：检查自己范围内的任务和异常。完成本次任务、处理异常或用 `defer_task` 明确等待后，可将已安排的后续任务留给 Engine。不必清空任务列表；不要持有父任务范围等待子 Agent 启动，因为父子范围互斥。
+4. `next_tasks`：检查自己范围内的任务和异常。完成本次任务、处理异常或用 `defer_task` 明确等待后，可将已安排的后续任务留给 Engine。不必清空任务列表；父 Agent 尚未 finish 时，就绪的子任务也可以由 Engine 派发。
 5. `finish`：确认返回 `ok: true` 和 `finished: true` 后退出。它释放本次操作权，不会替你提交结果，也不代表整个 Run 已达成目的。终态见下文。
 
 例如 `read_task` 的 outputs 只有一个名为 result 的字符串端口时，提交参数形如：
@@ -85,7 +95,7 @@ python3 scripts/call.py finish --arguments '{"run_id":"RUN_ID","token":"TOKEN"}'
 - `parent_id` 表示具体 Task 的归属，独立于输入来源和 `after`。两个任务即便使用同一 Node 模板，也可能是独立支线。读取兄弟支线结果不会获得修改权限。
 - `add_task`、`build_plan` 默认将新工作挂到当前 scope_task；全局 Agent 默认挂到唤醒任务。可提供本范围内的 `parent_id` 指定父任务；全局 Agent 可传空字符串明确创建顶层任务。父任务关系建立后不更改，公共汇总应由上层创建，不能因依赖多个支线就归各支线共同修改。
 - 普通 Agent 可调整自己支线内尚未执行任务的输入、参数、实现和依赖。全局设置、Run 暂停/结束及用户请求处理需要全局操作权。已派发任务保持保护。
-- 同一 Run 的不重叠支线可同时运行，范围重叠时等待。`acquire_run` 不带 task_id 请求全局操作权，带 task_id 请求该任务支线；冲突时不能抢占。
+- 同一 Run 的父子、全局与其他支线可同时思考，提交时校验版本与执行状态；同 Task 不重复执行。`acquire_run` 不带 task_id 登记全局身份，带 task_id 登记该 Task 子树身份；不抢占已有 Task 执行者。
 - 完成本次唤醒任务并处理本范围的异常后可 `finish`，已安排的后续 Agent 任务可以交还 Engine 并行派发，无需在本次会话中全部做完。finish 只释放自己的令牌。
 
 这些检查作用于平台工具调用；Agent 使用外部文件和服务仍沿用用户配置，不是操作系统隔离。需要并行修改文件时，由作者安排独立工作目录或明确串行依赖。
@@ -95,7 +105,7 @@ python3 scripts/call.py finish --arguments '{"run_id":"RUN_ID","token":"TOKEN"}'
 - `next_tasks` 和 `read_timeline` 读取当前节点任务与异常、用户授权及作者整体说明。read_timeline 的 records 列出记录 ID、类型和最新版本，需要正文时用 `read_record`。正常运行或等待的脚本不需要 Agent 接管。
 - 对每项可处理任务先 `read_task`，读取最新输入、输出契约及作者节点 Skill，再 `report_task`（event=completed） 写入完整结果。结果当次生效；不能代写脚本、事件或审批结果。
 - `read_plans` 查看模板，`build_plan` 提供 name、稳定 key、values。默认安排无条件或 when 为真的步骤；steps.<步骤>.skip=true 明确不安排。省略不会创建 Task、skipped 占位或假输出，回执 omitted 与安排记录说明原因。需要其输出的下游必须显式提供复用输入来源。相同 key 重试必须保持参数与安排不变；不要用重复 key 隐式撤回已安排任务。已存在的任务不再需要时，明确取消，保留事实。
-- 成组任务变更用 `edit_tasks`：从 read_timeline 取得最新 revision，changes 按顺序列出 `{"tool":"add_task/build_plan/change_task 中的一种","arguments":{...}}`。`preview:true` 返回变化前后的 Task、实际生成的 ID 和省略原因，不落盘或派发；检查后用同一 revision 和 `preview:false` 提交，任意一步失败整组回滚。提交回执只返回 run_id、revision 和 applied；需要详情再读 Timeline。预览也遵守当前操作范围。若要给刚展开的批次增加后继，可从预览的 changes[].after 中取 Task ID，加入 add_task.after 后再次预览；不要自行复制生成 ID 的算法。此事务不包含 report_task、change_settings 或 finish，不能把整个业务 helper 的多次调用当成一次事务。
+- 成组任务变更用 `edit_tasks`：使用此次决策的 basis（旧 revision 可作整个 Run 的保守校验），changes 按顺序列出 `{"tool":"add_task/build_plan/change_task 中的一种","arguments":{...}}`。`preview:true` 返回变化前后的 Task、实际生成的 ID 和省略原因，不落盘或派发；检查后用同一 basis 和 `preview:false` 提交，任意一步失败整组回滚。提交回执只返回 run_id、revision 和 applied；需要详情再读 Timeline。预览也遵守当前操作范围。若要给刚展开的批次增加后继，可从预览的 changes[].after 中取 Task ID，加入 add_task.after 后再次预览；不要自行复制生成 ID 的算法。此事务不包含 report_task、change_settings 或 finish，不能把整个业务 helper 的多次调用当成一次事务。
 - 若作者的 Loop 有轮次，build_plan 可传 `round`，例如作者确定的轮次名称。它只组织显示，不强制串行、不控制何时推进；不要给没有轮次的业务强加轮次。
 - `add_task` 从已声明的非入口节点安排单项工作：提供稳定 `key`、`node_id`、`inputs`，可选 `parameters`、`implementation`、`after` 和 `round`。返回任务 ID 与自动分配的输出记录 ID，供后续输入引用；不手写完整任务。
 - `change_task` 修正尚未执行的 `inputs`、`parameters`、`implementation` 和 `after`（前置任务 ID 列表）；重试前先核实是否已经产生外部副作用。执行中的正常脚本不应被当成待修复问题。
@@ -120,11 +130,11 @@ python3 scripts/call.py finish --arguments '{"run_id":"RUN_ID","token":"TOKEN"}'
 
 `read_loop` 返回 Loop 的 fallback_node。`start_run` 可传 fallback_node 覆盖，空字符串表示本次关闭；省略沿用 Loop。运行中用 change_settings 的 change.fallback_node 设节点 ID 或 null。兜底 Agent 通过该节点的 bindings 选择，不会隐式借用其他节点命令。
 
-兜底是普通的已声明节点：read_task 返回其 Skill、输出契约及 origin 中的进入原因。处理当前问题后，用 report_task（event=completed）完成兜底任务自身，再 finish；已有全局 Agent 可一并处理。全局范围与其他 Agent 支线互斥，正常脚本仍继续。
+兜底是普通的已声明节点：read_task 返回其 Skill、输出契约及 origin 中的进入原因。处理当前问题后，用 report_task（event=completed）完成兜底任务自身，再 finish；其他全局 Agent 可在授权内协助处理问题；兜底 Task 自身仍由唯一执行者完成。全局与支线身份可同时存在，提交检查相关版本，正常脚本仍继续。
 
 ## 用户中途提出新要求
 
-按上面的继续运行流程，先查看最新状态，普通操作由平台处理执行标识，长操作按需显式 acquire_run，决定怎样落实用户要求。若有 Agent 持有重叠范围的操作权，需要等待，不自行抢占。修改要求本身不会作废旧任务、审批或结果。由用户决定哪些工作需要改变，再按授权用 change_task 明确取消或修改；必要时先暂停推进。待确认审批可以取消，已派发脚本不能靠取消假定外部操作已停止。保留已有结果和来源，再检查当前任务与问题并结束。
+按上面的继续运行流程，先查看最新状态，普通操作由平台处理执行标识，长操作按需显式 acquire_run，决定怎样落实用户要求。其他 Agent 思考期间不阻塞修改；提交检查相关依据，同 Task 的执行仍不可重复启动。修改要求本身不会作废旧任务、审批或结果。由用户决定哪些工作需要改变，再按授权用 change_task 明确取消或修改；必要时先暂停推进。待确认审批可以取消，已派发脚本不能靠取消假定外部操作已停止。保留已有结果和来源，再检查当前任务与问题并结束。
 
 工具报错时读取 error 和当前状态：输入版本变化就重新 read_task；Timeline 版本变化就重新 read_timeline；缺字段按输出契约补齐。不要通过重复创建另一批任务绕过原错误，也不要重建 Run。
 
@@ -164,7 +174,7 @@ read_task.execution_state.wait 显示实际等待时刻、事件关联和截止�
 通知使用上述通用出口。非零退出、超时或未确认送达都会记录失败；显式指定的出口未配置时记录 waiting_configuration，等待用户补配后重试，不计入 unexpected 或触发兜底。默认出口没有发送命令时使用平台通知区。
 执行前通知与业务运行并行；执行前暂停拦住目标 Task，直到放行。普通通知使用本 Run 的默认出口；未选外部出口的新 Run 使用平台通知区。`route: workspace` 可明确选择仅在工作台留存。
 
-不同支线的失败计数分别保留，进入全局兜底后沿用未解决支线的最长失败链，不把并行支线的失败次数相加；恢复运行会清零这些计数；一个 Agent 退出不会释放其他 Agent 的操作权。无法确认旧进程停止时保留它的范围，重叠范围不得启动第二个 Agent。
+不同支线的失败计数分别保留，进入全局兜底后沿用未解决支线的最长失败链，不把并行支线的失败次数相加；恢复运行会清零这些计数；一个 Agent 退出不会释放其他 Agent 的操作权。无法确认旧进程停止时保留它的执行身份，同 Task 或同 CLI 原生会话不得启动第二个执行者，其他任务可继续。
 
 
 ## 统一报告事件与结果
@@ -214,7 +224,7 @@ Run 默认实现或输入记录的变化不直接改写 Task 声明，因此不�
 
 ### 状态机安排的恢复
 
-报告返回 state=retry 时，表示重试转移已记录，Task 处于 retrying，需等待进程结束及操作范围可写后才能应用。read_task 的 execution_state.retry 可查看 pending/applied/blocked/superseded 和已确定的参数。Agent 报告后仍需 finish 释放操作权；本任务明确转入 agent 时也可 finish，将该问题交还给已配置兜底，其他未处理问题仍须遵守原范围规则。
+报告返回 state=retry 时，表示重试转移已记录，Task 处于 retrying，需等待原执行进程结束、同 Task 的旧执行身份释放后才能应用。read_task 的 execution_state.retry 可查看 pending/applied/blocked/superseded 和已确定的参数。Agent 报告后仍需 finish 释放操作权；本任务明确转入 agent 时也可 finish，将该问题交还给已配置兜底，其他未处理问题仍须遵守原范围规则。
 
 不要重复 add_task 代替重试。报告重放沿用同一 report_id 和内容，已应用的转移不会再次改参或重提。服务重启后若标明旧进程结局未知，先核实它已停止及外部副作用，再用 change_task retry；平台不会自动冒险重提。自动恢复与手动操作共用 Task 修订、参数契约和操作范围。
 

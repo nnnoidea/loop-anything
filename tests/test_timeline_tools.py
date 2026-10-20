@@ -35,6 +35,7 @@ class ToolTests(unittest.TestCase):
         self.engine.tick(self.run_id)
         self.e = self.store.get(self.run_id)['executions'][0]
         self.tools = RunTools(self.store, self.run_id, self.e['token'])
+        self.tools.call('read_task', {'task_id': 'initial'})
 
     def complete(self, task_id='initial', **envelope):
         info = self.tools.call('read_task', {'task_id': task_id})
@@ -145,7 +146,7 @@ class ToolTests(unittest.TestCase):
         b = self.tools.call('add_task', {'key': 'b', 'node_id': 'finish', 'inputs': {'value': {'record': a['outputs']['result']['id']}}})['tasks'][0]
         before = self.store.get(self.run_id)
         change = {'tool': 'change_task', 'arguments': {'task_id': a['id'], 'operation': 'update', 'after': [b['id']], 'reason': 'cycle'}}
-        with self.assertRaises(Conflict):
+        with self.assertRaises(Invalid):
             edit_tasks(self.store, self.run_id, [change], before['revision'])
         with self.assertRaises(Conflict):
             edit_tasks(self.store, self.run_id, [change], before['revision'] - 1, self.e['token'])
