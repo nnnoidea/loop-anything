@@ -115,7 +115,9 @@ print('RESUMED-EXACT',flush=True);input();t.call('finish',{});time.sleep(60)
         for future in list(self.engine.futures):future.result(8)
         execution=self.store.get(rid)['executions'][0]
         native=execution['native_session'];self.assertEqual('configured_id',native['source'])
-        logs=self.engine.terminals.read(rid,execution['id']);self.assertIn(native['id'],str(logs['output']))
+        logs=self.engine.terminals.read(rid,execution['id'])
+        self.assertEqual(native['id'],logs['session']['native_session']['id'])
+        self.assertEqual('native_session',logs['session']['output_source']);self.assertEqual([],logs['output'])
         self.assertNotEqual(native['id'],execution['id'])
 
     def test_own_native_registration_and_historical_log_discovery(self):

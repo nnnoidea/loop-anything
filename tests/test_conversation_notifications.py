@@ -10,6 +10,7 @@ from unittest.mock import patch
 import test_communication as fixtures
 from loop_anything.runtime.model import Invalid
 from loop_anything.runtime.communication_conversations import register, resolve, from_source
+from communication_helpers import notification_groups
 
 SCRIPTS=Path(__file__).resolve().parents[1]/'skills/loop-anything-platform/scripts'
 sys.path.insert(0,str(SCRIPTS))
@@ -19,7 +20,7 @@ import cc_connect_context as bridge
 class ConversationTests(unittest.TestCase):
     setUp=fixtures.CommunicationTests.setUp
     tearDown=fixtures.CommunicationTests.tearDown
-    groups=fixtures.CommunicationTests.groups
+    groups=notification_groups
     cycle=fixtures.CommunicationTests.cycle
     agent=fixtures.CommunicationTests.agent
 
@@ -37,7 +38,7 @@ class ConversationTests(unittest.TestCase):
         for machine in (self.a,self.b,self.c):machine.last_scan=0;machine.scan()
 
     def completed(self, conversation, gid=None, **args):
-        ident=self.a.request(dict(location='group' if gid else 'local',group_id=gid,agent_id='papers',
+        ident=self.a.request(dict(location='group' if gid else 'local',group_id=gid,agent_id='papers',instance_id=self.c.settings()['instance_id'] if gid else None,
                                   message='original body',conversation_id=conversation,**args))['request']['id']
         with self.a.transaction() as db:
             row=self.a.get(ident,db);row.update(state='completed',executor=(self.c if gid else self.a).settings()['instance_id'],result={'answer':42});self.a.save(db,row)
@@ -135,11 +136,11 @@ class ConversationTests(unittest.TestCase):
 
     def test_nested_explicit_outlet_and_followup_survive_source_mirror(self):
         gid=self.groups();conversation=self.entry()
-        parent_id=self.a.request(dict(location='group',group_id=gid,agent_id='papers',message='parent',conversation_id=conversation))['request']['id']
+        parent_id=self.a.request(dict(location='group',group_id=gid,agent_id='papers',instance_id='notification-fixture',message='parent',conversation_id=conversation))['request']['id']
         with self.a.transaction() as db:
             parent=self.a.get(parent_id,db);parent.update(executor=self.b.settings()['instance_id'],state='running');self.a.save(db,parent)
         with self.b.transaction() as db:self.b.save(db,dict(parent,worker_token='worker'))
-        args=dict(location='group',agent_id='papers',message='quiet child',notification_route='workspace',notification_level='attention')
+        args=dict(location='group',agent_id='papers',instance_id='notification-fixture',message='quiet child',notification_route='workspace',notification_level='attention')
         child=self.b.worker_call(parent_id,'worker','request_assistance',args)['request']
         self.assertEqual(child['notification_policy'],'explicit')
         self.assertNotIn('notification_conversation',child)
@@ -166,11 +167,11 @@ class ConversationTests(unittest.TestCase):
 
     def test_nested_remote_assistance_inherits_original_conversation(self):
         gid=self.groups();conversation=self.entry()
-        parent_id=self.a.request(dict(location='group',group_id=gid,agent_id='papers',message='parent',conversation_id=conversation))['request']['id']
+        parent_id=self.a.request(dict(location='group',group_id=gid,agent_id='papers',instance_id='notification-fixture',message='parent',conversation_id=conversation))['request']['id']
         with self.a.transaction() as db:
             parent=self.a.get(parent_id,db);parent.update(executor=self.b.settings()['instance_id'],state='running');self.a.save(db,parent)
         with self.b.transaction() as db:self.b.save(db,dict(parent,worker_token='worker'))
-        child=self.b.worker_call(parent_id,'worker','request_assistance',dict(location='group',agent_id='papers',message='child',conversation_id='forged',chat_context={'platform':'feishu','entry_project':'forged','session_key':'feishu:oc_wrong:ou_wrong'}))['request']
+        child=self.b.worker_call(parent_id,'worker','request_assistance',dict(location='group',agent_id='papers',instance_id='notification-fixture',message='child',conversation_id='forged',chat_context={'platform':'feishu','entry_project':'forged','session_key':'feishu:oc_wrong:ou_wrong'}))['request']
         self.assertEqual(child['notification_conversation'],parent['notification_conversation'])
         with self.b.transaction() as db:views=self.b.child_views(parent_id,db)
         with self.a.transaction() as db:self.a.import_children(db,parent,views)

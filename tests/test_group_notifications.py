@@ -11,12 +11,13 @@ from unittest.mock import patch
 import test_communication as fixtures
 from loop_anything.runtime.model import Conflict
 from loop_anything.runtime.communication_notifications import deliver
+from communication_helpers import notification_groups
 
 
 class GroupNotificationTests(unittest.TestCase):
     setUp=fixtures.CommunicationTests.setUp
     tearDown=fixtures.CommunicationTests.tearDown
-    groups=fixtures.CommunicationTests.groups
+    groups=notification_groups
     def cycle(self, predicate, timeout=35):
         # Real adapter processes may use the 30-second delivery budget; the
         # in-memory fixture's five seconds is too short on a busy host.
@@ -38,7 +39,7 @@ class GroupNotificationTests(unittest.TestCase):
         return binding
 
     def completed_request(self, **args):
-        row=self.a.request(dict(location='group',group_id=self.gid,agent_id='papers',message='论文分析完成',**args))['request']
+        row=self.a.request(dict(location='group',group_id=self.gid,agent_id='papers',instance_id='notification-fixture',message='论文分析完成',**args))['request']
         with self.a.transaction() as db:
             current=self.a.get(row['id'],db);current.update(state='completed',executor=self.c.settings()['instance_id'],result={'summary':'实验支持该结论'});self.a.save(db,current)
         return row['id']
@@ -54,6 +55,9 @@ class GroupNotificationTests(unittest.TestCase):
         self.assertIn('论文分析完成',sent[0]['text'])  # Fast completion can be the first observed state.
         with self.c.store.connection() as db:
             packet=json.loads(db.execute("SELECT document FROM communication_inbox WHERE json_extract(document,'$.kind')='notification_deliver'").fetchone()[0])
+        self.assertNotIn('payload',packet)
+        from loop_anything.runtime.communication import read_message
+        packet=read_message(next((self.root/'nas').rglob(packet['id']+'.json')))
         self.c.receive(packet)
         duplicate=dict(packet,id='duplicate-delivery');self.c.receive(duplicate)
         deliver(self.c)
@@ -67,7 +71,7 @@ class GroupNotificationTests(unittest.TestCase):
     def test_lifecycle_messages_reference_same_request_without_repeating_body(self):
         self.configure();self.configure(self.a)
         message='请检索这次实验相关的论文，并比较不同方法的假设'
-        ident=self.a.request(dict(location='group',group_id=self.gid,agent_id='papers',message=message))['request']['id']
+        ident=self.a.request(dict(location='group',group_id=self.gid,agent_id='papers',instance_id='notification-fixture',message=message))['request']['id']
         for index,state in enumerate(('pending','running','completed'),1):
             with self.a.transaction() as db:
                 row=self.a.get(ident,db);row.update(state=state,executor=self.c.settings()['instance_id'])
@@ -159,6 +163,7 @@ class GroupNotificationTests(unittest.TestCase):
         self.assertEqual(self.a.get(ident)['notifications'][0]['group_binding']['level'],'detailed')
         override=self.completed_request(notification_route='workspace')
         self.assertEqual(self.a.get(override)['notification_policy'],'explicit')
+        self.agent(self.c,groups=[self.gid])
         continued=self.a.control(ident,'followup',message='继续',resume=False)['request']
         self.assertEqual(continued['notification_policy'],'actor_first')
         with self.assertRaises(Conflict):self.a.config('group_notifications',group_id=self.gid,notification_route='feishu')
@@ -217,11 +222,11 @@ class GroupNotificationTests(unittest.TestCase):
 
     def test_nested_request_falls_back_to_direct_origin_not_root_ledger(self):
         self.configure(self.a);b=self.configure(self.b)
-        parent=self.a.request(dict(location='group',group_id=self.gid,agent_id='papers',message='parent'))['request']['id']
+        parent=self.a.request(dict(location='group',group_id=self.gid,agent_id='papers',instance_id='notification-fixture',message='parent'))['request']['id']
         with self.a.transaction() as db:
             row=self.a.get(parent,db);row.update(executor=self.b.settings()['instance_id'],state='running');self.a.save(db,row)
         with self.b.transaction() as db:self.b.save(db,dict(row,worker_token='nested-worker'))
-        child=self.b.request(dict(location='group',group_id=self.gid,agent_id='papers',message='child',_parent_request=parent))['request']['id']
+        child=self.b.request(dict(location='group',group_id=self.gid,agent_id='papers',instance_id='notification-fixture',message='child',_parent_request=parent))['request']['id']
         with self.b.transaction() as db:
             item=self.b.get(child,db);item.update(executor=self.c.settings()['instance_id'],state='completed',result={'answer':42});self.b.save(db,item)
             views=self.b.child_views(parent,db)
@@ -243,7 +248,7 @@ class GroupNotificationTests(unittest.TestCase):
             db.execute('UPDATE communication_settings SET document=? WHERE id=1',(json.dumps(config),))
         self.a.last_scan=0;self.a.scan()
         self.assertEqual(self.a.settings()['groups'][self.gid]['notification_bindings'][self.c.settings()['instance_id']]['id'],binding['id'])
-        request=self.a.request(dict(location='group',group_id=self.gid,agent_id='papers',message='No hub fallback'))['request']['id']
+        request=self.a.request(dict(location='group',group_id=self.gid,agent_id='papers',instance_id='notification-fixture',message='No hub fallback'))['request']['id']
         self.a.deliver_notifications()
         self.assertEqual(self.a.get(request)['notifications'][0]['status'],'skipped')
 

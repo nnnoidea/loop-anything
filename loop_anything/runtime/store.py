@@ -179,7 +179,7 @@ class Store:
         with self.connection() as comm_db:
             if comm_db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='communication_settings'").fetchone():
                 comm_settings=json.loads(comm_db.execute('SELECT document FROM communication_settings WHERE id=1').fetchone()[0])
-                run['communication_group']=comm_settings.get('loop_groups',{}).get('loop:'+key)
+                run['communication_group']=comm_settings.get('loop_groups',{}).get('loop:'+key,comm_settings.get('default_team'))
             else:
                 run['communication_group']=None
         if acquire:

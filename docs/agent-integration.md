@@ -129,3 +129,7 @@ Loop 编辑可直接使用平台工具，无需口令或解锁。旧包的编辑
 ## 通知接入职责
 
 call.py 只将聊天入口的渠道、Bot project和完整session key作为chat_context随request_assistance/start_run传递；不探测cc-connect、读取配置或查询飞书，也不提前注册会话。平台保存并复用来源、选择出口与回退，发送适配器直接调用cc-connect，不自行查询飞书、读取Bot凭据或预检渠道权限。配置或桥接不可用仅形成通知错误，任务仍可执行。旧conversation_id和显式通知出口继续兼容；原话题不静默改投，未知送达不重复发送。
+
+## 独立派单
+
+只向具名 Agent 派任务、查结果和追问可单独安装 `skills/loop-anything-dispatch`，无需发布端运行平台。接单机器运行平台；团队连接使用 NAS 目录或飞书 Base 链接，内部表自动管理。托管节点同样复用派单协议，但沿用限定入口登记请求与当前 Task 的关联；等待后恢复原 session 仍由原平台负责。命令见[独立派单 Skill](../skills/loop-anything-dispatch/SKILL.md)。

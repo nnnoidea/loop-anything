@@ -106,6 +106,7 @@ class Capture:
 
 def configure_capture(store, run_id, execution_id, session, config, native=None):
     provider = native['provider'] if native else provider_for(config)
+    session.doc['native_history']=bool(config.get('resume_command')) or provider in ('codex','claude')
     def save(provider, ident, source="cli_output"):
         with store.edit(run_id) as run:
             execution = next(e for e in run['executions'] if e['id'] == execution_id)
@@ -195,6 +196,13 @@ def preparation(engine, run_id, execution_id):
     if execution['implementation']['kind'] != 'agent':raise Invalid('Only Agent executions have CLI sessions')
     native = execution.get('native_session')
     provider = (native or {}).get('provider') or provider_for(execution['implementation'])
+    if not native:
+        with engine.store.connection() as db:
+            for row in db.execute('SELECT document FROM execution_sessions WHERE run_id=? AND execution_id=? ORDER BY rowid DESC',(run_id,execution_id)):
+                native=json.loads(row[0]).get('native_session')
+                if native:
+                    provider=native['provider']
+                    break
     if not native:
         captured = []
         detector = Capture(provider, lambda p, i: captured.append({'provider':p, 'id':i, 'source':'saved_output'}))

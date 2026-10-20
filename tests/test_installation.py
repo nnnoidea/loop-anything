@@ -12,6 +12,16 @@ from loop_anything.runtime.store import Store
 
 
 class InstallationTests(unittest.TestCase):
+    def test_build_identity_includes_portable_runtime_code(self):
+        from loop_anything.capabilities import _source_build
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);scripts=root/'loop-anything-dispatch/scripts';scripts.mkdir(parents=True)
+            source=scripts/'team_transport.py';source.write_text('VERSION=1')
+            with patch('loop_anything.paths.platform_skill_directory',return_value=root/'loop-anything-platform'):
+                before=_source_build()
+                source.write_text('VERSION=2')
+                self.assertNotEqual(before,_source_build())
+
     def test_default_database_is_absolute_and_independent_of_working_directory(self):
         with tempfile.TemporaryDirectory() as folder, patch('loop_anything.paths.Path.home', return_value=Path(folder)):
             for system in ('darwin', 'win32', 'linux'):

@@ -1,4 +1,4 @@
-"""Scoped execution client; source calls travel via NAS when required. Stdlib only."""
+"""Scoped execution client; source calls travel via the team transport when required. Stdlib only."""
 import argparse
 import json
 import time

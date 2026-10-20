@@ -51,3 +51,10 @@ with tempfile.TemporaryDirectory() as folder:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(skills.read(name))
     print(entry / 'README.md')
+
+# A sender can install just this Skill, without the wheel or a running platform.
+with zipfile.ZipFile(output / 'loop-anything-dispatch.zip','w',zipfile.ZIP_DEFLATED) as archive:
+    dispatch = root / 'skills/loop-anything-dispatch'
+    for path in dispatch.rglob('*'):
+        if path.is_file() and path.suffix in ('.md','.py'):
+            archive.write(path,'loop-anything-dispatch/'+path.relative_to(dispatch).as_posix())

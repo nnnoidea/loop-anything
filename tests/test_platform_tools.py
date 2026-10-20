@@ -247,7 +247,7 @@ class PlatformToolTests(unittest.TestCase):
         self.assertEqual([], bp['nodes']['convert']['skills'])
         self.assertEqual(bp['nodes']['finish']['skills'], info['skills'])
         with zipfile.ZipFile(io.BytesIO(bundle('http://localhost:1234'))) as archive:
-            self.assertEqual(['platform/loop-anything-platform/SKILL.md'], [n for n in archive.namelist() if n.endswith('/SKILL.md')])
+            self.assertEqual(['platform/loop-anything-dispatch/SKILL.md','platform/loop-anything-platform/SKILL.md'], [n for n in archive.namelist() if n.endswith('/SKILL.md')])
             self.assertFalse(any(n.startswith('author/') for n in archive.namelist()))
             connection = json.loads(archive.read('platform/loop-anything-platform/connection.json'))
             self.assertEqual({'url': 'http://localhost:1234'}, connection)

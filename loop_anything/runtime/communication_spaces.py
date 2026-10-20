@@ -113,6 +113,11 @@ def discover(comm):
 def join_instructions(comm, group_id):
     config=comm.settings();group=config['groups'].get(group_id)
     if not group:raise Invalid('Unknown group')
+    if group.get('link'):
+        return {'group_id':group_id,'team_link':group['link'],'instructions':
+            '派单：安装 loop-anything-dispatch Skill，join 保存这个团队链接。接单：安装并运行平台，'
+            'communication_config(operation=team,link=...) 接入；由用户确认主要任务后配置具名 Agent。'
+            '内部表结构自动管理，无需记表 ID。NAS 使用接收机器上的实际挂载路径。'}
     space=config.get('spaces',{}).get(group.get('space_id'))
     where=(f"配置共享空间「{space['name']}」（ID：{space['id']}），在发现列表中选择此群组。\n群组相对目录：groups/{group['relative_path']}"
            if space else '在“直接加入已有群组目录”中填写这个群组在目标机器上的实际挂载路径。')

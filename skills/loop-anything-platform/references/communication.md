@@ -1,6 +1,6 @@
-# 具名 Agent 与通信群组
+# 接单平台与团队通信
 
-本机具名外援和群组远端外援使用同一请求接口。独立协作由平台内置 Loop 承接，无需用户构建 Loop。先调用 `read_capabilities` 检查 `agent_communication`，再读取当前服务工具 schema；不要为业务 Loop 自建 NAS 队列、心跳、轮询或回报脚本。
+派单、查结果和追问统一使用独立 `loop-anything-dispatch` Skill。它可单独安装，普通调用不依赖本机平台服务；本文件说明接单配置及 Loop 集成。托管节点通过原有限定入口提交，由平台调用同一派单实现；不要自建 NAS 队列或表格收发脚本。
 
 ## 当前连接的是谁
 
@@ -18,18 +18,19 @@
 
 `communication_config(operation=identity, name=...)` 修改显示名称，不改变 ID。重启、升级及正常移动数据库保留身份。发现副本或机器归属不符时，`identity_conflict` / `identity_error` 给出原因；明确为副本配置 `regenerate=true` 才建立新工作区身份。复制过来的 Run 和请求保留为只读历史，新工作应创建新 Run，不接管原执行。无机器身份的旧库首次升级如果原主机不同，需明确处理归属，不能猜测为改名。
 
-## 首次组网：共享空间 → 群组 → 具名 Agent
+## 首次组网：一个团队链接
 
-安装后通过平台工具配置；可信工作区可直接配置；远端worker限定入口不能修改组网配置。
+接单机器安装并运行平台，然后调用：
 
-1. **配置共享空间**：先在每台机器挂载同一个 NAS 目录，再调用 `communication_config`，参数如 `{"operation":"space","path":"/本机挂载目录/协作空间","name":"研究协作"}`。目录必须已存在；平台保存空间 ID 和本机路径，做本机读写检查，不代替 NAS 挂载或真实双机验收。首台写入空间标识，其他机器读取同一 ID；本机路径不同也可加入。
-2. **发现或创建群组**：`communication_workspace({"discover":true})` 返回 `shared_spaces`，每个空间包含群组名称、用途、`id`、`relative_path`、是否已加入和读取错误。发现仅扫描该空间的 `groups/` 直接子目录，不自动加入，不扫描整台机器。创建调用 `communication_config({"operation":"group","space_id":"返回的空间ID","create":true,"name":"论文协作","description":"用途说明"})`；创建者同时加入。其他机器加入时传 `operation: group`、`space_id`、发现结果中的 `relative_path` 和 `group_id`，不用复制另一台机器的绝对路径。
-3. **选择开放的 Agent**：每个具名 Agent 映射执行机器本地的 `implementation.command`、`cwd`、`resume_command`；用 `operation: agent` 保存，再在 `agent.groups` 中明确选择群组。不选择即不对群组开放，加入群组本身不会公开任何 Agent。可以只调用别人而不提供服务；配置不会启动模型。
-4. **查看与使用**：`communication_status` 查看已开放成员及状态，随后给 Loop / Run 绑定群组，或设置普通对话默认群组。目录通过平台心跳更新，名称可重复，调用使用 `instance_id` 与 `agent_id` 消歧。
+```json
+{"operation":"team","link":"飞书 Base 链接或本机 NAS 团队目录"}
+```
 
-`communication_workspace({"group_id":"群组ID"})` 返回可转交的纯文本，包含空间/群组 ID、相对目录和配置步骤，不含 CLI 命令、凭据或本机绝对路径。NAS 地址和访问权限需由空间提供者另行提供。群组 ID 用于核对身份，不是邀请凭据；当前没有管理员审批入群机制。
+`communication_config` 保存为默认团队，返回 `team.id`。未单独绑定的新 Run 固定这个默认团队；既有 Run 不改绑，显式解绑也不会被默认值覆盖。NAS 首次创建加 `create:true`，其他机器路径可不同但应指向同一目录。Base 使用本机已认证的 `lark-cli`（默认用户身份，可传 `identity:"bot"` 或自定义 `lark_cli` 路径），内部表和字段自动管理。链接不包含权限，实际需要所用身份能读写这个 Base。无需逐项复制表 ID。旧 `space/group` 配置继续兼容。
 
-同一空间更换本机挂载路径时，再保存新目录即可按空间 ID 更新路径；由该空间发现并加入的群组会校验身份后更新本机路径，保留开放范围和历史。目录缺失、空间身份变化或某个群组损坏会显示错误，不自动在缺失挂载位置创建新空间。此前直接配置的独立群组目录仍可用 operation=group、path 加入，不自动迁移。
+接着由用户确认本机 Agent 的主要任务、配置本机 CLI / cwd / resume_command，把返回的团队 ID 放入 `agent.groups`。加入团队本身不会公开 Agent，也不会启动模型。`communication_status` 查看成员，`communication_workspace(group_id=...)` 返回可转交的团队链接。仅派单的人安装独立派单 Skill，用同一个链接执行 join 即可。
+
+Base 收发至少间隔 15 秒，纯心跳至少间隔 60 秒、离线阈值至少 180 秒；纯心跳只修改已有成员记录的时间字段，不新增心跳行、不重复写目录。目录内容变化时才发布新版。不要把几秒无回应当成失败。接单前固定唯一 Agent 与机器，接收方不再等发起端在线发送 grant。旧在途 claim/grant 请求继续处理。
 
 ## 配置（平台所有者）
 
@@ -49,14 +50,16 @@
 
 ## 调用外援
 
+使用独立 `loop-anything-dispatch` Skill；下列工具是托管 Loop 与兼容客户端的同义入口，均复用相同发布协议。
+
 1. `communication_status` 查看显式开放的本机成员和群组目录，无需任务/请求 token。Loop 调用带 run_id；此时只显示其群组范围。查询不授权启动工作。
 2. `request_assistance` 传 `location: local` 和 agent_id；或 `location: group`、明确 group_id 和 agent_id/capability。无默认群组时先选择，不跨组广播；同名目标以稳定 ID 消歧。
 3. 提供 message、需要分享的 context，以及可选 result_schema（默认 object）。context 顶层须为 JSON 对象，内部业务字段可为文字、数组、null 等 JSON 值；例如 `{"task":"查找相关论文"}` 合法，不要求把 context.task 包装成平台 Task 对象。节点内调用带 `source: {run_id, task_id}`；托管节点使用当前操作 token，普通工作区操作可省略，由平台处理。独立请求可不传 source，平台创建内置协作 Run，调用方无需成为接单成员；已有协作继续传 collaboration_id。若已用 start_collaboration 承接当前 Agent，则沿用其 source 和 token。
 4. 返回精简 request 摘要、request.collaboration（独立协作的 run_id/task_id）、request.id 和兼容旧客户端的 request_token。之后 `read_assistance(request_id)` 默认只取状态、结构化结果和最近通知状态，不附带日志、原始上下文及完整历史；读取不会启动 Agent。
-5. **pending/offered 表示仍在等待接单，不能判断为无人接单。** 默认接单期限为 300 秒，以发起端记录的 deadline 为准；几秒钟无 grant、目录暂时无成员或几次查询仍 pending，都不能作为取消/重建请求的依据。可以继续其他工作，或用 wait_assistance 挂起；非托管外部会话可结束本轮对话并保留请求，等待通知。只有平台返回 unavailable 等终态才按该结果处理；用户撤回或任务已无需要时仍可显式取消，并可填写 reason。
+5. **pending/offered 表示仍在等待接单，不能判断为无人接单。** 默认接单期限为 300 秒，接收端首次接受前校验 deadline；几秒钟无接单回执、目录暂时无成员或几次查询仍 pending，都不能作为取消/重建请求的依据。可以继续其他工作，或用 wait_assistance 挂起；非托管外部会话可结束本轮对话并保留请求，等待通知。只有平台返回 unavailable 等终态才按该结果处理；用户撤回或任务已无需要时仍可显式取消，并可填写 reason。
 6. `control_assistance` 可 cancel、input、followup。followup 默认要求继续准确记录的 session；明确 `resume: false` 才新建。取消已发出不等于远端已经停止。
 
-接单拒绝会返回 selection_decision：包含 reason、发起端当时的 source_state、deadline 以及可用的取消原因或已分配执行者。not_selected 本身不等于“被取消”；旧版本空回执仍需查发起端详情。
+旧在途 claim/grant 请求的接单拒绝会返回 selection_decision：包含 reason、发起端当时的 source_state、deadline 以及可用的取消原因或已分配执行者。not_selected 本身不等于“被取消”；旧版本空回执仍需查发起端详情。
 
 对话默认群组通过 context_id 引用，单次 group_id 可覆盖，但不能绕过 Run 群组和执行范围。没有原生 session ID 也可以发送普通协助请求。可信工作区可按 request_id 读取或控制请求；worker 写回必须使用本次执行身份。
 
@@ -78,7 +81,7 @@ Loop 包资源经受限 `read_asset` 调用取回到执行端请求资源目录�
 
 | 场景 | 使用方式 | 当前 Agent 需要什么 |
 |---|---|---|
-| 飞书/终端入口请求外援，结果通知回来或稍后读取 | `request_assistance` | 不需要自身 execution_id、原生 session 登记或具名成员注册；平台自动建立结果跟踪 Run |
+| 飞书/终端入口请求外援，结果通知回来或稍后读取 | 独立派单 Skill | 不需要本机平台、自身 execution_id 或具名成员注册；接单平台建立结果跟踪 Run |
 | 当前入口 Agent 暂停，结果到达后自动恢复原会话继续 | `start_collaboration(caller=…)` | 提供真实 session、当前 Agent 进程 PID 和恢复配置；平台创建并返回 execution_id，随后沿用其 Run/Task/token |
 | 已在平台节点中执行，需补充当前 CLI 的真实 session ID | `register_agent_session` | 使用当前唤醒上下文中的自身 execution_id 和操作身份 |
 | 希望其他成员以后能向本机 Agent 发布任务 | `communication_config(operation=agent)` | 配置具名 Agent 及开放范围；向群组开放前由用户确认主要任务 |
@@ -97,6 +100,12 @@ Codex 的 `CODEX_THREAD_ID` 属于原生 Agent session，用于恢复上下文�
 
 恢复后的协调节点仍需 `report_task(event: completed)` 提交 `outputs.result`（对象）；首次完成入口同时提交 `settings.objective`，然后 `finish`。通过 `read_task` 获取实时 task_version。不要把外援返回当作协调任务已完成，不要自建轮询或另一个通信调度器。Run 的暂停/终止、事件去重和会话恢复均由原有 Engine 承担。
 
+## 普通会话的轻量等待与目录
+
+独立派单 Skill 的 wait(request_id 或 request_ids, timeout) 在脚本内等待，返回各请求状态与完整结果。等待超时或被中断不取消任务；需要释放 Agent CLI 并恢复原会话时仍使用下面的 wait_assistance。request_assistance 支持 agent_name，按目录解析名称；明确提供 Agent/机器 ID 也必须在目录中找到，离线保留的目录条目可排队。接单 Agent 启用前必须有主要任务说明，公开到团队还须用户确认职责和范围。已承接 Loop 节点的等待续跑仍沿用原执行归属与 session，不受停止接新任务或退组影响。
+
+一个 Base 链接自动配置可读字段与“Agent 目录”“请求与结果”“机器心跳”视图；请求与回复按同一请求 ID 对应，内部协议 JSON 不在这些视图默认展示。可读字段由平台维护，修改成员仍走接单机器配置。工具只按目录/请求 ID 取内容并自动解析附件，不要求 Agent 读取整表。
+
 ## 等待回复后继续
 
 需要自动续跑时检查 `assistance_session_resume` 能力；依赖它的 Loop 应声明 `requires: ["assistance_session_resume"]`。
@@ -111,7 +120,7 @@ Run 暂停或 Task 取消时不自动续跑，Run 终止后保留迟到结果但
 
 ## 控制通信上下文大小
 
-先检查运行服务的 `communication_context` 能力或实际工具 schema。`read_assistance` 默认精简的是请求视图，`result` 仍完整返回；日志和历史按需读取，记录不会为了压缩上下文删除。
+先检查运行服务的 `communication_context` 能力或实际工具 schema。`read_assistance` 默认精简的是请求视图，`result` 仍完整返回；日志和历史按需读取，平台保留必要执行状态与交付结果，已确认 Base 消息进入云端历史；原生 session 中已有的完整执行过程不另存副本。
 
 排错时显式读取：
 
@@ -119,7 +128,7 @@ Run 暂停或 Task 取消时不自动续跑，Run 终止后保留迟到结果但
 {"request_id":"请求ID","include_logs":true,"max_chars":4000}
 ```
 
-每页日志默认最多 4000 字符，可设置 1–16000。返回 `logs`、`log_cursor`、`log_offset` 和 `log_more`。需要继续时用 `after=log_cursor`、`offset=log_offset`；单个日志块也可以跨页，不会因截断丢字。不要每次从零重读，定位问题后停止获取多余日志。
+Base 的终端日志留在执行机器，不自动传输。显式 include_logs 才按需读取，返回 `logs_pending:true` 时保留游标稍后查询，不把它当成空日志，也不持续占用 Agent 轮询。镜像子请求的日志可在其来源或执行平台读取。网页只有展开运行输出才获取日志。每页日志默认最多 4000 字符，可设置 1–16000。返回 `logs`、`log_cursor`、`log_offset` 和 `log_more`。需要继续时用 `after=log_cursor`、`offset=log_offset`；单个日志块也可以跨页，不会因截断丢字。不要每次从零重读，定位问题后停止获取多余日志。
 
 需要原始业务上下文、完整通知与历史时使用 `include_details:true`；它不自动打开日志，仍需 `include_logs:true`。详细诊断可能较大，仅在当前问题确实需要时读取。结构化业务结果保持完整，不做自动语义裁剪；大业务产物仍应通过文件或共享引用交付。
 
@@ -129,7 +138,7 @@ Run 暂停或 Task 取消时不自动续跑，Run 终止后保留迟到结果但
 
 平台提供 `scripts/communication.py`，唤醒上下文包含其本机绝对路径、platform_url、request_id、限定 token。
 
-同时提供本机标准 platform_client 与限定 platform_url，原有 call.py 的 read_task/report_task/finish 操作可以通过该地址使用；平台负责跨 NAS 转送。communication.py 使用 execution_url 调用执行端工具，或在未提供时使用 platform_url。限定地址的工具目录说明当前允许的操作，不需要作者再写桥接客户端。
+同时提供本机标准 platform_client 与限定 platform_url，原有 call.py 的 read_task/report_task/finish 操作可以通过该地址使用；平台负责经团队介质转送。communication.py 使用 execution_url 调用执行端工具，或在未提供时使用 platform_url。限定地址的工具目录说明当前允许的操作，不需要作者再写桥接客户端。
 
 ```sh
 python3 /实际客户端路径/communication.py --context 请求上下文.json progress --arguments '{"message":"正在检索"}'
@@ -152,11 +161,17 @@ python3 /实际客户端路径/communication.py --context 请求上下文.json c
 
 共享目录发布完整消息或分块消息，单个逻辑消息上限 32 MiB；大业务数据使用产物引用。未确认消息保留重发，日志按序号单独持久化。
 
-平台自动分离待收消息与历史：`messages/<机器ID>/` 是待收区，`messages/broadcast/` 保留等待认领的公告，已确认消息进入 `archive/<日期>/<接收方>/`，普通轮询不扫描归档。接收确认只表示消息已持久化，不代表任务完成；公告由发起方在分配、取消或到期后归档。ACK 发布后停止定时重发，重复原消息可触发同一回执补发。归档失败保留待办和诊断，重启继续，不阻断其他消息；历史及去重记录继续保留，不自动按日期删除。Agent 使用已有通信工具，无需自己搬移文件或编写清理脚本。
+NAS 自动分离待收消息与历史：`messages/<机器ID>/` 是待收区，`messages/broadcast/` 仅兼容旧在途公告，新派单直接投递唯一目标，已确认消息进入 `archive/<日期>/<接收方>/`，普通轮询不扫描归档。接收确认只表示消息已持久化，不代表任务完成；公告由发起方在分配、取消或到期后归档。ACK 发布后停止定时重发，重复原消息可触发同一回执补发。归档失败保留待办和诊断，重启继续，不阻断其他消息；历史及去重记录继续保留，不自动按日期删除。Agent 使用已有通信工具，无需自己搬移文件或编写清理脚本。
+
+任务资料与产物只在确认双方可访问时优先保存在共享 NAS，通过 context/result 传路径和用途；挂载点不同则补充共享目录标识及相对路径。这与团队通信选用 Base 还是 NAS 无关，平台不会读取或上传引用文件。外援保留完整产物，不用 summary 替代全文。对方无法访问 NAS 或明确需要云端副本时，可选用飞书原生附件；命令与引用示例见派单 Skill 的[共享文件与可选附件](../../loop-anything-dispatch/references/artifacts.md)。读取结果不确认引用文件已读取，也不清理 NAS 产物。
+
+Base 的已确认消息和回执改标为云端历史，退出日常轮询；原记录与交付结果保留，按需人工清理已处理历史，不要求日常通信有删除权限。新版独立 Skill 按 ID 直接读取团队结果，不自动复制结果全文到本机，也不发送结果读回执；离线副本显式用 --output 保存。旧版缓存和在途读回执仍兼容。小状态原地更新，未发出进度合并；超过 90000 个 UTF-16 单位的内联消息自动用附件兜底，过时版本进入历史。
+
+本机保留执行状态、交付结果、session 定位和消息指纹去重；待发数据持久保存到交付完成。Base 消息不再另存本机完整归档。已登记原生 session 的成功执行不保留重复终端全文，include_logs 返回 logs_source=native_session 和查看提示，使用原机器上的恢复能力查看；无 session、失败和脚本执行仍有诊断输出。
 
 为兼容在途消息，保留旧传输路径和消息格式；服务启动或切换挂载后会一次性检查待收目录中的旧记录，只归档本机有权处理且已确认的内容。各机器升级后才能完整停止旧版 ACK 的定时重发。本机数据库仍保留历史，真实多机 NAS 的性能与故障恢复需在安装环境验收。
 
-通知使用已有出口和下述优先级。通信消息标题显示 Agent 与进展，首条实际通知带请求预览（即使请求很快进入执行或完成），后续只通过同一请求 ID 关联，不重复原请求。完成通知可展示结果中已有的简短文本 summary，否则显示“结果已返回”；不把截断 JSON 当摘要，不要求外援另写 summary。请求方读取和恢复时继续取得完整 result。默认不展示机器名、内部 Run/通知 ID；投递和重试仍保留内部标识及原通知快照。飞书/微信只用于通知；未配置时不猜接收人，不承担请求和正式结果传输。
+通知使用已有出口和下述优先级。通信消息标题显示 Agent 与进展，首条实际通知带请求预览（即使请求很快进入执行或完成），后续只通过同一请求 ID 关联，不重复原请求。完成通知可展示结果中已有的简短文本 summary，否则显示“结果已返回”；不把截断 JSON 当摘要，不要求外援另写 summary。请求方读取和恢复时继续取得完整 result。默认不展示机器名、内部 Run/通知 ID；投递和重试仍保留内部标识及原通知快照。飞书/微信聊天仅用于通知；飞书 Base 是单独的通信介质。未配置通知时不猜接收人，也不阻断任务结果。
 
 ### 群组按机器绑定出口与通知优先级
 
@@ -170,7 +185,7 @@ python3 /实际客户端路径/communication.py --context 请求上下文.json c
 ```
 
 3. `communication_status.groups[].notification_bindings` 按 instance_id 列出各机器绑定。修改时传本机绑定的 id 作为 binding_id；enabled=false 仅停用本机入口。不同机器互不覆盖。目录公开发送机器、目的地和档位，命令与凭据留在各自本地。保存配置不会发送消息。
-4. 来源平台继续统一生成和去重通知，经 NAS 交给选定机器调用本地适配器。`read_assistance.notifications[].routing` 给出 actor_instance、request_origin、sender_instance、binding_id 和 reason；action_machine 表示动作方，request_origin 表示回退发起方，no_bound_outlet 表示两者都没有入口。无入口状态为 skipped，不会影响任务执行。
+4. 已托管请求由来源平台生成和去重通知；独立 Skill 派单由接收平台生成通知，经团队介质交给选定机器调用本地适配器。`read_assistance.notifications[].routing` 给出 actor_instance、request_origin、sender_instance、binding_id 和 reason；action_machine 表示动作方，request_origin 表示回退发起方，no_bound_outlet 表示两者都没有入口。无入口状态为 skipped，不会影响任务执行。
 
 缺少绑定或明确停用才回退。绑定存在但机器离线、发送失败或送达未知时，保留 awaiting_delivery/fault 等状态，不切换机器重发。已经生成的通知和显式重试固定当时的发送机器、目的地及命令；更改绑定只影响后续新生成的通知。通知档位默认取选中入口的 level，请求明确指定 notification_level 时优先使用请求值；过滤掉的事件不会改投另一个入口。
 

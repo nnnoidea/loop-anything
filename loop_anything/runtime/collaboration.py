@@ -91,11 +91,17 @@ def reconcile(comm):
     from loop_anything.runtime.notifications import receive_event
     for row in comm.requests():
         link = row.get('collaboration')
-        if not link or row.get('mirror') or row['origin'] != comm.settings()['instance_id']:
+        if not link or row.get('mirror') or (row['origin'] != comm.settings()['instance_id'] and not row.get('dispatch_client')):
             continue
         run = comm.store.get(link['run_id'])
         if run['status'] == 'terminated':
-            if row['state'] not in END | {'cancelling'}:comm.control(row['id'], 'cancel',reason='Source collaboration Run was terminated')
+            if row['state'] not in END | {'cancelling'}:
+                if row.get('dispatch_client'):
+                    with comm.transaction() as db:
+                        current=comm.get(row['id'],db);current['cancel_requested']=True
+                        current['state']='cancelling' if current['state'] in ('starting','running','unknown') else 'cancelled'
+                        comm.save(db,current)
+                else:comm.control(row['id'], 'cancel',reason='Source collaboration Run was terminated')
             continue
         event_id = 'assistance:' + row['id']
         if row['state'] not in END or any(e['id'] == event_id for e in run['events']):

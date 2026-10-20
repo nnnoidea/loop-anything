@@ -90,10 +90,10 @@
 ## communication_context
 
 - 生效方式：automatic/operator
-- 平台承担：通信查询默认摘要，日志按需分段读取；外援续跑及追问不嵌入完整通信历史，保留业务上下文、结果及原 session。
-- 作者提供：优先读状态和结构化结果；排错时请求 include_logs 或 include_details，用返回的 log_cursor/log_offset 继续读取。
+- 平台承担：通信查询默认精简状态与完整结果；Base 日志留执行机，按需分页获取（logs_pending 表示等待）；外援续跑及追问不嵌入完整通信历史，保留业务上下文、结果及原 session。
+- 作者提供：优先读状态和结构化结果；文件在确认共享访问时才传 NAS 路径，即使用 Base 通信也无需上传文件。对方不能访问或需要云端副本时，附件用法见派单 Skill references/artifacts.md。排错时按需分页读日志。
 - 配置入口：`read_assistance.include_logs`、`read_assistance.include_details`、`read_assistance.max_chars`、`read_assistance.after/offset`
-- 边界：单页日志默认 4000、最多 16000 字符；完整诊断按需返回，原始日志保留；结构化业务结果不自动删减。
+- 边界：单页日志默认 4000、最多 16000 字符；成功的原生 session 执行不保留重复终端全文；脚本、无 session 和失败执行保留诊断输出；结构化业务结果不自动删减。
 - 工具入口：read_assistance、request_assistance、control_assistance
 - 详细说明：[references/communication.md](communication.md)
 
@@ -133,17 +133,17 @@
 - 平台承担：各机器独立绑定群组通知入口；来源持久生成通知，选定机器复用 cc-connect 等适配器并写回回执。
 - 作者提供：在各机器配置本地命名出口，再用 group_notifications 绑定该机器的群组入口。
 - 配置入口：`communication_config(operation=group_notifications)`、`platform notification channels`
-- 边界：命令和凭据不写入 NAS；已生成通知固定出口。旧策略请求按原策略完成；未知送达须核实后显式重试。
+- 边界：命令和凭据不写入团队介质；已生成通知固定出口。旧策略请求按原策略完成；未知送达须核实后显式重试。
 - 工具入口：communication_status、communication_config、read_notification_channels、set_notification_channels、read_assistance、control_assistance
 - 详细说明：[references/communication.md](communication.md)
 
 ## agent_communication
 
 - 生效方式：configured/operator
-- 平台承担：平台提供本机具名Agent目录、NAS群组收发、明确认领、进度结果、会话和等待恢复；独立协作自动使用平台内置 Loop。待收消息与历史自动分离，确认后归档，回执按需补发；作者无需自建归档或清理脚本。
-- 作者提供：先配置已挂载的共享空间，用 communication_workspace(discover=true) 发现群组并显式加入；再配置具名 Agent 对应的本机 CLI/工作目录/恢复命令及开放群组，支持转交加入说明；Loop绑定群组，节点显式声明群组执行；外援由Agent按需请求；pending/offered表示等待，默认接单期限300秒，不得因几秒无回应而取消或重建，按需挂起等待。
+- 平台承担：所有派单复用独立 loop-anything-dispatch Skill；仅接单需要运行平台。普通回复直接保存；文件只在确认双方共享访问时传 NAS 路径，飞书原生附件是可选交付能力，过长内联消息自动用附件兜底；Base 状态合并、心跳原地修改、确认消息进入云端历史；请求和结果保留，人工按需清理；客户端不自动复制全文。一个团队链接支持 NAS 或 Base，自动提供成员目录与请求结果视图。名称和 ID 都经目录解析；轻量 wait 由脚本等待，超时不撤单。
+- 作者提供：用 communication_config(operation=team,link=...) 配置接收平台默认团队，用户确认职责后开放具名 Agent。只派单使用独立 Skill 的 join/agents/submit/read/wait/control；Loop 节点沿用限定工具入口登记并发布，需等待时 wait_assistance 后 finish。
 - 配置入口：`communication_config`、`implementations.*.dispatch`、`request_assistance`、`wait_assistance`
-- 边界：可信工作区普通操作由平台处理内部标识，worker写回仍校验本次执行范围。原生 session ID 只用于恢复；本地节点只由来源平台执行，群组不是业务Run副本，session不决定认领。失联不自动重跑。NAS实际环境需安装时检查，逐键远程PTY尚不承诺。
+- 边界：发布前固定唯一机器与 Agent，接收方持久化后执行，不再等来源 grant。旧在途协议兼容；业务 Run 仍由来源拥有。会话恢复固定原 session，失联不自动重跑。真实 NAS/Base 验收需实际环境。
 - 工具入口：communication_workspace、communication_status、communication_config、request_assistance、read_assistance、control_assistance、wait_assistance、communication_execute
 - 详细说明：[references/communication.md](communication.md)
 
@@ -210,7 +210,7 @@
 ## agent_terminal
 
 - 生效方式：automatic/configured
-- 平台承担：为后台 Agent 每次执行持久化实时输出；可选交互终端连接同一 CLI 进程，转发键盘和窗口尺寸，finish 后关闭会话。
+- 平台承担：提供实时输出；有原生 session 时保留有限实时尾部，成功后只留会话定位；无 session 或失败时保留诊断；可选交互终端连接同一 CLI 进程，转发键盘和窗口尺寸，finish 后关闭会话。
 - 作者提供：提供 CLI 命令、工作目录、登录与权限配置；交互命令用 {{prompt}} 或 {{prompt_file}} 接收任务上下文。
 - 配置入口：`implementations.*.terminal`、`implementations.*.command`、`read_capabilities(agent_terminal)`
 - 边界：普通命令只读；交互终端当前支持 macOS/Linux。进程重启后只保留历史并按既有操作权恢复，不保证恢复 CLI 会话。终端session身份和执行状态仍校验，结果仍须 report_task/finish；不要重复构建日志查看与交互通道。
@@ -512,12 +512,12 @@
     "agent_communication"
   ],
   "configuration": [
-    "communication_config(operation=space,path=本机已挂载目录) 保存共享空间并检查本机读写；各机路径可以不同，核对返回 space_id。",
-    "communication_workspace(discover=true) 返回各空间群组及读取错误；发现不自动加入。创建用 operation=group、space_id、create=true、name；加入用 space_id、relative_path、group_id。",
-    "用 operation=agent 显式配置本机 CLI、cwd、resume_command，并选择 groups；加入群组不自动开放任何 Agent，也可只调用别人。",
-    "communication_workspace(group_id=...) 返回不含本机命令、凭据和挂载路径的加入说明；communication_status 查看开放成员，再绑定 Loop 或普通对话。"
+    "接单平台用 communication_config(operation=team,link=团队Base链接或NAS目录)，返回默认团队ID；首次创建NAS加create=true，Base内部表自动管理。",
+    "operation=agent 配置本机 CLI、cwd、resume_command 和团队范围；先由用户确认主要任务。连接团队不自动开放 Agent。",
+    "只派单的人安装独立 loop-anything-dispatch Skill，用同一团队链接join，不需要运行平台。",
+    "Loop绑定团队，调用沿用限定入口；网页用于查看成员、任务和结果。旧NAS空间/群组配置继续兼容。"
   ],
-  "author_provides": "共享 NAS 的访问方式与本机挂载路径、群组用途、本机允许启动的 Agent 命令；NAS 权限负责准入。",
+  "author_provides": "团队链接与相应访问权限；接单机器的本机 Agent 命令和用户确认的主要任务。",
   "verification": [
     "communication_workspace",
     "communication_status",
@@ -582,11 +582,11 @@
 
 ### named_agent_assistance
 
-当前节点或普通对话需要临时外援；外援可在本机，也可在明确选定的 NAS 群组中。
+当前节点或普通对话需要临时外援；外援可在本机，也可在明确选定的团队中。
 
 ```json
 {
-  "use_when": "当前节点或普通对话需要临时外援；外援可在本机，也可在明确选定的 NAS 群组中。",
+  "use_when": "当前节点或普通对话需要临时外援；外援可在本机，也可在明确选定的团队中。",
   "capabilities": [
     "agent_communication",
     "agent_terminal",
@@ -620,7 +620,7 @@
   ],
   "configuration": [
     "保持 kind=agent，设置 dispatch.location=group 和 agent_id 或 capability；绑定 Run 群组。",
-    "成员申请承接，来源确认后启动；来源平台继续拥有业务 Run。其他本地节点不发布到群组。",
+    "派单固定唯一机器与Agent，接收端持久化后启动，无需来源二次grant；来源平台继续拥有业务 Run。其他本地节点不发布到群组。",
     "通过限定 platform_client/URL 使用 read_task、report_task 和 finish，沿用原结果契约与操作范围。"
   ],
   "author_provides": "节点业务契约、成员选择；执行端提供 CLI、环境和可访问的产物。",

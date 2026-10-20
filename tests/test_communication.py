@@ -10,6 +10,7 @@ from unittest.mock import patch
 from loop_anything.runtime.store import Store
 from loop_anything.runtime.engine import Engine
 from loop_anything.runtime.model import Invalid, Conflict
+from communication_helpers import legacy_offer
 
 
 class CommunicationTests(unittest.TestCase):
@@ -36,7 +37,7 @@ class CommunicationTests(unittest.TestCase):
 
     def test_delayed_claim_remains_valid_before_default_acceptance_deadline(self):
         gid=self.groups();self.agent(self.b,groups=[gid])
-        created=self.a.request({'location':'group','group_id':gid,'agent_id':'papers','message':'help'})['request']
+        created=legacy_offer(self.a,location='group',group_id=gid,agent_id='papers',message='help')['request']
         self.assertAlmostEqual(created['deadline']-created['created_at'],300,places=2)
         self.assertEqual(created['next_action'],'await_assignment')
         with patch('loop_anything.runtime.communication.time.time',return_value=created['created_at']+29):
@@ -49,7 +50,7 @@ class CommunicationTests(unittest.TestCase):
 
     def test_cancelled_request_explains_late_claim_rejection_to_executor(self):
         gid=self.groups();self.agent(self.b,groups=[gid])
-        created=self.a.request({'location':'group','group_id':gid,'agent_id':'papers','message':'help'})['request']
+        created=legacy_offer(self.a,location='group',group_id=gid,agent_id='papers',message='help')['request']
         with self.a.store.connection() as db:
             offer=next(json.loads(r[0]) for r in db.execute('SELECT document FROM communication_outbox') if json.loads(r[0])['kind']=='offer')
         self.b.receive(offer)
@@ -126,7 +127,8 @@ class CommunicationTests(unittest.TestCase):
     def test_two_candidates_one_assignment_and_result_roundtrip(self):
         gid=self.groups()
         self.agent(self.b,groups=[gid]);self.agent(self.c,groups=[gid])
-        row=self.a.request({'location':'group','group_id':gid,'capability':'papers','message':'查论文'})['request']
+        with self.assertRaises(Invalid):self.a.request({'location':'group','group_id':gid,'capability':'papers','message':'查论文'})
+        row=self.a.request({'location':'group','group_id':gid,'capability':'papers','instance_id':self.b.settings()['instance_id'],'message':'查论文'})['request']
         calls=[]
         def worker(*args,**kw):calls.append(1);return self.worker(*args,**kw)
         with patch('loop_anything.runtime.host_runtime.run_command',side_effect=worker):
@@ -252,6 +254,7 @@ class CommunicationTests(unittest.TestCase):
             self.a.wake_assistance();self.a.wake_assistance()
             run=self.a.store.get(runid)
             self.assertEqual(len(run['tasks']),1)
+            self.assertIn('result',run['tasks']['init']['assistance_results'][0],run['tasks']['init']['assistance_results'])
             self.assertEqual(run['tasks']['init']['assistance_results'][0]['result']['papers'],['one'])
             self.assertEqual(sum(h['kind']=='assistance_ready' for h in run['history']),1)
             self.assertEqual(run['records'],{})
@@ -408,7 +411,7 @@ class CommunicationTests(unittest.TestCase):
         self.assertEqual(len(self.a.get(row['id'])['notifications']),1)
 
     def test_unstartable_agent_pauses_admission_and_retains_request_error(self):
-        self.a.config('agent',agent_id='broken',agent={'name':'broken','implementation':{'kind':'agent','command':['/definitely/missing/loop-agent']}})
+        self.a.config('agent',agent_id='broken',agent={'name':'broken','description':'Test unavailable worker startup','implementation':{'kind':'agent','command':['/definitely/missing/loop-agent']}})
         row=self.a.request({'location':'local','agent_id':'broken','message':'help'})['request']
         self.cycle(lambda:self.a.get(row['id'])['state']=='failed')
         self.assertFalse(self.a.settings()['agents']['broken']['enabled'])
@@ -438,7 +441,7 @@ class CommunicationTests(unittest.TestCase):
             else:self.assertNotIn('report_task',names)
 
     def test_local_helper_keeps_parent_group_scope_without_using_nas_for_local_request(self):
-        gid=self.groups();self.agent(self.a,'parent',groups=[gid]);self.agent(self.a,'helper')
+        gid=self.groups();self.agent(self.a,'parent',groups=[gid]);self.agent(self.a,'helper');self.agent(self.b,'remote-helper',groups=[gid])
         parent=self.a.request({'location':'group','group_id':gid,'agent_id':'parent','message':'parent'})['request']
         with self.a.transaction() as db:
             row=self.a.get(parent['id'],db);row.update(state='running',worker_token='parent-token');self.a.save(db,row)
@@ -587,6 +590,7 @@ class CommunicationTests(unittest.TestCase):
             run=self.a.store.get(runid)
             self.assertEqual(len(run['tasks']),1)
             self.assertEqual(run['records'],{})
+            self.assertIn('result',run['tasks']['init']['assistance_results'][0],run['tasks']['init']['assistance_results'])
             self.assertEqual(run['tasks']['init']['assistance_results'][0]['result']['papers'],['one'])
             self.assertEqual(self.b.store.list(),[])
             child=next(r for r in self.a.requests() if r.get('mirror'))

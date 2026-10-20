@@ -1,5 +1,7 @@
 # Agent 通信群组与远程执行修改计划
 
+本文保存原实施方案与历史验收；当前派单/接单分离、团队链接及 NAS / 飞书 Base 用法见 [通信手册](../skills/loop-anything-platform/references/communication.md) 和 [独立派单 Skill](../skills/loop-anything-dispatch/SKILL.md)。
+
 日期：2026-10-09
 
 状态：0.5.2 源码实现及本机验收完成；包含等待外援后恢复原 CLI session。真实 NAS、模型和渠道验收留到安装时。本文件保留原方案，实际交付证据见第 12 节；不授权部署或发送真实通知。

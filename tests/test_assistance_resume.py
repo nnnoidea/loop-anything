@@ -100,7 +100,7 @@ class AssistanceResumeTests(unittest.TestCase):
                     'resume_command':[sys.executable,str(script),str(root/'session.json'),'fail' if fail else 'resume','{{session_id}}','{{prompt}}'],
                     'terminal':True,'agent_cli':'custom','prompt':'{{context}}'}
                 executor=1 if remote else 0
-                tool(executor,'communication_config',{'operation':'agent','agent_id':'helper','agent':{'name':'helper','local':True,'implementation':{'kind':'agent','command':[sys.executable,'-c',HELPER_CLI],'prompt':'{{context}}'}}})
+                tool(executor,'communication_config',{'operation':'agent','agent_id':'helper','agent':{'name':'helper','description':'Provide research assistance','local':True,'implementation':{'kind':'agent','command':[sys.executable,'-c',HELPER_CLI],'prompt':'{{context}}'}}})
                 source=Store(root/'0.db');case=fixture.RuntimeTests();case.setUp()
                 try:
                     if remote:

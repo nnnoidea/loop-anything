@@ -14,6 +14,10 @@
 
 *当前本地平台的 r624 整体流程页实拍：展示八个节点及业务关系，不代表已启动真实训练。*
 
+## 只给其他 Agent 派任务
+
+安装 [`loop-anything-dispatch`](skills/loop-anything-dispatch/SKILL.md) 即可：保存一个团队链接（NAS 目录或飞书多维表格），发现成员、发布任务、查询完整结果。只派单不需要运行平台；接单机器安装下面的平台。Loop 内的派单复用同一协议，保留等待和原 session 恢复。
+
 ## 安装平台
 
 把本 README 交给你的 Agent，按[安装与升级说明](docs/installation.md)完成平台安装和 Skill 配置。需要 Python 3.9+；已有平台和工作区应继续复用。

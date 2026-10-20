@@ -1,6 +1,6 @@
-"""Durable named-Agent requests. Local execution and NAS share one request lifecycle.
+"""Durable named-Agent requests. Local execution, NAS and Feishu Base share one request lifecycle.
 
-The source instance alone grants assignments. Group files are a trusted transport,
+New publications authorize one selected executor without an origin-side grant. Team media are a trusted transport,
 never a shared Run database or an instruction to schedule somebody else's Loop.
 """
 import copy
@@ -19,12 +19,12 @@ from pathlib import Path
 from loop_anything.runtime.model import Invalid, Conflict, contract, check_schema
 from loop_anything.runtime.store import uid
 from loop_anything.runtime.communication_views import summary as request_summary, continuation_context, log_page
-from loop_anything.runtime.communication_archive import enqueue as archive_message, retire as retire_messages, acknowledge
+from loop_anything.runtime.communication_archive import enqueue as archive_message, retire as retire_messages, acknowledge, received, matches as message_matches
 
 END = {'completed', 'failed', 'cancelled', 'unavailable', 'not_selected'}
-PRIVATE = {'access_token', 'worker_token', 'source_token', 'launch', 'pending_result', 'sender', 'rpc'}
+PRIVATE = {'access_token', 'worker_token', 'source_token', 'launch', 'pending_result', 'sender', 'rpc', 'dispatch_envelope', 'dispatch_digest', 'log_reads'}
 CHILD_FIELDS=('id','origin','parent_request','kind','source','source_summary','state','message','result','error',
-              'native_session','created_at','revision','agent_id','agent_label','executor','executor_name','location',
+              'native_session','output_source','created_at','revision','agent_id','agent_label','executor','executor_name','location',
               'group_id','scope_group_id','progress','history','deadline','cancellation','selection_decision','notification_origin','notification_route','notification_level','notification_binding','notification_policy','notification_level_explicit','notification_conversation')
 RPC_TOOLS = {'read_loop', 'read_task', 'read_timeline', 'read_record', 'read_plans', 'read_capabilities',
              'next_tasks', 'report_task', 'complete_task', 'finish', 'build_plan', 'change_task',
@@ -48,55 +48,16 @@ def identifier(value):
     return value
 
 
-def atomic_json(path, value):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name('.' + path.name + '.' + secrets.token_hex(8))
-    try:
-        with temp.open('x', encoding='utf-8') as stream:
-            json.dump(value, stream, ensure_ascii=False, allow_nan=False)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
+from loop_anything.runtime.team_transport import core as dispatch_core
+atomic_json = dispatch_core.atomic_json
+def read_message(path):
+    try:return dispatch_core.read_message(path)
+    except ValueError as exc:raise Invalid(str(exc)) from exc
 
 
 def publish_message(path, message):
-    if path.exists():
-        try:previous=read_message(path)
-        except (OSError,ValueError):pass  # A partial/corrupt publication can be repaired by its owning sender.
-        else:
-            if previous!=message:raise Conflict('Published message ID has different content')
-            return  # Durable files are retained; retransmission need not rewrite every historical ACK.
-    data=json.dumps(message,ensure_ascii=False,allow_nan=False).encode('utf-8')
-    if len(data)<=1_000_000:
-        atomic_json(path,message);return
-    if len(data)>32*1024*1024:raise Invalid('Communication message exceeds 32 MiB; use artifact references')
-    parts=(len(data)+524287)//524288
-    for index in range(parts):
-        part=path.with_name(path.stem+'-part-'+str(index)+'.bin');part.parent.mkdir(parents=True,exist_ok=True)
-        temp=part.with_name('.'+part.name+'.'+secrets.token_hex(8))
-        try:
-            with temp.open('xb') as out:out.write(data[index*524288:(index+1)*524288]);out.flush();os.fsync(out.fileno())
-            os.replace(temp,part)
-        finally:temp.unlink(missing_ok=True)
-    atomic_json(path,{'transport':'parts-v1','parts':parts,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()})
-
-
-def read_message(path):
-    if path.stat().st_size>2_000_000:raise Invalid('Invalid transport envelope size')
-    message=json.loads(path.read_text())
-    if isinstance(message,dict) and message.get('transport')=='parts-v1':
-        if type(message.get('parts')) is not int or not 1<=message['parts']<=64 or type(message.get('bytes')) is not int or not 0<message['bytes']<=32*1024*1024:raise Invalid('Invalid multipart envelope')
-        chunks=[]
-        for index in range(message['parts']):
-            part=path.with_name(path.stem+'-part-'+str(index)+'.bin')
-            if part.stat().st_size>524288:raise Invalid('Invalid message part size')
-            chunks.append(part.read_bytes())
-        data=b''.join(chunks)
-        if len(data)!=message['bytes'] or hashlib.sha256(data).hexdigest()!=message.get('sha256'):raise Invalid('Incomplete or corrupted message')
-        message=json.loads(data)
-    return message
+    try:dispatch_core.publish_message(path,message)
+    except ValueError as exc:raise Conflict(str(exc)) from exc
 
 
 class Communication:
@@ -107,6 +68,7 @@ class Communication:
         self.lock = threading.RLock()
         self.live = {}
         self.last_scan = 0
+        self.scan_lock = threading.Lock()
         self.archive_scanned_groups = set()
         with store.connection() as db:
             db.executescript('''
@@ -185,6 +147,16 @@ class Communication:
         if operation=='conversation':
             from loop_anything.runtime.communication_conversations import register
             return register(self,a)
+        if operation=='team':
+            from loop_anything.runtime.team_transport import join
+            team=join(a['link'], a.get('create',False), a.get('name'), a.get('lark_cli','lark-cli'), a.get('identity','user'))
+            with self.transaction() as db:
+                config=self.settings(db)
+                config['groups'][team['id']]=dict(config['groups'].get(team['id'],{}),**team)
+                config['default_team']=team['id'];config['revision']+=1
+                db.execute('UPDATE communication_settings SET document=? WHERE id=1',(json.dumps(config),))
+            self.last_scan=0
+            return {'configuration':config,'team':team}
         if operation=='space':
             from loop_anything.runtime.communication_spaces import configure
             return configure(self,a)
@@ -194,13 +166,14 @@ class Communication:
         if operation == 'probe':
             config=self.settings();group=config['groups'].get(a['group_id'])
             if not group:raise Invalid('Unknown group')
-            root=Path(group['path'])
-            if json.loads((root/'group.json').read_text()).get('id')!=group['id']:raise Invalid('Group identity changed')
-            path=root/'checks'/(uid('check')+'.json');value={'instance_id':config['instance_id'],'nonce':secrets.token_hex(16)}
-            try:
-                atomic_json(path,value)
-                if json.loads(path.read_text())!=value:raise Invalid('Shared directory read-back mismatch')
-            finally:path.unlink(missing_ok=True)
+            from loop_anything.runtime.team_transport import transport
+            media=transport(self,group)
+            cloud=group.get('transport')=='feishu_base'
+            key='checks/'+(config['instance_id'] if cloud else uid('check'))+'.json'
+            value={'instance_id':config['instance_id'],'nonce':secrets.token_hex(16)}
+            media.put(key,value)
+            if media.get(key)!=value:raise Invalid('Team read-back mismatch')
+            if not cloud:media.delete(key)
             return {'read_write_verified':True,'group_id':group['id'],'multi_machine_verified':False,
                     'notice':'Only this machine read/write verified; peer visibility and actual NAS recovery need installation acceptance.'}
         with self.transaction() as db:
@@ -235,6 +208,8 @@ class Communication:
                     raise Invalid('Unsupported named Agent setting')
                 if not isinstance(agent.get('name'),str) or not agent['name'].strip() or not isinstance(agent.get('description', ''), str):
                     raise Invalid('Named Agent needs name and description text')
+                if agent.get('enabled',True) and not agent.get('description','').strip():
+                    raise Invalid('Describe this named Agent main task before enabling it')
                 launch = agent.get('implementation', {})
                 validate_implementation(launch)
                 if launch.get('kind') != 'agent' or not launch.get('command') or launch.get('dispatch'):
@@ -323,6 +298,9 @@ class Communication:
         if operation == 'identity' and a.get('regenerate'):
             self.identity_conflict=False
             self.identity_error=None
+        if operation in ('agent','leave'):
+            self._team_heartbeats={};self._team_scan_times={}
+            self.scan()
         return {'configuration': config}
 
     def run_group(self, run, config=None):
@@ -346,11 +324,11 @@ class Communication:
                 continue
             for agent in peer['agents']:
                 rows.append(dict(agent, group_id=peer['group_id'], location='group',
-                                 online=time.time() - peer['seen_at'] < config['offline_seconds']))
+                                 online=time.time() - peer['seen_at'] < max(config['offline_seconds'],180 if group.get('transport')=='feishu_base' else 0)))
         loops=[dict(ref,group_id=peer['group_id']) for peer in peers if (not group_id or peer['group_id']==group_id) and config['groups'].get(peer['group_id'],{}).get('enabled') for ref in peer.get('loops',[])]
         return {'self': self.self_info(), 'instance_id': config['instance_id'],
                 'identity_conflict':self.identity_conflict, 'identity_error':self.identity_error, 'agents': rows, 'loops':loops,
-                'groups': [{k: v for k, v in g.items() if k != 'path'} for g in config['groups'].values()]}
+                'default_team':config.get('default_team'), 'groups': [{k: v for k, v in g.items() if k not in ('path','lark_cli')} for g in config['groups'].values()]}
 
     def public_agent(self, agent, config, location, group_id=None, freeze=False):
         running = self.agent_load(agent['id'])
@@ -387,7 +365,8 @@ class Communication:
         if a.get('collaboration_id') and (source.get('run_id') or a.get('_parent_request')):
             raise Invalid('A scoped request already belongs to its source; do not also pass collaboration_id')
         source_summary={}
-        group_id = a.get('group_id')
+        continuing_node=False
+        group_id = a.get('group_id') or config.get('default_team')
         if a.get('collaboration_id') and not source.get('run_id'):
             collaboration_run=self.store.get(a['collaboration_id'])
             if not collaboration_run.get('collaboration'):raise Invalid('Unknown standalone collaboration')
@@ -410,7 +389,10 @@ class Communication:
             bound = self.run_group(run)
             if a.get('location', 'local') == 'group':
                 continuing_node=bool(node and continuation_from and continuation_from.get('kind')=='node_execution' and
-                    all(continuation_from['source'].get(k)==source.get(k) for k in ('run_id','task_id')) and group_id==continuation_from.get('group_id'))
+                    all(continuation_from['source'].get(k)==source.get(k) for k in ('run_id','task_id')) and group_id==continuation_from.get('group_id') and
+                    a.get('agent_id')==continuation_from.get('agent_id') and a.get('instance_id')==continuation_from.get('executor') and
+                    a.get('session')==dict(mode='resume',request_id=continuation_from['id'],instance_id=continuation_from['executor'],
+                                          native_id=continuation_from.get('native_session',{}).get('id')))
                 if group_id and group_id != bound and not continuing_node:
                     raise Conflict('The request must use the Run communication group')
                 if not continuing_node:group_id = bound
@@ -426,12 +408,25 @@ class Communication:
             scope_group_id=parent.get('scope_group_id',parent.get('group_id'))
         if location not in ('local', 'group'):
             raise Invalid('Choose local or group')
-        if location=='group' and not (a.get('agent_id') or a.get('capability')):raise Invalid('Choose a named Agent or capability for the selected group')
+        if location=='local' and a.get('agent_name'):
+            from loop_anything.runtime.dispatch import choose
+            target=choose([x for x in self.directory()['agents'] if x['location']=='local'],
+                          a.get('agent_id'),config['instance_id'],a.get('capability'),a['agent_name'])
+            a=dict(a,agent_id=target['id'])
+        if location=='group' and not (a.get('agent_id') or a.get('agent_name') or a.get('capability')):raise Invalid('Choose a named Agent or capability for the selected group')
         if location == 'group' and group_id not in config['groups']:
             raise Invalid('Choose one joined group; requests are never broadcast across groups')
-        if location=='group' and a.get('agent_id') and not a.get('instance_id'):
+        if location=='group' and not continuing_node and a.get('agent_id') and not a.get('instance_id'):
             instances={x['instance_id'] for x in self.directory(group_id)['agents'] if x['location']=='group' and x['id']==a['agent_id']}
             if len(instances)>1:raise Invalid('Agent ID appears on multiple instances; specify instance_id')
+        if location=='group' and not continuing_node:
+            from loop_anything.runtime.team_transport import transport
+            from loop_anything.runtime.dispatch import choose
+            # A retained directory entry can be addressed offline; unknown IDs are never invented.
+            candidates=[agent for _,peer in transport(self,config['groups'][group_id]).list('members') for agent in peer.get('agents',[])]
+            candidates += [self.public_agent(agent,config,'group',group_id) for agent in config['agents'].values() if group_id in agent.get('groups',[])]
+            target=choose(candidates,a.get('agent_id'),a.get('instance_id'),a.get('capability'),a.get('agent_name'))
+            a=dict(a,agent_id=target['id'],instance_id=target['instance_id'])
         schema = a.get('result_schema', {'type': 'object'})
         check_schema(schema)
         if not isinstance(a.get('message'), str) or not a['message'].strip():
@@ -513,7 +508,7 @@ class Communication:
         with self.transaction() as db:
             if db.execute('SELECT 1 FROM communication_requests WHERE id=?', (ident,)).fetchone():
                 old = self.get(ident, db)
-                if (old['source'], old['kind'], old['message']) != (source, request['kind'], request['message']):
+                if any(old.get(k)!=request.get(k) for k in ('source','kind','message','context','location','group_id','agent_id','session','result_schema')) or (request.get('target_instance') and old.get('target_instance')!=request['target_instance']):
                     raise Conflict('Request ID already exists with different work')
                 return {'request': request_summary(old), 'request_token': old['access_token']}
             if standalone:
@@ -543,7 +538,10 @@ class Communication:
                     self.assign(request,config['instance_id'],local['id'])
                     request.update(accepted_at=time.time(),launch=copy.deepcopy(local['implementation']))
                     request.update(agent_label=local['name'],executor_name=config['name'])
-                else:self.emit(db, request, 'broadcast', 'offer', clean(request))
+                else:
+                    from loop_anything.runtime.team_transport import prepare_dispatch
+                    prepare_dispatch(request,a['instance_id'],a['agent_id'])
+                    self.emit(db,request,request['executor'],'dispatch',clean(request))
             self.save(db, request)
         return {'request': request_summary(request), 'request_token': request['access_token']}
 
@@ -554,7 +552,7 @@ class Communication:
                     (not group_id or group_id in confirmation.get('groups',[])))
 
     def eligible(self, agent, request, config):
-        return (agent.get('enabled', True) and
+        return (agent.get('enabled', True) and bool(agent.get('description','').strip()) and
                 (not request.get('target_instance') or request['target_instance']==config['instance_id']) and
                 (not request.get('agent_id') or request['agent_id'] == agent['id']) and
                 (not request.get('capability') or request['capability'] in agent.get('capabilities', [])) and
@@ -574,7 +572,9 @@ class Communication:
         return old
 
     def assign(self, request, instance, agent):
-        request.update(executor=instance, agent_id=agent, assignment_id=uid('assignment'), state='assigned')
+        from loop_anything.runtime.team_transport import prepare_dispatch
+        prepare_dispatch(request,instance,agent)
+        request['state']='assigned'
         self.event(request, 'assigned', {'agent_id': agent, 'instance_id': instance})
 
     def emit(self, db, request, target, kind, payload):
@@ -609,6 +609,16 @@ class Communication:
             attempt=next(e for e in run['executions'] if e['id']==request['source']['execution_id'])
             result['business_outputs']=copy.deepcopy(attempt.get('outputs',{}))
         if include_logs:
+            if request.get('output_source')=='native_session':
+                result.update(logs=[],log_cursor=after,log_offset=0,log_more=False,logs_source='native_session',
+                              logs_hint='执行过程保存在原机器的 Agent session；请使用已记录的 session 恢复查看。')
+                return {'request':result}
+            config=self.settings()
+            if (mutable and request.get('executor') and request['executor']!=config['instance_id'] and
+                request.get('group_id') in config['groups']):
+                from loop_anything.runtime.dispatch import read_remote_logs
+                result.update(read_remote_logs(self,request,after,offset,max_chars))
+                return {'request':result}
             with self.store.connection() as db:
                 local=self.engine and request.get('executor') == self.settings()['instance_id']
                 terminal=db.execute('SELECT id FROM execution_sessions WHERE run_id=? AND execution_id=? ORDER BY rowid DESC LIMIT 1',('',ident)).fetchone() if local else None
@@ -744,7 +754,7 @@ class Communication:
             if row['origin'] == config['instance_id'] and row.get('executor') not in (None,config['instance_id']) and row['state'] in ('assigned','starting','running','unknown','cancelling'):
                 with self.store.connection() as db:
                     peer = db.execute('SELECT document FROM communication_peers WHERE id=?',(row['group_id']+':'+row['executor'],)).fetchone()
-                online = peer and time.time()-json.loads(peer[0])['seen_at'] < config['offline_seconds']
+                online = peer and time.time()-json.loads(peer[0])['seen_at'] < max(config['offline_seconds'],180 if config['groups'].get(row['group_id'],{}).get('transport')=='feishu_base' else 0)
                 with self.transaction() as db:
                     current=self.get(row['id'],db)
                     if not online and current['state']!='unknown':
@@ -758,7 +768,8 @@ class Communication:
                 with self.transaction() as db:
                     current = self.get(row['id'], db)
                     if current['state'] == 'pending':
-                        current['state'] = 'unavailable'
+                        current['state'] = 'unknown' if current.get('protocol')=='direct-v1' else 'unavailable'
+                        if current.get('protocol')=='direct-v1':current['error']='Acceptance not yet observed; inspect receiver status before retrying'
                         retire_messages(db, "json_extract(document,'$.request_id')=? AND json_extract(document,'$.kind')='offer'", (row['id'],))
                         self.event(current, 'unavailable', {'message': 'No Agent accepted before the deadline'})
                         self.save(db, current)
@@ -936,6 +947,11 @@ class Communication:
                     self.store.log(current,'assistance_ready','Assistance wait ended; continue this task',e['id'])
 
     def scan(self):
+        if not self.scan_lock.acquire(blocking=False):return
+        try:self._scan()
+        finally:self.scan_lock.release()
+
+    def _scan(self):
         if self.identity_conflict:return
         config = self.settings()
         now = time.time()
@@ -944,17 +960,24 @@ class Communication:
         self.last_scan = now
         self.transport_error = None
         for gid, group in config['groups'].items():
-            root = Path(group['path'])
+            from loop_anything.runtime.team_transport import transport
+            media=transport(self,group)
+            scans=getattr(self,'_team_scan_times',{})
+            if group.get('transport')=='feishu_base' and now-scans.get(gid,0)<media.interval:continue
+            scans[gid]=now;self._team_scan_times=scans
             try:
-                if not root.is_dir() or json.loads((root / 'group.json').read_text()).get('id') != gid:
+                root = Path(group['path']) if group.get('transport')!='feishu_base' else None
+                if root is not None and (not root.is_dir() or media.get('group.json').get('id') != gid):
                     raise Invalid('Group mount missing or identity changed')
-                from loop_anything.runtime.communication_archive import reconcile_legacy, drain
-                reconcile_legacy(self, root, gid, config['instance_id'])
-                drain(self, root, gid)
+                from loop_anything.runtime.communication_archive import reconcile_legacy, drain, drain_media
+                if root is not None:
+                    reconcile_legacy(self, root, gid, config['instance_id'])
+                    drain(self, root, gid)
+                else:drain_media(self,media,gid)
                 from loop_anything.runtime.communication_notifications import refresh
                 refresh(self,gid,group)
-                me = root / 'members' / (config['instance_id'] + '.json')
-                if not me.exists() or now - me.stat().st_mtime >= config['heartbeat_seconds']:
+                heartbeats=getattr(self,'_team_heartbeats',{})
+                if (root is not None and not (root/'members'/(config['instance_id']+'.json')).exists()) or now-heartbeats.get(gid,0)>=max(config['heartbeat_seconds'],media.heartbeat_seconds):
                     agents = [self.public_agent(a, config, 'group', gid, freeze=True) for a in config['agents'].values()
                               if group['enabled'] and gid in a.get('groups', [])]
                     loops=[]
@@ -965,10 +988,10 @@ class Communication:
                         for run in self.store.list():
                             if config['loop_groups'].get('run:'+run['id'],run.get('communication_group'))==gid:
                                 loops.append({'instance_id':config['instance_id'],'loop_key':run['loop_key'],'name':run['loop_definition'].get('name',run['loop_key']),'run_id':run['id'],'title':run['title']})
-                    atomic_json(me, {'instance_id': config['instance_id'], **self.self_info(), 'revision': uid('heartbeat'), 'agents': agents,'loops':loops})
-                for peerpath in (root / 'members').glob('*.json'):
+                    media.put('members/'+config['instance_id']+'.json', {'instance_id': config['instance_id'], **self.self_info(), 'revision': uid('heartbeat'), 'updated_at':now, 'agents': agents,'loops':loops})
+                    heartbeats[gid]=now;self._team_heartbeats=heartbeats
+                for _,peer in media.list('members'):
                     try:
-                        peer = json.loads(peerpath.read_text())
                         identifier(peer['instance_id'])
                         if not isinstance(peer.get('agents'),list) or not isinstance(peer.get('revision'),str):continue
                         if not isinstance(peer.get('loops',[]),list) or any(not isinstance(x,dict) for x in peer.get('loops',[])):continue
@@ -990,34 +1013,44 @@ class Communication:
                         # while this scan was publishing an earlier one.
                         with self.store.connection() as db:
                             if not db.execute('SELECT 1 FROM communication_outbox WHERE id=?', (mid,)).fetchone():continue
-                        publish_message(root / 'messages' / identifier(message['target']) / (mid + '.json'), message)
+                        media.put('messages/'+identifier(message['target'])+'/'+mid+'.json', message, immutable=True)
                         with self.transaction() as db:
                             db.execute('UPDATE communication_outbox SET sent=? WHERE id=?', (now, mid))
                 for target in ('broadcast', config['instance_id']):
-                    for file in (root / 'messages' / target).glob('*.json'):
-                        try:
-                            message = read_message(file)
-                            if not isinstance(message,dict):continue
-                        except (OSError,ValueError):continue
+                    incoming=[item for item in media.list('messages/'+target) if isinstance(item[1],dict)]
+                    incoming.sort(key=lambda item: (item[1].get('kind')!='dispatch',item[1].get('at',0)))
+                    for filename,message in incoming:
+                        if not isinstance(message,dict):continue
                         if message.get('group_id') != gid or message.get('version') != 1 or message.get('target') != target:
                             continue
                         try:
                             self.receive(message)
                         except (Invalid, Conflict, KeyError, TypeError, ValueError) as exc:
                             with self.transaction() as db:
-                                inserted=db.execute('INSERT OR IGNORE INTO communication_inbox VALUES (?,?)', (message.get('id', file.stem), json.dumps({'rejected': str(exc),'message':message,'request_id':message.get('request_id'),'at':time.time()})))
+                                inserted=db.execute('INSERT OR IGNORE INTO communication_inbox VALUES (?,?)', (message.get('id', filename.removesuffix('.json')), json.dumps(received(message,rejected=str(exc)))))
                                 if inserted.rowcount and message.get('kind') not in ('ack','rejected'):
                                     try:row=self.get(message['request_id'],db)
                                     except (Invalid,KeyError):row=None
                                     if row and message.get('sender') in (row['origin'],row.get('executor')) and message.get('assignment_id')==row.get('assignment_id'):
                                         self.emit(db,row,message['sender'],'rejected',{'message_id':message['id'],'error':str(exc)})
-                drain(self, root, gid)
+                from loop_anything.runtime.dispatch import publish_results
+                publish_results(self,media,gid)
+                if root is not None:drain(self, root, gid)
+                else:
+                    drain_media(self,media,gid)
+                    media.retry_cleanup()
+                    if media.cleanup_error:self.transport_error = 'Cloud history update pending: '+media.cleanup_error
             except (OSError, ValueError, Invalid) as exc:
                 self.transport_error = str(exc)
 
     def receive(self, msg):
+        if msg.get('kind')=='dispatch':
+            from loop_anything.runtime.dispatch import accept
+            return accept(self,msg)
         with self.transaction() as db:
             config = self.settings(db)
+            if msg.get('kind') in ('cancel','input') and not db.execute('SELECT 1 FROM communication_requests WHERE id=?',(msg['request_id'],)).fetchone():
+                return  # The publication may still be uploading; leave this command pending.
             if msg['sender'] == config['instance_id']:
                 return
             identifier(msg['id']); identifier(msg['sender'])
@@ -1025,10 +1058,12 @@ class Communication:
             old = db.execute('SELECT document FROM communication_inbox WHERE id=?', (msg['id'],)).fetchone()
             if old:
                 previous=json.loads(old[0])
-                if previous.get('rejected') and previous.get('message')==msg:return
-                if previous != msg:
+                if previous.get('rejected') and message_matches(previous,msg):return
+                if not message_matches(previous,msg):
                     raise Conflict('Message ID reused with different content')
                 if msg['kind'] == 'ack':archive_message(db, msg)
+                if msg['kind'] in ('cancel','input','result_read') and self.get(msg['request_id'],db).get('dispatch_client'):
+                    archive_message(db,msg);return
                 if msg['kind'] != 'ack' and msg['target'] != 'broadcast':
                     # A lost receipt must be reproducible without repeating its business effect.
                     self.emit(db, {'id':msg['request_id'],'group_id':msg['group_id'],'assignment_id':msg.get('assignment_id')},msg['sender'],'ack',{'message_id':msg['id']})
@@ -1060,6 +1095,7 @@ class Communication:
                 if row['group_id'] != gid:
                     raise Invalid('Wrong request group')
                 if kind == 'claim':
+                    if row.get('protocol')=='direct-v1':raise Invalid('Direct dispatch is already addressed; no claim/grant negotiation')
                     if row['origin']==config['instance_id'] and row['state']=='pending' and row.get('agent_id') and not row.get('target_instance'):
                         peers=[json.loads(r[0]) for r in db.execute('SELECT document FROM communication_peers')]
                         matches={p['instance_id'] for p in peers if p['group_id']==gid and any(a['id']==row['agent_id'] for a in p['agents'])}
@@ -1077,13 +1113,14 @@ class Communication:
                             self.event(row,'claim_not_selected',dict(decision,claimant=msg['sender']))
                             self.save(db,row)
                             self.emit(db,row,msg['sender'],'not_selected',decision)
-                            db.execute('INSERT INTO communication_inbox VALUES (?,?)',(msg['id'],json.dumps(msg)))
+                            db.execute('INSERT INTO communication_inbox VALUES (?,?)',(msg['id'],json.dumps(received(msg))))
                             self.emit(db,row,msg['sender'],'ack',{'message_id':msg['id']})
                         return
                     if row.get('target_instance') and row['target_instance'] != msg['sender']:raise Invalid('Claim from wrong instance')
                     if row.get('agent_id') and row['agent_id'] != payload['agent_id']:
                         raise Invalid('Claim does not match requested Agent')
                     self.assign(row, msg['sender'], identifier(payload['agent_id']))
+                    row.pop('protocol',None)  # A legacy claim remains a legacy grant exchange.
                     row.update(agent_label=payload.get('agent_label',row['agent_id']),executor_name=payload.get('executor_name',msg['sender']))
                     self.emit(db, row, msg['sender'], 'grant', {'agent_id': row['agent_id']})
                     # Stop repeatedly broadcasting an assigned offer.
@@ -1111,6 +1148,9 @@ class Communication:
                     if kind=='rejected' and msg['sender'] in (row['origin'],row.get('executor')):
                         self.event(row,'communication_rejected',payload)
                         acknowledge(db, msg)
+                    elif kind in ('logs_request','logs_response','result_read'):
+                        from loop_anything.runtime.dispatch import receive_read
+                        receive_read(self,db,row,msg)
                     elif kind in ('progress', 'rpc'):
                         if msg['sender'] != row.get('executor') or row['origin'] != config['instance_id']:
                             raise Conflict('Report is not from the assigned executor')
@@ -1135,7 +1175,7 @@ class Communication:
                                 if payload['state'] == 'completed':
                                     contract(payload['result'], row['result_schema'], 'Remote result')
                                 row.pop('state_before_disconnect',None)
-                                row.update({k: payload[k] for k in ('state', 'result', 'error', 'native_session') if k in payload})
+                                row.update({k: payload[k] for k in ('state', 'result', 'error', 'native_session','output_source') if k in payload})
                                 if row.get('cancel_requested') and row['state'] not in END | {'unknown'}:row['state']='cancelling'
                                 if payload.get('progress'):row['progress']=payload['progress']
                                 self.event(row, 'remote_' + row['state'])
@@ -1154,8 +1194,10 @@ class Communication:
                     else:
                         raise Invalid('Unknown message or sender')
                 self.save(db, row)
-            db.execute('INSERT INTO communication_inbox VALUES (?,?)', (msg['id'], json.dumps(msg)))
-            if kind != 'ack' and msg['target'] != 'broadcast':
+            db.execute('INSERT INTO communication_inbox VALUES (?,?)', (msg['id'], json.dumps(received(msg))))
+            if kind in ('cancel','input','result_read') and row.get('dispatch_client'):
+                archive_message(db,msg)
+            elif kind != 'ack' and msg['target'] != 'broadcast':
                 self.emit(db, {'id': msg['request_id'], 'group_id': gid, 'assignment_id': msg.get('assignment_id')}, msg['sender'], 'ack', {'message_id': msg['id']})
 
     def launch(self, ident):
@@ -1214,7 +1256,8 @@ class Communication:
         from loop_anything.paths import platform_skill_directory
         row = self.get(ident)
         session = self.engine.terminals.create('', ident, row['terminal_id'], row['launch'].get('terminal', False),
-                                              [row['worker_token']], {'owner_type': 'communication', 'request_id': ident,'native_session':row.get('native_session')})
+                                              [row['worker_token']], {'owner_type': 'communication', 'request_id': ident,'native_session':row.get('native_session'),
+                                              'native_history':bool(row['launch'].get('resume_command')) or provider_for(row['launch']) in ('codex','claude')})
         session.check = lambda: 'revoked' if self.get(ident)['state'] == 'cancelling' or row['session']['mode']=='resume' and session.doc.get('native_session_error') else 'finished' if self.get(ident).get('worker_finished') else None
         def native(provider, native_id):
             with self.transaction() as db:
@@ -1244,6 +1287,7 @@ class Communication:
         context['platform_url']=base+'/communication/'+ident+'/'+row['worker_token']
         context['platform_client']=str(platform_skill_directory()/'scripts/call.py')
         context['platform_guide']=str(platform_skill_directory()/'references/communication.md')
+        context['dispatch_skill']=str(platform_skill_directory().parent/'loop-anything-dispatch/SKILL.md')
         context.update(row['source'])
         context['self'] = self.self_info()
         if row.get('collaboration'):context['collaboration']=copy.deepcopy(row['collaboration'])
@@ -1255,11 +1299,12 @@ class Communication:
         prompt = ('You are executing a named Agent request. Use the supplied client to report progress and structured results; '
                   'When assistance_resume is present, continue the exact saved CLI session and use assistance_results. All earlier platform tokens are obsolete; use only this fresh context. '
                   'read_assistance defaults to compact status and results; request include_logs only for diagnosis, then advance after/offset from log_cursor/log_offset within max_chars. Do not replay full logs or request histories. '
+                  'For files and large answers, use shared NAS references only when both parties can access them; otherwise use Feishu attachments or accessible cloud links. Ordinary replies can be submitted inline. Preserve complete artifacts; include their purpose and shared-relative path when mounts differ. Use Feishu attachments when shared access is unavailable or a cloud copy is requested; see dispatch_skill references/artifacts.md. '
                   'your final chat text is not a result. The client accepts --context FILE, or --url URL --request ID --token TOKEN, '
                   'then TOOL --arguments JSON. For assistance call complete with {"result":...}. For node_execution call '
                   'the source read_task/report_task/finish tools using source_call {"tool":...,"arguments":...}; '
                   'then call complete with {"result":{}} after source finish is accepted. Read source context only as authorized. '
-                  'For optional help on this executor, call communication_status/request_assistance/read_assistance directly on this client. These use the executor local directory or this request group. Source calls return a call handle: only state=completed confirms acceptance; poll source_result if pending. '
+                  'The dispatch_skill exposes the shared lightweight publishing protocol. For optional help on this executor, call communication_status/request_assistance/read_assistance through this scoped client. These use the executor local directory or this request group. Source calls return a call handle: only state=completed confirms acceptance; poll source_result if pending. '
                   'For a node waiting on assistance, call source wait_assistance with task_id/request_ids/seconds, then source finish and complete with an empty result. The platform continues the same Task with replies; do not keep a CLI occupied just to poll. '
                   'read_context reads associated Loop/task context without granting writes, including for assistance; it may return a pending call handle. '
                   'The self field identifies this executor machine and workspace, not the source platform; instance_id routing uses workspace_id. '
@@ -1300,6 +1345,7 @@ class Communication:
                     current.update(state='completed', result=current.pop('pending_result'))
                 else:
                     current.update(state='failed', error=error)
+                current['output_source']=session.doc.get('output_source','platform')
                 self.event(current, current['state'])
                 self.save(db, current)
             self.live.pop(ident, None)
@@ -1416,7 +1462,7 @@ class Communication:
                     raise Conflict('Call ID already used')
                 return {'call': clean(previous)}
             row['rpc'][call['id']] = call
-            if row['origin'] != self.settings(db)['instance_id']:
+            if row['origin'] != self.settings(db)['instance_id'] and not row.get('dispatch_client'):
                 self.emit(db, row, row['origin'], 'rpc', call)
             self.save(db, row)
         return {'call': call}
@@ -1474,7 +1520,7 @@ class Communication:
 
     def process_rpcs(self):
         for row in self.requests():
-            if row.get('mirror') or row['origin'] != self.settings()['instance_id']:
+            if row.get('mirror') or (row['origin'] != self.settings()['instance_id'] and not row.get('dispatch_client')):
                 continue
             for call in list(row.get('rpc', {}).values()):
                 if call['state']=='awaiting_context':
@@ -1549,7 +1595,7 @@ class Communication:
         with self.transaction() as db:
             current=self.get(row['id'],db)
             current['rpc'][call_id]=answer
-            if current.get('executor')!=current['origin']:
+            if current.get('executor')!=self.settings(db)['instance_id']:
                 try:self.emit(db,current,current['executor'],'rpc_result',answer)
                 except Invalid as exc:
                     answer={k:v for k,v in answer.items() if k!='result'}
@@ -1559,21 +1605,29 @@ class Communication:
 
     def send_progress(self, ident):
         row = self.get(ident)
-        if row.get('executor') == row['origin'] or not row.get('assignment_id'):
+        if row.get('dispatch_client') or row.get('executor') == row['origin'] or not row.get('assignment_id'):
             return
-        terminal = self.engine.terminals.read('', ident, after=row.get('log_cursor',0))
+        compact=self.settings()['groups'].get(row.get('group_id'),{}).get('transport')=='feishu_base'
+        native=row.get('native_session') or {}
+        session_history=native.get('id') and (native.get('provider') in ('codex','claude') or row.get('launch',{}).get('resume_command')) and row.get('output_source')!='platform'
+        terminal = {} if compact or session_history else self.engine.terminals.read('', ident, after=row.get('log_cursor',0))
         with self.transaction() as db:
             row = self.get(ident, db)
-            payload = {k: row[k] for k in ('state', 'result', 'error', 'native_session','progress') if k in row}
+            payload = {k: row[k] for k in ('state', 'result', 'error', 'native_session','progress','output_source') if k in row}
             payload['children']=self.child_views(ident,db)
+            if compact:
+                for child in payload['children']:child.pop('history',None)
             payload['logs'] = terminal.get('output', [])
             row['log_cursor'] = terminal.get('cursor',row.get('log_cursor',0))
-            fingerprint = json.dumps(payload, sort_keys=True)
+            fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
             if row.get('last_sent') == fingerprint:
                 return
             row['last_sent'] = fingerprint
             row['sequence'] = row.get('sequence', 0) + 1
             payload['sequence'] = row['sequence']
+            if compact:
+                # Replace only unpublished snapshots; delivered states await their own ACK.
+                db.execute("DELETE FROM communication_outbox WHERE sent=0 AND json_extract(document,'$.request_id')=? AND json_extract(document,'$.kind')='progress'",(row['id'],))
             self.emit(db, row, row['origin'], 'progress', payload)
             self.save(db, row)
 

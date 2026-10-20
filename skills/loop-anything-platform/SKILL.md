@@ -1,6 +1,6 @@
 ---
 name: loop-anything-platform
-description: 用于将已有 Skill 转成 Loop，以及构建、编辑、测试调试和运行 Loop / 工作流，编排多步骤或多轮持续任务，查询进度与结果、暂停或恢复已有运行，以及等待训练等外部结果后继续。用户要跟远端或其他机器上的 Agent 通信、向本机或远端具名 Agent 求助、给 Agent 发布或委派任务、让另一台机器执行工作、查询协作结果或配置多机协作时，也应优先使用本 Skill。无需用户提到 Loop Anything；一次性远端求助或没有现成 Loop 同样触发。先发现平台已有能力、Loop、运行和成员，再按需复用或构建；无需工作流或协作的一次性问答和本地修改可直接完成。
+description: 用于将已有 Skill 转成 Loop，以及构建、编辑、测试调试和运行 Loop / 工作流，编排多步骤或多轮持续任务，查询进度与结果、暂停或恢复已有运行，以及等待训练等外部结果后继续。配置接单机器、具名 Agent 或团队连接时也使用本 Skill。单独给远端或本机具名 Agent 派任务、求助、查询结果与追问，使用独立的 loop-anything-dispatch Skill；Loop 节点同样复用它，并保留已有运行身份与等待恢复。先发现已有能力、Loop 和运行再复用或构建；无需工作流或协作的一次性问答和本地修改可直接完成。
 metadata:
   provider: loop-anything-platform
 ---
@@ -14,10 +14,10 @@ metadata:
 | 构建、编辑、测试或调试 Loop / 工作流 | 先查已有 Loop 和平台能力，按构建手册复用、编辑并验证；需要执行时再启动 Run | [构建](references/build.md)、[验收](references/testing.md)、[运行](references/run.md) |
 | 将已有 Skill 转成 Loop | 流程 Agent 完整读取 Loop 说明处理不确定推进，确定动作和等待交给平台，保留运行记录 | [流程 Agent](references/flow-agent.md) |
 | 多轮工作、依赖步骤、等待训练或其他外部结果后继续 | 查 `list_loops`、`list_runs`，复用已有工作；确需新流程再构建 | [构建](references/build.md)、[运行](references/run.md) |
-| 跟远端 Agent 通信、求助、发布任务，或请本机具名 Agent 帮忙 | `communication_status` 发现可调用成员，再 `request_assistance`；无需先登记自己的 session 或成为接单成员 | [通信](references/communication.md) |
+| 跟远端 Agent 通信、求助、发布任务，或请本机具名 Agent 帮忙 | 使用独立 `loop-anything-dispatch` Skill；托管节点沿用限定入口和运行身份 | [通信](references/communication.md) |
 | 独立会话需要等待外援后自动续跑 | `start_collaboration` 接入真实原 session/当前 Agent PID/恢复命令，或启动本机具名协调 Agent；再使用 `wait_assistance` | [通信](references/communication.md#独立协作内置-loop) |
 | 看进度、取结果、继续之前的工作 | 用已有 Run/请求 ID 查状态；有任务令牌就沿用，不重复创建 | [运行](references/run.md)、[通信](references/communication.md) |
-| 首次建立多机协作 | 配置共享空间，加入群组；先询问用户主要任务，再确认具名 Agent 的说明和开放范围 | [组网](references/communication.md#首次组网共享空间--群组--具名-agent) |
+| 首次建立多机协作 | `communication_config(operation=team,link=...)` 接入团队；先询问用户主要任务，再配置本机接单 Agent | [组网](references/communication.md#首次组网共享空间--群组--具名-agent) |
 
 普通飞书/终端入口没有 `execution_id` 是正常的；不要遍历其他 Run 寻找登记目标。求援、原会话续跑与已有执行登记的区别见[入口 Agent 与 session 登记](references/communication.md#入口-agent-与-session-登记)。
 

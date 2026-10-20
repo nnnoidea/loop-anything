@@ -12,7 +12,8 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
-WORKER = '''import json,sys,time
+WORKER = '''import json,sys,time,subprocess
+from pathlib import Path
 from urllib.request import Request,urlopen
 c=json.loads((sys.argv[1] if len(sys.argv)>1 else sys.stdin.read()).split("\\n",1)[1])
 with urlopen(c["platform_url"]+"/api/tools",timeout=10) as f: catalog=json.load(f)
@@ -25,6 +26,10 @@ def call(tool,a):
  with urlopen(r,timeout=10) as f: result=json.load(f)
  assert result.get("ok"),result
  return result
+client=Path(c['dispatch_skill']).parent/'scripts/dispatch.py'
+probe=subprocess.run([sys.executable,str(client),'agents','--tool-url',c['platform_url']],capture_output=True,text=True)
+assert probe.returncode==0,(probe.stdout,probe.stderr)
+assert json.loads(probe.stdout)['self']==c['self']
 print("执行进度：正在检查",flush=True)
 identity=call("communication_status",{})
 assert identity["self"]==c["self"],identity
@@ -95,8 +100,8 @@ class CommunicationHTTPTests(unittest.TestCase):
                 self.assertNotIn('command',json.dumps(public))
                 self.assertNotIn(str(root/'nas'),json.dumps(public))
                 # The client carries origin metadata even without cc-connect on either side.
-                client=Path(__file__).resolve().parents[1]/'skills/loop-anything-platform/scripts/call.py'
-                response=subprocess.run([sys.executable,str(client),'request_assistance','--url',urls[1],'--arguments',json.dumps({'location':'local','agent_id':'papers','message':'works without notification bridge'})],
+                client=Path(__file__).resolve().parents[1]/'skills/loop-anything-dispatch/scripts/dispatch.py'
+                response=subprocess.run([sys.executable,str(client),'submit','--platform-url',urls[1],'--arguments',json.dumps({'location':'local','agent_id':'papers','message':'works without notification bridge'})],
                     env=dict(os.environ,PATH='',CC_PROJECT='entrance',CC_SESSION_KEY='feishu:oc_isolated:root:om_isolated'),capture_output=True,text=True,timeout=10)
                 self.assertEqual(response.returncode,0,response.stderr);accepted=json.loads(response.stdout);self.assertTrue(accepted['ok'])
                 rid=accepted['request']['id']

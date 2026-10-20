@@ -152,9 +152,40 @@ class Session:
             self.output_tail = (self.output_tail + text)[-65536:]
             self.sequence += 1
             with self.manager.store.connection() as db:
-                db.execute('INSERT INTO execution_output VALUES (?,?,?)', (self.doc['id'], self.sequence, text))
+                native=self.has_native_history()
+                db.execute('INSERT INTO execution_output VALUES (?,?,?)', (self.doc['id'], self.sequence, text[-8192:] if native else text))
+                if native:
+                    # Keep a live reconnect tail, not a second copy of the CLI conversation.
+                    db.execute('DELETE FROM execution_output WHERE session_id=? AND sequence<=?',(self.doc['id'],self.sequence-8))
                 db.commit()
         return text
+
+    def has_native_history(self):
+        native=self.doc.get('native_session') or {}
+        return bool(native.get('id') and (native.get('provider') in ('codex','claude') or self.doc.get('native_history')))
+
+    def finish_recording(self):
+        # Explicit tool registration can happen after the process was launched.
+        with self.manager.store.connection() as db:
+            saved=db.execute('SELECT document FROM execution_sessions WHERE id=?',(self.doc['id'],)).fetchone()
+        if saved:
+            native=json.loads(saved[0]).get('native_session')
+            if native:self.doc['native_session']=native
+        if self.doc['run_id']:
+            try:
+                run=self.manager.store.get(self.doc['run_id'])
+                attempt=next(e for e in run['executions'] if e['id']==self.doc['execution_id'])
+                if attempt.get('native_session'):self.doc['native_session']=attempt['native_session']
+            except (Invalid,StopIteration):pass
+        if (self.has_native_history() and not self.doc.get('native_session_error') and
+                self.doc['state']=='exited' and self.doc.get('returncode')==0):
+            with self.manager.store.connection() as db:
+                db.execute('DELETE FROM execution_output WHERE session_id=?',(self.doc['id'],));db.commit()
+            self.doc['output_source']='native_session'
+            if self.doc['run_id']:
+                with self.manager.store.edit(self.doc['run_id']) as run:
+                    attempt=next(e for e in run['executions'] if e['id']==self.doc['execution_id'])
+                    attempt.pop('prompt_text',None)
 
     def writable(self):
         return self.doc['interactive'] and self.master is not None and self.process is not None and self.process.poll() is None and (not self.check or self.check() is None)
@@ -316,4 +347,5 @@ class Session:
                     if stream:
                         stream.close()
             self.doc['ended_at'] = time.time()
+            self.finish_recording()
             self.save()

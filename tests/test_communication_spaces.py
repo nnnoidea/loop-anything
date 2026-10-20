@@ -36,7 +36,7 @@ class SharedSpaceTests(unittest.TestCase):
         self.b.config('group',space_id=sid,relative_path=g['relative_path'],group_id=g['id'])
         self.assertEqual(self.b.settings()['agents'],{})
         implementation={'kind':'agent','command':[sys.executable,'-c','print("local-secret-command")']}
-        self.b.config('agent',agent_id='papers',agent={'name':'Paper Agent','groups':[],'implementation':implementation})
+        self.b.config('agent',agent_id='papers',agent={'name':'Paper Agent','description':'Find research papers','groups':[],'implementation':implementation})
         self.b.scan();self.a.scan()
         self.assertEqual(self.a.directory()['agents'],[])
         self.b.config('agent',agent_id='papers',agent={'groups':[g['id']], 'description':'Find research papers'},task_confirmed=True)

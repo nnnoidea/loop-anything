@@ -49,6 +49,28 @@ class TerminalTests(unittest.TestCase):
     def text(self, ident=None):
         return ''.join(r['text'] for r in self.sessions.read('run', 'attempt', ident)['output'])
 
+    def test_native_session_keeps_live_tail_then_only_identity_after_success(self):
+        session=self.sessions.create('', 'native-attempt','native',metadata={
+            'native_session':{'provider':'custom','id':'recorded-session','cwd':self.tmp.name},'native_history':True})
+        for i in range(20):session.append('stdout','chunk-'+str(i)+'\n')
+        with self.store.connection() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM execution_output WHERE session_id=?',('native',)).fetchone()[0],8)
+        result=run_command([sys.executable,'-c','print(\"done\")'],'',10,None,self.stop,session)
+        self.assertEqual(result.returncode,0)
+        saved=self.sessions.read('','native-attempt')
+        self.assertEqual(saved['output'],[])
+        self.assertEqual(saved['session']['native_session']['id'],'recorded-session')
+        self.assertEqual(saved['session']['output_source'],'native_session')
+
+    def test_custom_session_without_resume_keeps_diagnostics(self):
+        session=self.sessions.create('', 'custom-attempt','custom',metadata={
+            'native_session':{'provider':'custom','id':'custom-id'}})
+        result=run_command([sys.executable,'-c','print("diagnostic output")'],'',10,None,self.stop,session)
+        self.assertEqual(result.returncode,0)
+        saved=self.sessions.read('','custom-attempt')
+        self.assertIn('diagnostic output',str(saved['output']))
+        self.assertNotIn('output_source',saved['session'])
+
     def test_live_pipe_output_before_exit_cursor_stderr_and_history(self):
         release = Path(self.tmp.name) / 'release'
         code = "import sys,time;from pathlib import Path;assert sys.stdin.read()=='hello';print('early');print('error',file=sys.stderr)\nwhile not Path(%r).exists():time.sleep(.02)\nprint('late')" % str(release)

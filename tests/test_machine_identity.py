@@ -1,3 +1,4 @@
+from communication_helpers import legacy_offer
 import json
 import os
 from pathlib import Path
@@ -133,7 +134,7 @@ class MachineIdentityTests(unittest.TestCase):
         a = self.comm('a')
         group = a.config('group', path=str(self.root / 'nas'), create=True)['configuration']
         gid = next(iter(group['groups']))
-        request = a.request({'location':'group','group_id':gid,'agent_id':'missing','message':'Pending work'})
+        request = legacy_offer(a,location='group',group_id=gid,agent_id='missing',message='Pending work')
         a.scan()
         publication = next((self.root / 'nas' / 'messages' / 'broadcast').glob('*.json'))
         a.control(request['request']['id'], 'cancel')  # Archive is journaled but not yet applied.

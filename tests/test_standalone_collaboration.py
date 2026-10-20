@@ -102,6 +102,8 @@ class StandaloneCollaborationTests(unittest.TestCase):
         gid = next(iter(self.comm.config('group', path=str(Path(self.tmp.name)/'group'), create=True)['configuration']['groups']))
         agent = {'name': 'Papers', 'description': 'Find papers and compare methods', 'groups': [gid],
                  'implementation': {'kind': 'agent', 'command': [sys.executable, '-c', 'pass']}}
+        with self.assertRaisesRegex(Invalid, 'main task'):
+            self.comm.config('agent', agent_id='local-empty', agent=dict(agent,groups=[],description=' '))
         with self.assertRaisesRegex(Invalid, 'Ask the user'):
             self.comm.config('agent', agent_id='papers', agent=agent)
         self.comm.config('agent', agent_id='papers', agent=agent, task_confirmed=True)
@@ -120,7 +122,7 @@ class StandaloneCollaborationTests(unittest.TestCase):
         self.assertFalse(self.comm.eligible(legacy,{'location':'group','group_id':gid},self.comm.settings()))
 
     def test_managed_coordinator_reserves_named_capacity_and_keeps_followups(self):
-        self.comm.config('agent',agent_id='coordinator',agent={'name':'Coordinator',
+        self.comm.config('agent',agent_id='coordinator',agent={'name':'Coordinator','description':'Coordinate collaboration results',
             'implementation':{'kind':'agent','command':[sys.executable,'-c','pass']}})
         created=start(self.comm,{'message':'Research','agent_id':'coordinator'})
         self.assertEqual(created['mode'],'managed')
@@ -138,7 +140,7 @@ class StandaloneCollaborationTests(unittest.TestCase):
 
     def test_coordinator_notifications_inherit_chat_and_respect_explicit_override(self):
         from loop_anything.runtime.notifications import enqueue
-        self.comm.config('agent',agent_id='coordinator',agent={'name':'Coordinator','capacity':3,
+        self.comm.config('agent',agent_id='coordinator',agent={'name':'Coordinator','description':'Coordinate collaboration results','capacity':3,
             'implementation':{'kind':'agent','command':[sys.executable,'-c','pass']}})
         source={'platform':'feishu','entry_project':'entry','session_key':'feishu:oc_chat:root:om_root'}
         created=start(self.comm,{'message':'Research','agent_id':'coordinator','chat_context':source})
@@ -158,7 +160,7 @@ class StandaloneCollaborationTests(unittest.TestCase):
     def test_managed_coordinator_actually_executes_after_reloading_run(self):
         from unittest.mock import patch
         from loop_anything.interfaces.agent_tasks import RunTools
-        self.comm.config('agent',agent_id='coordinator',agent={'name':'Coordinator',
+        self.comm.config('agent',agent_id='coordinator',agent={'name':'Coordinator','description':'Coordinate collaboration results',
             'implementation':{'kind':'agent','command':[sys.executable,'-c','pass'],'prompt':'{{context}}'}})
         started=start(self.comm,{'message':'Finish standalone work','agent_id':'coordinator'})
         def worker(command,prompt,*args,**kwargs):
@@ -234,7 +236,7 @@ class StandaloneCollaborationTests(unittest.TestCase):
                     headers={'Content-Type':'application/json','X-Loop-Anything':'workspace'})
                 with urlopen(r,timeout=10) as f:result=json.load(f)
                 self.assertTrue(result.get('ok'),result);return result
-            call('communication_config',{'operation':'agent','agent_id':'papers','agent':{'name':'Papers',
+            call('communication_config',{'operation':'agent','agent_id':'papers','agent':{'name':'Papers','description':'Find research papers',
                 'implementation':{'kind':'agent','command':[sys.executable,'-c',HELPER_CLI],'prompt':'{{context}}'}}})
             caller=subprocess.Popen([sys.executable,str(script),'initial',url,str(root/'memory.json'),'original'],stdout=log,stderr=log)
             self.assertEqual(caller.wait(timeout=15),0)

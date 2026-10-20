@@ -18,11 +18,12 @@ def configure(comm, args):
     if comm.identity_conflict:raise Conflict('Resolve this machine identity before binding notifications')
     config=comm.settings();gid=args['group_id'];group=config['groups'].get(gid)
     if not group or not group['enabled']:raise Invalid('Choose a joined group')
-    root=Path(group['path'])
-    if json.loads((root/'group.json').read_text()).get('id')!=gid:raise Invalid('Group identity changed')
+    from loop_anything.runtime.team_transport import transport
+    media=transport(comm,group)
+    if group.get('transport')!='feishu_base' and media.get('group.json').get('id')!=gid:raise Invalid('Group identity changed')
     refresh(comm,gid,group)
     previous=group.get('notification_bindings',{}).get(config['instance_id'])
-    path=root/'notification-bindings'/(config['instance_id']+'.json')
+    path='notification-bindings/'+config['instance_id']+'.json'
     if (previous or {}).get('id','')!=args.get('binding_id',''):
         raise Conflict('This machine notification binding changed; reload before replacing it')
     enabled=args.get('enabled',True);level=args.get('notification_level','key')
@@ -38,7 +39,7 @@ def configure(comm, args):
     # Authorize the immutable binding locally before making it discoverable.
     with comm.transaction() as db:
         db.execute('INSERT INTO communication_notification_bindings VALUES (?,?)',(binding['id'],json.dumps(dict(binding,sender=sender))))
-    atomic_json(path,binding)
+    media.put(path,binding)
     refresh(comm,gid,group)
     return {'configuration':comm.settings(),'notification_binding':binding}
 
@@ -56,15 +57,17 @@ def validate_binding(binding,gid,instance=None):
 
 
 def refresh(comm,gid,group):
-    root=Path(group['path'])
+    from loop_anything.runtime.team_transport import transport
+    media=transport(comm,group)
     bindings=copy.deepcopy(group.get('notification_bindings',{}))
     # Legacy single-sender configuration becomes an entry for that machine, not a group-wide fallback.
-    legacy=root/'notifications.json'
-    if legacy.exists():
-        binding=validate_binding(json.loads(legacy.read_text()),gid)
+    try:legacy=media.get('notifications.json')
+    except FileNotFoundError:legacy=None
+    if legacy:
+        binding=validate_binding(legacy,gid)
         bindings.setdefault(binding['sender_instance'],binding)
-    for path in (root/'notification-bindings').glob('*.json'):
-        binding=validate_binding(json.loads(path.read_text()),gid,path.stem)
+    for filename,value in media.list('notification-bindings'):
+        binding=validate_binding(value,gid,filename.removesuffix('.json'))
         bindings[binding['sender_instance']]=binding
     if group.get('notification_bindings')==bindings:return
     with comm.transaction() as db:

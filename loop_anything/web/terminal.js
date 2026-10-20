@@ -42,7 +42,7 @@ async function openTerminal(executionId,sessionId=null){
         const becameInteractive=!view.canInput&&session.can_input;view.cursor=result.cursor;view.canInput=!!session.can_input;term.options.disableStdin=!view.canInput;$('terminal-interrupt').disabled=!view.canInput;
         $('terminal-status').textContent=({starting:'正在启动',running:'运行中',exited:'进程已退出',error:'执行异常',interrupted:'连接已中断',released:'已确认停止'})[session.state]||session.state;
         if(session.returncode!==undefined)$('terminal-status').textContent+=' · 退出码 '+session.returncode;
-        $('terminal-help').textContent=view.canInput?'点击终端即可输入；关闭面板后任务继续运行。Agent 调用 finish 后平台关闭本次会话。':session.interactive?'执行结束后可查看历史；继续工作请从任务操作发起。':'实时显示命令输出；此命令使用一次性输入，不接受终端交互。';
+        $('terminal-help').textContent=session.output_source==='native_session'?'执行过程保存在原 Agent session；从任务操作恢复该 session 查看。':view.canInput?'点击终端即可输入；关闭面板后任务继续运行。Agent 调用 finish 后平台关闭本次会话。':session.interactive?'执行结束后可查看历史；继续工作请从任务操作发起。':'实时显示命令输出；此命令使用一次性输入，不接受终端交互。';
         $('terminal-error').textContent=session.error||session.native_session_error||view.notice||'';
         $('terminal-recover').hidden=session.state!=='interrupted';
         if(becameInteractive){terminalSend(view,{cols:term.cols,rows:term.rows});term.focus();}

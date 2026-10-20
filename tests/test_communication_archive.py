@@ -1,3 +1,4 @@
+from communication_helpers import legacy_offer
 import json
 import tempfile
 import time
@@ -140,7 +141,7 @@ class CommunicationArchiveTests(unittest.TestCase):
         self.assertEqual(self.a.get(self.row['id'])['progress']['text'], 'next update')
 
     def test_active_broadcast_remains_until_source_cancels_and_old_files_are_retired(self):
-        request = self.a.request(dict(location='group', group_id=self.gid, agent_id='missing', message='wait'))['request']
+        request = legacy_offer(self.a,location='group', group_id=self.gid, agent_id='missing', message='wait')['request']
         self.scan(self.a, self.b)
         with self.a.store.connection() as db:
             message = json.loads(db.execute("SELECT document FROM communication_outbox WHERE json_extract(document,'$.kind')='offer'").fetchone()[0])
@@ -165,8 +166,8 @@ class CommunicationArchiveTests(unittest.TestCase):
         engine.communication = self.a
         self.a.engine = engine
         try:
-            granted, expired = [self.a.request(dict(location='group', group_id=self.gid,
-                agent_id='papers', message=label))['request'] for label in ('assign', 'expire')]
+            granted, expired = [legacy_offer(self.a,location='group', group_id=self.gid,
+                agent_id='papers', message=label)['request'] for label in ('assign', 'expire')]
             self.scan(self.a)
             with self.a.store.connection() as db:
                 offers = [json.loads(row[0]) for row in db.execute("SELECT document FROM communication_outbox WHERE json_extract(document,'$.kind')='offer'")]

@@ -12,7 +12,8 @@ def fetch(url, data=None):
     headers = {'Content-Type': 'application/json', 'X-Loop-Anything': 'workspace'}
     request = Request(url, data=data, headers=headers)
     try:
-        with urlopen(request, timeout=10) as response:
+        # Scoped remote tools return a durable pending handle after at most 20 seconds.
+        with urlopen(request, timeout=30) as response:
             return json.load(response)
     except HTTPError as exc:
         try:

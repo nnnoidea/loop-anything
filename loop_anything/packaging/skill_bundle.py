@@ -41,12 +41,17 @@ def bundle(url, installation_url=None):
         if not path.is_file() or path.suffix not in ('.md', '.py', '.json', '.mjs', '.txt'):
             continue
         files[prefix + path.relative_to(source).as_posix()] = path.read_bytes()
+    dispatch = source.parent / 'loop-anything-dispatch'
+    for path in dispatch.rglob('*'):
+        if path.is_file() and path.suffix in ('.md','.py','.json'):
+            files['platform/loop-anything-dispatch/'+path.relative_to(dispatch).as_posix()]=path.read_bytes()
     from loop_anything.authoring_guidance import render_guide
     files[prefix + 'references/platform-capabilities.md'] = render_guide().encode('utf-8')
     files[prefix + 'connection.json'] = connection.encode('utf-8')
     entry = ('# Loop Anything · 平台操作 Skill\n\n'
              '本包提供安装到 Agent 的平台操作手册、调用脚本与连接配置。\n\n'
              '- [平台 Skill](platform/loop-anything-platform/SKILL.md)：按场景选择持续工作、查询已有任务或调用本机/远端具名 Agent，再按需读取手册。\n'
+             '- [独立派单 Skill](platform/loop-anything-dispatch/SKILL.md)：一个团队链接即可派单、查结果；仅接单需要运行平台。\n'
              '- 作者说明及节点 Skill 随 Loop 包交付，处理任务时通过平台工具读取。\n\n')
     if installation_url:
         entry += '[下载平台安装包](' + installation_url + ')。首次安装步骤见解压后的 README.md。\n'

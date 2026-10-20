@@ -3,6 +3,19 @@ import json
 import time
 
 
+def received(message, **extra):
+    """A durable identity/fingerprint is enough to reject conflicting replays."""
+    from loop_anything.runtime.model import digest
+    return dict({k:message[k] for k in ('id','request_id','group_id','kind','sender','target','assignment_id','at') if k in message},
+                _message_digest=digest(message), **extra)
+
+
+def matches(record, message):
+    from loop_anything.runtime.model import digest
+    if '_message_digest' in record:return record['_message_digest']==digest(message)
+    return record.get('message',record)==message if record.get('rejected') else record==message
+
+
 def enqueue(db, message):
     db.execute('INSERT OR IGNORE INTO communication_archive_queue VALUES (?,?)',
                (message['id'], json.dumps(message)))
@@ -52,7 +65,7 @@ def reconcile_legacy(comm, root, group_id, instance):
                     enqueue(db, message)
             elif message.get('target') == instance and message.get('kind') == 'ack':
                 received = db.execute('SELECT document FROM communication_inbox WHERE id=?', (message['id'],)).fetchone()
-                if received and json.loads(received[0]) == message:
+                if received and matches(json.loads(received[0]), message):
                     enqueue(db, message)
     comm.archive_scanned_groups.add(key)
 
@@ -65,7 +78,8 @@ def drain(comm, root, group_id):
         messages = [json.loads(r[0]) for r in db.execute(
             """SELECT document FROM communication_archive_queue WHERE json_extract(document,'$.group_id')=?
             AND ((json_extract(document,'$.kind')='ack' AND json_extract(document,'$.target')=?)
-              OR (json_extract(document,'$.kind')!='ack' AND json_extract(document,'$.sender')=?))""", (group_id, instance, instance))]
+              OR (json_extract(document,'$.kind')!='ack' AND json_extract(document,'$.sender')=?)
+              OR (json_extract(document,'$.kind') IN ('dispatch','cancel','input') AND json_extract(document,'$.target')=?))""", (group_id, instance, instance, instance))]
     for message in messages:
         try:
             if message['kind'] == 'ack':
@@ -105,3 +119,34 @@ def archive(root, message):
     if size > 1_000_000:
         for index in range((size + 524287) // 524288):
             source.with_name(ident + '-part-' + str(index) + '.bin').unlink(missing_ok=True)
+
+
+def drain_media(comm, media, group_id):
+    """Retain cloud history outside the active bucket; do not duplicate it locally."""
+    with comm.store.connection() as db:
+        instance=comm.settings(db)['instance_id']
+        messages = [json.loads(r[0]) for r in db.execute(
+            """SELECT document FROM communication_archive_queue WHERE json_extract(document,'$.group_id')=?
+            AND ((json_extract(document,'$.kind')='ack' AND json_extract(document,'$.target')=?)
+              OR (json_extract(document,'$.kind')!='ack' AND json_extract(document,'$.sender')=?)
+              OR (json_extract(document,'$.kind') IN ('dispatch','cancel','input','result_read') AND json_extract(document,'$.target')=?))""",
+            (group_id,instance,instance,instance))]
+    for message in messages:
+        try:
+            if message['kind']=='ack':
+                key='messages/'+message['sender']+'/'+message['payload']['message_id']+'.json'
+                try:original=media.get(key)
+                except FileNotFoundError:original=None
+                if original is not None:
+                    expected={'id':message['payload']['message_id'],'sender':message['target'],
+                              'target':message['sender'],'group_id':group_id,'request_id':message['request_id'],
+                              'assignment_id':message.get('assignment_id')}
+                    if any(original.get(k)!=v for k,v in expected.items()):
+                        from loop_anything.runtime.model import Conflict
+                        raise Conflict('Receipt does not match the pending publication')
+                    media.retire(key)
+            key = message['target']+'/'+message['id']+'.json'
+            media.retire('messages/'+key)
+            with comm.transaction() as db:db.execute('DELETE FROM communication_archive_queue WHERE id=?',(message['id'],))
+        except (OSError,ValueError) as exc:
+            comm.transport_error='Cloud history update pending: '+str(exc)
