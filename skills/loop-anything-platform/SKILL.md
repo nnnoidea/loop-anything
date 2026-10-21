@@ -17,7 +17,8 @@ metadata:
 | 跟远端 Agent 通信、求助、发布任务，或请本机具名 Agent 帮忙 | 使用独立 `loop-anything-dispatch` Skill；托管节点沿用限定入口和运行身份 | [通信](references/communication.md) |
 | 独立会话需要等待外援后自动续跑 | `start_collaboration` 接入真实原 session/当前 Agent PID/恢复命令，或启动本机具名协调 Agent；再使用 `wait_assistance` | [通信](references/communication.md#独立协作内置-loop) |
 | 看进度、取结果、继续之前的工作 | 用已有 Run/请求 ID 查状态；有任务令牌就沿用，不重复创建 | [运行](references/run.md)、[通信](references/communication.md) |
-| 首次建立多机协作 | `communication_config(operation=team,link=...)` 接入团队；先询问用户主要任务，再配置本机接单 Agent | [组网](references/communication.md#首次组网共享空间--群组--具名-agent) |
+| 注册或修改本机具名 Agent | 用 `communication_workspace(registered_agents=true)` 发现已有注册；有相似名称/职责时确认复用、修改或新增，允许用户明确新增同名 Agent | [注册配置](references/communication.md#配置平台所有者) |
+| 首次建立多机协作 | `communication_config(operation=team,link=...)` 接入团队；先询问用户主要任务，再配置本机接单 Agent | [组网](references/communication.md#首次组网一个团队链接) |
 
 普通飞书/终端入口没有 `execution_id` 是正常的；不要遍历其他 Run 寻找登记目标。求援、原会话续跑与已有执行登记的区别见[入口 Agent 与 session 登记](references/communication.md#入口-agent-与-session-登记)。
 

@@ -139,11 +139,11 @@ class CompactBaseTests(unittest.TestCase):
     def test_old_version_cleanup_failure_does_not_fail_new_publication(self):
         key='results/request-prune.json'
         self.media.put(key,{'answer':'old'*40000})
-        api=self.media.api
-        def fail_delete(method,*args,**kwargs):
-            if method=='PUT' and args[1].get('fields',{}).get('bucket','').startswith('history/'):raise OSError('history update unavailable')
-            return api(method,*args,**kwargs)
-        with patch.object(self.media,'api',side_effect=fail_delete):
+        write=self.media.write_record
+        def fail_delete(fields,record_id=None):
+            if fields.get('bucket','').startswith('history/'):raise OSError('history update unavailable')
+            return write(fields,record_id)
+        with patch.object(self.media,'write_record',side_effect=fail_delete):
             self.media.put(key,{'answer':'new'*40000})
         self.assertEqual(self.media.get(key),{'answer':'new'*40000})
         self.assertTrue(self.media.cleanup_error)

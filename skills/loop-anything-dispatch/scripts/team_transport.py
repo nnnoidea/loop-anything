@@ -133,7 +133,8 @@ class Base:
     offline_seconds = 180
     inline_chars = 90000
     table_name = 'Loop Anything 通信'
-    fields = {**READABLE_FIELDS,'key':1, 'bucket':1, 'revision':1, 'part':2, 'count':2, 'value':1, 'updated':2, 'payload':17}
+    fields = {**READABLE_FIELDS,'key':'text','bucket':'text','revision':'text','part':'number',
+              'count':'number','value':'text','updated':'number','payload':'attachment'}
     def __init__(self, config):
         self.config = config
         self.app = config['app_token']
@@ -141,61 +142,83 @@ class Base:
         self.pending_cleanup = {}
         self.cleanup_error = None
         self._schema_ready=config.get('schema_version')==2
-    def api(self, method, path, data=None, params=None):
-        args = [self.config.get('lark_cli', 'lark-cli'), 'api', method, path,
-                '--as', self.config.get('identity', 'user'), '--format', 'json']
-        if params:args += ['--params', json.dumps(params)]
-        if data is not None:args += ['--data', '-']
-        for attempt in range(4):
-            try:
-                result = subprocess.run(args, input=json.dumps(data) if data is not None else None,
-                                        text=True, capture_output=True, timeout=60)
-            except subprocess.TimeoutExpired:raise ValueError('lark-cli timed out; publication may be pending, retry the same request ID')
-            try:body = json.loads(result.stdout.strip() or result.stderr)
-            except ValueError:raise ValueError('lark-cli returned no JSON response: ' + result.stderr[-1000:])
-            code = body.get('code', 0)
-            if code in (1254290, 1254291, 1254607, 99991400) and attempt < 3:
-                time.sleep(.3 * 2**attempt);continue
-            if result.returncode or code or body.get('error'):
-                raise ValueError('Feishu Base API failed: ' + json.dumps(body, ensure_ascii=False)[:2000])
-            value=body.get('data',body)
-            if isinstance(value,dict) and 'code' in value:
-                if value['code']:raise ValueError('Feishu Base API failed: '+json.dumps(value,ensure_ascii=False)[:2000])
-                value=value.get('data',value)
-            return value
-    @property
-    def path(self):
-        return '/open-apis/bitable/v1/apps/' + self.app + '/tables'
-    def pages(self, path, params=None):
-        query = dict(params or {}, page_size=100)
+    def call(self, operation, *, table=True, body=None, **options):
+        args=['base',operation,'--base-token',self.app]
+        if table:args+=['--table-id',self.table]
+        for name,value in options.items():
+            args+=['--'+name.replace('_','-')]
+            if value is not True:args+=[str(value)]
+        if body is None:
+            response=self.shortcut(args)
+        else:
+            # Native @file input avoids OS argument limits for complete replies.
+            with tempfile.TemporaryDirectory(prefix='loop-base-json-') as directory:
+                (Path(directory)/'body.json').write_text(json.dumps(body,ensure_ascii=False,allow_nan=False),encoding='utf-8')
+                response=self.shortcut(args+['--json','@./body.json'],cwd=directory)
+        return response.get('data',response)
+
+    def tables(self):
+        return self.call('+table-list',table=False).get('tables') or []
+
+    @staticmethod
+    def matrix_records(page):
+        names=page.get('fields') or []
+        values=page.get('data') or []
+        ids=page.get('record_id_list') or []
+        if len(ids)!=len(values) or any(len(row)!=len(names) for row in values):
+            raise ValueError('Incomplete Base record matrix')
+        return [{'record_id':rid,'fields':dict(zip(names,row))} for rid,row in zip(ids,values)]
+
+    def record_pages(self, field=None, value=None):
+        options={'format':'json','limit':100}
+        if field is not None:
+            options['filter_json']=json.dumps({'logic':'and','conditions':[[field,'==',value]]},ensure_ascii=False)
+        offset=0
         while True:
-            data = self.api('GET', path, params=query)
-            yield from data.get('items') or []
-            if not data.get('has_more'):break
-            token = data.get('page_token')
-            if not token or token == query.get('page_token'):raise ValueError('Invalid Base pagination cursor')
-            query['page_token'] = token
+            page=self.call('+record-list',offset=offset,**options)
+            rows=self.matrix_records(page)
+            yield from rows
+            if not page.get('has_more'):return
+            if not rows:raise ValueError('Incomplete Base record pagination')
+            next_offset=page.get('next_offset',offset+len(rows))
+            if next_offset<=offset:raise ValueError('Invalid Base pagination offset')
+            offset=next_offset
+
+    def get_record(self, record_id):
+        rows=self.matrix_records(self.call('+record-get',record_id=record_id,format='json'))
+        if len(rows)!=1 or rows[0]['record_id']!=record_id:raise ValueError('Base record not found: '+record_id)
+        return rows[0]
+
+    def write_record(self, fields, record_id=None):
+        options={'record_id':record_id} if record_id else {}
+        result=self.call('+record-upsert',body=fields,**options)
+        record=result.get('record',result)
+        ids=record.get('record_id_list') or []
+        ident=record_id or (ids[0] if len(ids)==1 else None)
+        if not ident:raise ValueError('Base write returned no record ID; retry the same request')
+        return {'record_id':ident,'fields':dict(fields)}
+
     def ensure(self):
         upgrading=not self._schema_ready
-        tables = list(self.pages(self.path))
+        tables=list(self.tables())
         if self.table:
-            if not any(t['table_id'] == self.table for t in tables):raise ValueError('Configured team table no longer exists')
+            if not any(t['id']==self.table for t in tables):raise ValueError('Configured team table no longer exists')
         else:
-            matches = sorted(t['table_id'] for t in tables if t['name'] == self.table_name)
+            matches=sorted(t['id'] for t in tables if t['name']==self.table_name)
             if not matches:
                 try:
-                    self.api('POST', self.path, {'table':{'name':self.table_name, 'default_view_name':'通信记录',
-                        'fields':[{'field_name':name, 'type':kind} for name,kind in self.fields.items()]}})
+                    self.call('+table-create',table=False,name=self.table_name,
+                              fields=json.dumps([{'name':n,'type':t} for n,t in self.fields.items()],ensure_ascii=False))
                 except ValueError:
-                    if not any(t['name']==self.table_name for t in self.pages(self.path)):raise
-                matches = sorted(t['table_id'] for t in self.pages(self.path) if t['name'] == self.table_name)
-            if len(matches) != 1:raise ValueError('Team table initialization is ambiguous; retry after resolving duplicate table names')
-            self.table = matches[0]
-        current = {f['field_name']:f for f in self.pages(self.path+'/'+self.table+'/fields')}
+                    if not any(t['name']==self.table_name for t in self.tables()):raise
+                matches=sorted(t['id'] for t in self.tables() if t['name']==self.table_name)
+            if len(matches)!=1:raise ValueError('Team table initialization is ambiguous; retry after resolving duplicate table names')
+            self.table=matches[0]
+        current={f['name']:f for f in self.call('+field-list').get('fields',[])}
         for name,kind in self.fields.items():
-            if name not in current:self.api('POST', self.path+'/'+self.table+'/fields', {'field_name':name,'type':kind})
-            elif current[name]['type'] != kind:raise ValueError('Team table field type changed: '+name)
-        self.config['table_id'] = self.table
+            if name not in current:self.call('+field-create',body={'name':name,'type':kind})
+            elif current[name]['type']!=kind:raise ValueError('Team table field type changed: '+name)
+        self.config['table_id']=self.table
         self._attachment_ready=True
         self._schema_ready=True
         self.config['schema_version']=2
@@ -207,13 +230,13 @@ class Base:
             # Readable views are presentation, never a gate on valid communication.
             self.config['view_error']=str(exc)
         return self
+
     def setup_views(self):
         readable_views(self)
+
     def rows(self, field, value):
         if not self.table:self.ensure()
-        # Formula values are JSON-quoted; never interpolate raw user text into a formula.
-        return list(self.pages(self.path+'/'+self.table+'/records',
-            {'filter':'CurrentValue.['+field+']='+json.dumps(value,ensure_ascii=False)}))
+        return list(self.record_pages(field,value))
     @staticmethod
     def text(value):
         if isinstance(value,list):return ''.join(v.get('text','') for v in value)
@@ -223,11 +246,11 @@ class Base:
         if '/' in binary:binary=str(Path(binary).expanduser().resolve())
         args=[binary,*arguments,'--as',self.config.get('identity','user')]
         try:result=subprocess.run(args,capture_output=True,text=True,timeout=120,cwd=cwd)
-        except subprocess.TimeoutExpired:raise ValueError('Feishu attachment operation timed out; retry the same request')
+        except subprocess.TimeoutExpired:raise ValueError('Feishu CLI operation timed out; retry the same request')
         try:body=json.loads(result.stdout.strip() or result.stderr)
-        except ValueError:raise ValueError('lark-cli attachment operation returned no JSON: '+result.stderr[-1000:])
+        except ValueError:raise ValueError('lark-cli operation returned no JSON: '+result.stderr[-1000:])
         if result.returncode or body.get('ok') is False or body.get('code') or body.get('error'):
-            raise ValueError('Feishu attachment operation failed: '+json.dumps(body,ensure_ascii=False)[:2000])
+            raise ValueError('Feishu CLI operation failed: '+json.dumps(body,ensure_ascii=False)[:2000])
         return body
     def upload_attachment(self, record_id, data):
         with tempfile.TemporaryDirectory(prefix='loop-base-upload-') as directory:
@@ -296,9 +319,9 @@ class Base:
         complete=next((r for r in current if int(r['fields']['count'])==1 and int(r['fields']['part'])==0),None)
         if complete:
             if heartbeat_at is not None and float(complete['fields']['updated'])!=heartbeat_at:
-                self.api('PUT',self.path+'/'+self.table+'/records/'+complete['record_id'],{'fields':{'updated':heartbeat_at,'更新时间':display['更新时间']}})
+                self.write_record({'updated':heartbeat_at,'更新时间':display['更新时间']},complete['record_id'])
             elif not self.text(complete['fields'].get('记录类型')):
-                self.api('PUT',self.path+'/'+self.table+'/records/'+complete['record_id'],{'fields':display})
+                self.write_record(display,complete['record_id'])
             self.prune(previous, complete['record_id'])
             return
         try:old=self.decode(previous)
@@ -312,22 +335,20 @@ class Base:
             fields.update(count=0,value=json.dumps({'transport':'attachment-json-v1','bytes':len(raw)}))
             pending=next((r for r in current if int(r['fields']['count'])==0),None)
             if pending:record=pending
-            else:record=self.api('POST',self.path+'/'+self.table+'/records',{'fields':fields},
-                                 {'client_token':str(uuid.uuid4())})['record']
+            else:record=self.write_record(fields)
             if not record['fields'].get('payload'):self.upload_attachment(record['record_id'],raw)
             # Only expose the record after the attachment has been bound successfully.
-            record=self.api('GET',self.path+'/'+self.table+'/records/'+record['record_id'])['record']
+            record=self.get_record(record['record_id'])
             attachments=record['fields'].get('payload',[])
             if not attachments:raise ValueError('Attachment binding not yet visible; retry the same request')
-            self.api('PUT',self.path+'/'+self.table+'/records/'+record['record_id'],{'fields':{'count':1}})
+            self.write_record({'count':1},record['record_id'])
         else:
             # A native single-record update is atomic and keeps status record IDs stable.
             record=next((r for r in previous if int(r['fields']['part'])==0),None) if not immutable else None
             if record:
                 if record['fields'].get('payload'):fields['payload']=[]
-                self.api('PUT',self.path+'/'+self.table+'/records/'+record['record_id'],{'fields':fields})
-            else:record=self.api('POST',self.path+'/'+self.table+'/records',{'fields':fields},
-                                 {'client_token':str(uuid.uuid4())})['record']
+                self.write_record(fields,record['record_id'])
+            else:record=self.write_record(fields)
         self.prune(previous, record['record_id'])
     def prune(self, previous, keep):
         # Retain superseded revisions outside the active key/bucket; no delete permission needed.
@@ -341,18 +362,17 @@ class Base:
     def retry_cleanup(self):
         self.cleanup_error = None
         for record_id,fields in list(self.pending_cleanup.items()):
-            try:self.api('PUT',self.path+'/'+self.table+'/records/'+record_id,{'fields':fields})
+            try:self.write_record(fields,record_id)
             except (OSError,ValueError) as exc:self.cleanup_error = str(exc)
             else:self.pending_cleanup.pop(record_id,None)
     def retire(self, key):
         for row in self.rows('key',key):
             bucket=self.text(row['fields']['bucket'])
             if not bucket.startswith('history/'):
-                self.api('PUT',self.path+'/'+self.table+'/records/'+row['record_id'],
-                         {'fields':{'bucket':'history/'+bucket}})
+                self.write_record({'bucket':'history/'+bucket},row['record_id'])
     def delete(self, key):
         for row in self.rows('key', key):
-            self.api('DELETE', self.path+'/'+self.table+'/records/'+row['record_id'])
+            self.call('+record-delete',record_id=row['record_id'],yes=True)
             self.pending_cleanup.pop(row['record_id'],None)
 
 
@@ -378,7 +398,8 @@ def join(link, create=False, name=None, lark_cli='lark-cli', identity='user'):
                   'lark_cli':lark_cli,'identity':identity}
         transport = Base(config)
         if segments[0] == 'wiki':
-            node = transport.api('GET','/open-apis/wiki/v2/spaces/get_node',params={'token':segments[1]})['node']
+            body=transport.shortcut(['wiki','spaces','get_node','--params',json.dumps({'token':segments[1]})])
+            node=body.get('data',body)['node']
             if node['obj_type'] != 'bitable':raise ValueError('Team link must reference a Base')
             config['app_token'] = node['obj_token'];transport = Base(config)
         transport.ensure()

@@ -26,13 +26,17 @@
 {"operation":"team","link":"飞书 Base 链接或本机 NAS 团队目录"}
 ```
 
-`communication_config` 保留已加入连接，返回 `team.id`，`configuration.default_team` 表示当前默认选择：启用的 Base 优先，没有 Base 才用 NAS；后来加入 NAS 不会覆盖 Base。未单独绑定的新 Run 固定这个选择；既有 Run 不改绑，人工绑定与显式解绑也不会被默认值覆盖。Base 断网、权限不足或找不到目标时不会转 NAS 重派。operation=leave 停用指定团队的新接单/默认选择，已承接工作沿原介质收尾。NAS 首次创建加 `create:true`，其他机器路径可不同但应指向同一目录。Base 使用本机已认证的 `lark-cli`（默认用户身份，可传 `identity:"bot"` 或自定义 `lark_cli` 路径），内部表和字段自动管理。链接不包含权限，实际需要所用身份能读写这个 Base。无需逐项复制表 ID。旧 `space/group` 配置继续兼容。
+`communication_config` 保留已加入连接，返回 `team.id`，`configuration.default_team` 表示当前默认选择：启用的 Base 优先，没有 Base 才用 NAS；后来加入 NAS 不会覆盖 Base。未单独绑定的新 Run 固定这个选择；既有 Run 不改绑，人工绑定与显式解绑也不会被默认值覆盖。Base 断网、权限不足或找不到目标时不会转 NAS 重派。operation=leave 停用指定团队的新接单/默认选择，已承接工作沿原介质收尾。NAS 首次创建加 `create:true`，其他机器路径可不同但应指向同一目录。Base 使用本机已认证的 `lark-cli`（默认用户身份，可传 `identity:"bot"` 或自定义 `lark_cli` 路径），内部表和字段自动管理。链接不包含权限，实际需要所用身份能读写这个 Base。无需逐项复制表 ID。旧 `space/group` 配置继续兼容。 Base 表、字段、记录与视图统一复用新版 `lark-cli base +…`，已验证 CLI 1.0.98，按键/收件箱用 `--filter-json` 精确筛选；旧 CLI 不支持时执行 `lark-cli update`。不申请旧版 `bitable:app` 或回退旧接口；认证和实际缺失的新版权限由 CLI 报错说明，不增加权限预检。既有表、团队 ID、请求和等待恢复关系保留。
 
 接着由用户确认本机 Agent 的主要任务、配置本机 CLI / cwd / resume_command，把返回的团队 ID 放入 `agent.groups`。加入团队本身不会公开 Agent，也不会启动模型。`communication_status` 查看成员，`communication_workspace(group_id=...)` 返回可转交的团队链接。仅派单的人安装独立派单 Skill，用同一个链接执行 join 即可。
 
 Base 收发至少间隔 15 秒，纯心跳至少间隔 60 秒、离线阈值至少 180 秒；纯心跳只修改已有成员记录的时间字段，不新增心跳行、不重复写目录。目录内容变化时才发布新版。不要把几秒无回应当成失败。接单前固定唯一 Agent 与机器，接收方不再等发起端在线发送 grant。旧在途 claim/grant 请求继续处理。
 
 ## 配置（平台所有者）
+
+注册或重新加入时，用 `communication_workspace({"registered_agents":true})` 查看本机已知工作区的已有注册。返回名称、主要任务、agent_id、归属工作区/database、命令程序/cwd、已绑定团队及启用状态，不读取团队网络或请求历史，也不启动其他工作区。离线或停用不表示没注册；`unavailable_workspaces` 非空表示有登记未能读取，不要宣称本机没有已有注册。
+
+结合用户目标比较名称和职责；发现相似条目时，展示相关信息，请用户选择复用、修改或新增。用户已经明确选择时直接照做，不重复确认。不要求当前对话辨认自己是不是某个具名 Agent，不做相似度阈值或同名禁止。当前工作区复用/修改使用原 agent_id；确实新增时省略 agent_id，让平台生成独立记录，即使显示名称相同也可以。其他工作区的记录以返回的归属为准；复用它的既有团队地址即可派单，若要修改需连接其所属工作区，不将那个 ID 填进当前工作区冒充更新。工作区保留运行归属，内部寻址组合仍是 workspace_id + agent_id。
 
 用 `communication_config` 配置本机具名 Agent 的名称、能力、CLI argv、cwd、接单上限及开放范围：
 

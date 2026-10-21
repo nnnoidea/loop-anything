@@ -3,7 +3,7 @@ import json
 import time
 from urllib.parse import urlparse, urlencode
 
-FIELDS={name:1 for name in ('名称','记录类型','主要任务','Agent ID','机器 ID','请求 ID','状态','请求内容','完整回复','更新时间')}
+FIELDS={name:'text' for name in ('名称','记录类型','主要任务','Agent ID','机器 ID','请求 ID','状态','请求内容','完整回复','更新时间')}
 STATES={'pending':'等待接单','assigned':'已接单','starting':'启动中','running':'执行中','completed':'已完成',
         'failed':'失败','cancelled':'已取消','unavailable':'不可用','unknown':'执行状态待核实'}
 
@@ -51,7 +51,7 @@ def directory(media, member):
 def backfill(media):
     """One-time explicit join/upgrade: decorate existing rows without republishing work."""
     grouped={}
-    for row in media.pages(media.path+'/'+media.table+'/records'):
+    for row in media.record_pages():
         f=row['fields'];key=media.text(f.get('key',''))
         if key.startswith(('members/','results/','messages/')) and not media.text(f.get('记录类型')):
             grouped.setdefault(key,[]).append(row)
@@ -62,7 +62,7 @@ def backfill(media):
         visible=columns(key,value)
         for row in rows:
             if int(row['fields']['part'])==0:
-                media.api('PUT',media.path+'/'+media.table+'/records/'+row['record_id'],{'fields':visible})
+                media.write_record(visible,row['record_id'])
 
 
 def views(media):
@@ -79,9 +79,12 @@ def views(media):
             part=page.get('views') or [];result.extend(part);offset+=len(part)
             if not part or offset>=page.get('total',offset):return result
     known={v.get('name',v.get('view_name')):v.get('id',v.get('view_id')) for v in listed()}
-    if '请求与结果' not in known and '通信记录' in known:
-        ident=known.pop('通信记录')
-        call('+view-rename',view_id=ident,name='请求与结果');known['请求与结果']=ident
+    if '请求与结果' not in known:
+        # v3 creates one default grid. Reuse it instead of leaving protocol fields visible.
+        initial='通信记录' if '通信记录' in known else next(iter(known)) if len(known)==1 else None
+        if initial:
+            ident=known.pop(initial)
+            call('+view-rename',view_id=ident,name='请求与结果');known['请求与结果']=ident
     specs={
         '请求与结果':(['请求','回复'],['名称','请求 ID','记录类型','Agent ID','机器 ID','状态','请求内容','完整回复','payload','更新时间']),
         'Agent 目录':(['Agent'],['名称','主要任务','Agent ID','机器 ID','状态','更新时间']),

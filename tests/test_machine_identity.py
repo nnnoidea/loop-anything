@@ -32,6 +32,40 @@ class MachineIdentityTests(unittest.TestCase):
     def comm(self, name):
         return service(Store(self.root / (name + '.db')))
 
+    def test_registration_discovery_across_workspaces_is_local_and_allows_duplicate_names(self):
+        first=self.comm('first');second=self.comm('second')
+        profile={'name':'Research','description':'Read papers','enabled':False,
+                 'implementation':{'kind':'agent','command':['codex','--secret','DO-NOT-EXPOSE'],'cwd':str(self.root)}}
+        first.config('agent',agent_id='research',agent=profile)
+        second.config('agent',agent_id='research',agent=profile)
+        second.config('agent',agent=profile)
+        tools=PlatformTools(second.store)
+        with patch.object(second,'directory',side_effect=AssertionError('No team transport during registration discovery')):
+            result=tools.call('communication_workspace',{'registered_agents':True})
+        agents=result['registered_agents']
+        self.assertEqual(len(agents),3)
+        self.assertEqual(sum(a['current_workspace'] for a in agents),2)
+        self.assertEqual(len({(a['workspace_id'],a['agent_id']) for a in agents}),3)
+        self.assertTrue(all(a['name']=='Research' and not a['enabled'] for a in agents))
+        self.assertTrue(all(a['executable']=='codex' and a['cwd']==str(self.root) for a in agents))
+        self.assertNotIn('DO-NOT-EXPOSE',json.dumps(result))
+        self.assertNotIn('implementation',json.dumps(result))
+        self.assertEqual(first.settings()['agents']['research']['name'],'Research')
+        # Explicitly targeting one record updates it without changing the other workspace.
+        second.config('agent',agent_id='research',agent={'name':'Research updated'})
+        self.assertEqual(first.settings()['agents']['research']['name'],'Research')
+
+    def test_registration_discovery_reports_missing_or_replaced_workspaces(self):
+        first=self.comm('first');second=self.comm('second');missing=self.comm('missing')
+        with first.transaction() as db:
+            config=first.settings(db);config['machine_id']='another-machine'
+            db.execute('UPDATE communication_settings SET document=?',(json.dumps(config),))
+        Path(missing.store.filename).unlink()
+        result=second.machine_identity.agent_registrations(second.settings()['instance_id'])
+        self.assertEqual(len(result['unavailable_workspaces']),2)
+        self.assertFalse(Path(missing.store.filename).exists())
+        self.assertEqual(result['registered_agents'],[])
+
     @staticmethod
     def copy_database(source, destination):
         a = sqlite3.connect(source)

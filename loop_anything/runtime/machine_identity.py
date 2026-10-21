@@ -1,5 +1,6 @@
 """Local platform identity, independent of any business workspace database."""
 from contextlib import contextmanager
+import json
 import os
 from pathlib import Path
 import socket
@@ -46,6 +47,34 @@ class MachineIdentity:
         if not isinstance(name, str) or not name.strip():raise Invalid('Machine name must be nonempty text')
         with self.transaction() as db:
             db.execute('UPDATE machine SET name=? WHERE singleton=1', (name,))
+
+    def agent_registrations(self, current_workspace):
+        """Inspect known local registrations on demand; never open a Store or start workers."""
+        with self.transaction() as db:
+            machine=db.execute('SELECT id FROM machine WHERE singleton=1').fetchone()[0]
+            workspaces=db.execute('SELECT id,path FROM workspaces ORDER BY id').fetchall()
+        agents=[];unavailable=[]
+        for workspace,path in workspaces:
+            try:
+                # Only known databases, read-only, including stopped workspaces.
+                db=sqlite3.connect(Path(path).as_uri()+'?mode=ro',uri=True,timeout=2)
+                try:row=db.execute('SELECT document FROM communication_settings WHERE id=1').fetchone()
+                finally:db.close()
+                config=json.loads(row[0]) if row else {}
+                if config.get('machine_id')!=machine or config.get('instance_id')!=workspace:
+                    raise ValueError('Workspace identity no longer matches its local registration')
+                for ident,agent in config.get('agents',{}).items():
+                    launch=agent.get('implementation',{})
+                    groups=config.get('groups',{})
+                    agents.append({'agent_id':ident,'name':agent.get('name',''),
+                        'description':agent.get('description',''),'enabled':agent.get('enabled',True),
+                        'workspace_id':workspace,'database':path,'current_workspace':workspace==current_workspace,
+                        'cwd':launch.get('cwd'),'executable':(launch.get('command') or [None])[0],
+                        'teams':[{'id':gid,'name':groups.get(gid,{}).get('name',''),
+                                  'enabled':groups.get(gid,{}).get('enabled',False)} for gid in agent.get('groups',[])]})
+            except (OSError,sqlite3.Error,ValueError,TypeError,KeyError) as exc:
+                unavailable.append({'workspace_id':workspace,'database':path,'error':str(exc)})
+        return {'machine_id':machine,'registered_agents':agents,'unavailable_workspaces':unavailable}
 
     def claim(self, ident, database, owner=None, legacy=None):
         """Serialize first use and moves; a live second copy cannot reuse an address."""

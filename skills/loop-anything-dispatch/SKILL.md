@@ -9,7 +9,7 @@ description: 跟远端或其他机器上的具名 Agent 通信、求助、发布
 
 ## 普通会话
 
-首次保存团队链接，之后不用重复提供。可以先后 join NAS 和 Base，旧连接会保留；默认始终优先已配置、启用的 Base，没有或明确停用 Base 才使用 NAS，不取决于加入顺序。Base 断网、权限不足或找不到目标 Agent 时明确报告问题，不自动改向 NAS 重发。NAS 使用本机挂载目录，各机器路径可不同；飞书使用 Base 链接（含知识库 Base 链接也可以），复用本机已认证的 `lark-cli`，默认用户身份，`identity: "bot"` 可使用应用身份。链接本身不授予访问权限；认证问题沿用 lark-cli 的说明处理，无需复制其他进程的凭据。
+首次保存团队链接，之后不用重复提供。可以先后 join NAS 和 Base，旧连接会保留；默认始终优先已配置、启用的 Base，没有或明确停用 Base 才使用 NAS，不取决于加入顺序。Base 断网、权限不足或找不到目标 Agent 时明确报告问题，不自动改向 NAS 重发。NAS 使用本机挂载目录，各机器路径可不同；飞书使用 Base 链接（含知识库 Base 链接也可以），复用本机已认证的 `lark-cli`，默认用户身份，`identity: "bot"` 可使用应用身份。链接本身不授予访问权限；认证问题沿用 lark-cli 的说明处理，无需复制其他进程的凭据。 Base 通信统一使用新版 Base API，复用 `lark-cli base +…`（已验证 1.0.98）；旧 CLI 若不支持 `--filter-json`，先用 `lark-cli update` 升级。不要为平台申请旧版 `bitable:app`，也不回退旧 API；实际缺少的新版操作权限按 CLI 报错处理。
 
 ```sh
 python3 scripts/dispatch.py join --arguments '{"link":"团队 Base 链接或 NAS 目录"}'

@@ -101,40 +101,41 @@ class DispatchTests(unittest.TestCase):
 
 
 class FakeBase(core.Base):
-    """Official v1 API shape, paging, rich text cells and idempotent record creation."""
+    """Native v3 shortcut shapes, filtered offset paging and record matrices."""
     def __init__(self):
         super().__init__({'app_token':'base-test','transport':'feishu_base'})
-        self.tables=[];self.records={};self.tokens={};self.token_bodies={};self.counter=0;self.files={}
+        self.table_rows=[];self.records={};self.counter=0;self.files={}
     def setup_views(self):
         pass
-    def api(self,method,path,data=None,params=None):
-        if path.endswith('/tables'):
-            if method=='POST':
-                self.tables.append({'table_id':'tbl-test','name':data['table']['name']})
-                return {'table_id':'tbl-test'}
-            return {'items':self.tables,'has_more':False}
-        if path.endswith('/fields'):return {'items':[{'field_name':n,'type':t} for n,t in self.fields.items()]}
-        if method=='GET' and '/records/rec' in path:return {'record':self.records[path.rsplit('/',1)[1]]}
-        if method=='DELETE':self.records.pop(path.rsplit('/',1)[1],None);return {}
-        if method=='PUT':
-            row=self.records[path.rsplit('/',1)[1]];row['fields'].update(data['fields'])
-            return {'record':row}
-        if method=='POST':
-            token=params['client_token']
-            if token in self.token_bodies and self.token_bodies[token]!=data:raise ValueError('1255006 client token conflict')
-            self.token_bodies[token]=data
-            if token not in self.tokens:
-                self.counter+=1;rid='rec'+str(self.counter);self.tokens[token]=rid
-                fields=dict(data['fields']);fields['value']=[{'type':'text','text':fields['value']}]
-                self.records[rid]={'record_id':rid,'fields':fields}
-            return {'record':self.records.get(self.tokens[token],{})}
-        if params and params.get('filter'):
-            expression=params['filter'];field=expression.split('[')[1].split(']')[0];value=json.loads(expression.split('=',1)[1])
-            rows=[r for r in self.records.values() if r['fields'].get(field)==value]
-        else:rows=list(self.records.values())
-        params=params or {}
-        offset=int(params.get('page_token',0));end=offset+2
-        return {'items':rows[offset:end],'has_more':end<len(rows),'page_token':str(end)}
+    def call(self, operation, *, table=True, body=None, **options):
+        if operation=='+table-list':return {'tables':self.table_rows,'total':len(self.table_rows)}
+        if operation=='+table-create':
+            self.table_rows.append({'id':'tbl-test','name':options['name']})
+            return {'table':self.table_rows[-1]}
+        if operation=='+field-list':return {'fields':[{'name':n,'type':t} for n,t in self.fields.items()]}
+        if operation=='+record-delete':
+            self.records.pop(options['record_id'],None);return {}
+        if operation=='+record-upsert':
+            rid=options.get('record_id')
+            if rid:self.records[rid]['fields'].update(body)
+            else:
+                self.counter+=1;rid='rec'+str(self.counter)
+                self.records[rid]={'record_id':rid,'fields':dict(body)}
+            return {'record':{'update':body} if options.get('record_id') else {'record_id_list':[rid]}}
+        if operation=='+record-get':
+            rows=[self.records[options['record_id']]]
+        elif operation=='+record-list':
+            rows=list(self.records.values())
+            if options.get('filter_json'):
+                field,operator,value=json.loads(options['filter_json'])['conditions'][0]
+                assert operator=='=='
+                rows=[r for r in rows if r['fields'].get(field)==value]
+        else:raise AssertionError(operation)
+        offset=int(options.get('offset',0));end=offset+2
+        selected=rows[offset:end];names=list(self.fields)
+        return {'fields':names,'record_id_list':[r['record_id'] for r in selected],
+                'data':[[r['fields'].get(n) for n in names] for r in selected],
+                'has_more':end<len(rows)}
 
     def upload_attachment(self, record_id, data):
         token='file-'+record_id;self.files[token]=data
@@ -144,6 +145,21 @@ class FakeBase(core.Base):
 
 
 class BaseTests(unittest.TestCase):
+    def test_lost_create_response_reuses_published_request(self):
+        media=FakeBase().ensure()
+        call=media.call
+        def lose_response(operation,**kwargs):
+            result=call(operation,**kwargs)
+            if operation=='+record-upsert':raise ValueError('Response lost after commit')
+            return result
+        key='messages/worker/request-once.json';value={'id':'request-once','message':'help'}
+        with patch.object(media,'call',side_effect=lose_response):
+            with self.assertRaises(ValueError):media.put(key,value,immutable=True)
+        ids=set(media.records)
+        media.put(key,value,immutable=True)
+        self.assertEqual(set(media.records),ids)
+        self.assertEqual(media.get(key),value)
+
     def test_real_numeric_cells_can_be_strings(self):
         media=FakeBase().ensure()
         key='members/worker.json'
@@ -151,9 +167,9 @@ class BaseTests(unittest.TestCase):
         for row in media.records.values():
             for field in ('updated','part','count'):row['fields'][field]=str(row['fields'][field])
         self.assertEqual(media.get(key)['updated_at'],100.5)
-        with patch.object(media,'api',wraps=media.api) as api:
+        with patch.object(media,'write_record',wraps=media.write_record) as api:
             media.put(key,{'updated_at':100.5,'agents':[]})
-            self.assertFalse(any(c.args[0]=='PUT' for c in api.call_args_list))
+            self.assertFalse(api.called)
 
     def test_native_attachment_cli_uses_relative_paths_in_isolated_directory(self):
         media=core.Base({'app_token':'test','table_id':'tbl-test'})
@@ -172,7 +188,7 @@ class BaseTests(unittest.TestCase):
 
     def test_real_empty_page_can_have_null_items(self):
         media=core.Base({'app_token':'test','table_id':'tbl-test'})
-        with patch.object(media,'api',return_value={'items':None,'has_more':False}):
+        with patch.object(media,'call',return_value={'data':None,'has_more':False}):
             self.assertEqual(media.rows('key','absent'),[])
             with self.assertRaises(FileNotFoundError):media.get('absent')
 
@@ -181,12 +197,12 @@ class BaseTests(unittest.TestCase):
         failure={'ok':False,'error':{'type':'permission','message':'Permission denied',
             'detail':{'permission_violations':[{'subject':'base:record:retrieve'}]}}}
         with patch.object(core.subprocess,'run',return_value=subprocess.CompletedProcess([],1,'',json.dumps(failure))):
-            for call in (lambda:media.api('GET',media.path),lambda:media.shortcut(['docs','+media-download'])):
+            for call in (lambda:media.call('+table-list',table=False),lambda:media.shortcut(['docs','+media-download'])):
                 with self.assertRaisesRegex(ValueError,'base:record:retrieve'):call()
 
     def test_auto_schema_pagination_partial_retry_and_full_results(self):
-        media=FakeBase().ensure();self.assertEqual(len(media.tables),1)
-        media.ensure();self.assertEqual(len(media.tables),1)
+        media=FakeBase().ensure();self.assertEqual(len(media.table_rows),1)
+        media.ensure();self.assertEqual(len(media.table_rows),1)
         value={'message':'多语言完整结果'*10000}
         media.put('messages/receiver/message-one.json',value,immutable=True)
         self.assertEqual(media.get('messages/receiver/message-one.json'),value)
@@ -279,17 +295,17 @@ class BaseTests(unittest.TestCase):
                         'loops':[],'updated_at':100,'revision':'first'}
                 key='members/worker.json';media.put(key,member)
                 ids=set(media.records);before=media.get(key)
-                with patch.object(media,'api',wraps=media.api) as calls:
+                with patch.object(media,'write_record',wraps=media.write_record) as calls:
                     for stamp in (115,130,145):
                         media.put(key,dict(member,updated_at=stamp,revision=str(stamp)))
                         self.assertEqual(set(media.records),ids)
                         value=media.get(key)
                         self.assertEqual(value['updated_at'],stamp)
                         self.assertEqual(value['agents'],member['agents'])
-                    writes=[c for c in calls.call_args_list if c.args[0] in ('POST','PUT','DELETE')]
-                    self.assertEqual([c.args[0] for c in writes],['PUT']*3)
+                    writes=calls.call_args_list
+                    self.assertEqual(len(writes),3)
                     self.assertEqual(len({c.args[1] for c in writes}),1)
-                    self.assertTrue(all(set(c.args[2]['fields'])=={'updated','更新时间'} for c in writes))
+                    self.assertTrue(all(set(c.args[0])=={'updated','更新时间'} for c in writes))
                 self.assertNotEqual(media.get(key)['revision'],before['revision'])
                 # A changed directory remains complete, then subsequent beats update its stable row.
                 changed=dict(member,agents=[{'id':'b','description':'新任务'}],updated_at=160,revision='changed')
@@ -300,15 +316,14 @@ class BaseTests(unittest.TestCase):
                 self.assertEqual(set(media.records),ids)
                 self.assertEqual(dict(media.list('members'))['worker.json']['updated_at'],175)
                 # The server committed a heartbeat but the response was lost: retry must not create a row.
-                api=media.api
-                def lose_response(method,path,data=None,params=None):
-                    answer=api(method,path,data,params)
-                    if method=='PUT':raise ValueError('Response lost after commit')
-                    return answer
-                with patch.object(media,'api',side_effect=lose_response):
+                write=media.write_record
+                def lose_response(fields,record_id=None):
+                    write(fields,record_id)
+                    raise ValueError('Response lost after commit')
+                with patch.object(media,'write_record',side_effect=lose_response):
                     with self.assertRaises(ValueError):media.put(key,dict(changed,updated_at=190))
-                with patch.object(media,'api',wraps=media.api) as retry:
+                with patch.object(media,'write_record',wraps=media.write_record) as retry:
                     media.put(key,dict(changed,updated_at=190))
-                    self.assertFalse(any(c.args[0] in ('POST','PUT','DELETE') for c in retry.call_args_list))
+                    self.assertFalse(retry.called)
                 self.assertEqual(set(media.records),ids)
                 self.assertEqual(media.get(key)['updated_at'],190)
