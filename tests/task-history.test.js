@@ -26,3 +26,10 @@ test('pending collection follows its pinned producer versions, including mixed r
  const run={tasks,records:{shared:[{revision:1,tasks:'old'},{revision:2,tasks:'new'}],other:[{revision:2,tasks:'other'}]},executions:[]};
  assert.deepEqual(history.rows(run).find(row=>row.tasks.id==='review').dependencies,['old','other']);
 });
+test('business graph folds only internal decisions into their source and preserves next work',()=>{
+  const run={tasks:{a:{id:'a',spec:{node:'work',inputs:{},outputs:{}},origin:{}},d:{id:'d',spec:{node:'$flow_agent',inputs:{},outputs:{}},origin:{flow_agent:{task_id:'a'},execution:'ea'}},b:{id:'b',spec:{node:'work',inputs:{},outputs:{}},origin:{agent:'ed'}}},executions:[{id:'ea',task_id:'a'},{id:'ed',task_id:'d'}]};
+  const graph=history.businessGraph(run);
+  assert.deepEqual(graph.items.map(i=>i.tasks.id),['a','b']);
+  assert.deepEqual(graph.links,[{from:'a',to:'b',kind:'planning'}]);
+  assert.equal(history.rows(run).length,3);
+});

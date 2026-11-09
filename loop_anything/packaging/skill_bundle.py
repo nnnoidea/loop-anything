@@ -1,6 +1,7 @@
 """Export the platform Skill. Author Skills stay bound to nodes in Loop packages."""
 import io
 import json
+import sys
 from pathlib import Path
 import zipfile
 from loop_anything.runtime.model import Invalid
@@ -28,10 +29,11 @@ def install_skills(data, directory, replace=False):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
     return {'directory': str(root), 'skills': folders,
-            'check': ['python', str(root / 'loop-anything-platform' / 'scripts' / 'call.py'), 'check']}
+            'check': ([sys.executable, str(root / 'loop-anything-platform' / 'scripts' / 'call.py'), 'check']
+                      if 'loop-anything-platform' in folders else [sys.executable,'-m','loop_anything','local','--help'])}
 
 
-def bundle(url, installation_url=None):
+def bundle(url, installation_url=None, only=None):
     source = platform_skill_directory()
     files = {}
     connection = json.dumps({'url': url}, ensure_ascii=False, indent=2)
@@ -45,19 +47,34 @@ def bundle(url, installation_url=None):
     for path in dispatch.rglob('*'):
         if path.is_file() and path.suffix in ('.md','.py','.json'):
             files['platform/loop-anything-dispatch/'+path.relative_to(dispatch).as_posix()]=path.read_bytes()
+    local=source.parent/'loop-anything-local/SKILL.md'
+    files['platform/loop-anything-local/SKILL.md']=local.read_bytes()
     from loop_anything.authoring_guidance import render_guide
     files[prefix + 'references/platform-capabilities.md'] = render_guide().encode('utf-8')
     files[prefix + 'connection.json'] = connection.encode('utf-8')
-    entry = ('# Loop Anything · 平台操作 Skill\n\n'
-             '本包提供安装到 Agent 的平台操作手册、调用脚本与连接配置。\n\n'
-             '- [平台 Skill](platform/loop-anything-platform/SKILL.md)：按场景选择持续工作、查询已有任务或调用本机/远端具名 Agent，再按需读取手册。\n'
-             '- [独立派单 Skill](platform/loop-anything-dispatch/SKILL.md)：一个团队链接即可派单、查结果；仅接单需要运行平台。\n'
-             '- 作者说明及节点 Skill 随 Loop 包交付，处理任务时通过平台工具读取。\n\n')
+    entry = ('# Loop Anything · Agent Skills\n\n'
+             '**English** | [简体中文](README.zh-CN.md)\n\n'
+             'This bundle contains Agent instructions, tool clients, and connection configuration.\n\n'
+             '- [Platform Skill](platform/loop-anything-platform/SKILL.md): build and run Loops, inspect existing work, and configure receivers. Read references as needed.\n'
+             '- [Dispatch Skill](platform/loop-anything-dispatch/SKILL.md): dispatch and read results through one team link; only receiving requires a running platform.\n'
+             '- [Local scheduling Skill](platform/loop-anything-local/SKILL.md): independent timers, conditions, and lightweight team receivers without a web UI or service database.\n'
+             '- Business handbooks and node Skills ship with Loop packages and are read through platform tools when working on a Task.\n\n')
+    entry_zh = ('# Loop Anything · Agent Skills\n\n'
+                '[English](README.md) | **简体中文**\n\n'
+                '本包提供安装到 Agent 的操作说明、调用脚本与连接配置；Skill 正文为英文。\n\n'
+                '- [平台 Skill](platform/loop-anything-platform/SKILL.md)：构建、运行 Loop，查看已有工作，配置接单端；详细说明按需读取。\n'
+                '- [独立派单 Skill](platform/loop-anything-dispatch/SKILL.md)：一个团队链接即可派单、查结果；仅接单需要运行平台。\n'
+                '- [本机调度 Skill](platform/loop-anything-local/SKILL.md)：独立定时/条件任务与团队轻量接单端，不启动网页或服务数据库。\n'
+                '- 业务说明及节点 Skill 随 Loop 包交付，处理任务时通过平台工具读取。\n\n')
     if installation_url:
-        entry += '[下载平台安装包](' + installation_url + ')。首次安装步骤见解压后的 README.md。\n'
+        entry += '[Download the platform installer](' + installation_url + '). Follow the README.md in the extracted package.\n'
+        entry_zh += '[下载平台安装包](' + installation_url + ')。首次安装步骤见解压后的 README.zh-CN.md。\n'
     else:
-        entry += '首次安装平台请阅读源码仓库的 README.md。\n'
+        entry += 'For first-time installation, start with README.md in the source repository.\n'
+        entry_zh += '首次安装平台请阅读源码仓库的 README.zh-CN.md。\n'
     files['README.md'] = entry.encode('utf-8')
+    files['README.zh-CN.md'] = entry_zh.encode('utf-8')
+    if only=='local':files={k:v for k,v in files.items() if k.startswith('platform/loop-anything-local/')}
     raw = io.BytesIO()
     with zipfile.ZipFile(raw, 'w', zipfile.ZIP_DEFLATED) as archive:
         for name, content in sorted(files.items()):

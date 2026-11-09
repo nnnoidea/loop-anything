@@ -49,11 +49,11 @@ class TerminalSessions:
               PRIMARY KEY(session_id, sequence));
             ''')
 
-    def recover(self):
+    def recover(self, remote_ids=()):
         with self.store.connection() as db:
             for row in db.execute('SELECT id, document FROM execution_sessions').fetchall():
                 doc = json.loads(row['document'])
-                if doc['state'] in ('starting', 'running'):
+                if doc['state'] in ('starting', 'running') and row['id'] not in remote_ids:
                     doc.update(state='interrupted', ended_at=time.time(), error='平台连接中断；确认旧进程停止后再恢复任务。')
                     db.execute('UPDATE execution_sessions SET document=? WHERE id=?', (json.dumps(doc), row['id']))
             db.commit()
@@ -66,6 +66,15 @@ class TerminalSessions:
             db.execute('INSERT INTO execution_sessions VALUES (?,?,?,?)', (ident, run_id, execution_id, json.dumps(doc)))
             if _db is None:db.commit()
         return Session(self, doc, secrets)
+
+    def attach(self, ident, secrets=()):
+        with self.store.connection() as db:
+            row=db.execute('SELECT document FROM execution_sessions WHERE id=?',(ident,)).fetchone()
+            sequence=db.execute('SELECT COALESCE(MAX(sequence),0) FROM execution_output WHERE session_id=?',(ident,)).fetchone()[0]
+        if not row:raise Invalid('Unknown execution session')
+        session=Session(self,json.loads(row[0]),secrets)
+        session.sequence=sequence
+        return session
 
     def read(self, run_id, execution_id, ident=None, after=0):
         if type(after) is not int or after < 0:
@@ -94,6 +103,9 @@ class TerminalSessions:
             session = self.live.get(ident)
             if not session or (session.doc['run_id'], session.doc['execution_id']) != (run_id, execution_id) or not session.writable():
                 raise Conflict('此执行会话已结束、尚未就绪或不支持输入。')
+            if getattr(session,'remote_control',None):
+                session.remote_control(data=data,cols=cols,rows=rows)
+                return {'accepted':True}
             if data is not None:
                 try:
                     session.inputs.put_nowait(data.encode())
@@ -136,7 +148,7 @@ class Session:
             db.execute('UPDATE execution_sessions SET document=? WHERE id=?', (json.dumps(self.doc), self.doc['id']))
             db.commit()
 
-    def append(self, stream, text, final=False):
+    def decode_output(self, stream, text, final=False):
         if self.capture:
             try:self.capture.feed(stream,text,final)
             except (Invalid, Conflict) as exc:
@@ -147,7 +159,10 @@ class Session:
         if self.stream and text:
             with self.manager.lock:
                 self.stream.feed(text)
-        text = self.redactors[stream].feed(text, final)
+        return self.redactors[stream].feed(text, final)
+
+    def append(self, stream, text, final=False):
+        text = self.decode_output(stream, text, final)
         if text:
             self.output_tail = (self.output_tail + text)[-65536:]
             self.sequence += 1
@@ -188,6 +203,8 @@ class Session:
                     attempt.pop('prompt_text',None)
 
     def writable(self):
+        if getattr(self,'remote_control',None):
+            return self.doc['interactive'] and self.doc['state']=='running' and (not self.check or self.check() is None)
         return self.doc['interactive'] and self.master is not None and self.process is not None and self.process.poll() is None and (not self.check or self.check() is None)
 
     def run(self, command, prompt, timeout, cwd, stop):

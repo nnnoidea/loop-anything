@@ -66,7 +66,7 @@ def probe_transition(engine, config, case):
     return detail
 
 
-def runtime_smoke(document, root, *, timeout=30, node_id=None, implementation_id=None, cases=None):
+def runtime_smoke(document, root, *, timeout=30, node_id=None, implementation_id=None, cases=None, configuration=None):
     """Opt-in: may call configured Agents/models. Never submit external business jobs."""
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise Invalid('Probe timeout must be positive and finite')
@@ -75,7 +75,13 @@ def runtime_smoke(document, root, *, timeout=30, node_id=None, implementation_id
     cases = [] if cases is None else cases
     if not isinstance(cases, list) or any(not isinstance(c, dict) for c in cases):
         raise Invalid('cases must be an array of lifecycle examples')
-    candidates = [(node, ident, config) for node, entry in effective_implementations(document, root).items()
+    from loop_anything.packaging.configuration import apply
+    execution_document = apply(document, configuration) if configuration is not None else document
+    implementations = effective_implementations(execution_document, root)
+    if execution_document['loop_definition'].get('flow_agent') is not None:
+        from loop_anything.runtime.flow_agent import NODE, effective
+        implementations[NODE] = effective(execution_document['loop_definition']['flow_agent'], root)
+    candidates = [(node, ident, config) for node, entry in implementations.items()
                   for ident, config in options(entry).items()
                   if (node_id is None or node == node_id) and (implementation_id is None or ident == implementation_id)]
     if not candidates:
@@ -94,7 +100,7 @@ def runtime_smoke(document, root, *, timeout=30, node_id=None, implementation_id
             raise Invalid('Case context fields must be objects')
         if 'expected' in case and not isinstance(case['expected'], str):
             raise Invalid('Case expected state must be text')
-    preflight = smoke(document, root)
+    preflight = smoke(document, root, configuration=configuration)
     checks = [c for c in preflight['checks'] if c['status'] == 'fail' and
               (not c.get('node') or (c['node'], c.get('implementation')) in selected)]
     def add(node, ident, kind, status, detail, **fields):
@@ -108,6 +114,9 @@ def runtime_smoke(document, root, *, timeout=30, node_id=None, implementation_id
         try:
             for node, ident, config in candidates:
                 if config['kind'] == 'agent':
+                    if config.get('executor'):
+                        add(node, ident, 'agent_probe', 'unknown', 'Executor-bound Agent: test through the selected receiver; the command is not run on the service machine.')
+                        continue
                     if config.get('dispatch'):
                         add(node, ident, 'agent_probe', 'unknown', 'Group Agent: configure the Run group and explicitly test its remote member. Local command is not executed.')
                         continue

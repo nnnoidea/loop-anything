@@ -126,7 +126,10 @@ def make_archive(document, assets=None):
     document['format'] = CAPABILITY_FORMAT if needed else FORMAT
     if needed:document['requires'] = needed
     validate_document(document)
-    assets = assets or {}
+    assets = dict(assets or {})
+    from loop_anything.packaging.configuration import TEMPLATE, template
+    if TEMPLATE not in assets:
+        assets[TEMPLATE] = ((json.dumps(template(document), ensure_ascii=False, indent=2) + '\n').encode(), False)
     if set(document.get('files', {})) - set(assets):
         raise Invalid('Existing manifest declares assets that were not supplied; explicitly include them instead of silently dropping files')
     if len(assets) >= MAX_FILES:
@@ -243,9 +246,13 @@ def effective_implementations(document, root):
     return implementations
 
 
-def smoke(document, root):
+def smoke(document, root, configuration=None):
     """No subprocess, imports, network, writes, dependency installation or repairs."""
     report = validate_document(document)
+    from loop_anything.packaging.configuration import apply
+    execution_document = apply(document, configuration) if configuration is not None else document
+    if configuration is not None:
+        report = validate_v2(current_definition(execution_document['loop_definition']), execution_document.get('implementations', {}))
     root = Path(root)
     checks = []
     def add(kind, target, passed, detail, node=None, implementation=None):
@@ -274,7 +281,10 @@ def smoke(document, root):
                                                 for i in range(1, len(PurePosixPath(name).parts) + 1))
         valid = safe and same_file(file, metadata['sha256'])
         add('asset', name, valid, 'Installed asset matches manifest.' if valid else 'Asset missing, changed or symlinked.')
-    candidates = [(node, ident, config) for node, entry in effective_implementations(document, root).items() for ident, config in options(entry).items()]
+    candidates = [(node, ident, config) for node, entry in effective_implementations(execution_document, root).items() for ident, config in options(entry).items()]
+    if execution_document['loop_definition'].get('flow_agent') is not None:
+        from loop_anything.runtime.flow_agent import effective, NODE
+        candidates.append((NODE, 'default', effective(execution_document['loop_definition']['flow_agent'], root)))
     for name, ident, implementation in candidates:
         directory = Path(implementation.get('cwd', str(root)))
         if 'command' in implementation or 'observe' in implementation:
@@ -317,12 +327,13 @@ def load_installed(database, key):
     uri = Path(database).resolve().as_uri() + '?mode=ro'
     try:
         with sqlite3.connect(uri, uri=True) as db:
-            row = db.execute('SELECT document, root FROM loop_packages WHERE key=?', (key,)).fetchone()
+            row = db.execute('SELECT document, root, digest FROM loop_packages WHERE key=?', (key,)).fetchone()
     except sqlite3.Error as exc:
         raise Invalid('No installed package database: ' + str(exc)) from exc
     if row is None:
         raise Invalid('Unknown installed package')
-    return json.loads(row[0]), Path(row[1])
+    root=Path(database).resolve().parent/'packages'/row[2]
+    return json.loads(row[0]), root if root.is_dir() else Path(row[1])
 
 
 def install(store, data):
@@ -356,14 +367,17 @@ def install(store, data):
         # Keep the author's document untouched; cwd resolution is installation metadata.
         bound = effective_implementations(document, root)
         existing = db.execute('SELECT document, root FROM loop_packages WHERE key=?', (key,)).fetchone()
-        if existing and (json.loads(existing[0]) != document or existing[1] != str(root)):
+        if existing and (json.loads(existing[0]) != document or existing[1] != str(root) and not getattr(store,'hosting_team',False)):
             raise Conflict('Package identity already installed with different content/location')
         db.execute('INSERT OR IGNORE INTO loop_packages VALUES (?,?,?,?)', (key, fingerprint, str(root), json.dumps(document)))
+        if getattr(store,'hosting_team',False):db.execute('UPDATE loop_packages SET root=? WHERE key=?',(str(root),key))
         db.execute('INSERT OR IGNORE INTO loop_definitions VALUES (?,?,?,?)',
                    (key, fingerprint, json.dumps(effective_definition(document)), json.dumps(bound)))
         db.commit()
+    from loop_anything.packaging.configuration import initialize_file
+    config_path = initialize_file(store.filename, key, document, root)
     return {'key': key, 'loop_definition_id': document['loop_definition']['id'], 'version': document['loop_definition']['version'],
-            'root': str(root), 'unbound_nodes': validate_document(document)['unbound_nodes'],
+            'root': str(root), 'config_path': config_path, 'unbound_nodes': validate_document(document)['unbound_nodes'],
             'installed': True, 'started': False}
 
 

@@ -15,13 +15,17 @@ def uid(prefix):
 
 
 class Store:
-    def __init__(self, filename):
+    def __init__(self, filename, journal_mode=None):
         self.filename = str(filename)
         Path(filename).parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
             if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='blueprints'").fetchone():
                 raise Invalid('This database uses the pre-0.2 names. Convert a backup before opening it with Loop Anything; the original has not been changed.')
-            db.execute('PRAGMA journal_mode=WAL')
+            existing=db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='platform_settings'").fetchone()
+            saved=db.execute("SELECT value FROM platform_settings WHERE key='journal_mode'").fetchone() if existing else None
+            mode=journal_mode or (json.loads(saved[0]) if saved else 'WAL')
+            if mode not in ('WAL','DELETE'):raise Invalid('Unsupported journal mode')
+            db.execute('PRAGMA journal_mode='+mode)
             db.executescript('''
             CREATE TABLE IF NOT EXISTS loop_definitions (key TEXT PRIMARY KEY, digest TEXT, document TEXT, implementations TEXT);
             CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, document TEXT NOT NULL);
@@ -33,6 +37,9 @@ class Store:
             CREATE TABLE IF NOT EXISTS loop_drafts (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, updated_at REAL NOT NULL, document TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS loop_packages (key TEXT PRIMARY KEY, digest TEXT NOT NULL, root TEXT NOT NULL, document TEXT NOT NULL);
             ''')
+            from loop_anything.runtime.run_library import initialize
+            initialize(db)
+            db.execute("INSERT OR REPLACE INTO platform_settings VALUES ('journal_mode',?)",(json.dumps(mode),));db.commit()
 
     @contextmanager
     def connection(self):
@@ -71,17 +78,19 @@ class Store:
         from loop_anything.packaging.packages import make_archive,install
         return install(self,make_archive({'loop_definition':loop_definition,'implementations':implementations}))
 
-    def catalog(self):
+    def catalog(self, include_archived=True):
         with self.connection() as db:
             packages = {r[0] for r in db.execute('SELECT key FROM loop_packages')}
-            return [dict(key=r['key'], loop_definition=current_definition(json.loads(r['document'])), implementations=json.loads(r['implementations']),
+            archived = dict(db.execute('SELECT key, archived_at FROM loop_library'))
+            return [dict(key=r['key'], archived_at=archived.get(r['key']), loop_definition=current_definition(json.loads(r['document'])), implementations=json.loads(r['implementations']),
                          **({'package_key': r['key']} if r['key'] in packages else {}))
-                    for r in db.execute('SELECT * FROM loop_definitions ORDER BY key')]
+                    for r in db.execute('SELECT * FROM loop_definitions ORDER BY key') if include_archived or not archived.get(r['key'])]
 
-    def drafts(self):
+    def drafts(self, include_archived=True):
         with self.connection() as db:
-            return [dict(id=r['id'], revision=r['revision'], updated_at=r['updated_at'], **json.loads(r['document']))
-                    for r in db.execute('SELECT * FROM loop_drafts ORDER BY updated_at DESC')]
+            archived = dict(db.execute('SELECT key, archived_at FROM loop_library'))
+            return [dict(id=r['id'], revision=r['revision'], updated_at=r['updated_at'], archived_at=archived.get(r['id']), **json.loads(r['document']))
+                    for r in db.execute('SELECT * FROM loop_drafts ORDER BY updated_at DESC') if include_archived or not archived.get(r['id'])]
 
     def save_draft(self, loop_definition, implementations, draft_id=None, revision=None, assets=None, checks=None):
         # Drafts may be incomplete. Strict graph validation belongs to publish.
@@ -117,7 +126,9 @@ class Store:
             db.commit()
         return {'id': draft_id, 'revision': revision, 'updated_at': now, 'loop_definition': loop_definition, 'implementations': implementations, **extra}
 
-    def create(self, key, title, inputs=None, settings=None, authorization='', acquire=False, bindings=None, fallback_node=None, global_agent_node=None, notification_command=None, notification_route=None, _db=None, conversation_id=None, chat_context=None):
+    def create(self, key, title, inputs=None, settings=None, authorization='', acquire=False, bindings=None, fallback_node=None, global_agent_node=None, notification_command=None, notification_route=None, _db=None, conversation_id=None, chat_context=None, created_by=None):
+        from loop_anything.runtime.run_library import user_name
+        created_by = user_name(created_by or '')
         if chat_context and not conversation_id and notification_route is None and notification_command is None:
             from loop_anything.runtime.communication import service
             from loop_anything.runtime.communication_conversations import from_source
@@ -133,6 +144,7 @@ class Store:
         item = next((c for c in self.catalog() if c['key'] == key), None)
         if item is None:
             raise Invalid('Unknown loop_definition')
+        configuration = None
         if item.get('package_key'):
             from loop_anything.packaging.packages import load_installed, smoke
             document, root = load_installed(self.filename, key)
@@ -140,6 +152,12 @@ class Store:
             if not readiness['startable']:
                 failures = [c['target'] for c in readiness['checks'] if c['status'] == 'fail' and c['kind'] in ('manifest', 'asset')]
                 raise Invalid('Package is installed but not ready; run smoke and resolve: ' + ', '.join(failures))
+            from loop_anything.packaging.configuration import read_file, path_for, effective
+            configuration = read_file(document, root, path_for(self.filename, key))
+            configured = effective(document, root, configuration['config'])
+            item = dict(item, **{k: configured[k] for k in ('loop_definition', 'implementations')})
+            if bindings is None:
+                bindings = configured['bindings']
         loop_definition = item['loop_definition']
         if loop_definition.get('schema_version') != 2:
             raise Invalid('Legacy v1 loop_definitions are inspect-only; publish a Timeline-based Loop to execute')
@@ -153,7 +171,12 @@ class Store:
         run = {'id': uid('run'), 'title': title, 'loop_key': key, 'loop_definition': loop_definition,
                'implementations': item['implementations'], 'inputs': defaults,
                'status': 'running', 'revision': 1, 'created_at': time.time(),
+               'created_by': created_by, 'metadata_revision': 0, 'archived_at': None,
                'executions': [], 'events': [], 'history': []}
+        if configuration is not None:
+            run['configuration'] = dict({k: copy.deepcopy(configuration[k]) for k in ('path', 'revision', 'config')}, package_root=str(root))
+        from loop_anything.runtime.flow_agent import materialize as materialize_flow
+        materialize_flow(run, root if item.get('package_key') else None)
         if inherit_conversation:run['notification_conversation_id']=conversation_id
         if loop_definition.get('schema_version') == 2:
             from loop_anything.runtime.timeline_runtime import initialize_run
@@ -198,6 +221,16 @@ class Store:
 
     @staticmethod
     def log(run, kind, message, execution=None, detail=None):
+        from loop_anything.runtime.run_library import meaningful_event
+        active = meaningful_event(kind, detail)
+        if kind == 'transition' and (detail or {}).get('event') == 'progress':
+            attempt = next((e for e in run['executions'] if e['id'] == execution), None)
+            payload = detail.get('detail', {})
+            progress = {k: payload[k] for k in ('external_status', 'classification', 'phase', 'progress', 'metrics') if k in payload}
+            if attempt is not None and progress:
+                active = active or attempt.get('activity_progress') != progress
+                attempt['activity_progress'] = copy.deepcopy(progress)
+        if active: run['last_activity_at'] = time.time()
         run['history'].append({'id': uid('event'), 'at': time.time(), 'kind': kind,
                                'message': message, 'execution': execution, 'detail': detail})
 
@@ -226,6 +259,16 @@ class Store:
             return normalize_run(run)  # Legacy snapshots are migrated transactionally on next edit.
         loop_definition = db.execute('SELECT document, implementations FROM loop_definitions WHERE key=?', (run['loop_key'],)).fetchone()
         run.update(loop_definition=current_definition(json.loads(loop_definition[0])), implementations=json.loads(loop_definition[1]))
+        if run.get('configuration'):
+            from loop_anything.packaging.configuration import effective
+            package = db.execute('SELECT document FROM loop_packages WHERE key=?', (run['loop_key'],)).fetchone()
+            snapshot = run['configuration']
+            configured = effective(json.loads(package[0]), snapshot['package_root'], snapshot['config'])
+            run.update({k: configured[k] for k in ('loop_definition', 'implementations')})
+        if run['loop_definition'].get('flow_agent') is not None:
+            from loop_anything.runtime.flow_agent import materialize as materialize_flow
+            package = db.execute('SELECT root FROM loop_packages WHERE key=?', (run['loop_key'],)).fetchone()
+            materialize_flow(run, run.get('configuration', {}).get('package_root') or (package[0] if package else None))
         if run['loop_definition']['id']=='platform-collaboration' and run.get('collaboration',{}).get('coordinator_implementation'):
             run['implementations']['coordinate']=copy.deepcopy(run['collaboration']['coordinator_implementation'])
         for field, section in self.PARTS.items():
@@ -242,6 +285,9 @@ class Store:
         return normalize_run(run)
 
     def _save(self, db, run):
+        if not db.in_transaction: db.execute('BEGIN IMMEDIATE')
+        if not db.execute('SELECT 1 FROM loop_definitions WHERE key=?',(run['loop_key'],)).fetchone():
+            raise Conflict('Loop version was deleted before this Run could be saved')
         if run.get('schema_version') != 2:
             db.execute('INSERT OR REPLACE INTO runs VALUES (?,?)', (run['id'], json.dumps(run, allow_nan=False)))
             return

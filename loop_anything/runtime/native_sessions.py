@@ -170,6 +170,11 @@ def active_native(db, provider, ident, store):
 
 def confirm_stopped(engine, run_id, execution_id, session_id):
     from loop_anything.interfaces.agent_tasks import recover_owner
+    try:remote=engine.executors.get(session_id)
+    except Invalid:remote=None
+    if remote and remote['state'] in ('unknown','completed','failed') and not remote.get('applied'):
+        if (remote['metadata'].get('run_id'),remote['metadata'].get('execution_id'))!=(run_id,execution_id):raise Conflict('Execution association does not match')
+        return engine.executors.confirm_stopped(session_id)
     with engine.terminals.lock:
         if session_id in engine.terminals.live:raise Conflict('Process is still managed by this platform; wait for it to stop')
         with engine.store.connection() as db:
@@ -285,10 +290,11 @@ def resume(engine, run_id, execution_id, arguments):
         db.commit()
     def execute():
         from loop_anything.interfaces.agent_tasks import owner_for, release_in_run
-        from loop_anything.runtime.agent_prompt import task_context
-        error=None
+        from loop_anything.runtime.agent_prompt import task_context,process_prompt
+        from loop_anything.runtime.executors import RemotePending
+        error=None;deferred=False
         try:
-            config=execution['implementation']
+            config=engine.implementation(dict(execution['implementation'],command=command,cwd=cwd))
             current=engine.store.get(run_id)
             if not owner_for(current,token):raise Conflict('Resume ownership expired before startup')
             context=task_context(engine.store,current,dict(execution,token=token),getattr(engine,'platform_url',None),execution['task_id'])
@@ -299,30 +305,42 @@ def resume(engine, run_id, execution_id, arguments):
                 'The source execution and committed outputs are history; do not repeat completed work or overwrite results merely because this conversation resumed. '
                 'Explain results when asked; make new tasks or explicit corrections only when requested and within this Task branch. '
                 'Finish this continuation by calling the platform finish tool; it releases this conversation scope and closes this terminal, without marking the historical Task complete. '
-                'Use platform_client with run_id/token from this context for existing Run tools.\nRun context:\n'+json.dumps(context,ensure_ascii=False))
+                'Use platform_client with run_id/token from this context for existing Run tools.\nRun context:\n{{context}}')
+            prompt=process_prompt(config,context,prompt)
             session.native_id=ident
             def state():
                 latest=engine.store.get(run_id)
                 if not owner_for(latest,token):return 'finished'
                 if latest['status'] in ('terminated','completed'):return 'revoked'
             session.check=state
-            result=run_command(command,prompt,config.get('timeout'),cwd,engine.stopping,session)
+            if config.get('executor'):
+                from loop_anything.runtime.executors import run as remote_run
+                result=remote_run(engine,config,config['command'],prompt,config.get('timeout'),config.get('cwd'),engine.stopping,session,session_id,
+                    {'kind':'resume','run_id':run_id,'execution_id':execution_id})
+            else:result=run_command(config['command'],prompt,config.get('timeout'),config.get('cwd'),engine.stopping,session)
             if result.returncode:raise Invalid('Resume command failed: '+result.stdout[-1500:])
+        except RemotePending:
+            deferred=True
         except Exception as exc:
             error=exc
             # Also surface errors that occur before Session.run gets control.
             if session.doc['state']=='starting':
                 session.doc.update(state='error',error=str(exc),ended_at=time.time());session.save()
         finally:
+            if deferred:return
             with engine.store.edit(run_id) as latest:
                 owner=owner_for(latest,token)
                 attempt=engine.execution(latest,execution_id)
                 if not isinstance(error,CommandNotStopped) and attempt.get('worker_active')==session_id:
                     attempt.pop('worker_active')
                 if owner:
-                    if isinstance(error,CommandNotStopped):owner['recovery_required']=True
+                    if isinstance(error,CommandNotStopped):
+                        if not (execution['implementation'].get('executor') and engine.stopping.is_set()):owner['recovery_required']=True
                     else:release_in_run(latest,token)
                 Store.log(latest,'agent_resume_exit',str(error) if error else 'CLI continuation ended',execution_id,{'session_id':session_id,'error':bool(error)})
+            if execution['implementation'].get('executor'):
+                try:engine.executors.applied(session_id)
+                except Invalid:pass
     try:engine.futures.add(engine.pool.submit(execute))
     except RuntimeError:
         from loop_anything.interfaces.agent_tasks import release_in_run

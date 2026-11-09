@@ -1,75 +1,75 @@
-# Agent 执行会话与 CLI 接入
+# Agent execution sessions and CLI integration
 
-平台提供后台 Agent 实时输出与交互，关联具体 Run、Task 和执行尝试。已登记可恢复原生 session 时仅保留有限实时尾部；成功退出后保留 session 定位和业务结果，移除重复终端全文及 prompt。终端返回 output_source=native_session 时，从任务操作恢复原 session 查看过程，不能把空输出理解为没有执行。无原生 session、自定义 Agent 没有恢复命令或失败时保留诊断输出。断开查看连接不停止进程；已有历史不批量删除。
+The platform provides live background-agent output and interaction tied to a Run, Task, and attempt. With a registered recoverable native session, it retains only a bounded live tail; successful exit keeps session location/business results and removes duplicate terminal text/prompt. `output_source=native_session` means resume the original session to inspect its execution history, not that nothing executed. Diagnostics remain for failures, absent native sessions, or custom agents lacking a resume command. Disconnecting a viewer does not stop execution; old history is not bulk-deleted.
 
-这是平台已有能力。Loop 作者只需提供命令和业务方法，不需要另建日志查看功能、终端服务器、任务身份映射或对话代理。构建前用 `read_capabilities(capability="agent_terminal")` 核实运行中的平台支持情况。
+This is an existing platform capability. Authors supply commands and business methods, not another log viewer, terminal server, identity map, or conversation proxy. Check `read_capabilities(capability="agent_terminal")` on the running service before relying on it.
 
-## 普通命令：默认只读输出
+## Ordinary commands: read-only output by default
 
-现有 Agent 命令保持原行为：平台把完整提示词一次性写入 stdin 并关闭输入，持续收集 stdout/stderr。例如：
+Existing agent commands retain their behavior: the platform writes the full prompt once to stdin, closes input, and collects stdout/stderr continuously. Example:
 
 ```json
 {"kind":"agent","command":["codex","exec","-"]}
 ```
 
-显示速度取决于 CLI 自己是否及时输出/刷新缓冲。平台不追加模型、权限、工具或输出格式参数。CLI 的结构化输出会按原文显示；不是所有 Agent 都会输出详细进度。
+Output timing depends on CLI flushing. The platform does not append model, permission, tool, or output-format options. Structured CLI output remains verbatim; not every agent emits detailed progress.
 
-## 交互终端：同一进程内输入
+## Interactive terminals: input to the same process
 
-在候选实现中设置 `terminal: true`。当前 PTY 主机支持 macOS/Linux；Windows 可使用普通命令实时输出，交互终端会明确拒绝启动。
+Set candidate `terminal:true`. PTY hosts currently support macOS/Linux. Windows supports ordinary live output but rejects interactive startup explicitly.
 
-通过公开工具配置：
+Configure through public tools:
 
 ```json
 {
   "tool":"set_implementation",
   "arguments":{
-    "draft_id":"实际草稿 ID","revision":1,"node_id":"实际节点 ID",
+    "draft_id":"ACTUAL_DRAFT_ID","revision":1,"node_id":"ACTUAL_NODE_ID",
     "kind":"agent","terminal":true,"command":["codex","{{prompt}}"],
-    "cwd":"/用户选择的工作目录"
+    "cwd":"/user-selected/workdir"
   }
 }
 ```
 
-命令参数中的 `{{prompt}}` 替换为完整任务提示词，作为一个参数传入，不经过 shell。CLI 必须支持初始提示词参数；可自行添加其支持的参数。
+`{{prompt}}` becomes the full task prompt in one argv element, without a shell. The CLI must accept an initial prompt argument; add only options that it supports.
 
-对于较长的上下文或接受文件的 CLI，使用 `{{prompt_file}}`：平台写入本次执行专用的 UTF-8 文件（权限 0600），替换为文件路径，并通过 `LOOP_ANYTHING_PROMPT_FILE` 环境变量提供相同路径。配置的程序必须读取该文件；进程结束时文件移除。`{{prompt_file}}` 不能自动让不支持文件输入的 CLI 读取文件。
+For long context or file-aware CLIs, use `{{prompt_file}}`. The platform creates a private per-execution UTF-8 file (0600), substitutes its path, and also provides `LOOP_ANYTHING_PROMPT_FILE`. The program must read it; it is removed when the process ends. The placeholder does not make a CLI support file input automatically.
 
-每个交互命令必须包含至少一种占位符。平台不会把长提示词模拟成终端按键；终端 stdin 留给真实交互。PTY 使用 `TERM=xterm-256color`，支持 ANSI 屏幕、键盘输入和窗口尺寸调整；主机维护终端状态并回复标准光标/设备查询，不依赖查看连接。CLI 的登录、模型、信任目录、权限和工具配置仍由用户管理；程序必须能调用平台工具才能参与 Loop。
+Interactive commands require at least one prompt placeholder. Long prompts are not simulated keystrokes; terminal stdin remains available for interaction. PTY uses TERM=xterm-256color, supports ANSI screen/input/resize, and maintains screen state and standard cursor/device responses without a viewer. Users manage CLI login, model, trusted directories, permissions, and tools. The program must be able to call platform tools to participate in a Loop.
 
-## 任务与退出约定
+## Task and exit contract
 
-- 交互连接使用已经运行的同一个 Agent，不新建 Agent，不取得另一份任务操作权。
-- 可以直接输入补充要求、回答 CLI 提问；Ctrl+C 原样发送给该 CLI，其效果由 CLI 决定。
-- CLI 通过既有 `read_task`、`report_task`/`complete_task`、`finish` 协议提交结果。终端文字不作为业务结果。
-- 交互 Agent 成功调用 `finish` 释放操作权后，平台停止该会话的进程组，保存输出。普通命令仍保留原先自然退出语义。
-- 完成后的终端只可回看，不能继续向已失去操作权的 Agent 发指令。继续工作使用现有任务编排工具，失败后重试产生新的执行记录。
-- 用户配置的 timeout、平台关闭及未知进程状态恢复规则仍有效。平台重启会保留输出，标记旧会话中断；不会自动重连或恢复厂商 CLI 会话，也不会把未知副作用视为成功。
+- Interaction connects to the same running agent, not a new agent or another task owner.
+- Enter additional instructions or answer CLI questions directly. Ctrl+C is forwarded unchanged; the CLI determines its effect.
+- Use read_task, report_task/complete_task, and finish to submit results. Terminal text is not a business result.
+- After an interactive agent successfully calls finish, the platform stops that session's process group and saves output. Ordinary commands retain natural-exit behavior.
+- A completed terminal is inspection-only; do not send instructions to an agent that lost its operation identity. Continue through task orchestration; retry creates another attempt.
+- Configured timeout, platform shutdown, and unknown-process recovery still apply. Restart preserves output and marks old sessions interrupted; it does not automatically reconnect/resume vendor sessions or treat unknown side effects as success.
 
-## 访问与验收
+## Access and acceptance
 
-终端日志可能包含工作目录或业务数据，输入仍核对实际终端session及执行状态。运行令牌在持久化输出中遮蔽；这不是通用业务数据脱敏服务。需要保留的输出存于本机 SQLite，按游标分页读取，不随 Loop 包分享；原生 session 文件由原机器 CLI 管理。
+Logs can contain working directories/business data. Input checks the actual terminal session and execution state. Runtime tokens are masked in persisted output; this is not general business-data redaction. Retained output is local SQLite data read by cursor, not shared with Loop packages. The original machine's CLI manages native session files.
 
-`smoke_runtime` 能检查配置的交互命令启动，并在观察到探针标记后关闭探针会话；交互界面可能回显提示词，检查明确保留模型回复未验证，不能将回显当成模型成功。它不能证明该 CLI 的所有交互、登录和业务工具均可用；`test_loop` 仍只做模拟流程验收。
+`smoke_runtime` starts the configured interactive command and closes its probe after observing a marker. Because an interactive UI may echo the prompt, the check explicitly leaves model response unverified; echo is not model success. It cannot prove all interaction, login, or business tools work. `test_loop` remains simulated acceptance.
 
-## 每个任务的结果与原生会话恢复
+## Task results and native-session recovery
 
-通过 read_task/read_record/read_run 读取任务结果及执行历史，查看不启动 CLI 或改变结果。平台已有按执行身份查看输出、连接运行进程及恢复原生会话的能力；构建时配置准确身份和恢复命令，无需另建恢复服务。
+Use read_task/read_record/read_run for results/history; reading neither starts a CLI nor changes results. Existing capabilities inspect by execution identity, connect to live processes, and resume native sessions. Configure accurate identity/resume commands rather than creating another recovery service.
 
-### 保存真实原生 ID
+### Store the real native ID
 
-平台执行 ID 与 CLI session ID 分开保存。支持以下来源：
+Platform execution IDs and CLI session IDs are stored separately. Sources include:
 
-- Codex：自动识别 `codex exec --json` 的 `thread.started.thread_id`，以及普通输出中的明确 `session id:` 行。平台不会擅自追加 `--json`。
-- Claude Code：识别 JSON/stream-json 中的 `session_id`；交互启动可以显式配置 `command: ["claude","--session-id","{{session_id}}","{{prompt}}"]`，平台在每次执行生成新的 UUID 并替换占位符。
-- 已在平台执行中的 Agent 可调用 `register_agent_session(execution_id, provider, session_id, cwd)` 记录自己当前 CLI 的真实会话 ID。例如 Codex 的工具进程可读取 `CODEX_THREAD_ID`；拿不到真实 ID 时不猜测。只能登记自己持权的当前执行，不能覆盖另一个已关联的 ID。没有自身 execution_id 的外部入口先按[入口 Agent 与 session 登记](communication.md#入口-agent-与-session-登记)选择方式，不借用其他 Run 的执行。
-- 旧执行可从其自身已保存的启动输出识别 ID；没有记录时由用户明确补充。平台不扫描无关 CLI 历史，也不使用 `--last`。
+- Codex: recognize thread.started.thread_id from `codex exec --json` or an explicit `session id:` output line. The platform does not add --json itself.
+- Claude Code: recognize session_id in JSON/stream-json. Interactive startup can explicitly use `["claude","--session-id","{{session_id}}","{{prompt}}"]`; each execution receives a fresh UUID.
+- A currently executing managed agent can call `register_agent_session(execution_id, provider, session_id, cwd)` with its actual CLI identity. A Codex tool process can read CODEX_THREAD_ID. Do not guess an unavailable ID, register another execution, or overwrite a different existing association. External entry without its own execution_id follows [entry/session guidance](communication.md#entry-agents-and-session-registration), not another Run's execution.
+- Older executions may recover an ID from their own saved startup output. Otherwise the user supplies it explicitly. The platform does not scan unrelated CLI history or use --last.
 
-直接命令的 `codex` / `claude` 可自动识别；包装脚本通过候选字段 `agent_cli: "codex" | "claude" | "custom"` 显式说明。
+Direct codex/claude commands can be recognized. Wrappers declare `agent_cli:"codex"|"claude"|"custom"` explicitly.
 
-### 恢复命令
+### Resume commands
 
-候选可声明 `resume_command`（每个元素一个 argv）：
+Candidates may declare `resume_command` as argv:
 
 ```json
 {
@@ -78,23 +78,26 @@
 }
 ```
 
-Claude 示例为 `["claude","--resume","{{session_id}}","{{prompt}}"]`。其他 CLI 也可使用显式命令。恢复命令必须包含真实 ID 占位符以及新提示词 `{{prompt}}` 或 `{{prompt_file}}`，由平台传入最新任务上下文及用户要求。本次恢复命令需由用户明确选择；所需模型、权限、profile 等参数须显式保留，平台不猜测或添加。
+For Claude use `["claude","--resume","{{session_id}}","{{prompt}}"]`; other CLIs can provide explicit commands. Include the real ID placeholder and a fresh `{{prompt}}` or `{{prompt_file}}` for current task context/user instructions. The user explicitly chooses the resume command; retain required model, permission, and profile options rather than guessing or adding them.
 
-恢复仅对仍处于 running/paused 的 Run 开放，沿用所选任务支线的操作范围。同 Task 已有执行者、同 CLI 会话仍在运行或旧进程状态未知时，平台拒绝重复恢复。重复请求同一正在恢复的执行只连接已有进程。
+Recovery is available only for running/paused Runs and keeps the selected task branch's scope. Existing execution of the Task, an active native CLI session, or unknown old process state blocks duplicates. Repeated requests for an execution already resuming attach to its existing process.
 
-每次恢复签发新的平台操作令牌，旧令牌不能复用。源任务及其正式结果保持历史语义；解释结果不重复执行，修改工作必须通过明确的任务工具。恢复会话调用 `finish` 仅结束本次对话并释放操作权，不把原任务伪造成重新完成。CLI 找不到原生记录时保留失败信息，不自动改为新会话。
+Each recovery issues a new platform token; old tokens cannot be reused. Source tasks and committed results retain their historical meaning. Explaining results does not rerun work; modifications use explicit task tools. A recovered session's finish ends that conversation and releases scope without pretending the source Task completed again. Missing native CLI history remains a failure, not an automatic new session.
 
-CLI 自己的会话文件仍需保留。会话 ID 不能替代这些文件，也不随 Loop 包搬迁到另一台机器。此能力已经由平台提供，作者无需另建会话注册、恢复进程或任务结果展示功能。
+Retain the CLI's session files. An ID does not replace them and does not move them with a Loop package. The platform already provides registration, resume processes, and result viewing; authors need not rebuild them.
 
-接口参考：[Codex JSON 事件](https://learn.chatgpt.com/docs/non-interactive-mode)、[Claude CLI session/resume 参数](https://code.claude.com/docs/en/cli-reference)。具体版本以主机安装的 CLI 为准。
+Interface references: [Codex JSON events](https://learn.chatgpt.com/docs/non-interactive-mode), [Claude session/resume options](https://code.claude.com/docs/en/cli-reference). Match the CLI version actually installed on the host.
 
+### Recovery boundaries and corrections
 
-### 恢复边界与纠错
+Within one platform, a native CLI session stays exclusive until its process truly exits, including the interval after finish and recovery across Tasks/Runs. For unknown state, inspect records and confirm the old CLI and child processes stopped on the host before confirming stoppage through the platform and resuming. Confirming a recovered conversation's process stopped does not change the source business task's failure count.
 
-同一平台内，同一个原生 CLI 会话在进程真正退出前保持互斥，包括已调用 finish 但仍在退出的间隔，以及跨任务/跨 Run 的恢复。进程状态未知时先查看会话记录，在主机确认旧 CLI 及其子进程已停止后，通过平台确认旧进程停止后再恢复。确认恢复对话进程停止不改变原业务任务的失败计数。
+Automatic native-ID detection is auxiliary. Conflicting IDs produce diagnostics and preserve the existing association without aborting business execution. Users may explicitly correct a wrong manual association. The platform checks the observed prior association, rejects replacing active/unconfirmed sessions, and preserves old-session and association-change history.
 
-自动识别原生 ID 是辅助功能。ID 来源冲突会显示诊断并保留既有关联，不中止业务执行。用户如手动关联错误，可明确纠正 ID；平台按读取到的旧关联检查并发变化，拒绝替换仍活动或未确认停止的会话，保留旧会话和关联变更历史。
+For direct Codex/Claude commands, the platform checks explicit resume syntax and a separate session ID, rejecting latest/continue/fork options. Authors of custom wrappers must ensure equivalent native recovery semantics.
 
-直接使用 Codex/Claude 命令时，平台检查明确的 resume 子命令/参数和独立的 session ID，拒绝最近会话/继续/分叉选项。自定义包装程序仍须由作者保证真正实现对应 CLI 的恢复语义。
+An interactive CLI's own exit cleans children still in its process group. Detached or externally launched CLIs are not adopted. A user-provided agent may register its ID after its first report establishes an execution and before finish, with its own token/scope.
 
-交互 CLI 自行退出也会清理仍处于同一进程组的子进程。平台不接管脱离进程组或外部手动启动的 CLI。用户自带 Agent 可在首次报告建立实际 execution 后、finish 之前登记会话 ID，登记仍需自己的 token 和任务范围。
+## Terminal clients and lightweight executors
+
+Without the web UI, use `read_execution_session(run_id,execution_id,session_id?,after?)` for paginated output. `prepare:true` returns the saved native session and exact resume command. User-requested input uses `control_execution_session(action=input,data=...,session_id=...)`; continuation uses `action=resume,continuation={provider,native_session_id,command,cwd,message}` with preparation's identity/command. Execution stays on the original implementation.executor over HTTP/NAS. Verify unknown processes before confirm_executor_stopped or session confirm_stopped; neither automatically reexecutes work.

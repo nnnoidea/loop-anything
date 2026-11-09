@@ -23,8 +23,6 @@ function parseRoute(hash){
 }
 function rememberEditor(){
   if(page!=='editor' || !editor)return;
-  collectAll();
-  if(!activeRoute.node){const pane=$('editor-canvas').parentElement;editor.canvasPosition={left:pane.scrollLeft,top:pane.scrollTop};}
   editor.routeId ||= editor.id || 'session-'+randomKey();
   editorSessions.set(editor.routeId,{editor,selection:editSelection});
 }
@@ -34,33 +32,25 @@ function registerEditor(){
   editorSessions.set(editor.routeId,{editor,selection:null});
   return editor.routeId;
 }
-function savedEditorRoute(){
-  if(page!=='editor' || !editor.id)return;
-  const old=editor.routeId;editor.routeId=editor.id;
-  editorSessions.set(editor.id,{editor,selection:editSelection});
-  if(old)editorSessions.set(old,{editor,selection:editSelection});
-  if(activeRoute.implementation){const current=$('author-candidates')?.querySelector('.author-candidate:not([hidden]) [data-candidate-id]')?.value.trim();if(current)activeRoute.implementation=current;}
-  let removed=false;
-  if(!editor.dirty&&activeRoute.node&&!Object.hasOwn(editor.loop_definition.nodes,activeRoute.node)){delete activeRoute.node;delete activeRoute.implementation;editSelection=null;removed=true;}
-  if(!editor.dirty&&activeRoute.implementation&&!Object.hasOwn(implementationOptions(editor.implementations[activeRoute.node]),activeRoute.implementation)){delete activeRoute.implementation;removed=true;}
-  activeRoute={...activeRoute,type:'editor',id:editor.id};history.replaceState(null,'',routeHash(activeRoute));updateNavigationUI();if(removed){editorSessions.get(editor.id).selection=editSelection;renderProperties();}
-}
 async function navigateTo(route,{replace=false,external=false,capture=true}={}){
+  if(route.type==='loop')route={type:'editor',id:route.key};
   const previous=activeRoute,serial=++navigationSerial;
-  if(capture && page==='editor' && routeHash(route)!==routeHash(previous)){
-    try{if(editorOperation)await editorOperation;await saveEditor();rememberEditor();}catch(error){if(external)history.replaceState(null,'',routeHash(previous));toast('草稿中有未应用的无效内容，请先修正；修改仍保留：'+error.message);return false;}
-    // Keep the draft in memory on navigation. beforeunload protects reload/closing.
+  // Reading another node preserves the authored iframe and never writes the definition.
+  if(capture&&page==='editor'&&route.type==='editor'&&route.id===previous.id&&route.id===editor?.routeId){
+    if(route.node&&!Object.hasOwn(editor.loop_definition.nodes,route.node)){toast('节点已不存在，请重新选择。');if(external)history.replaceState(null,'',routeHash(previous));return false;}
+    if(!external)history[replace?'replaceState':'pushState'](null,'',routeHash(route));
+    activeRoute=structuredClone(route);editSelection=route.node?{node:route.node}:null;
+    renderProperties();updateNavigationUI();
+    const pane=editorPage.querySelector('.editor-right');pane.scrollTop=0;
+    if(route.node&&window.matchMedia('(max-width: 1100px)').matches)pane.focus({preventScroll:true});
+    return true;
   }
+  if(capture&&page==='editor')rememberEditor();
   try{
-    if($('web-chat'))$('web-chat').inert=true;
-    if(['launch','runs'].includes(page) && routeHash(route)!==routeHash(previous)){
-      if(conversation)conversationDrafts.set(conversation.id || conversation.run_id,$('web-chat-input').value);
-      clearTimeout(savePreparation.timer);await savePreparation();if(page==='launch')$('create-dialog').close();
-    }
     let session;
     if(route.type==='editor'){
       session=editorSessions.get(route.id);
-      if(!session){const rows=await api('drafts'),draft=rows.find(d=>d.id===route.id);if(!draft)throw new Error('这份未保存草稿不在当前会话中；请从 Loop 库打开已保存草稿。');session={editor:{...draft,dirty:false,routeId:draft.id,returnTo:{type:'catalog'}},selection:null};editorSessions.set(route.id,session);}
+      if(!session){session={editor:await loadReader(route.id),selection:null};editorSessions.set(route.id,session);}
     }
     if(route.type==='loop' && !catalog.some(c=>c.key===route.key))await loadCatalog();
     if(route.type==='loop' && !catalog.some(c=>c.key===route.key))throw new Error('找不到这个 Loop 版本，请返回 Loop 库。');
@@ -71,38 +61,31 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
     activeRoute=structuredClone(route);
     if(route.type==='communication'){page='communication';await renderCommunication();}
     else if(route.type==='catalog'){page='catalog';await loadCatalog();}
-    else if(route.type==='loop'){page='loop';loopKey=route.key;loopTab=route.tab || 'overview';renderLoop();}
-    else if(route.type==='prepare'){if(await enterPreparation(route.id)===false)return true;}
+    else if(route.type==='loop'){await openLoop(route.key);}
+    else if(route.type==='prepare'){page='catalog';await loadCatalog();toast('请重新从 Loop 页面启动；旧准备记录保留。');}
     else if(route.type==='editor'){
-      editor=session.editor;if(route.node&&!Object.hasOwn(editor.loop_definition.nodes,route.node))throw new Error('节点已不存在，请返回草稿总览。');editSelection=route.node?{node:route.node}:session.selection;connectFrom=null;page='editor';
-      populateMeta();renderEditor();renderProperties();saveState();
-      if(!route.node)requestAnimationFrame(()=>{$('editor-canvas').parentElement.scrollTo(editor.canvasPosition||{left:0,top:0});});
+      editor=session.editor;if(route.node&&!Object.hasOwn(editor.loop_definition.nodes,route.node))throw new Error('节点已不存在，请返回草稿总览。');editSelection=route.node?{node:route.node}:null;page='editor';
+      populateMeta();renderEditor();renderProperties();
     }else if(route.type==='run'){
       if(previous.type!=='run' && previous.type!=='home')runReturns.set(route.id,structuredClone(previous));
-      selected=route.id;run=nextRun;settingsBase=null;filterNode=null;page='runs';renderRun();await enterRunChat(route.id);
-    }else{page='runs';await refresh();if(run)await enterRunChat(run.id);}
+      selected=route.id;run=nextRun;settingsBase=null;filterNode=null;page='runs';renderRun();
+    }else{page='runs';await refresh();}
     showPage();updateNavigationUI();window.scrollTo(0,0);if(page==='runs')requestAnimationFrame(()=>sizeTaskGraph());return true;
   }catch(error){
     if(serial!==navigationSerial)return false;
     if(external){activeRoute={type:'catalog'};history.replaceState(null,'','#loop_definitions');page='catalog';showPage();updateNavigationUI();}
     toast(error.message);return false;
-  }finally{if(serial===navigationSerial&&$('web-chat'))$('web-chat').inert=false;}
+  }
 }
 function navLink(route,label){return `<a href="${esc(routeHash(route))}" data-route-link>${esc(label)}</a>`;}
-function relatedRunsHTML(key){
-  const rows=runs.filter(r=>r.loop_key===key);
-  return `<h3>这个版本的运行 · ${rows.length}</h3><p class="small muted">每个 Run 有独立的目标、Timeline 和历史，修改Loop 定义不会改变已有运行。</p>${rows.map(r=>`<p>${navLink({type:'run',id:r.id},r.title)} ${badge(r.status)}</p>`).join('') || '<p class="muted">还没有运行。</p>'}`;
-}
+function relatedRunsHTML(key){return relatedRunRows(key);}
+
 function updateNavigationUI(){
-  if(typeof renderPreparationNav==='function')renderPreparationNav();
   $('run-list').querySelectorAll('[data-run]').forEach(b=>b.classList.toggle('chosen',page==='runs'&&b.dataset.run===selected));
   const crumbs=[navLink({type:'catalog'},'Loop 库')];
   if(page==='communication'){crumbs.push('Agent 通信');}
-  else if(page==='loop'){
-    crumbs.push(esc(currentLoop()?.loop_definition.name || loopKey));
-    if($('loop-runs')){const content=relatedRunsHTML(loopKey);if($('loop-runs').innerHTML!==content)$('loop-runs').innerHTML=content;}
-  }else if(page==='launch' && conversation){crumbs.push(navLink({type:'loop',key:conversation.launch.key},launchItem()?.loop_definition.name || 'Loop'));crumbs.push('启动准备');
-  }else if(page==='editor' && editor){
+  else if(page==='editor' && editor){
+    if(editor.installedKey&&$('reader-runs')){renderRelatedRuns(editor.installedKey);safely(()=>refreshRelatedRuns(editor.installedKey));}
     if(editor.returnTo?.type==='loop')crumbs.push(navLink(editor.returnTo,'来源 Loop'));
     crumbs.push(navLink({type:'editor',id:editor.routeId},(editor.loop_definition.name || '草稿')+' · 查看'));
     if(activeRoute.node)crumbs.push(navLink({type:'editor',id:editor.routeId,node:activeRoute.node},editor.loop_definition.nodes[activeRoute.node]?.label||activeRoute.node));

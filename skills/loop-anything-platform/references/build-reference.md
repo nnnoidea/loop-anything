@@ -1,44 +1,50 @@
-# 构建工具与接入契约
+# Authoring tools and integration contracts
 
-构建时先读 [build.md](build.md) 的能力映射。本文件保留具体字段与接入步骤，按当前操作查阅；工具参数以运行中服务的 list 为准。
+Start with capability mapping in [build.md](build.md). This reference covers fields and integration steps; consult only the current operation. Live service list schemas are authoritative.
 
-按需定位：[基础编辑](#基础编辑) · [节点 Skill 文件](#作者-skill-的文件与引用) · [条件步骤](#可选步骤满足条件才安排) · [脚本封装](#给运行时-agent-提供简洁入口) · [结果展示](#结果的通用展示) · [修改与参数契约](#修改既有设计) · [并行范围](#并行支线与全局决策) · [生命周期与重试](#执行生命周期与附属监控) · [等待节点](#平台等待节点) · [运行级检查](#运行级验证)。
+Jump to [editing](#basic-editing), [Skill files](#author-skill-files-and-references), [conditional steps](#optional-steps-arrange-only-when-conditions-hold), [runtime wrappers](#simple-entry-points-for-runtime-agents), [result display](#generic-result-display), [existing designs](#modify-an-existing-design), [parallel scopes](#parallel-branches-and-global-decisions), [lifecycles/retries](#execution-lifecycle-and-attached-monitoring), [wait nodes](#platform-wait-nodes), and [runtime verification](#runtime-verification).
 
-## 基础编辑
+## Basic editing
 
-- **开始或复用**：`list_loops` 找现有资产；`read_loop` 读它的实际定义。`create_loop` 建立草稿与通用入口；`copy_loop` 从已安装版本复制为草稿；普通修改传 new_version:true，保留 Loop ID 并自动选择后续版本，原有 Run 不变；只有用户要另建一个 Loop 时才使用普通复制。
-- **业务说明**：`set_loop` 写入作者提供的 `handbook`、用途说明、初始输入默认值或明确的运行限额。平台 Skill 不维护这些业务内容。
-- **节点**：`put_node` 写一个节点的职责、端口和可选作者 Skill。用 `skills: [{"name":"方法名","content":"作者提供的业务方法"}]` 直接绑定到该节点；Agent 读取节点任务时会获得这些内容。端口列表使用 `name` 加 `type`，嵌套契约使用 `schema`；工具生成输出记录类型。节点机械完成约束统一用 assertions 表达，例如 eq 比较字段值；不从约束自动填业务结果。入口端口变更会同步其初始位置。
-- **可复用批次**：`put_step` 将节点加入一个命名模板。可用 implementation 指定模板选用的候选 ID，通常留给 Run 或任务选择。用 `plan_parameters` 声明运行时参数；`each` 指向参数里的列表。`connect_steps` 把上游 output 连到下游 input，`collect:true` 表示收集全部展开结果。
-- **初始或复用输入**：在 `put_step.inputs` 中使用 `{"record":"initial.result"}` 等明确来源。入口的真实输出位置由 `read_loop` 返回，不猜名字。普通参数值用 `literal`；运行时替换值可以写 `{"literal":{"$":"values.参数名"}}`。列表元素对应 `item`。
-- **候选实现**：`set_implementation` 提供 node_id、implementation_id 和 agent、command、external、event、timer 或 approval 配置。同一节点可多次添加不同 ID；default:true 选为 Loop 默认，default:false 取消该候选的默认地位，省略则不改默认。已存在的候选可只传 ID 与 default 调整默认。填写实际命令参数列表。外部任务还需 observe；删除指定候选时用 unbind:true，不能伪装成模拟实现。`put_asset` 把作者编写的脚本/文档附进包。
-- **可选兜底**：与用户明确是否需要 Agent 兜底。需要时用 `put_node` 添加一个非入口节点，`inputs: []`，编写处理未覆盖状态的职责并绑定作者 Skill；通过 `set_implementation` 提供 Agent 候选，再用 `set_loop` 的 `fallback_node` 指定节点 ID。不需要时传空字符串关闭。兜底通过 Run 工具读取问题，使用同一套节点提交；不要自动挑其他节点的 Agent。
-- **通知**：在生命周期转移的 notify 数组中配置消息/询问，或由脚本、Agent 调用 notify；使用 default 路由。使用者在平台配置实际出口并在 Run 中选择，详见 [notifications.md](notifications.md)。
-- **结束条件**：作者说明完成目的与判定依据，运行时 Agent 把机械规则或终止信号写入 Timeline；不要给节点添加 terminal 标记。
-- **Agent 命令**：用 `set_implementation` 设置 kind="agent" 和用户提供的 command，例如 `["codex", "exec", "-"]`；cwd/timeout 按实际需要明确设置；Agent 留空 timeout 时不限时，脚本命令默认 60 秒。平台向标准输入传入任务 prompt，原样执行命令；模型、工具和权限沿用用户配置。无需专用启动器或工具注册。
-- **检查与交付**：`validate_loop` 检查结构并单列缺失实现。修正错误后继续保存草稿；用户要求本机可用版本或启动该版本时，`publish_loop` 安装为一个版本，auto_version:true 自动管理版本并复用相同内容，返回最新 draft_id/revision；`export_loop` 导出包含附件的包，客户端 `--output 文件.loop.zip` 保存它。
+- **Start/reuse:** list_loops finds assets and read_loop reads actual definitions. create_loop creates a draft/common entry. copy_loop copies an installed version to a draft; for ordinary revisions use new_version:true to preserve Loop ID and select a later version automatically, without changing Runs. Ordinary copy is for an explicitly separate Loop.
+- **Business handbook:** set_loop writes the author's handbook, purpose, default startup inputs, and explicit runtime limits. Platform Skills do not own business content.
+- **Nodes:** put_node writes responsibilities, ports, and optional author Skills. `skills:[{"name":"Method","content":"Author-provided method"}]` binds content returned when agents read tasks. Port lists use name plus type, or schema for nested contracts; output record types are generated. Use assertions, such as eq over values, for mechanical completion constraints; constraints do not fill results. Entry-port changes update initial locations.
 
-新建 Loop 默认提供无输入、无强制输出的 Agent 入口。用户与 Agent 讨论后，Agent 通过 start_run 接管入口，将目标、要求和约束写入完成报告的 settings，再按需安排任务并 finish。无需把对话复制到 request 表单，也不需要人为生成一条初始化结果；业务确需输入或共享初始结果时，用 put_node 明确添加端口。没有 command 的 Agent 候选由当前用户 Agent 操作；自动唤醒仍需配置用户选择的 Agent 命令。
+Optional node description is a short user-facing purpose: what it does and delivers, without API fields, commands, port lists, or repeated rules. instructions/skills retain full execution requirements, folded in the web view. Store nodes.<id>.description directly or use put_node(description=...). Empty clears the introduction without changing instructions. An absent description is not extracted, truncated, or rewritten from instructions and does not block building/running.
 
-每次编辑带上 `draft_id` 和刚返回的 `revision`。出现版本冲突，重新 `read_loop` 后再决定修改，不盲目覆盖。工具返回当前验证结果；未完整连接的草稿可保存，但必须修正结构错误才能发布。
+- **Reusable batches:** put_step adds a node to a named plan. implementation optionally fixes a candidate, but normally leave selection to Run/Task bindings. plan_parameters declares runtime parameters; each points to a list. connect_steps connects output/input; collect:true gathers expanded results.
+- **Initial/reused inputs:** use explicit put_step.inputs sources such as `{"record":"initial.result"}`. Obtain real entry-output locations from read_loop rather than guessing. Use literal for values and `{"literal":{"$":"values.parameter"}}` for substitutions; item refers to list elements.
+- **Candidates:** set_implementation takes node_id, implementation_id, and agent/command/external/event/timer/approval configuration; Loop calls are described in [loop-calls.md](loop-calls.md). Add several candidate IDs per node. default:true selects the Loop default, false clears that candidate's default status, omission preserves selection. Existing candidates can update selection with only ID/default. Provide real argv; external also needs observe. unbind:true removes a candidate, not a fake simulated implementation. put_asset attaches authored scripts/docs.
+- **Optional fallback:** establish whether the user wants agent recovery. If so, create a nonentry node with inputs:[], recovery responsibilities and author Skill; bind an agent candidate and set_loop.fallback_node to its ID. Empty string disables it. It reads issues through Run tools and uses ordinary node reporting. Never select another node's agent implicitly.
+- **Notifications:** configure lifecycle notify arrays or call notify from scripts/agents, using default routing. Users configure/select actual platform/Run outlets. See [notifications](notifications.md).
+- **Completion:** authors explain goals/evidence; runtime agents write mechanical rules or termination signals to Timeline settings. Do not add node terminal flags.
+- **Agent commands:** set kind=agent and user-provided command such as `["codex","exec","-"]`; set cwd/timeout explicitly as needed. An omitted agent timeout is unlimited; script commands default to 60 seconds. The platform supplies a prompt on stdin and runs argv unchanged, retaining user model/tool/permission choices. No special launcher or tool registration is needed.
+- **Recipient configuration:** packages include config.example.json; authors can provide an explained template with put_asset. Recipients adapt paths/agents/services with read_loop_config/set_loop_config. New Runs snapshot configuration; see [configuration](loop-config.md).
+- **Verify/deliver:** validate_loop checks structure and separately lists missing implementations. Continue saving the draft after fixes. Publish when the user wants a locally usable version or to run it. publish_loop(auto_version:true) manages versions/reuses identical content and returns current draft_id/revision. export_loop includes assets; client --output FILE.loop.zip saves it.
 
-## 作者 Skill 的文件与引用
+New Loops have an agent entry without inputs or mandatory outputs. After discussing the goal, the user agent takes the entry through start_run, submits goals/requirements/constraints in completion-envelope settings, arranges work as needed, and finishes. Do not copy conversation into a request form or invent an initialization result. Add ports explicitly when business inputs/shared initial results are needed. An agent candidate without command is operated by the current user agent; automatic wake-up requires the user's chosen command.
 
-作者已有完整 Skill 目录时，保留 SKILL.md、references/ 和 scripts/ 的相对结构，用现有 `put_asset` 将各文件附进 Loop 包；本地打包也可使用已有的目录附件能力。
+Every edit includes draft_id and the latest returned revision. Reread/reassess conflicts instead of overwriting. Tools return validation; incomplete drafts can be saved, but structural errors must be fixed before publication.
 
-- Loop Skill：`set_loop` 的 `handbook_path` 绑定包内入口，例如 `skills/research/SKILL.md`。可同时保留 handbook 简介；空字符串清除文件绑定。
-- 节点 Skill：`put_node` 的 `skills` 使用 `[{"name":"评审方法","path":"skills/review/SKILL.md"}]`。原有 content 正文方式继续可用。
-- 发布前 `validate_loop` 会检查绑定的入口文件已附入包。引用资源由作者完整附入，不自动扫描或改写 Markdown。
+## Author Skill files and references
 
-安装后 `read_loop` 返回 Loop 和节点 Skill 的 `resolved_path`；运行中 `read_timeline` 返回 Loop Skill 的该路径，`read_task` 返回对应节点 Skill 的该路径。Agent直接读取文件，以其所在目录解析 references/、scripts/ 等相对引用。`path` 是包内绑定，`resolved_path` 是读取结果，不写回 Loop 定义。
+Preserve an author's SKILL.md, references/, and scripts/ relative structure. Attach files with put_asset or existing directory-asset packaging.
 
-## 事件触发任务
+- Loop Skill: set_loop.handbook_path binds a package entry such as skills/research/SKILL.md. An inline handbook introduction may remain; empty clears the file binding.
+- Node Skill: put_node.skills accepts `[{"name":"Review method","path":"skills/review/SKILL.md"}]`; inline content remains supported.
+- validate_loop checks bound entry files are attached before publication. Authors include referenced resources; Markdown is not automatically scanned/rewritten.
 
-作者先定义 plan，再用 `put_node` 的 `routes` 绑定源节点。省略 routes 保留原值，传数组整体替换，`[]` 清除。以下绑定将研究结果的两组参数展开为两项实验及一个汇总任务；research 节点必须声明 requests 数组输出。
+handbook_path is a tool argument stored as loop_definition.handbook.path. Direct loop.json edits use `"handbook":{"path":"skills/research/SKILL.md"}`, optionally with an instructions introduction, not a top-level handbook_path field. Node bindings are loop_definition.nodes.<id>.skills[].path. Verify the actual binding resolves to registered assets; parseable JSON or file existence alone is insufficient.
+
+Installed read_loop returns resolved_path for Loop/node Skills; read_timeline returns the handbook's path and read_task the node Skill's path. Read files directly and resolve references/scripts relative to their directory. path is the package binding; resolved_path is a read result, never written back into the definition.
+
+## Event-triggered task generation
+
+Define a plan, then bind source-node routes with put_node. Omission preserves, a supplied array replaces, and [] clears. This maps research output parameter sets into experiments plus aggregation; research must declare requests as an array output:
 
 ```json
 {
-  "draft_id":"实际草稿ID", "revision":12, "node_id":"research",
+  "draft_id":"ACTUAL_DRAFT_ID", "revision":12, "node_id":"research",
   "routes":[{
     "id":"run_experiments", "event":"completed", "plan":"round",
     "values":{"experiments":{"$":"outputs.requests"}}
@@ -46,7 +52,7 @@
 }
 ```
 
-对应的 round 模板：
+The corresponding round plan:
 
 ```json
 {
@@ -58,142 +64,139 @@
 }
 ```
 
-运行时研究节点只需 `report_task(event=completed, envelope.outputs={requests:[...]})`。Task 参数由模板绑定，业务命令从 parameters 读取；不在领域结果之外再手写 Task ID、依赖或聚合列表。初始化节点也可配置 routes，在同一次报告中提供初始 settings 和业务结果。
+Research only reports `report_task(event=completed,envelope.outputs={requests:[...]})`. The template binds Task parameters for commands; do not separately handcraft IDs, dependencies, or aggregation lists. Initialization can use routes and submit settings/business outputs together.
 
-| route 字段 | 含义 |
+| Route field | Meaning |
 | --- | --- |
-| id、event、plan、values | 必填：节点内唯一规则 ID、生命周期报告事件、已有模板名、模板参数对象 |
-| each | 可选：报告上下文的数组路径，每项展开一个 plan；如 outputs.groups。空数组生成零批 |
-| when | 可选：每项触发前计算的确定性布尔表达式；false 跳过本项，缺字段或非布尔值报错 |
-| steps | 可选：与 build_plan 的 steps 覆盖一致，可映射输入、参数、implementation 或 skip |
-| round | 可选：本批任务显示名称，支持字符串插值，例如 `{item.name}` |
+| id, event, plan, values | Required: unique rule ID within the node, lifecycle-report event, existing plan, parameter object |
+| each | Optional report-context array path, e.g. outputs.groups; one plan batch per item, zero for an empty array |
+| when | Optional deterministic boolean evaluated per item before triggering; false omits, missing fields/nonbooleans error |
+| steps | Optional build_plan-style input/parameter/implementation/skip overrides |
+| round | Optional display label with interpolation such as `{item.name}` |
 
-值可用 `{"$":"outputs.requests"}` 保留原类型，字符串中可用 `{parameters.name}` 插值。上下文有 `inputs`、`outputs`（completed 报告的业务输出）、`parameters`、`settings`（初始化时含本次 settings）、`detail`、`attempt`、`task_revision`、`task.id`、`task.node`、`task.outputs`（输出目的位置）及 `transition.from/event/to`。each 每项另有 item/index；未设置 each 时 item 为 null、index 为 0。这里没有操作令牌，也不能读取任意 Run 内部字段。
+`{"$":"outputs.requests"}` preserves types; strings can interpolate `{parameters.name}`. Context includes inputs, outputs (completed business outputs), parameters, settings (including current initialization settings), detail, attempt, task_revision, task.id, task.node, task.outputs (output destinations), and transition.from/event/to. each adds item/index; without each they are null/0. No operation tokens or arbitrary Run internals are exposed here.
 
-`when={"path":"outputs.decision.again"}` 可按决策结果继续；`each="outputs.groups"` 搭配 `when={"path":"item.enabled"}` 可逐组判断。route.when 在映射参数之前求值，跳过项不要求提供后续字段；plan 内 step.when 仍只读本批 values，并在步骤的 each 之前计算。route 的 steps 在报告上下文中展开一次，取得的业务数据原样传给模板，不再次解释数据中的 `{...}` 或 `$`。直接 build_plan 的 steps 仍使用 values/item/index 模板上下文。steps 可以按映射值选择已声明候选、覆盖参数或省略步骤；被省略步骤的消费者必须有有效的替代输入。
+Use `when={"path":"outputs.decision.again"}` or `each="outputs.groups"` with `when={"path":"item.enabled"}`. route.when runs before mapping, so omitted items need not supply later fields. Plan step.when reads batch values and runs before step.each. Route steps expand once in report context; resulting business data is passed unchanged, without reinterpreting embedded braces or $. Direct build_plan steps still use values/item/index. Overrides may select declared candidates, parameters, or omission; consumers of omitted steps require valid alternatives.
 
-只有**被当前执行生命周期接受的报告事件**才触发，Agent、command、external、timer、event 共用此规则。自定义事件须先在候选 lifecycle 声明合法转移，再从 report_task.detail 取参数；本功能不订阅任意系统事件。外部业务事件先由匹配的 event Task 接收，再以 completed 触发。
+Only events accepted by the current execution lifecycle trigger routes, across agents, commands, external jobs, timers, and events. Declare custom lifecycle transitions first, then use report_task.detail. Routes do not subscribe to arbitrary system events; receive those through a matching event Task and its completed report.
 
-平台在原报告事务中校验全部匹配规则、批次及同一 envelope.tasks：参数、实现、任务预算、输出位置和依赖全部通过才提交结果与生成任务。任务属于源 Task 的后代；routes 自身就是作者声明，不依赖脚本的 plan_nodes 权限。循环可生成新 Task，但具体任务依赖不能成环。
+The report transaction validates all matching rules/batches and envelope.tasks: parameters, implementations, task budget, output destinations, and dependencies must pass before results/tasks commit. Generated tasks are descendants of the source. Routes are themselves author declarations, independent of script plan_nodes permission. Cycles may generate new Tasks; actual Task dependencies cannot cycle.
 
-失败不留下部分生成的 Task：工具调用报错后可修正参数重报；脚本/定时器走已有错误报告路径，外部事件保留拒收信息；平台生成的错误事件如果自身触发规则也无效，保留可见 fault，不重复陷入报错。相同 execution/report_id 和相同内容重复报告返回原回执，不再创建任务；同 ID 不同内容冲突，过期监控报告不触发。
+Failure leaves no partial generated Tasks. Tool callers can fix/re-report; scripts/timers follow existing error reporting; event delivery records rejection. Invalid rules on a platform-generated error produce a visible fault rather than recursive errors. Identical execution/report_id/content returns the original receipt; conflicting content errors, and stale monitor reports do not trigger routes.
 
-回执 `routes` 列出规则 ID、模板、batches（批次 ID、Task IDs、模板省略原因）及 omitted_items（条件为 false 的序号）。Timeline 记录 route_fired，每个 Task origin 含源 execution、route_id、report_id、plan 和 batch_id。没有规则的节点沿用原行为；不要在 helper 中再次创建这些后继。现有 Run 固定原定义，修改并保存 Loop 只影响新 Run。
+Receipt routes lists rule IDs, plans, batches (IDs, Task IDs, omissions), and omitted_items (false-condition indices). Timeline logs route_fired; Task origin includes source execution, route_id, report_id, plan, batch_id. Nodes without routes retain behavior. Helpers must not recreate these successors. Existing Runs retain definitions; saved changes affect new Runs.
 
-## 可选步骤：满足条件才安排
+## Optional steps: arrange only when conditions hold
 
-参数映射可以直接写进模板：`put_step.parameters={"$":"values.options"}` 将本批 values.options 对象作为 Task parameters；逐项展开时也可引用 item。调用时可用 steps.<step>.parameters 覆盖少量字段：先展开模板参数和本次覆盖对象，再按顶层字段合并，本次值优先、嵌套对象整体替换。两者都必须解析为对象。无需 helper 逐字段搬运。each 使用相对于 values 的列表路径（如 experiments）；模板内部的 `$` 引用使用 values/item/index 上下文。
+put_step.parameters can use `{"$":"values.options"}` for a complete Task parameter object, or item during expansion. Call-time steps.<step>.parameters overrides selected fields: expand both objects, then merge top-level keys with current values winning and nested objects replaced whole. Both must resolve to objects. No field-copying helper is needed. each uses a values-relative list path, e.g. experiments; $ references use values/item/index.
 
-`put_step` 可设置 `when`，使用已有确定性表达式，只读取本批 `values`。例如 `when={"path":"values.action.stages.prediction.enabled"}`：字段为 true 才安排，false 时不创建该步骤的任何 Task 或输出占位。`put_step` 省略 when 保留现值，传 `when={}` 清除条件；直接编辑定义时删除 when 字段即可。
+put_step.when uses deterministic expressions over batch values only. Example `{"path":"values.action.stages.prediction.enabled"}` creates Tasks only for true; false creates neither Tasks nor output placeholders. Omission preserves the condition; when={} clears it; direct definition editing removes the field.
 
-条件在 `build_plan` 时判断一次，作用于整个步骤，在 `each` 展开之前判断；不读取运行时结果或单个 item，不是运行过程中重新判断的分支。缺字段、非法表达式、非布尔结果会报错，不能当作 false。显式 `steps.<步骤>.skip=true` 优先表示本次不安排。
+The condition is evaluated once during build_plan for the entire step before each, not against runtime results or individual items. Missing fields, invalid expressions, and nonbooleans error rather than mean false. Explicit steps.<step>.skip=true takes precedence for this invocation.
 
-若下游仍引用被省略步骤的输出，构建会拒绝，必须显式复用已有输入或同时不安排该下游。仅有先后依赖的步骤沿用原省略语义，不为省略项占位。安排预览和工具回执列出未安排原因。业务输出中名为 status 的字段不会改变平台 Task 状态。
+Consumers of omitted outputs are rejected unless given valid reused input or also omitted. Order-only dependencies follow existing omission behavior, without placeholders. Preview/receipts explain omissions. A business output named status does not change Task state.
 
-## 给运行时 Agent 提供简洁入口
+## Simple entry points for runtime agents
 
-结果触发模板任务优先用 routes；只有业务入口适配或临时组合操作确有重复时，才封装为随包脚本。用已有 `put_asset` 添加脚本及其说明，通过节点 `skills[].path` 绑定说明入口；不需要注册新工具。Skill 内写清命令、参数、回执和出错后的处理，业务规则由作者负责。
+Prefer routes for result-triggered plans. Package wrappers are for genuinely repeated business adaptations/compositions. Add scripts/instructions with put_asset and bind skills[].path, without registering new tools. Document commands, parameters, receipts, and error handling; business rules remain author-owned.
 
-封装调用同一个平台 HTTP 接口或 Skill 中的 `scripts/call.py`。从本次唤醒上下文取得实际地址、Run、Task 和令牌，不写死本机路径或另存一份 Timeline。后台节点使用 `platform_url` 并传 run_id/token；上下文提供 `tool_url` 时，按[限定工具入口](scoped-entry.md)调用，其接口已绑定身份，参数中不再传 run_id/token。Skill 的 `resolved_path` 可直接读取，其 references、scripts 路径相对该文件所在目录解析。
+Wrappers call the same HTTP tools or call.py and read actual address/Run/Task/token from wake-up context. Do not hardcode local paths or copy the Timeline. Background nodes use platform_url with run_id/token. A provided tool_url is already identity-bound; follow [scoped entry](scoped-entry.md), without those fields in arguments. Read resolved_path directly and resolve references/scripts relative to its directory.
 
-封装负责重新读取所需版本、检查每步回执，并返回实际提交结果。成组任务编辑可复用 edit_tasks 的预览与原子提交。结果报告和任务编辑之间的多次调用不是一个事务：例如 complete_task 成功后 build_plan 失败，不能直接从头重跑已结束的完成步骤。为安排使用稳定 key，保留已完成操作的回执，恢复时读取当前任务和计划并跳过已提交步骤。少量已知的后续 Task 可随完成报告的 envelope.tasks 一起提交；批量模板后继可通过 routes 与报告原子提交；独立工具调用按其实际边界恢复。完成任务仍需提交必需输出，最后释放操作权。权限范围、版本冲突和输出校验由平台照常执行。
+Reread required versions, check every receipt, and return actual submission outcomes. Reuse edit_tasks preview/atomic commit for grouped edits. Reports and independent task edits are separate transactions: if complete_task succeeds and build_plan fails, do not rerun completion from scratch. Use stable arrangement keys, retain completed receipts, reread Tasks/plans, and skip committed steps on recovery. A few known successors may be submitted in completion-envelope tasks; batched successors use atomic routes. Recover separate calls according to their actual boundaries. Required outputs and finish still apply; scope/version/output checks remain enforced.
 
-Agent 候选支持 `prompt` 字符串，与 command 一起保存、分享；已有候选可用 `set_implementation` 单独修改 prompt，无需重填命令。例如：
+Agent candidates support a shared prompt string alongside command. set_implementation can edit prompt alone. Example:
 
 ```text
-读取本次上下文中 skills 的作者说明，按说明使用随包脚本完成工作。
+Read the author instructions in this context's skills and use their packaged scripts to perform the work.
 {{context}}
 ```
 
-只有 `{{context}}` 会替换为 JSON；其他文本原样发送，没有隐藏追加指令。不填写 prompt 时使用平台默认；显式空字符串就是空提示词。默认内容引导使用作者入口，平台手册仅在直接操作通用工具时按需读取。后台上下文含 run_id、execution_id、task_id、token、scope_task、platform_url、platform_client、platform_guide、loop_key、handbook、node_id、instructions 和 skills。限定入口的额外上下文见[限定工具入口](scoped-entry.md)。
+Only {{context}} expands to JSON; other text is unchanged, with no hidden appended instructions. Omission uses the platform prompt; an explicit empty string means an empty prompt. Defaults direct agents to author entry points and platform references only when generic operations are needed. Background context includes run_id, execution_id, task_id, token, scope_task, platform_url, platform_client, platform_guide, loop_key, handbook, node_id, instructions, skills. See [scoped entry](scoped-entry.md) for its additional context.
 
-## 结果的通用展示
+## Generic result display
 
-平台按结果结构提供文本、字段和表格展示，无需作者另建结果展示功能。可在输入输出 schema 中提供 `title`、`description` 解释字段，平台不识别业务字段名称。轮次由运行时 `round` 明确提供，没有轮次的 Loop 无需填写。
+The platform renders structured results as text, fields, and tables; do not rebuild a viewer. Use schema title/description to explain fields; business field names are not interpreted. Runtime round explicitly groups work; workflows without rounds need not provide it.
 
-文件输出使用 `schema: {"type":"string","format":"file"}`，结果值填写实际文件路径。相对路径以该次执行的工作目录为基准；没有工作目录时以安装的 Loop 包目录为基准。文件必须位于该目录内。平台提供图片预览及文件访问；文件不存在时会报错，不把普通字符串当文件，也不复制或保存外部文件历史。要保留旧产物，请每次执行使用不同文件名。
+File outputs use `schema:{"type":"string","format":"file"}` and an actual path value. Relative paths resolve under the attempt's cwd, or the installed package if cwd is absent. Files must be inside that directory. The platform previews images/provides file access, errors on absent files, and does not treat arbitrary strings as files or retain external file history. Use distinct filenames per execution to keep older artifacts.
 
-## 修改既有设计
+## Modify an existing design
 
-1. 用 `list_loops` 的 loop_id 对照已有版本和草稿；普通修改继续现有草稿。revision 和 updated_at 帮助判断哪份是当前工作，不因重开会话就复制新 Loop。
-2. 定向读取需要修改的对象，带回执里的最新 revision 修改。没有筛选参数的 `read_loop` 仍返回完整定义，适合第一次了解整体结构。
-3. 看修改回执的 `changes`：每项包含字段路径和实际 before/after；新增没有 before，删除没有 after。文件回执只列大小、执行权限及 content_changed，不重复输出整份正文。`validation.valid=false` 表示草稿尚未可发布，不代表本次草稿保存失败。
-4. 修正 `validation.issues` 指出的路径，继续校验。errors 保留原文本；issues 定位当前首先遇到的结构问题，不声称一次列出所有错误。明确需要时才 publish_loop，原有 Run 不迁移。
+1. Match loop_id across versions/drafts with list_loops and continue the current draft. revision/updated_at identify ongoing work; a new conversation is not a reason to copy the Loop.
+2. Read the needed object and edit against its latest returned revision. Unfiltered read_loop still returns the complete definition for initial orientation.
+3. Inspect changes with field paths and actual before/after; additions omit before, deletions omit after. Asset receipts report size, executable, content_changed, not full bodies. validation.valid=false means not publishable, not a failed save.
+4. Fix validation.issues paths and validate again. errors retains text; issues locates the first encountered structural problem, not necessarily every error. Publish only when needed; old Runs do not migrate.
 
-定向查询在同一个 `read_loop` 中完成，传 draft_id 或已安装 key 二选一：
+Targeted queries use read_loop with either draft_id or installed key:
 
-| 想读取什么 | 附加参数 |
+| Object | Extra arguments |
 | --- | --- |
-| 一个节点及其实现、输出记录类型 | node_id |
-| 一个候选实现（包括生命周期） | node_id、implementation_id |
-| 一个任务构建模板 | plan |
-| 模板中的一个步骤 | plan、step |
-| 包内脚本或 Skill 正文 | asset_path |
+| Node, implementations, output types | node_id |
+| One candidate including lifecycle | node_id, implementation_id |
+| Plan | plan |
+| Step | plan, step |
+| Script/Skill asset body | asset_path |
 
-返回 value 和 references，以及草稿的 draft_id/revision 或已安装 key。references 列出声明中可确定的引用位置，例如节点被哪些步骤使用、某步骤输出被哪些输入使用、Skill 入口和命令参数引用了哪个包内文件；它不解析脚本逻辑或 Markdown 内的间接引用。读取普通包文件使用 UTF-8 正文；二进制文件明确返回 encoding=base64。安装版本只读，修改通过其草稿进行。
+Results include value/references and draft identity/revision or installed key. references finds declarative uses: plan nodes, consumed step outputs, bound Skills, and command arguments referring to package files. It does not analyze scripts or indirect Markdown references. Text assets return UTF-8; binary assets use encoding=base64. Installed versions are read-only; edit via drafts.
 
-例如只改已有实现的命令：
+Change only an existing candidate's command:
 
 ```json
-{"draft_id":"草稿ID","revision":12,"node_id":"train","implementation_id":"local","command":["python3","scripts/train_v2.py"]}
+{"draft_id":"DRAFT_ID","revision":12,"node_id":"train","implementation_id":"local","command":["python3","scripts/train_v2.py"]}
 ```
 
-`set_implementation` 只修改传入字段。即使重复传 kind，也保留未传的 prompt、cwd、timeout、lifecycle 等字段；编辑既有候选不暗中改变默认选择，切换默认用 default:true。清除可选配置用 `clear:["timeout","prompt"]`，不能同时清除和设置同一个字段；空 prompt 表示发送空提示词，clear prompt 才表示恢复平台默认提示词。
+set_implementation changes supplied fields only, even when kind is repeated. Omitted prompt/cwd/timeout/lifecycle remain; editing a candidate does not change its default selection implicitly. Use default:true explicitly. clear:["timeout","prompt"] removes optional fields; the same field cannot be cleared/set together. Empty prompt sends empty content; clear prompt restores the platform default.
 
-候选实现可声明可选的 `parameter_schema`（type 为 object），约束该实现接收的 Task parameters；节点的 parameter_schema 继续表达公共要求，同一份参数必须同时满足两者。read_loop 定向读取候选可查看契约。set_implementation 未传则保留，clear:["parameter_schema"] 明确清除。只做校验，不在服务端补参数默认值。
+Optional object parameter_schema constrains a candidate's Task parameters in addition to the node contract. Read it through targeted read_loop. Omission preserves it; clear:["parameter_schema"] removes it. Validation never injects defaults.
 
-新增、批量安排、修改与重试任务按有效实现校验参数，选择优先级仍是 Task 指定、Run 默认、Loop 默认。后续切换 Run 默认实现时，未执行且不满足新契约的任务会等待修正，不会带错参数启动；已派发执行保留原契约。没有选定实现时仍允许安排任务，选定后再检查。兜底候选由平台以空参数创建，因此不能要求必填的私有参数，应通过 Timeline 工具读取上下文。
+Adding, batching, editing, and retrying validate against the effective implementation: Task selection, then Run binding, then Loop default. Changing Run bindings leaves incompatible unexecuted Tasks waiting for correction, not starting with invalid parameters. Dispatched attempts keep their contract. Tasks can be arranged unbound and checked after selection. Fallback uses empty parameters, so its candidate cannot require private fields; read context through Timeline tools.
 
-更改 kind 时明确提供新 lifecycle，或 `clear:["lifecycle"]` 使用该方式的初始模板。旧配置中不适用于新方式的字段也要明确清除，工具不会偷偷删除作者内容。例如 Agent 改同步脚本时，可清除 prompt 并设置真实 command。
+A kind change requires a new lifecycle or clear:["lifecycle"] for the kind template, plus explicit removal of incompatible old fields. Tools never silently delete author content. For example, clear agent prompt when changing to a real command implementation.
 
-集合字段约定保持简单：未传则保留，传入则替换该字段整体。put_node 的端口/Skill 列表、put_step 的 inputs/after、set_implementation 的 lifecycle 都遵循这一约定；先定向读取再修改，不把只提供一个元素误当作追加。单条连接可用 connect_steps 修改，不用重写其他输入。
+Collections are preserved when omitted and wholly replaced when supplied: ports/Skills, step inputs/after, and lifecycle all follow this rule. Read first; one element is not an append. connect_steps edits one connection without rewriting other inputs.
 
-包文件用 read_loop 的 asset_path 读取，再用 put_asset 的 content 写回；未传 executable 会保留已有权限。删除用 `put_asset(..., path="包内路径", remove=true)`，不同时传 content 或 executable。删除不级联删除节点和 Skill，草稿可暂时存在缺失引用，修正后再发布；检查 references 及作者脚本中的实际使用位置。
+Read assets by asset_path and write with put_asset.content. Omitted executable retains permissions. Delete with put_asset(path="PACKAGE_PATH",remove=true), without content/executable. Deletion does not cascade through nodes/Skills; drafts may temporarily have missing references but must be fixed before publishing. Inspect both references and actual script uses.
 
-删除节点或输出时，保存草稿会清理本次失去最后一个输出引用的自动生成记录类型（节点ID.端口名）；共享类型保留，已发布版本和已有 Run 不变。validate_loop 的 unused_records 列出其他未引用类型；核对后可用 set_loop 的 remove_records 数组删除，工具拒绝删除仍被引用的类型。
+Deleting nodes/outputs removes generated node.port record types that lost their final output reference in this edit. Shared types, published versions, and Runs remain. validate_loop.unused_records lists other unused types; remove explicitly with set_loop.remove_records after checking. Referenced types cannot be removed.
 
-模板输入未指定时保持缺失，不自动填空值。通过 read_loop 查看各步骤的输入来源，根据校验回执中的位置修正缺失或已删除的上游引用。校验只检查已声明的契约，业务是否还需要其他数据由作者判断。
+Unspecified template inputs remain missing, not empty-filled. Inspect step sources and receipt locations to repair absent/deleted upstream references. Validation checks declared contracts; authors determine additional business needs.
 
-`remove_step` 要求先处理消费者；删除模板最后一步前还须移除引用该模板的 routes，`remove_node` 要求先移除引用它的步骤。工具会拒绝仍被引用的删除操作；先修改关联再删除。持续更新同一草稿，用 publish_loop 更新可用版本；分享时才调用 export_loop。
+remove_step requires consumers handled first; deleting the last step also requires removing routes that use its plan. remove_node requires removal of referencing steps. Change references before deletion. Continue the same draft; publish for a usable version and export for sharing.
 
-循环自动生成通过节点 routes 声明；脚本主动安排范围通过 plan_nodes 声明，运行任务依赖仍不能成环。可缺实现地构建、分享、安装和创建 Run；实际执行时才检查实现选择。业务脚本和环境配置由作者提供，不自动修复路径或依赖。构建完成后按 [run.md](run.md) 操作 Run；编辑 Loop 定义与修改正在运行的 Timeline 是不同操作。
+Routes declare cyclic task generation, plan_nodes permits explicit script arrangements, and concrete dependencies remain acyclic. Loops may be built/shared/installed and Runs created with missing implementations; selection is required for actual execution. Authors supply scripts/environments; paths/dependencies are not automatically repaired. See [run.md](run.md); definition editing differs from changing an active Timeline.
 
+## Parallel branches and global decisions
 
-## 并行支线与全局决策
+Agents normally arrange work in their own Task branch; one node template can serve several parallel Tasks. parent_id expresses ownership, while inputs/after express dependency. Common aggregation is arranged by the shared ancestor. Later steps reuse existing nodes/plans.
 
-运行时 Agent 默认在自己的 Task 支线内规划后续工作；相同节点模板可以用于多个并行 Task。归属由 parent_id 表达，输入/after 只表达数据与执行依赖。公共汇总任务由共同上层安排，后续业务步骤仍使用已有节点和批次模板。
+For a normal decision node that needs whole-Run scope, set global_agent_node and provide an agent candidate. Initialization and fallback also have global scope. Ordinary branches should produce separate results and explicit aggregation rather than coordinating by overwriting one global record.
 
-需要某个正常决策节点处理整个 Run 时，通过 set_loop 的 global_agent_node 指定该节点，并提供 Agent 候选实现；初始化与兜底任务也具有全局范围。不要让普通节点靠改写同一全局记录协同，应输出各自结果再明确汇总。
+## Execution lifecycle and attached monitoring
 
+Storage and transition calculation are separate: Timeline stores facts/state/history; the generic state machine evaluates lifecycle rules; the platform commits state/results/matching arrangements together. Authors still use set_implementation, routes, and report_task; existing Loops need no migration, state store, or internal transition calls. External identity, observation times, and check errors remain separate; waiting alone does not prove monitoring is healthy.
 
-## 执行生命周期与附属监控
+Candidates determine sync/async execution. set_implementation stores an explicit lifecycle:{initial,transitions} template, readable/editable through tools. Templates are not business decisions. Old packages without lifecycle remain unchanged; views show the kind template and dispatch snapshots the actual rules.
 
-状态保存和转移计算已分开：Timeline 保存事实、任务状态与历史，通用状态机按 lifecycle 计算转移，平台统一提交状态、结果与命中的后续安排。作者继续使用 set_implementation、routes 和 report_task；已有 Loop 无需迁移，不必编写独立的状态仓库或调用内部计算函数。waiting 的外部任务身份、观察时间及查询错误仍分别保存，不能仅凭状态名称判断是否正在正常观察。
+Rows are {from,event,to}. Multiple rows for one state/event require distinct when conditions, with exactly one runtime match; row order is not priority. Expressions read inputs, parameters, settings, detail, outputs, attempt (one-based execution count), task_revision. State/event IDs allow letters, numbers, underscores, hyphens. initial starts the attempt; completed/fault/retry/agent are exits, not ordinary stages with outgoing transitions. retry starts another attempt of the same Task. agent uses the configured fallback or leaves an issue. completed requires a completed event with every output, passing outputs/assertions validation. Lifecycle describes an execution stage; the Task may wait for inputs, scope, or pause points before execution.
 
-同步/异步由候选实现决定，同一节点可切换实现。`set_implementation` 保存候选时会填入明确的 `lifecycle: {initial, transitions}` 初始模板；`read_loop` 可查看，通过 set_implementation 更新转移矩阵。模板不是业务决策。没有 lifecycle 的旧包保留原文；查看时展示对应初始模板，派发时将实际规则保存到执行快照。
+Commands generally use executing → completed/fault. An external candidate combines command submission with attached observe monitoring of the same external_id/Task/attempt. Report submitted/progress/completed/failed through report_task. Monitor process failure produces check_error; by default it preserves external state, stops checking, and exposes an issue. Resume observation after repair without resubmission. Authors may add stages/events; uncovered reports preserve state/event and enter explicit issue handling rather than guessed transitions.
 
-转移行是 `{from, event, to}`，同一状态/事件可以有多行，但每行必须声明不同的 `when` 条件，运行时必须恰好命中一行；不按行顺序选择。`when` 使用现有确定性表达式，读取 inputs、parameters、settings、detail、outputs、attempt（执行次数，从 1 开始）和 task_revision。状态和事件 ID 使用字母、数字、下划线或连字符。`initial` 指定执行开始时的阶段；completed、fault、retry、agent 是本次执行的出口，不能作为普通阶段继续向外转移。retry 会让同一 Task 开始下一次执行；agent 交给运行已配置的兜底 Agent，未配置时保留异常。进入 completed 只能报告 completed 并一次提交全部输出，通过节点的输出和 assertions 校验。生命周期状态表示这次执行的阶段；任务仍可能在执行之前等待输入、权限或暂停点。
+process_error covers platform-detected missing delivery, nonzero exit, timeout, etc. Later process exit does not retract committed success. Scope/version/output/live-process protection cannot be bypassed through matrix edits. Normal waiting is not automatically failure. Without fallback_node, issues remain visible; with it, existing scopes and three-failure handling apply.
 
-同步脚本一般使用 executing → completed/fault。external 将提交与检查绑定在一个候选里：command 提交工作，observe 是它的附属监控，接收同一 external_id；每次检查沿用同一任务和执行记录。用 report_task 报告 submitted、progress、completed 或 failed。监控进程失败由平台报告 check_error，默认保留最后的外部状态并停止检查、暴露异常；处理后恢复监控，不重复提交外部工作。作者可添加业务阶段和事件，但平台不会猜测缺失的转移；未覆盖的报告保留原状态及事件，进入明确的异常处理路径。
+See [reporting](run.md#unified-event-and-result-reporting) for script integration. Helpers may wrap tools, but business facts/results still require real verification. History supports diagnosis and optimization suggestions, not automatic Loop rewriting.
 
-`process_error` 来自平台检测的未完成交付、非零退出、超时等。已成功提交的结果不会因后续进程退出而撤回。权限、版本、输出校验和进程存活保护始终有效，不能通过编辑矩阵绕过。正常等待不自动判为失败。未启用 fallback_node 时只展示问题；启用后仍按既有范围和三次失败规则处理。
+### Declare recovery in the matrix
 
-脚本接入工具的用法见 [run.md](run.md#统一报告事件与结果)。作者可封装调用；业务事实与结果仍需真实验证。历史记录用于分析失败原因和后续优化建议，不会自动改写 Loop。
+`to:"retry"` reuses the Task. Optional parameters overrides listed top-level fields, retaining others; nested values replace whole objects and existing $ references apply. The platform validates complete parameters against node/effective candidate before recording the match. At retry it rechecks current contracts/budgets and atomically applies parameters, Task revision, and retry record. Unchanged-parameter retry does not increment revision.
 
+Use attempt expressions, e.g. `{"op":"le","args":[{"path":"attempt"},2]}` for the first two attempts and ge 3 afterward. An unconditional failed → fault does not become automatic retry by itself. Replace the original event row when adding branches to avoid overlapping an unconditional row. Retry/handoff are visible in configuration and execution details.
 
-### 在矩阵中声明恢复
+Example for an existing command candidate: first failed attempt retries unchanged, second retries with batch=8, third and later hand off. batch is illustrative; use an actually permitted field/value satisfying contracts. This policy is not enabled by default.
 
-`to: "retry"` 使用原 Task 重试，不新建业务任务。可选 `parameters` 对象覆盖列出的顶层参数字段，其余参数保留；嵌套字段值整体替换，沿用模板已有的 `$` 路径引用。平台先按节点和有效候选校验完整参数，再记录匹配结果；真正重试时再检查当前契约和运行限额，在同一事务中应用参数、Task 修订与重试记录。原参重试不增加修订。
-
-次数条件使用已有表达式，例如 `{"op":"le","args":[{"path":"attempt"},2]}` 表示前两次执行；其余分支可用 ge 3。未设置条件的既有 failed → fault 不会自行变成自动重试；要加分支时，应修改该事件原有行，避免与无条件行重叠。retry 与 agent 在候选矩阵和运行详情中直接显示。
-
-下面是修改**已有同步脚本候选**的完整参数示例：第 1 次执行报告 failed 时原参重试，第 2 次将 batch 改为 8 后重试，第 3 次及以后交给已配置的兜底 Agent。batch 只是示例参数，须替换成作者实际允许修改且满足参数契约的字段和值；不默认启用这套策略。
-
-先用 `read_loop` 传 draft_id、node_id、implementation_id 读取候选，确认 kind 为 command，并取得最新 revision。将以下 JSON 保存为 `recovery.json`，替换草稿 ID、revision、节点与候选 ID；已有 command 等未传字段保持不变。
+Read draft_id/node_id/implementation_id first, confirm kind=command, and use the current revision. Save the following as recovery.json with real identities/revision. Omitted command and other fields remain:
 
 ```json
 {
-  "draft_id": "实际草稿ID",
+  "draft_id": "ACTUAL_DRAFT_ID",
   "revision": 12,
   "node_id": "train",
   "implementation_id": "local",
@@ -211,55 +214,54 @@ Agent 候选支持 `prompt` 字符串，与 command 一起保存、分享；已�
 }
 ```
 
-在 Skill 根目录调用；其他目录使用 scripts/call.py 的绝对路径：
+Run at the Skill root or use an absolute script path:
 
 ```sh
 python3 scripts/call.py set_implementation --arguments @recovery.json
-python3 scripts/call.py validate_loop --arguments '{"draft_id":"实际草稿ID"}'
+python3 scripts/call.py validate_loop --arguments '{"draft_id":"ACTUAL_DRAFT_ID"}'
 ```
 
-确认修改回执 `ok: true`、校验 `valid: true`，再定向 read_loop 核对保存的 lifecycle；下一次编辑使用修改回执中的新 revision。此操作只保存草稿，不会发布、启动或改变已有 Run。
+Check edit ok:true and validation valid:true, reread the saved lifecycle, and use the new revision for later edits. This only saves a draft; it does not publish/start/change existing Runs.
 
-`attempt` 是同一 Task 的总执行次数，不是连续失败计数；改参重试保留 Task ID 和下游引用，参数确实变化时增加 Task 修订。`agent` 需要作者显式配置 fallback_node 及可用的 Agent 候选，否则保留异常等待处理。示例只对主动报告的 failed 分支重试；漏报、非零退出等 process_error 保留 fault，仍按原有兜底设置处理，不应被误认为已命中上述次数分支。
+attempt counts all executions of that Task, not consecutive failures. Parameter changes preserve Task ID/downstream references and increment revision only if values actually change. agent needs explicit fallback_node and a usable candidate or leaves an issue. The example retries actively reported failed only; missing reports/nonzero exits remain process_error → fault under original fallback handling, not these attempt branches.
 
-注意 lifecycle 是整体替换。修改已有矩阵时保留其他业务阶段和转移，只替换相关的 failed 行；异步 external 不直接套用上述 executing 矩阵，应在读到的 submitting/waiting 矩阵上修改实际业务失败所在状态，保留 submitted 和 check_error 等行。
+Lifecycle is replaced whole. Preserve unrelated stages/rows when changing failure behavior. Do not apply this executing matrix directly to external: modify its actual submitting/waiting failure states while retaining submitted/check_error rows.
 
-同一事件零条命中、多条命中、条件求值失败或重试参数不合法，均保留为明确异常，不擅自选择分支。`process_error` 可进入 fault/retry/agent，但进程未确认停止时禁止自动重试。`check_error` 只代表监控查询失败，不允许借此进入 completed/fault/retry 或重提外部工作；可以显式转到 agent，让已启用的兜底 Agent 检查。恢复监控仍沿用原 external_id，并回到转交前的监控状态。
+Zero/multiple matches, expression errors, or invalid retry parameters become explicit issues. process_error may go to fault/retry/agent, but automatic retry waits for confirmed process termination. check_error means observation failure only; it cannot complete/fault/retry or resubmit external work. It may explicitly hand off to enabled fallback. Resumed observation retains external_id and returns to its pre-handoff observation state.
 
-接入前把 observer 会报告的事件与 lifecycle 的 from/event 对齐，同时覆盖平台产生的 process_error 和已提交 external 的 check_error。重试和等待上限按用户约束或外部系统已确认的故障条件设置；排队或运行耗时本身不等于失败。
+Align observer reports with lifecycle from/event rows, including platform process_error and post-submission external check_error. Use user constraints or confirmed external failure conditions for retry/wait limits; time in queue/running is not itself failure.
 
-重试等待上一进程退出和操作范围可写，暂停期间不执行。等待期间可由持权操作者明确接管重试或取消；原待应用转移随之失效。进程已确认结束的待重试动作会在重启后继续；重启时进程结局未知则标明原因，核实后通过已有 retry 工具恢复。调度复用现有限额，Agent 异常退出的三次暂停与通知机制继续有效。
+Retry waits for the old process to exit and writable scope; paused Runs do not retry. An authorized operator may explicitly take over retry or cancel, invalidating the pending transition. Confirmed-ended pending retries continue after restart; unknown process outcomes retain a reason until verified and recovered through existing retry tools. Existing limits and three-agent-failure pause/notification remain.
 
-监控到达 completed、fault、retry 或 agent 后，本次监控停止。已经在途的报告可能收到 `stale: true, accepted: false`：平台只保留证据，不改变任务、结果或失败次数；不要为此安排新 Task 或重复提交外部工作。
+Observation stops on completed/fault/retry/agent. In-flight reports may return stale:true,accepted:false: evidence is retained without changing Tasks/results/failure counts. Do not create another Task or resubmit external work for that reason.
 
-通过 `set_loop.fallback_node` 配置兜底节点，再用 set_implementation 配置该节点候选；Run 选用关系遵循现有绑定契约。未配置命令的 Agent 只能等待外部接管，不能自动唤醒。运行前检查会列出实际工作目录、程序/脚本缺项及 Agent 信任/登录未验证项；作者应在该目录确认 Agent 可以非交互运行。平台不会自动切换 cwd 或修改信任设置。
+Configure fallback_node and its candidate through existing bindings. An agent without command waits for external takeover and cannot auto-wake. Runtime checks list actual cwd, missing programs/scripts, and unverified agent trust/login. Authors verify noninteractive startup there; the platform never changes cwd/trust automatically.
 
-## 平台等待节点
+## Platform wait nodes
 
-通过 put_node + set_implementation 添加时间或事件等待，不需要守候脚本或常驻 Agent。
+Add timer/event nodes with put_node + set_implementation; no polling script or resident agent is required.
 
-- 时间等待：`kind="timer"`，wait 提供且只提供 seconds 或 until。seconds 是等待秒数，until 是带时区的 ISO 日期，例如 `2026-10-01T09:00:00+08:00`。相对时间从本次 Task 开始等待时计算，期限保存后重启不重算。一般没有业务输出；若节点声明输出，显式配置 wait.outputs。
-- 事件等待：`kind="event"`，event 为事件名称；wait.key 为关联标识，省略时沿用 Task parameters.event_key。可填 wait.timeout 作为最多等待秒数。收到匹配事件后，以 payload 作为节点全部输出，按原契约检查并提交。事件可先于等待到达；同一个事件只被一个等待执行消费。
-- wait 支持原有 `{parameters.name}` 或 `{"$":"parameters.name"}` 引用。回复事件名称、关联标识和输出结构需与询问一致。
-- 超时产生 timeout 事件，初始矩阵进入 fault；作者可在同一矩阵中改为重试或交给 Agent。取消等待不启动外部操作；下游是否改选输入仍由明确安排决定。暂停期间不推进，恢复时依据原期限处理。
+- timer: wait contains exactly one seconds or timezone-aware ISO until, e.g. 2026-10-01T09:00:00+08:00. Relative time begins when the Task starts waiting; persisted deadlines are not recalculated on restart. Usually there are no outputs; declare wait.outputs if outputs exist.
+- event: event names the event; wait.key correlates it, defaulting to Task parameters.event_key. Optional wait.timeout limits seconds. A matching payload supplies all outputs and is validated/committed. Events may arrive first; one event is consumed by one waiting execution.
+- wait supports `{parameters.name}` and `{"$":"parameters.name"}`. Question/reply event name, correlation key, and output structure must agree.
+- Expiry reports timeout; the initial matrix faults, but authors may configure retry/agent. Cancelling a wait starts no external operation; alternative downstream inputs require explicit arrangement. Pausing stops progression; resume respects the original deadline.
 
-示例为通用工具参数，不包含业务方法：
+Generic example, without business methods:
 
 ```json
 {"draft_id":"DRAFT_ID","revision":1,"node_id":"wait_reply","kind":"event","event":"reply","wait":{"key":"{parameters.question_id}","timeout":86400}}
 ```
 
-使用真实的草稿 revision；先声明该节点的输出契约。需要完成后通知时，在它的 completed 转移行加入 notify；通知内容和具体输出字段由作者定义。
+Use the real revision and declare output contracts first. Add notify to the completed row for completion messages; authors choose content/output fields.
 
+## Runtime verification
 
-## 运行级验证
+validate_loop and static smoke do not execute candidates. Explicit smoke_runtime(key,node_id?,implementation_id?,timeout?,cases?) checks installed agent startup and external lifecycles. It runs selected agents with real argv/cwd, potentially invoking models (default 30 seconds per check), and simulates external reports, duplicates, and post-retry check_error in a temporary Timeline. It does not run real external business work or modify Runs. Omitted selectors check every candidate, including fallback.
 
-`validate_loop` 和静态 `smoke` 不执行候选。需要验证安装后的 Agent 启动及 external 生命周期时，显式调用 `smoke_runtime(key, node_id?, implementation_id?, timeout?, cases?)`。它会按实际 argv/cwd 启动选定 Agent（可能调用模型，默认每个检查最多 30 秒），并在临时 Timeline 中模拟 external 报告、重复报告及重试后的 check_error；不会启动真实外部业务或修改已有 Run。省略选择器时检查全部候选，包括兜底。
+For conditional transitions, cases supplies node, implementation, state, event, and required attempt/parameters/inputs/settings/detail/expected. Only those cases are verified; business output contracts/services still need acceptance. unknown is not success; ready means no known failure; verified means every item passed. Corrupt packages do not execute. CLI: `smoke-runtime <key> --node <node> --implementation <id> --timeout 30 --cases cases.json`.
 
-有条件的状态转移用 cases 提供 node、implementation、state、event，以及需要的 attempt/parameters/inputs/settings/detail/expected。检查仅验证给定样例，业务输出契约及外部服务仍需验收。unknown 不表示成功，ready 仅表示没有已知失败，verified 表示全部项目通过。包损坏时不执行命令。命令行入口是 `smoke-runtime <key> --node <node> --implementation <id> --timeout 30 --cases cases.json`。
+## Further construction tools
 
-## 进一步的构建工具
+See [contracts](contracts.md) for conditional parameters, stable Task/output refs, validate_parameters, and preview_plan, and [testing](testing.md) for test_loop/scenarios. read_capabilities exposes these and other mechanisms.
 
-条件参数、稳定 Task/输出引用、validate_parameters 和 preview_plan 的完整契约见 [contracts.md](contracts.md)。隔离流程验收 test_loop 及 set_loop.scenarios 的示例见 [testing.md](testing.md)。read_capabilities 可发现这些能力及其他已有机制。
-
-导出时自动根据 routes、扩展 schema、稳定引用、scenarios 和 requires 计算包能力要求。使用新能力的包采用 package/2，旧服务会明确拒绝；普通旧包继续使用 package/1。requires 可显式追加能力要求。安装、导入草稿、复制和再次导出会保留包级要求；未知包格式会明确拒绝，不自动降级。更新运行服务后需重新读取实际工具目录；源码修改本身不代表服务已升级。
+Exports derive capability requirements from routes, extended schemas, refs, scenarios, and requires. New-capability packages use package/2 so older services reject explicitly; ordinary old packages retain package/1. requires may add explicit requirements. Install/import/copy/reexport preserve package requirements; unknown formats reject rather than downgrade. Reread live schemas after updating a service; source edits alone are not a running-service upgrade.

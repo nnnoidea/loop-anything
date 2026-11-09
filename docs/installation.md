@@ -16,6 +16,16 @@
 
 平台程序位于 `loop_anything/`，操作 Skill 位于根目录 `skills/`。Agent 的模型、工具权限及启动参数由用户管理，Skill 安装不会替用户配置这些内容。
 
+## 本地预览
+
+在源码目录运行：
+
+```sh
+python3 -m loop_anything serve --demo --open
+```
+
+默认地址为 `http://127.0.0.1:8767`。示例展示模拟流程，不执行真实训练或预订；前台预览需要保持进程运行。已有服务占用默认端口或工作区时，请复用已有服务，或用独立的 `--db` 和 `--port` 启动预览。
+
 ## 安装位置、工作区与升级
 
 安装器默认在用户数据目录的 `app/` 下创建环境，也可用 `--prefix 绝对路径` 指定。macOS 启动文件是 `Loop Anything.command`，Windows 是 `Loop Anything.cmd`，Linux 是 `loop-anything`。
@@ -56,3 +66,11 @@ python3 -m loop_anything --db /绝对路径/runs.sqlite3 serve --host 0.0.0.0
 macOS 首次后台安装使用 `python3 install.py --host 0.0.0.0`；已有后台服务先 `service stop`，再 `service install --host 0.0.0.0`。未指定的工作区和端口沿用已有配置。
 
 共享访问面向可信内部环境。多机 Agent 协作见[通信说明](../skills/loop-anything-platform/references/communication.md)。
+
+## 团队服务、纯客户端与本机运行端
+
+角色和完整操作见[团队运行说明](../skills/loop-anything-platform/references/team-runtime.md)。团队服务安装程序后用 `serve --team-dir /nas/team/loop-anything`；仅 NAS 接入可加 `--no-web`。集群前台部署可用 `install.py --no-service`，由团队已有进程托管方式维持服务。
+
+纯客户端只复制导出的 `loop-anything-platform` 与 `loop-anything-dispatch` Skill，写好 `connection.json` 即可；不需要 wheel、数据库或网页。服务机可用 `skills --output skill.zip --url nas:///...` 导出，其他成员解压 `platform/` 下的 Skill 目录，按各自 NAS 挂载路径改 URL。
+
+本机运行端用 `python3 install.py --role local` 安装共享程序；同一个安装包，按入口按需加载，不启动完整平台。安装返回的 Python 执行 `-m loop_anything skills --only local --install-dir <Agent Skill目录>` 导出小型调度 Skill，无需填写平台地址。个人登记放在约定目录（可选 NAS），登记、查询、安装和升级均不会启动旧任务；明确 `local ... start ID` 才开始运行。接单本身也是一个这样的登记任务。

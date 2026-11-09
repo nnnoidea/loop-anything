@@ -49,11 +49,25 @@ def acquire_in_run(run, kind, token=None, execution_id=None, task_id=None):
         task_id = execution(run, execution_id)['task_id']
     if task_id is not None and task_id not in run['tasks']:
         raise Invalid('Unknown scope task')
-    scope = scope_for(run, run['tasks'][task_id]) if task_id and (kind == 'background' or node_for(run, run['tasks'][task_id]['spec']['node']).get('initialize_timeline')) else task_id
+    # A decision without a CLI stays unclaimed until an interactive Agent
+    # explicitly acquires it. Bind that claim to the existing execution.
+    from loop_anything.runtime.flow_agent import NODE as FLOW_AGENT
+    manual = None
+    if (kind == 'interactive' and execution_id is None and task_id
+            and run['tasks'][task_id]['spec']['node'] == FLOW_AGENT):
+        current_id = run['tasks'][task_id].get('execution_id')
+        current = execution(run, current_id) if current_id else None
+        if (current and current['status'] == 'decision' and not current['implementation'].get('command')
+                and not current['implementation'].get('dispatch') and not owner_for(run, current.get('token'))):
+            manual, execution_id = current, current_id
+    scope = scope_for(run, run['tasks'][task_id]) if task_id and (kind == 'background' or
+        run['tasks'][task_id]['spec']['node'] == FLOW_AGENT or node_for(run, run['tasks'][task_id]['spec']['node']).get('initialize_timeline')) else task_id
     if not scope_available(run, task_id, token):
         raise Conflict('Another Agent is executing this Task')
     owner = dict(token=token or uid('operator'), kind=kind, execution_id=execution_id,
                  task_id=task_id, scope_task=scope, acquired_at=time.time())
+    if manual is not None:
+        manual['token'] = owner['token']
     from loop_anything.runtime.optimistic import basis
     owner['observed'] = basis(run)
     run.setdefault('agent_sessions', []).append(owner)
@@ -231,7 +245,7 @@ def change_task_in_run(run, arguments, actor=None):
         tasks['status'] = 'waiting'
         Store.log(run, 'monitor_retry', arguments['reason'], current['id'], {'external_id': current['external_id'], 'task_revision': before_revision, 'actor': actor})
         return
-    active_script = tasks['status'] in ('executing', 'waiting', 'decision') and not (op=='cancel' and current and current['implementation']['kind'] in ('timer','event'))
+    active_script = tasks['status'] in ('executing', 'waiting', 'decision') and not (op=='cancel' and current and current['implementation']['kind'] in ('timer','event','loop'))
     if active_script or (tasks['status'] == 'approval' and op != 'cancel') or tasks['status'] == 'completed':
         raise Conflict('Cannot change dispatched side effects or completed tasks')
     if op == 'update':
@@ -613,6 +627,7 @@ class RunTools:
                 raise Invalid('Record not found')
             return {'record': record}
         if name == 'read_task':
+            from loop_anything.runtime.flow_agent import decisions, route_receipts
             tasks = run['tasks'].get(arguments['task_id'])
             if not tasks:
                 raise Invalid('Unknown business Task')
@@ -622,9 +637,11 @@ class RunTools:
             config = selected(run, tasks)[1]
             lifecycle = definition(config) if config else None
             attempt = execution(run, tasks['execution_id']) if tasks.get('execution_id') else {}
-            execution_state = {k: attempt[k] for k in ('id', 'task_revision', 'task_spec', 'lifecycle_state', 'external_id', 'wake_at', 'observation_error', 'retry', 'wait', 'native_session', 'worker_active', 'communication_id', 'communication_state') if k in attempt}
+            execution_state = {k: attempt[k] for k in ('id', 'task_revision', 'task_spec', 'lifecycle_state', 'external_id', 'child_run_id', 'child_status', 'child_revision', 'wake_at', 'observation_error', 'retry', 'wait', 'native_session', 'worker_active', 'communication_id', 'communication_state') if k in attempt}
             last_transition = next((h for h in reversed(run['history']) if h['kind'] == 'transition' and h['execution'] == attempt.get('id')), None)
-            return {'lifecycle': lifecycle, 'execution_state': execution_state, 'last_transition': last_transition, 'task': tasks, 'task_revision': tasks.get('revision'), 'inputs': values, 'sources': sources, 'missing': missing,
+            return {'flow_decisions': decisions(run, tasks['id']), 'flow_trigger': tasks.get('origin', {}).get('flow_agent'),
+                    'route_receipts': route_receipts(run, tasks['id']),
+                    'lifecycle': lifecycle, 'execution_state': execution_state, 'last_transition': last_transition, 'task': tasks, 'task_revision': tasks.get('revision'), 'inputs': values, 'sources': sources, 'missing': missing,
                     'task_version': digest([tasks.get('revision'), tasks['spec'], values, sources, selected(run, tasks)]),
                     'parameter_schema': node.get('parameter_schema'),
                     'implementation_id': selected(run, tasks)[0], 'implementation': selected(run, tasks)[1],

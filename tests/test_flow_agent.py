@@ -20,7 +20,16 @@ class FlowAgentTests(unittest.TestCase):
         self.platform = PlatformTools(self.store)
         self.engine = Engine(self.store)
         self.draft = self.platform.call('create_loop', {'name': 'Skill to Loop'})
-        recipe = self.platform.call('read_capabilities', {'capability': 'flow_agent'})['patterns']['flow_agent_decision']
+        # Legacy ordinary-node definitions remain executable after builtin support.
+        recipe = {
+            'node': {'node_id': 'flow_agent', 'instructions': 'Read the handbook and decide.',
+                     'inputs': [{'name': 'trigger', 'type': 'object'}, {'name': 'result', 'type': 'object'}],
+                     'outputs': [{'name': 'decision', 'type': 'object'}]},
+            'plan': {'steps': {'decide': {'node': 'flow_agent', 'inputs': {
+                'trigger': {'literal': {'$': 'values.trigger'}}, 'result': {'record': {'$': 'values.record'}}}}}},
+            'source_routes': [{'id': 'decide', 'event': 'completed', 'plan': 'decide_next', 'values': {
+                'record': {'$': 'task.outputs.result.id'}, 'trigger': {'task_id': {'$': 'task.id'}, 'transition': {'$': 'transition'}}}}]}
+
         self.edit('put_node', **recipe['node'])
         self.edit('set_implementation', node_id='flow_agent', kind='agent')
         self.edit('set_loop', global_agent_node='flow_agent', handbook='Use the existing business Skill; wait for external facts before deciding.')

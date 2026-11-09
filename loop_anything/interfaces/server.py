@@ -2,7 +2,6 @@
 import json
 import base64
 import mimetypes
-import threading
 import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,13 +12,10 @@ from loop_anything.runtime.model import Conflict, Invalid, validate
 from loop_anything.paths import platform_skill_directory
 
 
-def serve(store, engine, port, initial_run=None, protection=None, open_browser=False, host='127.0.0.1'):
+def serve(store, engine, port, initial_run=None, protection=None, open_browser=False, host='127.0.0.1', mailbox=None, public_url=None):
     from loop_anything.interfaces.platform_tools import PlatformTools
     platform_tools = PlatformTools(store)
     root = Path(__file__).resolve().parents[1] / 'web'
-    stop = threading.Event()
-    from loop_anything.interfaces.web_agent import WebAgent
-    web_agent = WebAgent(store, engine)
     timeline_guide = (platform_skill_directory() / 'references/run.md').read_text(encoding='utf-8')
 
     def power_status():
@@ -27,27 +23,6 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
         requested = store.keep_awake(default=state['requested'])
         return dict(state, requested=requested, controllable=protection is not None,
                     updating=bool(state.get('updating') or protection and requested != state['requested']))
-
-    def scheduler():
-        while not stop.wait(0.75):
-            try:
-                engine.communication.tick()
-            except Exception:
-                traceback.print_exc()
-            for run in store.scheduling_list():
-                try:
-                    engine.tick(run['id'])
-                except Exception as exc:
-                    # A malformed runtime path must remain inspectable instead of spinning.
-                    with store.edit(run['id']) as current:
-                        current['status'] = 'paused'
-                        Store.log(current, 'engine_error', str(exc))
-                    traceback.print_exc()
-
-    def communication_transport():
-        while not stop.wait(.4):
-            try:engine.communication.scan()
-            except Exception:traceback.print_exc()
 
     from loop_anything.runtime.store import Store
 
@@ -59,8 +34,6 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             # These handles bind execution reports to a specific live request/turn.
             if len(parts)==5 and parts[0]=='communication' and parts[3:]==['api','tools']:
                 return not self.headers.get('Origin') and engine.communication.authorized({'request_id':parts[1],'token':parts[2]},worker=True)
-            if len(parts)==5 and parts[0]=='web' and parts[3:]==['api','tools']:
-                web_agent.turn(parts[1],parts[2])
             return True
 
         def send(self, data, status=200):
@@ -82,20 +55,14 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
 
         def get(self):
             parts = urlsplit(self.path).path.strip('/').split('/')
+            query = {k:v[-1] for k,v in parse_qs(urlsplit(self.path).query,keep_blank_values=True).items()}
             if len(parts)==5 and parts[0]=='communication' and parts[3:]==['api','tools']:
                 self.send(engine.communication.scoped_definitions(parts[1],parts[2]));return
             if len(parts)==5 and parts[0]=='communication' and parts[3:]==['api','platform']:
                 if not engine.communication.authorized({'request_id':parts[1],'token':parts[2]},worker=True):raise Conflict('Invalid execution credential')
                 parts=['api','platform']
-            if len(parts) == 5 and parts[0] == 'web':
-                web_agent.turn(parts[1], parts[2])
-                if parts[3:] == ['api', 'tools']:
-                    from loop_anything.capabilities import service_info
-                    from loop_anything.interfaces.platform_tools import WORKFLOW
-                    self.send({'service': service_info(), 'instructions': WORKFLOW, 'tools': web_agent.definitions(parts[1], parts[2])})
-                    return
-                if parts[3:] == ['api', 'platform']:
-                    parts = ['api', 'platform']
+            if parts[0]=='web' or parts[:2]==['api','conversations']:
+                raise Invalid('独立网页 Agent 对话已移除；节点 session 仅用于 Run 任务。')
             if len(parts) == 6 and parts[:2] == ['api', 'runs'] and parts[3] == 'executions' and parts[5] in ('terminal','session'):
                 if host in ('127.0.0.1', 'localhost') and self.headers.get('Host') not in ('127.0.0.1:%s' % server.server_port, 'localhost:%s' % server.server_port):
                     raise Invalid('Workspace host required')
@@ -118,12 +85,6 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 from loop_anything.runtime.agent_prompt import DEFAULTS
                 self.send(DEFAULTS)
                 return
-            if parts == ['api', 'conversations']:
-                self.send(web_agent.list())
-                return
-            if len(parts) == 3 and parts[:2] == ['api', 'conversations']:
-                self.send(web_agent.view(web_agent.read(parts[2])))
-                return
             if parts == ['api', 'tools']:
                 from loop_anything.interfaces.platform_tools import PlatformTools
                 from loop_anything.capabilities import service_info
@@ -131,7 +92,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 return
             if parts == ['api', 'skills']:
                 from loop_anything.packaging.skill_bundle import bundle
-                data = bundle('http://' + self.headers.get('Host', '127.0.0.1:%s' % server.server_port))
+                data = bundle(engine.platform_url if mailbox else 'http://' + self.headers.get('Host', '127.0.0.1:%s' % server.server_port))
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/zip')
                 self.send_header('Content-Disposition', 'attachment; filename=loop-anything-skills.zip')
@@ -149,12 +110,22 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.send({'service': service_info(), 'system': platform.system(), 'database': str(Path(store.filename).resolve()),
                            'keep_awake': power_status()})
             elif parts == ['api', 'catalog']:
-                self.send([dict(item, timeline_guide=timeline_guide) for item in store.catalog()])
+                self.send([dict(item, timeline_guide=timeline_guide) for item in store.catalog(query.get('include_archived')=='true')])
             elif parts == ['api', 'drafts']:
-                self.send(store.drafts())
+                self.send(store.drafts(query.get('include_archived')=='true'))
             elif parts == ['api', 'runs']:
-                self.send([{k: v for k, v in r.items() if k in ('id', 'title', 'status', 'loop_key', 'created_at', 'executions', 'settings')}
-                           for r in store.list()])
+                for k in ('limit','offset'):
+                    if k in query:
+                        try:query[k]=int(query[k])
+                        except ValueError:raise Invalid(k+' must be an integer')
+                for k in ('created_from','created_to','active_from','active_to'):
+                    if k in query:
+                        try:query[k]=float(query[k])
+                        except ValueError:raise Invalid(k+' must be a Unix timestamp')
+                if 'root_only' in query:
+                    if query['root_only'] not in ('true','false'):raise Invalid('root_only must be true or false')
+                    query['root_only']=query['root_only']=='true'
+                self.send(platform_tools.call('list_runs',query))
             elif len(parts) == 3 and parts[:2] == ['api', 'runs']:
                 current = store.get(parts[2])
                 if current.get('operator_protocol'):
@@ -218,7 +189,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.send({'snapshot': run, 'execution_id': execution['id'], 'token': execution.get('token'),
                            'settings_revision': execution['settings_revision'], 'output_contract': node_for(run, execution['node'])['outputs']})
             else:
-                filename = {name: name for name in ('communication.js', 'communication.css', 'terminal.js', 'terminal.css', 'xterm.js', 'xterm-fit.js', 'xterm.css', 'app.js', 'notifications.js', 'lifecycle.js', 'loop_graph.js', 'settings.js', 'forms.js', 'workspace.js', 'authoring.js', 'workspace.css', 'conversation.js', 'conversation.css', 'task_history.js', 'style.css', 'graph.css', 'editor.js', 'editor.css', 'packages.js', 'library.js', 'library.css', 'navigation.js')}.get('/'.join(parts))
+                filename = {name: name for name in ('communication.js', 'communication.css', 'terminal.js', 'terminal.css', 'xterm.js', 'xterm-fit.js', 'xterm.css', 'app.js', 'notifications.js', 'lifecycle.js', 'loop_graph.js', 'flow_bridge.js', 'settings.js', 'forms.js', 'workspace.js', 'authoring.js', 'workspace.css', 'launch.js', 'task_history.js', 'style.css', 'graph.css', 'editor.js', 'editor.css', 'packages.js', 'library.js', 'library.css', 'navigation.js', 'run_library.js')}.get('/'.join(parts))
                 if parts == ['']:
                     filename = 'index.html'
                 if not filename:
@@ -284,49 +255,8 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 store.keep_awake(body['enabled'])
                 self.send(power_status())
                 return
-            if parts == ['api', 'agent-prompts', 'preview']:
-                from loop_anything.runtime.agent_prompt import author_context, render_prompt
-                if body.get('conversation_id') or body.get('run_id'):
-                    if body.get('conversation_id'):
-                        doc = web_agent.read(body['conversation_id'])
-                    else:
-                        run = store.get(body['run_id'])
-                        doc = {'id': '[会话建立时生成]', 'run_id': run['id'], 'launch': {'key': run['loop_key']}, 'messages': []}
-                    if body.get('launch') is not None and not doc.get('run_id'):
-                        doc['launch'] = dict(doc['launch'], **body['launch'])
-                    context = web_agent.prompt_context(doc, '[运行时生成]', body.get('scope_task'),
-                                                       body.get('start', False), body.get('message'))
-                    mode = 'web'
-                else:
-                    # A draft has no installed Skill paths or Run identity yet.
-                    context = author_context(store, None, body['loop_definition'], body['node_id'])
-                    context.update(platform_url=engine.platform_url, run_id='[运行时生成]', execution_id='[运行时生成]',
-                                   task_id='[运行时生成]', token='[运行时生成]', scope_task='[由实际任务归属决定]')
-                    mode = 'task'
-                self.send({'text': render_prompt(body, mode, context),
-                           'notice': '预览不会启动 Agent。运行身份和令牌在唤醒时生成；草稿 Skill 路径在安装后解析。'})
-                return
-            if len(parts) == 5 and parts[0] == 'web' and parts[3:] == ['api', 'tools']:
-                result = web_agent.tool(parts[1], parts[2], body['tool'], body.get('arguments', {}))
-                self.send(result, 200 if result['ok'] else 409 if result['error']['code'] == 'conflict' else 400)
-                return
-            if parts == ['api', 'conversations']:
-                self.send(web_agent.create(body.get('key'), body.get('run_id')), 201)
-                return
-            if len(parts) == 4 and parts[:2] == ['api', 'conversations']:
-                ident, action = parts[2:]
-                if action == 'update':
-                    result = web_agent.update(ident, body['revision'], body.get('launch'), body.get('agent'))
-                elif action == 'send':
-                    result = web_agent.send(ident, body['revision'], body['message'], body.get('start', False), body.get('scope_task'))
-                elif action == 'start':
-                    result = web_agent.start(ident, body['revision'])
-                elif action == 'recover':
-                    result = web_agent.recover(ident, body.get('confirmed_stopped'))
-                else:
-                    raise Invalid('Unknown conversation operation')
-                self.send(result)
-                return
+            if parts[0]=='web' or parts[:2]==['api','conversations']:
+                raise Invalid('独立网页 Agent 对话已移除；节点 session 仅用于 Run 任务。')
             if parts == ['api', 'tools']:
                 from loop_anything.interfaces.platform_tools import PlatformTools
                 result = PlatformTools(store).respond(body['tool'],body.get('arguments',{}))
@@ -357,8 +287,9 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                            'assets': [{'path': n, 'base64': base64.b64encode(v[0]).decode(), 'executable': v[1]} for n, v in assets.items()]})
             elif parts == ['api', 'packages', 'smoke']:
                 from loop_anything.packaging.packages import load_installed, smoke
-                document, directory = load_installed(store.filename, body['key'])
-                self.send(smoke(document, directory))
+                from loop_anything.packaging.configuration import installed
+                document, directory, configuration = installed(store.filename, body['key'])
+                self.send(smoke(document, directory, configuration=configuration['config']))
             elif parts == ['api', 'validate']:
                 self.send(validate(body['loop_definition'], body.get('implementations', {})))
             elif parts == ['api', 'drafts']:
@@ -366,7 +297,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             elif parts == ['api', 'publish']:
                 self.send(store.publish(body['loop_definition'],body['implementations']))
             elif parts == ['api', 'runs']:
-                self.send(store.create(body['key'], body['title'], body.get('inputs'), authorization=body.get('authorization', ''), acquire=body.get('acquire', False), bindings=body.get('bindings'), fallback_node=body.get('fallback_node'), global_agent_node=body.get('global_agent_node'), notification_command=body.get('notification_command'),notification_route=body.get('notification_route'),conversation_id=body.get('conversation_id'),chat_context=body.get('chat_context')), 201)
+                self.send(store.create(body['key'], body['title'], body.get('inputs'), authorization=body.get('authorization', ''), acquire=body.get('acquire', False), bindings=body.get('bindings'), fallback_node=body.get('fallback_node'), global_agent_node=body.get('global_agent_node'), notification_command=body.get('notification_command'),notification_route=body.get('notification_route'),conversation_id=body.get('conversation_id'),chat_context=body.get('chat_context'),created_by=body.get('created_by')), 201)
             elif len(parts) == 4 and parts[:2] == ['api', 'runs']:
                 run_id, action = parts[2:]
                 if action == 'request':
@@ -424,7 +355,8 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             self.server_name, self.server_port = self.server_address
 
     server = LocalHTTPServer((host, port), Handler)
-    engine.platform_url = 'http://%s:%s' % ('127.0.0.1' if host in ('0.0.0.0', 'localhost') else host, server.server_port)
+    engine.web_url = 'http://%s:%s' % ('127.0.0.1' if host in ('0.0.0.0', 'localhost') else host, server.server_port)
+    engine.platform_url = public_url or engine.web_url
     if initial_run is not None:
         try:
             created = store.create(**initial_run)
@@ -433,14 +365,11 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             server.server_close()
             engine.close()
             raise
-    engine.communication.background_transport = True
-    transport_thread = threading.Thread(target=communication_transport, daemon=True)
-    transport_thread.start()
-    thread = threading.Thread(target=scheduler, daemon=True)
-    thread.start()
+    from loop_anything.runtime.service_host import ServiceHost
+    runtime=ServiceHost(engine,mailbox).start()
     print('Loop Anything workspace: http://127.0.0.1:%s' % server.server_port, flush=True)
     if host not in ('127.0.0.1', 'localhost'):
-        print('Trusted workspace: http://<server-address>:%s (optional Loop editing locks)' % server.server_port, flush=True)
+        print('Trusted workspace: http://<server-address>:%s' % server.server_port, flush=True)
     print('Database: ' + str(Path(store.filename).resolve()), flush=True)
     if protection and protection.status()['error']:
         print('WARNING: sleep protection unavailable: ' + protection.status()['error'], flush=True)
@@ -451,8 +380,5 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
     try:
         server.serve_forever()
     finally:
-        stop.set()
-        thread.join(timeout=5)
-        transport_thread.join(timeout=1)
         server.server_close()
-        engine.close()
+        runtime.close()

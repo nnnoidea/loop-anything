@@ -19,7 +19,6 @@ test('routes round-trip versions, tabs, draft and Run identities with escaped ke
 });
 test('implementations and local readiness are separate; prose is never inferred',()=>{
   assert.match(run("libraryCard({key:'x',loop_definition:{id:'x',version:'1',nodes:{a:{},b:{}}},implementations:{a:{kind:'agent'}}})"),/部分实现/);
-  assert.match(run("overviewHTML({loop_definition:{nodes:{},id:'x'},implementations:{}})"),/作者尚未提供/);
   assert.match(run("checkHTML({checks:[{kind:'runtime',status:'unknown'}]})"),/未验证/);
   assert.doesNotMatch(run("checkHTML({checks:[{kind:'runtime',status:'unknown'}]})"),/保证运行成功。<\/strong>/);
 });
@@ -32,28 +31,25 @@ test('real commands marked simulated are still disclosed in v2',()=>{
   assert.match(run("executionLabel({kind:'agent',command:['run'],simulation:'example'},1)"),/平台内置模拟/);
   assert.match(run("executionLabel({kind:'agent',simulation:'example'},2)"),/等待外部提交/);
 });
-test('typed form values preserve false, zero, strings and structures',()=>{
-  assert.equal(run("parseField('false','boolean','x')"),false);
-  assert.equal(run("parseField('0','integer','x')"),0);
-  assert.equal(run("parseField('001','string','x')"),'001');
-  assert.equal(run("JSON.stringify(parseField('[1,2]','array','x'))"),'[1,2]');
-  assert.throws(()=>run("parseField('1.5','integer','x')"));
-  assert.throws(()=>run("parseField('null','object','x')"));
+test('execution and recovery descriptions follow dispatch and executor placement',()=>{
+  const remote=run("executionLabel({kind:'agent',command:['codex'],executor:'worker-2'})");
+  assert.match(remote,/执行端 worker-2/);assert.doesNotMatch(remote,/平台所在机器执行/);
+  const named=run("executionLabel({kind:'agent',dispatch:{location:'group',agent_id:'papers'}})");
+  assert.match(named,/团队具名 Agent papers/);assert.doesNotMatch(named,/未配置自动命令/);
+  assert.match(run("executionLabel({kind:'agent',dispatch:{location:'local',agent_id:'papers'}})"),/本服务具名 Agent/);
+  assert.match(run("executionLabel({kind:'command',command:['script']})"),/平台所在机器/);
+  const fallback=run("fallbackSummary({loop_definition:{nodes:{repair:{}}},implementations:{repair:{kind:'agent',dispatch:{location:'group',agent_id:'papers'}}}},'repair')");
+  assert.match(fallback,/接单后执行/);assert.doesNotMatch(fallback,/只能等待外部 Agent/);
 });
-test('launch preview validates seed contracts and includes effective defaults',()=>{
-  run("var bp={schema_version:2,entry:'init',defaults:{n:3,flag:false},nodes:{init:{inputs:{value:{type:'integer',minimum:1}}}},seed:{inputs:{value:{run:'n'}}}}");
-  assert.equal(run("JSON.stringify(effectiveLaunchInputs(bp,{}))"),'{"n":3,"flag":false}');
-  assert.throws(()=>run("effectiveLaunchInputs(bp,{n:0})"));
-  assert.throws(()=>run("effectiveLaunchInputs(bp,{n:'3'})"));
-  assert.throws(()=>run("validateInput({},{type:'object',required:['x']},'object')"));
-  assert.throws(()=>run("validateInput([1,1],{type:'array',uniqueItems:true},'list')"));
-});
-test('nested run parameters remain objects, not flattened or guessed',()=>{
-  run("var nested={schema_version:2,entry:'init',defaults:{settings:{count:2}},nodes:{init:{inputs:{n:{type:'integer'}}}},seed:{inputs:{n:{run:'settings.count'}}},guide:{parameters:{settings:{label:'设置'}}}}");
-  assert.equal(run("launchFields(nested,nested.defaults)[0].type"),'object');
-  assert.equal(run("launchFields(nested,nested.defaults)[0].label"),'设置');
-  assert.equal(run("effectiveLaunchInputs(nested,{settings:{count:4}}).settings.count"),4);
-  assert.throws(()=>run("effectiveLaunchInputs(nested,{settings:{}})"));
+test('task execution badge follows Task selection and then its dispatched snapshot',()=>{
+  context.item={settings:{bindings:{work:'script'}},implementations:{work:{default:'script',options:{script:{kind:'command'},reason:{kind:'agent',agent_cli:'codex'}}}}};
+  context.task={spec:{node:'work',implementation:'reason'}};
+  assert.equal(run('taskImplementation(item,task).kind'),'agent');
+  assert.equal(run('taskImplementation(item,task,{implementation:{kind:"external"}}).kind'),'external');
+  context.task.spec.implementation=null;
+  assert.equal(run('taskImplementation(item,task).kind'),'command');
+  context.item.settings.bindings.work=null;
+  assert.equal(run('taskImplementation(item,task)'),null);
 });
 test('Loop handbook and node Skill render their own body formats without mutation',()=>{
   run("var hand={name:'Loop 手册',instructions:'<b>启动与后续任务</b>'};var skill={name:'专业方法',content:'<b>证据分析</b>'}");
@@ -96,4 +92,19 @@ test('declared input sources distinguish unbound ports, upstream outputs and int
  assert.equal(rows[0].text,'data / dataset');
  delete bp.plans.experiment.steps.data;
  assert(JSON.parse(run(`JSON.stringify(nodeInputRows(${JSON.stringify(bp)},'predict'))`)).find(r=>r.port==='dataset').missing);
+});
+
+test('read-only node navigation keeps the overview and never calls an authoring API',async()=>{
+  const inspector={scrollTop:10,focus(){}};
+  context.editor={routeId:'draft-side',revision:3,loop_definition:{nodes:{work:{}}}};
+  context.editorPage={querySelector:()=>inspector};context.page='editor';context.editSelection=null;
+  context.history={pushState(){},replaceState(){}};context.structuredClone=structuredClone;
+  context.window.matchMedia=()=>({matches:false});context.renderProperties=()=>{};context.updateNavigationUI=()=>{};
+  context.saveEditor=()=>{throw Error('Reading must not save');};context.renderEditor=()=>{throw Error('Reading must not recreate iframe');};
+  const before=JSON.stringify(context.editor);
+  run("activeRoute={type:'editor',id:'draft-side'}");
+  assert.equal(await run("navigateTo({type:'editor',id:'draft-side',node:'work',implementation:'one'})"),true);
+  assert.equal(run('activeRoute.implementation'),'one');assert.equal(run('editSelection.node'),'work');
+  assert.equal(await run("navigateTo({type:'editor',id:'draft-side'})"),true);
+  assert.equal(run('editSelection'),null);assert.equal(JSON.stringify(context.editor),before);
 });

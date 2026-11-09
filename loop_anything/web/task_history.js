@@ -46,5 +46,16 @@
     for(const item of items){const key=item.round;if(!result.has(key))result.set(key,[]);result.get(key).push(item);}
     return [...result].map(([round,items])=>({round,items}));
   }
-  const api={rows,groups,startTime,links};if(typeof module!=='undefined' && module.exports)module.exports=api;else root.TaskHistory=api;
+  function businessGraph(run,items=rows(run)){
+    const source=id=>run.tasks[id]?.origin?.flow_agent?.task_id;
+    const visible=items.filter(i=>!source(i.tasks.id)),ids=new Set(visible.map(i=>i.tasks.id));
+    const resolve=id=>{const seen=new Set();while(source(id)&&!seen.has(id)){seen.add(id);id=source(id);}return id;};
+    const seen=new Set(),mapped=[];
+    for(const edge of links(run,rows(run))){
+      const from=resolve(edge.from),to=resolve(edge.to),key=JSON.stringify([from,to,edge.kind]);
+      if(from!==to&&ids.has(from)&&ids.has(to)&&!seen.has(key)){seen.add(key);mapped.push({...edge,from,to});}
+    }
+    return {items:visible,links:mapped};
+  }
+  const api={rows,groups,startTime,links,businessGraph};if(typeof module!=='undefined' && module.exports)module.exports=api;else root.TaskHistory=api;
 })(typeof globalThis!=='undefined'?globalThis:this);

@@ -1,501 +1,528 @@
-# 平台已承担的能力与作者分工
+# Platform capabilities and author responsibilities
 
-由平台能力定义生成；运行服务的 read_capabilities 为实际可用能力依据。可传 capability 按需读取详细机制与组合示例。
+Generated from platform capability definitions. The running service read_capabilities is authoritative; pass capability to read relevant mechanisms and composition examples on demand.
 
-## 特性如何改变 Loop 的组织方式
+## How capabilities shape a Loop
 
-讨论构建方案时，主动选择与用户目标相关、会影响工作组织的特性，说明可以怎样组织及其帮助。用户无需先知道这些能力。下表提供构建思路，按需使用；已有方案合适时直接继续，不逐项宣读、不强制覆盖所有特性，不增加检查或确认步骤。
+During design discussion, proactively select features relevant to the user goal that affect work organization. Explain a possible structure and its benefit; users need not know platform features beforehand. Use this table as needed, not as a checklist. Continue when an existing design fits; do not recite every feature or add checks/confirmation steps.
 
-| 用户目标中的线索 | 可利用的特性 | 可以提出的构建建议 | 按需深入 |
+| Clue in the user goal | Available capability | Design suggestion | Details on demand |
 | --- | --- | --- | --- |
-| 已有 Skill，后续动作需要临场判断 | 自然语言流程 Agent 与确定规则混合推进 | 先把 Skill 中的长任务和等待拆出，已确定转移用规则，其余让流程 Agent 决定；多次运行后依据记录逐步固化。 | [流程 Agent](flow-agent.md) |
-| 耗时训练、排队、等待外部结果 | Agent 只在需要判断时出现 | 拆开方案制定、自动执行与等待、结果分析。平台按时调用短查询脚本，或接收完成事件，随后推进到下一个决策点。 | [生命周期与监控](#lifecycle)、[持久等待](#waits) |
-| 实验数量、分支或下一轮方案依赖结果 | 后续任务可以根据结果生成 | 先定义可复用的工作模板，让 Agent 提交本轮参数，平台展开任务并汇总结果；按明确条件决定下一轮或结束。 | [结果触发](#event_routes)、[批量任务](#plans)、[结束条件](#termination) |
-| 工作持续多天、需要换会话或换入口继续 | 工作状态独立于聊天会话保存 | 把长期工作划成阶段，目标、进度和结果存入 Timeline；后续 Agent 读取当前状态继续处理。 | [持久状态](#timeline_storage)、[执行恢复](#execution_recovery) |
-| 工作需要不同的工具、算力或机器环境 | 一个 Loop 可组合多种执行方式 | 按职责与资源拆分：本机脚本准备数据，外部平台训练，显式指定的远端 Agent 分析。 | [候选实现](#implementation_selection)、[远端协作](#agent_communication) |
-| 多种专业职责、阶段说明不同或手册过长 | Loop 与节点可分别绑定 Skill／说明 | 结合目标建议知识分工：Loop 层保存整体目标和共享规则，节点说明各自的方法、工具与输入输出，执行时按需读取。例如共享实验目标，把训练操作与结果评价分别放到对应节点。 | [作者与节点 Skill](#author_skills) |
-| 分析中偶尔需要查论文或咨询其他专长 | 专业 Agent 可以作为临时外援 | 必需步骤留在主流程；偶发协助由执行中的 Agent 按需请求，必要时挂起，结果回来后恢复原会话继续。 | [具名外援](#agent_communication)、[原会话续跑](#assistance_session_resume) |
-| 研究、排障过程中会产生新信息或改变方向 | 运行中可以调整后续安排 | 保存已发生的事实与结果，按新目标修改后续任务、参数或依赖；不要求第一次规划就确定全部路径。 | [任务编辑](#task_edits)、[运行控制](#run_control) |
+| An existing Skill needs situational next-step decisions | Natural-language flow decisions alongside deterministic rules | Separate long work/waits, encode known transitions, and let a flow agent handle uncertain decisions. Gradually encode stable behavior from runtime records. | [Flow agent](flow-agent.md) |
+| A reusable Loop already handles part of the work | Nodes can call existing Loops | Configure target, inputs, and result mapping; the platform creates a child Run, waits, and returns results without custom startup/polling scripts. | [Loop calls](loop-calls.md) |
+| Long training, queues, or external results | Agents appear only when judgment is needed | Separate planning, automatic execution/waiting, and analysis. The platform runs short periodic query scripts or receives completion events, then advances to the next decision. | [Lifecycle/observation](#lifecycle), [durable waits](#waits) |
+| Experiment counts, branches, or next rounds depend on results | Results can generate later Tasks | Define reusable templates. Agents submit round parameters; the platform expands work and aggregates results. Explicit conditions determine another round or completion. | [Event routes](#event_routes), [plans](#plans), [termination](#termination) |
+| Work spans days, sessions, or entry points | Business state persists independently of chat | Divide long work into stages and persist goals/progress/results in Timeline; later agents read current facts to continue. | [Storage](#timeline_storage), [recovery](#execution_recovery) |
+| Different tools, compute, or machine environments | Mix execution methods in one Loop | Divide by responsibility/resource: prepare data on the platform host, train externally, use lightweight executors for other environments, and dispatch specialists through the named directory when needed. | [Candidates](#implementation_selection), [executors](#headless_execution), [communication](#agent_communication) |
+| A team shares NAS and machines change often | Separate service, clients, and executors | One service keeps state machines/runtime facts; members edit/run through NAS/HTTP tools, while receiving machines start lightweight executors. | [Team service](#team_service), [execution](#headless_execution) |
+| Local timers or conditions should awaken an agent | Independent local scheduling | Register a timer/condition without building a Loop. Keep definitions; start only on explicit request. A different machine can inspect them without restarting them. | [Local scheduling](#local_scheduling) |
+| Multiple specialties, stage-specific methods, or a long handbook | Separate Loop and node Skills/instructions | Keep shared objectives/rules at Loop level and node methods/tools/contracts at their relevant nodes, read on demand. For example, share experiment goals while separating training operations from evaluation methods. | [Author Skills](#author_skills) |
+| Analysis occasionally needs papers or specialist advice | Temporary named helpers | Keep required steps in the main workflow. Request optional help during execution, suspend if needed, and resume the original session with results. | [Assistance](#agent_communication), [session resume](#assistance_session_resume) |
+| Research/debugging reveals new information or direction | Revise future work during a Run | Preserve existing facts/results and adjust future Tasks, parameters, or dependencies. The first plan need not enumerate every path. | [Task edits](#task_edits), [Run control](#run_control) |
 
-这些建议要结合实际接入条件：外部系统需要提交/查询脚本或事件回传；动态任务需要模板、触发规则和结束条件；远端执行需要已配置的群组与成员；恢复原会话需要真实 session 和恢复命令。Timeline 保存业务状态，不等于自动恢复任意聊天上下文。每次查询结束后由平台等待，不需要 Agent 或脚本常驻循环；事件与轮询双通道兜底需另行明确设计，并非默认组合。
+Respect actual integration prerequisites: external systems need submit/query scripts or event callbacks; dynamic work needs templates/routes/completion conditions; lightweight executors must be explicitly started and bound; named dispatch needs directory members (local help needs no team); exact resumption needs native session IDs and commands. Timeline business state does not restore arbitrary chat context. The platform waits between short queries, without resident agent/script polling loops. Combining event and polling fallback requires an explicit design; it is not the default.
 
-例如用户说“持续跑实验”：可建议“提出参数 → 展开实验 → 平台等待训练 → Agent 分析 → 按结果决定下一轮”。若用户只要求汇总一份现成结果，则直接处理相应任务，不凭空增加循环、外援或等待节点。
+For “keep running experiments,” suggest “propose parameters → expand experiments → platform waits for training → agent analyzes → choose the next round from results.” For a one-off summary of existing results, handle that task without inventing loops, helpers, or waits.
 
-说明按职责组织并按需读取，才能减少无关上下文和指令干扰；把全部节点说明一次性塞给 Agent 不会得到这一收益。共享规则保留在 Loop 层，节点引用，避免重复和矛盾。已有说明简短清楚时无需拆分，不强制每个节点新建 Skill，不仅为缩短文件而增加节点，不承诺完全消除上下文漂移。
+Organize instructions by responsibility and read on demand to reduce irrelevant context and conflicting instructions. Loading every node Skill at once loses this benefit. Keep shared rules at Loop level and reference them from nodes. Clear short instructions need no split; do not require a new Skill per node, add nodes solely to shorten files, or promise zero context drift.
 
-## 机制详情
+## Mechanism details
 
-需要落实方案时再读取对应机制。activation=automatic 表示平台自动执行；declared/configured 需要作者声明或使用者配置；operator 需要显式操作。
+Read the relevant mechanism when implementing a design. activation=automatic means platform-managed; declared/configured requires author declarations or user configuration; operator requires an explicit operation.
+
+## run_library
+
+- Activation: operator
+- Platform handles: Server-side paginated summaries by person, Loop, status, and dates; meaningful progress updates activity, and child Runs inherit attribution. Archival preserves history; deletion protects references and live executions.
+- Author provides: Set the caller's name once and pass created_by on creation. Query with filters/next_offset; use metadata_revision to change title, attribution, and archival.
+- Configuration: `call.py profile --name`, `start_run.created_by`, `list_runs`, `update_run`, `delete_run`, `archive_loop`, `delete_loop`
+- Limits: Attribution is not an account or permission boundary. Reads/unchanged polling do not refresh activity. Deletion leaves native sessions and external artifacts. Archive referenced Loop versions instead of deleting them.
+- Tools: list_runs, start_run, update_run, delete_run, list_loops, archive_loop, delete_loop
+- Reference: [references/run.md](run.md)
+
+## loop_calls
+
+- Activation: declared
+- Platform handles: Creates and links child Runs, executes their entries, durably waits in the parent node, and validates returned results. Recovery/retry reuses the same child Run.
+- Author provides: Declare kind=loop with loop.key/inputs/result for an installed Loop on the same service and input/result-envelope mappings.
+- Configuration: `set_implementation.loop`, `read_task.execution_state.child_run_id`, `read_run.parent_call`
+- Limits: One Task maps to one child Run; new execution requires a new call Task. Parent/child pause or terminate separately; the child uses its own completion conditions. Ancestor-recursive calls are unsupported.
+- Tools: set_implementation, list_loops, read_task, read_run, read_record, command
+- Reference: [references/loop-calls.md](loop-calls.md)
+
+## team_service
+
+- Activation: configured
+- Platform handles: One service persists team Loops, Runs, and state machines. NAS request/receipt mailboxes and HTTP share the official tools; the web UI is optional.
+- Author provides: Select a NAS team directory; members save nas:/// addresses using their own mount paths. Read/edit clients do not need the runtime platform installed.
+- Configuration: `serve --team-dir`, `serve --no-web`, `call.py --url`, `call.py result`
+- Limits: Only one service opens the team database, using DELETE journaling. NAS must support locking/durable writes. Timeout does not cancel requests; a processing crash returns outcome_unknown without automatic replay. Validate real NAS behavior in deployment.
+- Tools: list_loops, list_runs, read_capabilities
+- Reference: [references/team-runtime.md](team-runtime.md)
+
+## headless_execution
+
+- Activation: configured
+- Platform handles: A local scheduler receives assigned processes, persists deduplication/results, and forwards interactive terminals. The service retains business state machines; exact sessions resume on their original executor.
+- Author provides: Explicitly start a receiver registration. Discover IDs with list_executors and select implementation.executor on a node or named agent. Install required CLIs/environment on the executor.
+- Configuration: `local register/start`, `list_executors`, `read_executor_call`, `implementation.executor`
+- Limits: Disconnection does not reassign/restart work. A restarted service reconnects to the original call; a restarted receiver does not replay accepted commands with unknown outcomes. Native session history must remain accessible on the original executor. Legacy NAS/Base named communication remains supported.
+- Tools: list_executors, read_executor_call, set_implementation, confirm_executor_stopped, executor_poll, executor_report
+- Reference: [references/team-runtime.md](team-runtime.md)
+
+## local_scheduling
+
+- Activation: operator
+- Platform handles: Shares a small scheduling, pure-transition, and process-management core for timers, script conditions, and local CLIs without a service, Run, or web UI.
+- Author provides: Register through loop-anything-local, optionally using NAS for persistent definitions; explicitly select IDs with local start.
+- Configuration: `local --root register/list/show/start/stop`
+- Limits: Definitions persist; processes stop with their machine. Loading/moving machines does not restart them. Intervals run after completion; conditions fire once by default. Failure stops with a saved error; receiver communication errors retry at the configured interval.
+- Tools: Provided by the runtime; no separate call required
+- Reference: [references/team-runtime.md](team-runtime.md)
 
 ## flow_agent
 
-- 生效方式：declared
-- 平台承担：复用普通 Agent 节点、事件 routes、依赖调度和任务工具；在声明的决策点唤醒，记录实际安排和结果。
-- 作者提供：从已有 Skill 提炼阶段，将目标、约束、推进规则和结束条件写入 Loop 说明，流程 Agent 完整读取；声明唤醒事件与可安排工作。
-- 配置入口：`Loop.handbook`、`nodes.*.routes`、`plans`、`Loop.global_agent_node`、`build_plan/edit_tasks/report_task/finish`
-- 边界：完全确定性流程无需调用流程 Agent。普通节点只操作自身分支；需修改全局设置或其他支线时显式选择 global_agent_node。长期等待交给平台，规则文本自身不会触发唤醒。
-- 工具入口：put_node、put_step、set_implementation、set_loop、read_timeline、read_task、build_plan、edit_tasks、report_task、finish、test_loop
-- 详细说明：[references/flow-agent.md](flow-agent.md)
+- Activation: declared
+- Platform handles: Built-in flow decisions awaken on explicit event routes, reusing execution, sessions, wait/resume, and Timeline writes without extra authored flow nodes.
+- Author provides: Choose decision points from the user's goal, keep full business rules in the Loop handbook, and configure an actual CLI, executor, or dispatch. Do not choose a default progression mode for the user.
+- Configuration: `Loop.flow_agent`, `nodes.*.routes.flow_agent`, `read_task.flow_decisions`, `build_plan/edit_tasks/report_task/finish`
+- Limits: Configuring an executor alone does not trigger it. Without a matching route no agent is called. Decisions have global Run scheduling scope with commit validation. Explicit rule and agent routes can both fire; read receipts to avoid duplicate scheduling.
+- Tools: set_loop, put_node, acquire_run, read_timeline, read_task, build_plan, edit_tasks, report_task, finish, test_loop
+- Reference: [references/flow-agent.md](flow-agent.md)
+
+## builtin_flow_agent
+
+- Activation: declared
+- Platform handles: Identifies the built-in decision configuration/route protocol so old services cannot interpret it as ordinary event routing.
+- Author provides: Package capability declarations detect it automatically; see flow_agent for usage.
+- Configuration: `Loop.flow_agent`, `nodes.*.routes.flow_agent`
+- Limits: A compatibility declaration alone does not awaken an agent; explicit routing is required.
+- Tools: set_loop, put_node, read_task
+- Reference: [references/flow-agent.md](flow-agent.md)
+
+## loop_configuration
+
+- Activation: configured
+- Platform handles: Ships config.example.json; recipient overrides persist separately, are snapshotted for new Runs, and survive retry/restart. Sharing excludes personal overrides.
+- Author provides: Expose paths/services as startup inputs with documented templates. Recipients use read_loop_config/set_loop_config and explicit bindings after adding local candidates.
+- Configuration: `config.example.json`, `read_loop_config`, `set_loop_config`
+- Limits: Does not change nodes/routes/lifecycles/Skills, probe availability, or rewrite hardcoded paths. Existing Runs ignore later configuration changes.
+- Tools: read_loop_config, set_loop_config, read_loop, put_asset, start_run
+- Reference: [references/loop-config.md](loop-config.md)
 
 ## flow_diagram
 
-- 生效方式：author-maintained
-- 平台承担：随 Skill 提供现成绘图组件和模板，复用包资产保存，整体流程视图展示已保存页面。
-- 作者提供：首次完成流程及修改节点、分支、循环或任务生成逻辑后，逐一画出定义中的全部节点，包括按需分支与异常兜底；不以汇总框替代真实节点，保存前对照节点清单并预览。
-- 配置入口：`scripts/render_flow.py`、`assets/flow.md`、`docs/flow.md`、`docs/flow.html`、`put_asset`
-- 边界：绘图需要 Node.js 20+，查看不需要；不改执行规则，不在打开网页或每轮运行时调用 Agent，不作为保存或运行的前置检查。
-- 工具入口：read_loop、put_asset
-- 详细说明：[references/flow-diagram.md](flow-diagram.md)
+- Activation: author-maintained
+- Platform handles: Ships ready-made drawing components/templates in the Skill. Saved package assets appear in the overall workflow view; actual IDs/unique names link diagram nodes to detail panels. Custom shapes can use data-loop-node.
+- Author provides: After initial construction or changes to nodes, branches, loops, or task generation, draw every defined node, including optional/fallback branches. Do not replace actual nodes with summary boxes; compare against the node list and preview before saving.
+- Configuration: `scripts/render_flow.py`, `assets/flow.md`, `docs/flow.md`, `docs/flow.html`, `put_asset`
+- Limits: Rendering requires Node.js 20+, viewing does not. Diagrams do not change execution rules, awaken agents on page open/every round, or become save/run preflight gates.
+- Tools: read_loop, put_asset
+- Reference: [references/flow-diagram.md](flow-diagram.md)
 
 ## machine_identity
 
-- 生效方式：automatic
-- 平台承担：按需生成并持久保存完整机器 UUID，独立于工作区；communication_status.self 与唤醒上下文直接提供当前机器和工作区身份。
-- 作者提供：读取 self；按成员返回的 instance_id 与 agent_id 寻址，不从 MAC、主机名或会话推断身份。
-- 配置入口：`communication_status.self`、`context.self`、`communication_config(operation=identity)`
-- 边界：身份属于连接的平台用户环境。instance_id 是 workspace_id 的兼容别名。移动/改名不改身份；副本显式建立新工作区身份，历史不接管。身份存储不要随业务数据库复制到另一机器。
-- 工具入口：communication_status、communication_workspace、communication_config
-- 详细说明：[references/communication.md](communication.md)
+- Activation: automatic
+- Platform handles: Generates and persists a full machine UUID on demand, separate from workspace identity. communication_status.self and awakening contexts expose both directly.
+- Author provides: Read self and address directory members using instance_id plus agent_id; do not infer identity from MAC, hostname, or session.
+- Configuration: `communication_status.self`, `context.self`, `communication_config(operation=identity)`
+- Limits: Identity belongs to the connected platform user environment. instance_id aliases workspace_id. Moving/renaming preserves identity; copies need an explicitly new workspace identity without historical takeover. Do not copy identity storage with a business database to another machine.
+- Tools: communication_status, communication_workspace, communication_config
+- Reference: [references/communication.md](communication.md)
 
 ## cc_connect
 
-- 生效方式：configured/operator
-- 平台承担：本机共用 cc-connect 接入配置，读取已有 Bot 列表，不返回凭据；具名 Agent 直接选择 Bot。
-- 作者提供：read_cc_connect 发现；缺接入时 configure_cc_connect 指定实际配置文件和可执行文件，按返回 project/platform 建立 notification_bot 映射。固定目的地才建 cc_connect 引用出口。
-- 配置入口：`read_cc_connect`、`configure_cc_connect`、`agent.notification_bot`、`channels.*.cc_connect`
-- 边界：不猜配置文件目录、不为每个 Bot 写命令、不安装/启动 Bot。列表不证明在线或在群；目录歧义不自动选择；明确填写引用可保存，不作可用性预检。路径和密钥留本机。
-- 工具入口：read_cc_connect、configure_cc_connect、communication_config、read_notification_channels、set_notification_channels
-- 详细说明：[references/cc-connect.md](cc-connect.md)
+- Activation: configured/operator
+- Platform handles: Shares local cc-connect configuration, discovers existing Bots without returning credentials, and lets named agents select a Bot directly.
+- Author provides: Discover with read_cc_connect. If missing, configure_cc_connect with actual config/executable paths. Map notification_bot from returned project/platform; create a cc_connect outlet only for a fixed destination.
+- Configuration: `read_cc_connect`, `configure_cc_connect`, `agent.notification_bot`, `channels.*.cc_connect`
+- Limits: Do not guess config directories, write per-Bot commands, or install/start Bots. Listing proves neither online status nor group membership. Ambiguity does not auto-select. Explicit references can be saved without availability preflight. Paths/secrets stay local.
+- Tools: read_cc_connect, configure_cc_connect, communication_config, read_notification_channels, set_notification_channels
+- Reference: [references/cc-connect.md](cc-connect.md)
 
 ## conversation_notifications
 
-- 生效方式：automatic/configured
-- 平台承担：飞书入口调用默认回复原会话；私聊由入口Bot回复，群聊优先具名Agent对应Bot并保持原话题。
-- 作者提供：Skill call.py 只携带 chat_context；平台持久保存并复用来源，发送适配器保存原入口，话题用根消息调用cc-connect，缺根消息原样交给cc-connect；不查飞书权限或凭据；agent.notification_bot 直接映射本机已发现Bot，旧notification_route兼容。嵌套外援继承来源，不需要Agent重新拼接通知命令。
-- 配置入口：`request_assistance.chat_context`、`start_run.chat_context`、`communication_config(operation=agent)`、`兼容已有conversation_id`
-- 边界：通知接入失败不阻断业务任务；适配器明确确认未投递（未启动、未连接或明确拒绝）时才回退入口Bot；其他失败或结果未知不改投。原始session_key保留；适配器将明确话题目标转换为同群同话题的root发送目标，不自行改投群时间线；实际投递由cc-connect负责。显式出口优先；无聊天来源沿用群组按机器出口。
-- 工具入口：communication_config、request_assistance、start_run、read_assistance
-- 详细说明：[references/cc-connect.md](cc-connect.md)
+- Activation: automatic/configured
+- Platform handles: Feishu-origin calls reply to the original conversation by default. Private chats use the entry Bot; group chats prefer the named agent's Bot while preserving the topic.
+- Author provides: Skill call.py carries chat_context only. The platform persists/reuses origin; the adapter retains the original entry, uses a known root with cc-connect, or passes an unresolved session unchanged. No Feishu permission/credential lookups. agent.notification_bot maps discovered local Bots; legacy notification_route remains compatible. Nested assistance inherits origin without rebuilding notification commands.
+- Configuration: `request_assistance.chat_context`, `start_run.chat_context`, `communication_config(operation=agent)`, `existing conversation_id compatibility`
+- Limits: Notification integration failure does not block business work. Fall back to the entry Bot only after definitive non-delivery (not started, not connected, or explicit rejection), not ambiguous failure. Preserve raw session_key; map an explicit topic to a root target in the same chat/topic, never to the main timeline. cc-connect owns actual delivery. Explicit outlets win; without origin use per-machine group outlets.
+- Tools: communication_config, request_assistance, start_run, read_assistance
+- Reference: [references/cc-connect.md](cc-connect.md)
 
 ## group_notification_priority
 
-- 生效方式：automatic/configured
-- 平台承担：无聊天来源时，群组通知逐条优先动作发生方，再回退本次请求的直接发起方；均无入口则仅平台记录。
-- 作者提供：按机器绑定入口；省略请求 notification_route 使用优先级。嵌套外援按子请求直接发起方回退。
-- 配置入口：`communication_config(operation=group_notifications)`、`communication_status.groups[].notification_bindings`、`read_assistance.notifications[].routing`
-- 边界：缺入口或明确停用才回退；离线、失败及送达未知不自动改投。显式出口优先，通知重试固定原绑定。
-- 工具入口：communication_config、communication_status、read_assistance
-- 详细说明：[references/communication.md](communication.md)
+- Activation: automatic/configured
+- Platform handles: Without chat origin, each group notification prefers the action machine, then the immediate requester; with neither outlet, record only in the platform.
+- Author provides: Bind outlets per machine and omit request.notification_route to use priority. Nested assistance falls back to its immediate requester.
+- Configuration: `communication_config(operation=group_notifications)`, `communication_status.groups[].notification_bindings`, `read_assistance.notifications[].routing`
+- Limits: Fallback requires an absent/explicitly disabled outlet, not offline/failure/unknown delivery. Explicit outlets win; retries pin the original binding.
+- Tools: communication_config, communication_status, read_assistance
+- Reference: [references/communication.md](communication.md)
 
 ## communication_context
 
-- 生效方式：automatic/operator
-- 平台承担：通信查询默认精简状态与完整结果；Base 日志留执行机，按需分页获取（logs_pending 表示等待）；外援续跑及追问不嵌入完整通信历史，保留业务上下文、结果及原 session。
-- 作者提供：优先读状态和结构化结果；文件在确认共享访问时才传 NAS 路径，即使用 Base 通信也无需上传文件。对方不能访问或需要云端副本时，附件用法见派单 Skill references/artifacts.md。排错时按需分页读日志。
-- 配置入口：`read_assistance.include_logs`、`read_assistance.include_details`、`read_assistance.max_chars`、`read_assistance.after/offset`
-- 边界：单页日志默认 4000、最多 16000 字符；成功的原生 session 执行不保留重复终端全文；脚本、无 session 和失败执行保留诊断输出；结构化业务结果不自动删减。
-- 工具入口：read_assistance、request_assistance、control_assistance
-- 详细说明：[references/communication.md](communication.md)
+- Activation: automatic/operator
+- Platform handles: Queries default to compact status/full result. Base logs remain on the executor and paginate on demand (logs_pending means waiting). Resumption/follow-up preserve business context, results, and original session without embedding full communication archives.
+- Author provides: Read status/structured results first. Pass NAS paths only with confirmed shared access, even with Base communication. Use dispatch references/artifacts.md for optional cloud attachments when needed. Page through logs only for diagnostics.
+- Configuration: `read_assistance.include_logs`, `read_assistance.include_details`, `read_assistance.max_chars`, `read_assistance.after/offset`
+- Limits: Logs default to 4000 characters per page, maximum 16000. Successful native-session execution keeps no duplicate full terminal transcript. Scripts, failures, and sessionless execution retain diagnostics. Structured business results are not automatically shortened.
+- Tools: read_assistance, request_assistance, control_assistance
+- Reference: [references/communication.md](communication.md)
 
 ## standalone_collaboration
 
-- 生效方式：configured/operator
-- 平台承担：独立协作由内置 Loop 承接；事件等待记录结果，当前会话或具名协调 Agent 复用原 Task/session 挂起续跑。
-- 作者提供：request_assistance 返回协作 Run；追问延续原 Run。自动续跑使用 start_collaboration，提供真实本机会话、Agent PID 和恢复配置，wait_assistance 后 finish 并退出原进程。
-- 配置入口：`start_collaboration`、`request_assistance`、`wait_assistance`
-- 边界：未知外部会话仅保存结果并通知；不猜 session，不并行恢复尚存活的原进程。
-- 工具入口：start_collaboration、request_assistance、read_assistance、wait_assistance、communication_status
-- 详细说明：[references/communication.md](communication.md)
+- Activation: configured/operator
+- Platform handles: A built-in Loop handles standalone collaboration. Event waits record results; current sessions or named coordinators suspend/resume the same Task/session.
+- Author provides: request_assistance returns a collaboration Run; follow-ups continue it. Automatic resumption uses start_collaboration with the actual local session, agent PID, and resume configuration; after wait_assistance, finish and exit the original process.
+- Configuration: `start_collaboration`, `request_assistance`, `wait_assistance`
+- Limits: Unknown external sessions receive result tracking/notification only. Never guess sessions or resume alongside a still-live original process.
+- Tools: start_collaboration, request_assistance, read_assistance, wait_assistance, communication_status
+- Reference: [references/communication.md](communication.md)
 
 ## confirmed_agent_directory
 
-- 生效方式：configured
-- 平台承担：群组目录共享用户确认的主要任务、能力与可用状态；旧的未确认说明不接收新群组工作。
-- 作者提供：先询问用户主要任务并确认说明及开放群组，再 communication_config(task_confirmed=true)。修改说明或新增群组重新确认。
-- 配置入口：`communication_config`、`communication_status`
-- 边界：Agent 自拟描述不等于用户确认。
-- 工具入口：communication_config、communication_status
-- 详细说明：[references/communication.md](communication.md)
+- Activation: configured
+- Platform handles: Group directories share user-confirmed duties, capabilities, and availability. Legacy unconfirmed descriptions do not accept new group work.
+- Author provides: Ask about duties and confirm description/group exposure before communication_config(task_confirmed=true). Reconfirm changed descriptions or added groups.
+- Configuration: `communication_config`, `communication_status`
+- Limits: An agent-written description is not user confirmation.
+- Tools: communication_config, communication_status
+- Reference: [references/communication.md](communication.md)
 
 ## assistance_session_resume
 
-- 生效方式：configured/operator
-- 平台承担：等待外援前检查原生 session 和准确恢复命令；回复或期限到达后恢复同一会话与 Task，携带结果和新操作凭据。
-- 作者提供：配置托管 CLI 与 resume_command，登记真实 session；wait_assistance 成功后再 finish，远端还需完成执行请求。
-- 配置入口：`wait_assistance`、`register_agent_session`、`implementations.*.resume_command`
-- 边界：原机器/Agent/session 固定；缺失或恢复失败时明确阻塞，不新建对话。当前恢复使用 macOS/Linux 终端，CLI 自身的会话文件须保留。
-- 工具入口：wait_assistance、register_agent_session、communication_execute、read_assistance
-- 详细说明：[references/communication.md](communication.md)
+- Activation: configured/operator
+- Platform handles: Checks the native session/exact resume command before waiting; replies/deadlines resume that session and Task with results and fresh credentials.
+- Author provides: Configure managed CLI/resume_command and register the actual session. finish only after wait_assistance succeeds; remote nodes also complete their execution request.
+- Configuration: `wait_assistance`, `register_agent_session`, `implementations.*.resume_command`
+- Limits: Original machine/agent/session stay fixed. Missing data or resume failure blocks explicitly, never starts a new conversation. Current resumption uses macOS/Linux terminals; retain CLI session files.
+- Tools: wait_assistance, register_agent_session, communication_execute, read_assistance
+- Reference: [references/communication.md](communication.md)
 
 ## group_notifications
 
-- 生效方式：configured/operator
-- 平台承担：各机器独立绑定群组通知入口；来源持久生成通知，选定机器复用 cc-connect 等适配器并写回回执。
-- 作者提供：在各机器配置本地命名出口，再用 group_notifications 绑定该机器的群组入口。
-- 配置入口：`communication_config(operation=group_notifications)`、`platform notification channels`
-- 边界：命令和凭据不写入团队介质；已生成通知固定出口。旧策略请求按原策略完成；未知送达须核实后显式重试。
-- 工具入口：communication_status、communication_config、read_notification_channels、set_notification_channels、read_assistance、control_assistance
-- 详细说明：[references/communication.md](communication.md)
+- Activation: configured/operator
+- Platform handles: Machines bind their own group outlets. The source durably creates notifications; the selected machine uses existing adapters such as cc-connect and returns receipts.
+- Author provides: Configure named local outlets, then group_notifications to bind each machine's group entry.
+- Configuration: `communication_config(operation=group_notifications)`, `platform notification channels`
+- Limits: Commands/credentials do not enter team transport. Created notifications pin their outlet; old-policy requests finish under it. Verify unknown delivery before explicit retry.
+- Tools: communication_status, communication_config, read_notification_channels, set_notification_channels, read_assistance, control_assistance
+- Reference: [references/communication.md](communication.md)
 
 ## agent_communication
 
-- 生效方式：configured/operator
-- 平台承担：所有派单复用独立 loop-anything-dispatch Skill；仅接单需要运行平台。普通回复直接保存；文件只在确认双方共享访问时传 NAS 路径，飞书原生附件是可选交付能力，过长内联消息自动用附件兜底；Base 状态合并、心跳原地修改、确认消息进入云端历史；请求和结果保留，人工按需清理；客户端不自动复制全文。一个团队链接支持 NAS 或 Base，自动提供成员目录与请求结果视图。已配置且启用的 Base 优先，NAS 仅在没有 Base 时使用；错误不触发改道重派，旧 Run/请求保持原连接。名称和 ID 都经目录解析；轻量 wait 由脚本等待，超时不撤单。
-- 作者提供：用 communication_config(operation=team,link=...) 配置接收平台默认团队，用户确认职责后开放具名 Agent。只派单使用独立 Skill 的 join/leave/agents/submit/read/wait/control；Loop 节点沿用限定工具入口登记并发布，需等待时 wait_assistance 后 finish。
-- 配置入口：`communication_config`、`implementations.*.dispatch`、`request_assistance`、`wait_assistance`
-- 边界：发布前固定唯一机器与 Agent，接收方持久化后执行，不再等来源 grant。旧在途协议兼容；业务 Run 仍由来源拥有。会话恢复固定原 session，失联不自动重跑。真实 NAS/Base 验收需实际环境。
-- 工具入口：communication_workspace、communication_status、communication_config、request_assistance、read_assistance、control_assistance、wait_assistance、communication_execute
-- 详细说明：[references/communication.md](communication.md)
+- Activation: configured/operator
+- Platform handles: All dispatch reuses loop-anything-dispatch; only receiving needs a running platform. Replies persist in full. Pass NAS artifacts only with shared access; native Feishu attachments are optional and automatically handle oversized inline messages. Base coalesces state, updates heartbeats in place, and archives acknowledged messages in the cloud. Requests/results remain for optional manual cleanup; clients do not auto-copy full bodies. One NAS/Base team link supplies directory/result views. Enabled Base wins; NAS is used only without Base, never to reroute failures. Existing Runs/requests retain transport. Names and IDs resolve through the directory; script wait timeouts do not cancel requests.
+- Author provides: Set the receiving default with communication_config(operation=team,link=...), then expose agents after user-confirmed duties. Send-only clients use the independent Skill's join/leave/agents/submit/read/wait/control. Loop nodes retain scoped entries for registration/dispatch; wait_assistance then finish when needed.
+- Configuration: `communication_config`, `implementations.*.dispatch`, `request_assistance`, `wait_assistance`
+- Limits: Dispatch fixes one machine/agent; receivers persist then execute without another source grant. Old in-flight protocols remain compatible; the source owns the business Run. Recovery pins the original session; disconnection never auto-reruns work. Validate actual NAS/Base environments.
+- Tools: communication_workspace, communication_status, communication_config, request_assistance, read_assistance, control_assistance, wait_assistance, communication_execute
+- Reference: [references/communication.md](communication.md)
 
 ## timeline_storage
 
-- 生效方式：automatic
-- 平台承担：持久化 Run、Task、执行尝试、版本化结果、事件和历史；正式写入使用同一数据库事务。
-- 作者提供：定义业务结果 schema，并通过正式报告提交事实。
-- 配置入口：`nodes.*.outputs`、`records`、`report_task.envelope`
-- 边界：外部系统的副作用不属于本地事务；平台不会代替外部服务提供 exactly-once 提交。
-- 工具入口：read_timeline、read_record、read_run
-- 详细说明：[references/run.md](run.md)
+- Activation: automatic
+- Platform handles: Persists Runs, Tasks, attempts, versioned results, events, and history; formal writes share a database transaction.
+- Author provides: Define business-result schemas and report facts through official tools.
+- Configuration: `nodes.*.outputs`, `records`, `report_task.envelope`
+- Limits: External side effects are outside local transactions; the platform cannot provide exactly-once submission for an external service.
+- Tools: read_timeline, read_record, read_run
+- Reference: [references/run.md](run.md)
 
 ## task_scheduler
 
-- 生效方式：automatic
-- 平台承担：检查输入与 after 依赖、暂停点、实现选择、并发额度和操作范围，派发就绪任务。
-- 作者提供：声明任务、数据来源和依赖；需要后继自动生成时配置 routes。
-- 配置入口：`plans.*.steps.*.inputs`、`plans.*.steps.*.after`、`settings.max_parallel`、`nodes.*.routes`
-- 边界：依赖连线仅推进已有任务；默认不会推断缺失业务任务。
-- 工具入口：next_tasks、change_settings
-- 详细说明：[references/run.md](run.md)
+- Activation: automatic
+- Platform handles: Checks inputs/after dependencies, pause points, implementation selection, concurrency, and scope, then dispatches ready Tasks.
+- Author provides: Declare Tasks, sources, and dependencies; configure routes when successors should be generated automatically.
+- Configuration: `plans.*.steps.*.inputs`, `plans.*.steps.*.after`, `settings.max_parallel`, `nodes.*.routes`
+- Limits: Dependency edges advance existing Tasks only; missing business work is not inferred by default.
+- Tools: next_tasks, change_settings
+- Reference: [references/run.md](run.md)
 
 ## execution_recovery
 
-- 生效方式：automatic
-- 平台承担：重启后恢复已持久化执行状态，保留重试和监控身份，暴露无法确认停止的进程与操作权。
-- 作者提供：让外部提交和观察可恢复，核对未知外部副作用，必要时确认旧进程已停止。
-- 配置入口：`implementations.*.observe`、`implementations.*.lifecycle`、`command`
-- 边界：未知进程状态不会被当作安全完成；外部幂等和身份解析由适配器负责。
-- 工具入口：read_task、command、change_task
-- 详细说明：[references/build-reference.md](build-reference.md)
+- Activation: automatic
+- Platform handles: Recovers persisted execution state after restart, preserves retry/observation identities, and exposes processes/identities whose stopping cannot be confirmed.
+- Author provides: Make submission/observation recoverable, investigate unknown external effects, and confirm old processes stopped when needed.
+- Configuration: `implementations.*.observe`, `implementations.*.lifecycle`, `command`
+- Limits: Unknown process status is not safe completion. External idempotency and identity resolution belong to adapters.
+- Tools: read_task, command, change_task
+- Reference: [references/build-reference.md](build-reference.md)
 
 ## implementation_selection
 
-- 生效方式：declared
-- 平台承担：按 Task 指定、Run binding、Loop 默认的顺序选择候选；校验节点和候选参数，保留执行快照。
-- 作者提供：提供真实候选、参数契约与入口；在安排任务时确定自动阶段所需参数。
-- 配置入口：`implementations`、`settings.bindings`、`Task.implementation`、`Task.parameters`
-- 边界：平台不自动补默认参数、不生成业务命令、不修复执行环境。
-- 工具入口：read_loop、read_task、set_implementation
-- 详细说明：[references/contracts.md](contracts.md)
+- Activation: declared
+- Platform handles: Selects Task override, then Run binding, then Loop default; validates node/candidate parameters and preserves execution snapshots.
+- Author provides: Provide real candidates, parameter contracts, and entries; determine automatic-stage parameters when scheduling.
+- Configuration: `implementations`, `settings.bindings`, `Task.implementation`, `Task.parameters`
+- Limits: The platform does not inject default parameters, generate business commands, or repair execution environments.
+- Tools: read_loop, read_task, set_implementation
+- Reference: [references/contracts.md](contracts.md)
 
 ## workspace_inspection
 
-- 生效方式：automatic
-- 平台承担：提供 Loop 结构、任务依赖、执行状态、结果、输入来源、历史、参数编辑、预览及文件结果展示。
-- 作者提供：提供有意义的节点名称、schema title/description、明确的文件输出和业务结果。
-- 配置入口：`nodes.*.label`、`records.*.title`、`records.*.description`、`records.*.format`
-- 边界：现有工作台是操作界面；没有独立的脱敏团队只读看板。文件展示不证明产物有效。
-- 工具入口：read_run、read_loop
-- 详细说明：[references/build-reference.md](build-reference.md)
+- Activation: automatic
+- Platform handles: Provides Loop structure, dependencies, execution state, results, input provenance, history, parameter editing tools, previews, and file-result display.
+- Author provides: Provide meaningful node names, schema title/description, explicit file outputs, and business results.
+- Configuration: `nodes.*.label`, `records.*.title`, `records.*.description`, `records.*.format`
+- Limits: The workspace supports runtime operations; there is no separate sanitized team-only dashboard. Displaying a file does not prove artifact validity.
+- Tools: read_run, read_loop
+- Reference: [references/build-reference.md](build-reference.md)
 
 ## agent_resume
 
-- 生效方式：configured/operator
-- 平台承担：每个任务直接查看对应尝试的结果；记录CLI原生ID，按用户请求恢复同一会话，签发新操作权并保持历史结果。
-- 作者提供：提供CLI及恢复命令；让CLI输出或Agent报告真实ID。用户选择恢复目标和本次要求。
-- 配置入口：`implementations.*.agent_cli`、`implementations.*.resume_command`、`register_agent_session`、`command argv {{session_id}}`
-- 边界：不使用--last猜测，不扫描无关CLI历史。进程退出前同原生ID跨Run互斥；外部手动CLI进程由用户管理。旧任务没有原生ID时需明确补充；CLI本机记录丢失会恢复失败。恢复只适用于仍在运行或暂停的Run；原生CLI会话存储与模型访问由CLI负责。
-- 工具入口：register_agent_session、read_task、set_implementation
-- 详细说明：[references/terminal.md](terminal.md)
+- Activation: configured/operator
+- Platform handles: Shows results per attempt, records actual CLI session IDs, and resumes the selected original session on request with fresh operation identity and preserved historical results.
+- Author provides: Provide CLI/resume commands; let the CLI output or agent register its real ID. The user selects the target and new request.
+- Configuration: `implementations.*.agent_cli`, `implementations.*.resume_command`, `register_agent_session`, `command argv {{session_id}}`
+- Limits: Do not guess with --last or scan unrelated CLI history. Native IDs are exclusive across Runs until process exit; users manage manually started external CLIs. Missing old IDs need explicit registration; missing local history can prevent recovery. Resume only running/paused Runs. CLI storage/model access remain the CLI's responsibility.
+- Tools: register_agent_session, read_task, set_implementation, read_execution_session, control_execution_session
+- Reference: [references/terminal.md](terminal.md)
 
 ## agent_terminal
 
-- 生效方式：automatic/configured
-- 平台承担：提供实时输出；有原生 session 时保留有限实时尾部，成功后只留会话定位；无 session 或失败时保留诊断；可选交互终端连接同一 CLI 进程，转发键盘和窗口尺寸，finish 后关闭会话。
-- 作者提供：提供 CLI 命令、工作目录、登录与权限配置；交互命令用 {{prompt}} 或 {{prompt_file}} 接收任务上下文。
-- 配置入口：`implementations.*.terminal`、`implementations.*.command`、`read_capabilities(agent_terminal)`
-- 边界：普通命令只读；交互终端当前支持 macOS/Linux。进程重启后只保留历史并按既有操作权恢复，不保证恢复 CLI 会话。终端session身份和执行状态仍校验，结果仍须 report_task/finish；不要重复构建日志查看与交互通道。
-- 工具入口：set_implementation、read_task
-- 详细说明：[references/terminal.md](terminal.md)
+- Activation: automatic/configured
+- Platform handles: Streams output; with native sessions it keeps a bounded live tail, then session location after success. Failures/sessionless runs retain diagnostics. Optional terminals attach to the same CLI process, forwarding keyboard/size and closing after finish.
+- Author provides: Provide CLI, cwd, login, and permissions. Interactive commands receive context through {{prompt}} or {{prompt_file}}.
+- Configuration: `implementations.*.terminal`, `implementations.*.command`, `read_capabilities(agent_terminal)`
+- Limits: Ordinary command output is read-only; interactive terminals currently support macOS/Linux. After process restart, history/recovery follow existing operation rules without guaranteeing CLI session recovery. Terminal identity/execution checks and report_task/finish still apply. Do not duplicate logging/interaction services.
+- Tools: set_implementation, read_task, read_execution_session, control_execution_session
+- Reference: [references/terminal.md](terminal.md)
 
 ## host_service
 
-- 生效方式：configured
-- 平台承担：在已安装主机持续运行服务，保存工作区；提供受支持系统的防休眠和 macOS 后台托管。
-- 作者提供：安装并选择主机、数据库、端口与所需凭据；可按运行需求配置主机。
-- 配置入口：`service CLI`、`platform keep-awake setting`
-- 边界：远程计算平台、凭据、训练环境和跨机器部署由安装或业务适配负责。
-- 工具入口：由运行平台提供，无须单独调用
-- 详细说明：[references/platform-capabilities.md](platform-capabilities.md)
+- Activation: configured
+- Platform handles: Keeps the workspace service running on its installed host, with supported keep-awake controls and macOS background hosting.
+- Author provides: Choose/install the host, database, port, and credentials; configure the host to suit runtime needs.
+- Configuration: `service CLI`, `platform keep-awake setting`
+- Limits: Remote compute, credentials, training environments, and cross-machine deployment belong to installation/business integration.
+- Tools: Provided by the runtime; no separate call required
+- Reference: [references/platform-capabilities.md](platform-capabilities.md)
 
 ## authoring
 
-- 生效方式：operator
-- 平台承担：保存同一草稿及 revision，校验定义，生成本机可用版本；运行固定在启动时版本。
-- 作者提供：设计业务节点和方法，持续编辑已有草稿；需要分享时导出。
-- 配置入口：`Loop.id/version`、`draft revision`
-- 边界：保存草稿、保存可用版本、打包分享用途不同；不会自动迁移历史 Run。
-- 工具入口：list_loops、read_loop、create_loop、copy_loop、set_loop、put_node、remove_node、set_implementation、put_step、remove_step、connect_steps、validate_loop、publish_loop
-- 详细说明：[references/build.md](build.md)
+- Activation: operator
+- Platform handles: Saves drafts/revisions, validates definitions, and produces locally usable versions; Runs pin their startup version.
+- Author provides: Design business nodes/methods, keep editing the existing draft, and export when sharing.
+- Configuration: `Loop.id/version`, `draft revision`
+- Limits: Draft save, usable-version save, and share packaging serve different purposes. Historical Runs do not migrate automatically.
+- Tools: list_loops, read_loop, create_loop, copy_loop, set_loop, put_node, remove_node, set_implementation, put_step, remove_step, connect_steps, validate_loop, publish_loop
+- Reference: [references/build.md](build.md)
 
 ## parameter_contracts
 
-- 生效方式：automatic
-- 平台承担：在正式任务写入及执行选择时校验嵌套输入输出与参数。
-- 作者提供：声明真实契约，调用预校验工具定位缺失字段。
-- 配置入口：`nodes.*.parameter_schema`、`implementations.*.parameter_schema`、`records`
-- 边界：不解释领域含义，也不把 schema.default 注入参数。
-- 工具入口：read_loop、read_task
-- 详细说明：[references/contracts.md](contracts.md)
+- Activation: automatic
+- Platform handles: Validates nested inputs/outputs and parameters at formal Task writes and implementation selection.
+- Author provides: Declare actual contracts and use validation tools to locate missing fields.
+- Configuration: `nodes.*.parameter_schema`, `implementations.*.parameter_schema`, `records`
+- Limits: It does not interpret domain meaning or inject schema.default into parameters.
+- Tools: read_loop, read_task
+- Reference: [references/contracts.md](contracts.md)
 
 ## conditional_contracts
 
-- 生效方式：declared
-- 平台承担：执行条件必填、互斥与组合类型检查，对不支持的 schema 关键字报错。
-- 作者提供：将确定性的参数要求声明在 schema 中。
-- 配置入口：`parameter_schema.if/then/else`、`parameter_schema.oneOf`、`parameter_schema.dependentRequired`
-- 边界：仅支持公布的 JSON Schema 子集；业务 CLI 参数投影仍由实现负责。
-- 工具入口：read_capabilities、validate_loop、validate_parameters
-- 详细说明：[references/contracts.md](contracts.md)
+- Activation: declared
+- Platform handles: Checks conditional requirements, exclusive alternatives, and union types; unsupported schema keywords fail explicitly.
+- Author provides: Declare deterministic parameter requirements in schemas.
+- Configuration: `parameter_schema.if/then/else`, `parameter_schema.oneOf`, `parameter_schema.dependentRequired`
+- Limits: Only the published JSON Schema subset is supported; implementations still project business CLI arguments.
+- Tools: read_capabilities, validate_loop, validate_parameters
+- Reference: [references/contracts.md](contracts.md)
 
 ## plans
 
-- 生效方式：declared
-- 平台承担：生成 Task/输出身份，按 each 展开，按 collect 聚合，解析输入和 after，按 when/skip 省略步骤。
-- 作者提供：定义稳定工作骨架、批次参数、输入映射和可选步骤。
-- 配置入口：`plans.*.parameters`、`plans.*.steps`、`steps.*.each/when`、`inputs.*.from/collect`
-- 边界：省略项不创建占位结果，消费者需明确复用来源；plan.when 作用于步骤，先于该步骤 each。
-- 工具入口：put_step、build_plan、read_plans、preview_plan
-- 详细说明：[references/build-reference.md](build-reference.md)
+- Activation: declared
+- Platform handles: Allocates Task/output identities, expands each, aggregates collect, resolves inputs/after, and omits steps by when/skip.
+- Author provides: Define reusable work structure, batch parameters, input mapping, and optional steps.
+- Configuration: `plans.*.parameters`, `plans.*.steps`, `steps.*.each/when`, `inputs.*.from/collect`
+- Limits: Omission produces no placeholder output; consumers need explicit reusable sources. Plan when applies to a step before that step's each expansion.
+- Tools: put_step, build_plan, read_plans, preview_plan
+- Reference: [references/build-reference.md](build-reference.md)
 
 ## event_routes
 
-- 生效方式：declared
-- 平台承担：接受节点事件后映射结果参数并展开计划，与结果写入一起提交；重复报告返回同一回执。
-- 作者提供：声明 event、plan、values 和需要的 each/when/steps；节点只提交业务结果。
-- 配置入口：`nodes.*.routes`、`report_task.report_id`
-- 边界：仅由接受的生命周期报告触发；同一后继不要又在 helper 中主动生成。
-- 工具入口：put_node、read_task、report_task、test_loop
-- 详细说明：[references/build-reference.md#事件触发任务](build-reference.md#事件触发任务)
+- Activation: declared
+- Platform handles: Maps accepted node events to plan parameters/expansion, committing with results. Duplicate reports return the same receipt.
+- Author provides: Declare event, plan, values, and needed each/when/steps; nodes submit business results.
+- Configuration: `nodes.*.routes`, `report_task.report_id`
+- Limits: Only accepted lifecycle reports trigger routes. Do not generate the same successors again in helpers.
+- Tools: put_node, read_task, report_task, test_loop
+- Reference: [references/build-reference.md#event-triggered-task-generation](build-reference.md#event-triggered-task-generation)
 
 ## task_refs
 
-- 生效方式：declared
-- 平台承担：把业务 ref 解析为真实 Task/record 身份，支持同一报告各批次间前向引用。
-- 作者提供：提供 Run 内唯一名称及明确的汇总成员；循环名称包含轮次。
-- 配置入口：`steps.*.ref`、`steps.*.after_refs`、`inputs.*.task_ref/task_refs`
-- 边界：引用缺失或重复会拒绝提交；没有自动推断成员的任务组调度器。
-- 工具入口：put_step、add_task、resolve_refs、preview_plan
-- 详细说明：[references/contracts.md](contracts.md)
+- Activation: declared
+- Platform handles: Resolves business refs to actual Task/record identities, including forward references across batches in one report.
+- Author provides: Provide Run-unique names and explicit aggregation members; include rounds in repeated names.
+- Configuration: `steps.*.ref`, `steps.*.after_refs`, `inputs.*.task_ref/task_refs`
+- Limits: Missing/duplicate references reject submission. No task-group scheduler infers members automatically.
+- Tools: put_step, add_task, resolve_refs, preview_plan
+- Reference: [references/contracts.md](contracts.md)
 
 ## record_versions
 
-- 生效方式：automatic
-- 平台承担：任务输出引用固定生产者版本，保存真实输入来源；汇总可读取不同版本的记录。
-- 作者提供：通过 task_ref/task_refs 声明来源；需要覆盖版本时明确指定。
-- 配置入口：`inputs.*.revision/revisions`、`resolve_refs`
-- 边界：普通 record 来源未指定版本时沿用最新值语义；版本固定不校验远端文件内容。
-- 工具入口：resolve_refs、read_record、build_plan、add_task
-- 详细说明：[references/contracts.md](contracts.md)
+- Activation: automatic
+- Platform handles: Pins Task-output references to producer versions and preserves actual input provenance; aggregation can consume different record revisions.
+- Author provides: Declare task_ref/task_refs sources and explicitly specify version overrides.
+- Configuration: `inputs.*.revision/revisions`, `resolve_refs`
+- Limits: Unversioned ordinary record sources use latest-value semantics. Pinning a revision does not verify remote file contents.
+- Tools: resolve_refs, read_record, build_plan, add_task
+- Reference: [references/contracts.md](contracts.md)
 
 ## task_edits
 
-- 生效方式：operator
-- 平台承担：按 basis 和业务范围原子校验并应用有序任务编辑，失败时整组回滚。
-- 作者提供：根据读取依据作决定，冲突后重新判断。
-- 配置入口：`edit_tasks.basis`、`edit_tasks.changes`、`edit_tasks.preview`
-- 边界：独立工具调用不是跨调用事务；结果和后继一起提交可用 routes。
-- 工具入口：edit_tasks、change_task
-- 详细说明：[references/run.md](run.md)
+- Activation: operator
+- Platform handles: Atomically validates/applies ordered edits against basis and business scope, rolling back the group on failure.
+- Author provides: Decide from read evidence and reconsider after conflicts.
+- Configuration: `edit_tasks.basis`, `edit_tasks.changes`, `edit_tasks.preview`
+- Limits: Separate calls are not cross-call transactions. Use routes to commit results and successors together.
+- Tools: edit_tasks, change_task
+- Reference: [references/run.md](run.md)
 
 ## lifecycle
 
-- 生效方式：declared
-- 平台承担：通用状态机独立计算转移，Timeline 统一保存状态、结果和历史；沿原事务应用同 Task 重试、异常观察与配置的兜底。
-- 作者提供：外部适配器报告有限事实；沿用 lifecycle 声明转移、重试条件和业务修复方法，无需业务专属转移函数或状态仓库。
-- 配置入口：`implementations.*.lifecycle`、`implementations.*.command/observe`、`Loop.fallback_node`
-- 边界：已有 Loop 无需迁移；waiting 仍带外部任务身份、观察时间及查询错误。正常排队或耗时不会自动成为业务失败；重试、去重与原子提交语义不变。
-- 工具入口：set_implementation、report_task、change_task
-- 详细说明：[references/build-reference.md](build-reference.md)
+- Activation: declared
+- Platform handles: A generic state machine computes transitions independently; Timeline stores state/results/history and applies same-Task retry, observation failures, and configured fallback in the existing transaction.
+- Author provides: Adapters report bounded facts; lifecycle declares transitions/retry conditions/business repair methods. No business-specific transition functions or state stores are needed.
+- Configuration: `implementations.*.lifecycle`, `implementations.*.command/observe`, `Loop.fallback_node`
+- Limits: Existing Loops need no migration. waiting retains external identity, observation timing, and query errors. Healthy queuing/long duration is not automatically failure. Retry, deduplication, and atomicity remain unchanged.
+- Tools: set_implementation, report_task, change_task
+- Reference: [references/build-reference.md](build-reference.md)
 
 ## waits
 
-- 生效方式：declared
-- 平台承担：原生 timer/event/approval Task 表达等待；外部事件按名称和关联键匹配，状态持久化。
-- 作者提供：声明等待时间、事件键或审批任务，以及收到结果后的 routes。
-- 配置入口：`implementations.*.kind`、`implementations.*.wait`、`implementations.*.event`
-- 边界：通知本身不暂停运行；等待需有明确 Task。聊天桥接和业务事件来源由适配器接入。
-- 工具入口：set_implementation、send_event
-- 详细说明：[references/notifications.md](notifications.md)
+- Activation: declared
+- Platform handles: Native timer/event/approval Tasks persist waits; external events match by name/correlation key.
+- Author provides: Declare wait times, event keys, or approvals, and routes for subsequent work.
+- Configuration: `implementations.*.kind`, `implementations.*.wait`, `implementations.*.event`
+- Limits: Notifications alone do not pause work; waiting needs an explicit Task. Adapters connect chat replies/business event sources.
+- Tools: set_implementation, send_event
+- Reference: [references/notifications.md](notifications.md)
 
 ## notifications
 
-- 生效方式：configured
-- 平台承担：按出口排队投递、去重、保存回执；未配置出口显示等待配置，投递失败保留故障。
-- 作者提供：配置实际发送命令/目标，声明通知内容和询问关联键。
-- 配置入口：`platform notification channels`、`settings.notification_route`、`lifecycle.transitions.*.notify`、`notify.reply`
-- 边界：本地通知区收录不代表外部送达；平台不会自行安装聊天机器人。
-- 工具入口：notify、read_notification_channels、set_notification_channels、send_event、retry_notification
-- 详细说明：[references/notifications.md](notifications.md)
+- Activation: configured
+- Platform handles: Queues, deduplicates, and records delivery receipts per outlet. Missing configuration waits; delivery failures remain visible.
+- Author provides: Configure actual send commands/destinations and declare content/question correlation keys.
+- Configuration: `platform notification channels`, `settings.notification_route`, `lifecycle.transitions.*.notify`, `notify.reply`
+- Limits: A platform notification record is not external delivery. The platform does not install chat Bots automatically.
+- Tools: notify, read_notification_channels, set_notification_channels, send_event, retry_notification
+- Reference: [references/notifications.md](notifications.md)
 
 ## optimistic_edits
 
-- 生效方式：automatic/operator
-- 平台承担：托管身份记录所读版本，提交时沿短事务检查 basis、范围和执行状态；不长期占用 Timeline。
-- 作者提供：无持续 token 的修改携带读取返回的 basis；定点任务用 read_task，集合／缺席判断用 read_timeline/next_tasks，冲突后重新判断。
-- 配置入口：`read_task.basis`、`read_timeline.basis`、`edit_tasks.basis`、`change_task.basis`
-- 边界：不能只换最新版本号原样重试；日志与普通进度不构成冲突。身份、同 Task 唯一执行及原 session 保护继续保留；finish 后退出间隙、历史恢复终端和未结束远端进程也受保护。
-- 工具入口：read_task、read_timeline、next_tasks、edit_tasks、change_task、change_settings
-- 详细说明：[references/run.md](run.md)
+- Activation: automatic/operator
+- Platform handles: Managed identities remember read versions; short commit transactions check basis, scope, and execution state without long Timeline occupancy.
+- Author provides: Without a sustained token, pass returned basis on edits. Use read_task for focused work and read_timeline/next_tasks for collection/absence decisions. Reconsider conflicts.
+- Configuration: `read_task.basis`, `read_timeline.basis`, `edit_tasks.basis`, `change_task.basis`
+- Limits: Do not merely replace version numbers and retry unchanged. Logs/ordinary progress are not conflicts. Identity, same-Task exclusivity, and native-session protection remain, including exit gaps after finish, resumed historical terminals, and unfinished remote processes.
+- Tools: read_task, read_timeline, next_tasks, edit_tasks, change_task, change_settings
+- Reference: [references/run.md](run.md)
 
 ## scopes
 
-- 生效方式：automatic
-- 平台承担：按 Task 归属限定修改范围，不在思考期间互斥；同 Task 保留唯一有效执行者。
-- 作者提供：让任务归属对应真实责任，完成或明确等待后 finish；全局判断使用明确的全局节点。
-- 配置入口：`Task.parent_id`、`Loop.global_agent_node`、`acquire_run/finish`
-- 边界：依赖与归属含义不同；后代满足依赖即可运行，无需等待父 Agent finish。
-- 工具入口：read_timeline、acquire_run、finish、read_task
-- 详细说明：[references/run.md](run.md)
+- Activation: automatic
+- Platform handles: Restricts changes by Task ownership without excluding concurrent thinking; one valid executor remains per Task.
+- Author provides: Align ownership with responsibility and finish after completion/explicit waiting. Use an explicit global node for global decisions.
+- Configuration: `Task.parent_id`, `Loop.global_agent_node`, `acquire_run/finish`
+- Limits: Dependency differs from ownership; ready descendants can run before the parent agent finishes.
+- Tools: read_timeline, acquire_run, finish, read_task
+- Reference: [references/run.md](run.md)
 
 ## run_control
 
-- 生效方式：operator
-- 平台承担：提供暂停/恢复、任务编辑、用户请求与等待登记，Hooks 可在前后或状态转移时暂停/通知。
-- 作者提供：按用户意图选择干预位置和动作。
-- 配置入口：`settings.hooks`、`command`、`defer_task`、`resolve_request`
-- 边界：自然语言授权由用户的 Agent 理解，平台执行显式操作与权限检查。
-- 工具入口：list_runs、start_run、read_run、next_tasks、read_record、complete_task、command、defer_task、resolve_request、change_settings
-- 详细说明：[references/run.md](run.md)
+- Activation: operator
+- Platform handles: Supports pause/resume, Task edits, user requests, and registered waits. Hooks can pause/notify before, after, or at transitions.
+- Author provides: Choose intervention points/actions from user intent.
+- Configuration: `settings.hooks`, `command`, `defer_task`, `resolve_request`
+- Limits: The user's agent interprets natural-language authorization; the platform applies explicit operations and scope checks.
+- Tools: list_runs, start_run, read_run, next_tasks, read_record, complete_task, command, defer_task, resolve_request, change_settings
+- Reference: [references/run.md](run.md)
 
 ## termination
 
-- 生效方式：declared
-- 平台承担：按 completion_rule 或 termination_signal 将 Run 收口并停止剩余工作。
-- 作者提供：声明可判定的终止条件，或将已确认的完成判断写入相应设置。
-- 配置入口：`settings.completion_rule`、`settings.termination_signal`
-- 边界：业务输出里的 satisfied/status、没有剩余任务或 finish 都不会自行结束 Run。
-- 工具入口：change_settings、read_timeline
-- 详细说明：[references/run.md](run.md)
+- Activation: declared
+- Platform handles: Closes the Run and stops remaining work through completion_rule or termination_signal.
+- Author provides: Declare decidable conditions or persist a confirmed completion judgment in settings.
+- Configuration: `settings.completion_rule`, `settings.termination_signal`
+- Limits: Business output satisfied/status, an empty Task list, or finish does not end a Run by itself.
+- Tools: change_settings, read_timeline
+- Reference: [references/run.md](run.md)
 
 ## scenarios
 
-- 生效方式：operator
-- 平台承担：用真实 Engine 在隔离库中推进作者提供的模拟报告，检查任务展开、依赖、去重和收口。
-- 作者提供：给出代表性输入、模拟事实与可观察预期。
-- 配置入口：`Loop.scenarios`、`test_loop`、`preview_plan`
-- 边界：拦截命令/模型/通知投递，不能替代真实外部环境和模型行为验收。
-- 工具入口：test_loop、preview_plan
-- 详细说明：[references/testing.md](testing.md)
+- Activation: operator
+- Platform handles: Uses the real Engine in an isolated database with authored simulated reports to check expansion, dependencies, deduplication, and completion.
+- Author provides: Supply representative inputs, simulated facts, and observable expectations.
+- Configuration: `Loop.scenarios`, `test_loop`, `preview_plan`
+- Limits: Commands/models/notification delivery are intercepted; this does not replace real environment/model acceptance.
+- Tools: test_loop, preview_plan
+- Reference: [references/testing.md](testing.md)
 
 ## packages
 
-- 生效方式：operator
-- 平台承担：打包定义、候选和作者资源，检查能力要求并安装；工作区历史保留。
-- 作者提供：附带实际使用的文件、声明依赖和能力要求，提供目标环境配置。
-- 配置入口：`Loop.requires`、`package assets`、`export_loop`
-- 边界：平台不自动补业务依赖；包安装不启动业务 Run。
-- 工具入口：export_loop、read_capabilities
-- 详细说明：[references/build-reference.md](build-reference.md)
+- Activation: operator
+- Platform handles: Packages definitions/candidates/author assets, checks capability requirements, installs versions, and preserves workspace history.
+- Author provides: Include actual files/dependencies/requirements and target-environment configuration.
+- Configuration: `Loop.requires`, `package assets`, `export_loop`
+- Limits: The platform does not supply missing business dependencies; installation does not launch a business Run.
+- Tools: export_loop, read_capabilities
+- Reference: [references/build-reference.md](build-reference.md)
 
 ## author_skills
 
-- 生效方式：declared
-- 平台承担：按 Loop/节点绑定返回作者方法及安装后的路径，保留包内相对结构。
-- 作者提供：编写领域方法、所需证据、输入输出和完成标准。
-- 配置入口：`Loop.handbook`、`nodes.*.skills`、`put_asset`
-- 边界：绑定脚本资产不会自动把它注册成候选实现；业务方法不会由平台生成。
-- 工具入口：read_loop、read_timeline、read_task、put_asset
-- 详细说明：[references/build-reference.md](build-reference.md)
+- Activation: declared
+- Platform handles: Returns author methods and installed paths by Loop/node binding, preserving relative package structure.
+- Author provides: Write domain methods, required evidence, inputs/outputs, and completion criteria.
+- Configuration: `Loop.handbook`, `nodes.*.skills`, `put_asset`
+- Limits: Attaching a script asset does not register an implementation; the platform does not invent business methods.
+- Tools: read_loop, read_timeline, read_task, put_asset
+- Reference: [references/build-reference.md](build-reference.md)
 
 ## runtime_smoke
 
-- 生效方式：operator
-- 平台承担：执行显式请求的真实最小 Agent 启动，并模拟生命周期矩阵的报告路径。
-- 作者提供：按授权选择候选/用例，另行验证真实外部业务。
-- 配置入口：`smoke_runtime`
-- 边界：该检查可能调用模型；静态校验和模拟通过不代表目标环境已可用。
-- 工具入口：smoke_runtime
-- 详细说明：[references/build.md](build.md)
+- Activation: operator
+- Platform handles: Performs explicitly requested real minimal agent startup and simulated lifecycle-report paths.
+- Author provides: Select authorized candidates/cases and separately validate real external business work.
+- Configuration: `smoke_runtime`
+- Limits: May invoke models. Passing static/simulated checks does not establish target-environment readiness.
+- Tools: smoke_runtime
+- Reference: [references/build.md](build.md)
 
-## 常见组合
+## Common compositions
 
 ### flow_agent_decision
 
-已有 Skill 的后续动作需要临场判断，先跑通，再逐步固化稳定规则。
+An existing Skill needs situational decisions about what happens next. Get it running, then gradually encode stable rules; the building agent configures explicit points from user goals.
 
 ```json
 {
-  "use_when": "已有 Skill 的后续动作需要临场判断，先跑通，再逐步固化稳定规则。",
+  "use_when": "An existing Skill needs situational decisions about what happens next. Get it running, then gradually encode stable rules; the building agent configures explicit points from user goals.",
   "capabilities": [
     "flow_agent",
+    "builtin_flow_agent",
     "event_routes",
-    "plans",
     "scopes"
   ],
-  "prerequisites": "Loop handbook 保存目标、约束和已有业务方法，无需穷举所有分支；源节点有 result 对象输出；下列 node 可用 put_node 保存，plan.steps 用 put_step 保存。Agent 候选配置实际 CLI 或群组 dispatch。",
-  "node": {
-    "node_id": "flow_agent",
-    "instructions": "完整读取 Loop handbook，结合当前目标与结果判断下一步；提交决策和依据，安排后续后 finish 退出。",
-    "inputs": [
-      {
-        "name": "trigger",
-        "type": "object"
-      },
-      {
-        "name": "result",
-        "type": "object"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "decision",
-        "type": "object"
-      }
-    ]
+  "prerequisites": "The Loop handbook keeps full objectives, rules, and completion conditions. set_loop accepts the loop fields below. Complete flow_agent with the actual user CLI or dispatch. With kind only, acquire_run(run_id,task_id) claims a pending decision; it will not run automatically. No extra node, port, or intermediary plan is required.",
+  "loop": {
+    "flow_agent": {
+      "kind": "agent"
+    }
   },
   "source_routes": [
     {
       "id": "decide",
       "event": "completed",
-      "plan": "decide_next",
-      "values": {
-        "record": {
-          "$": "task.outputs.result.id"
-        },
-        "trigger": {
-          "task_id": {
-            "$": "task.id"
-          },
-          "transition": {
-            "$": "transition"
-          }
-        }
-      }
+      "flow_agent": true
     }
   ],
-  "plan": {
-    "steps": {
-      "decide": {
-        "node": "flow_agent",
-        "inputs": {
-          "trigger": {
-            "literal": {
-              "$": "values.trigger"
-            }
-          },
-          "result": {
-            "record": {
-              "$": "values.record"
-            }
-          }
-        }
-      }
-    }
-  },
-  "execution": "流程 Agent 完整读取 Loop handbook（唤醒上下文或 read_timeline 返回），用 read_task/read_timeline 取当前事实，build_plan/add_task 或 edit_tasks 安排后续；report_task 提交 decision 后 finish 退出。已声明 routes 的后续只提交映射结果，不重复安排。确定的脚本或等待节点完成后可再沿同样路由唤醒流程 Agent。",
-  "scope": "本分支决策沿用普通节点范围；需要改全局目标、收口或调整其他支线时用 set_loop(global_agent_node=\"flow_agent\") 显式配置全局节点。global_agent_node 赋予范围，不自行轮询或触发。不要把正常判断配置为 fallback。",
+  "execution": "The platform saves source Task/execution/report, event, conditions, and exact result-version references. The flow agent reads the full handbook, read_task.trigger, and source route_receipts, schedules successors, submits the full decision output, and calls finish. read_task(source_task) returns flow_decisions; read_task(decision_task)/read_record retrieve full results.",
+  "scope": "Built-in decisions have global scheduling scope in the current Run. Thinking does not lock Timeline; commits validate read evidence. One event can explicitly match both rule and agent routes; do not reschedule work already created by rules. No declared route means no flow-agent call.",
   "verification": [
     "test_loop",
+    "read_task",
     "read_record"
   ]
 }
@@ -503,21 +530,29 @@
 
 ### shared_space_onboarding
 
-各机器独立安装后，首次寻找共同群组并开放具名 Agent。
+Independently installed machines need to discover a shared team and expose named agents.
 
 ```json
 {
-  "use_when": "各机器独立安装后，首次寻找共同群组并开放具名 Agent。",
+  "use_when": "Independently installed machines need to discover a shared team and expose named agents.",
   "capabilities": [
     "agent_communication"
   ],
   "configuration": [
-    "接单平台用 communication_config(operation=team,link=团队Base链接或NAS目录)，返回加入的团队ID及当前默认团队；Base优先，NAS作备用；首次创建NAS加create=true，Base内部表自动管理。",
-    "operation=agent 配置本机 CLI、cwd、resume_command 和团队范围；先由用户确认主要任务。连接团队不自动开放 Agent。",
-    "只派单的人安装独立 loop-anything-dispatch Skill，用同一团队链接join，不需要运行平台。",
-    "Loop绑定团队，调用沿用限定入口；网页用于查看成员、任务和结果。旧NAS空间/群组配置继续兼容。"
+    "The receiver calls communication_config(operation=team,link=BASE_LINK_OR_NAS_DIRECTORY), returning the joined team ID and current default. Base is preferred; NAS is the fallback. A new NAS team needs create=true; Base tables are managed automatically.",
+    "operation=agent configures local CLI, cwd, resume_command, and team scope after the user confirms duties. Joining a team does not expose agents automatically.",
+    "Send-only users install loop-anything-dispatch and join the same link without running a platform.",
+    "Bind Loops to the team and retain scoped call entries. The web shows members, work, and results. Legacy NAS spaces/groups remain compatible."
   ],
-  "author_provides": "团队链接与相应访问权限；接单机器的本机 Agent 命令和用户确认的主要任务。",
+  "loop_configuration": {
+    "tool": "read_capabilities",
+    "arguments": {
+      "capability": "loop_configuration"
+    },
+    "reference": "references/loop-config.md",
+    "guidance": "When sharing or moving a Loop, expose paths/services as startup inputs and provide config.example.json. Recipients adapt agents/environments with separate runtime configuration, without copying the workflow or building configuration loaders."
+  },
+  "author_provides": "A team link and access; local receiving CLI commands and user-confirmed duties.",
   "verification": [
     "communication_workspace",
     "communication_status",
@@ -528,11 +563,11 @@
 
 ### chat_origin_delivery
 
-用户在飞书私聊或群话题中请求本机/远端外援，结果需要回到这段对话。
+A Feishu private chat/group topic requests local or remote help and needs results returned to that conversation.
 
 ```json
 {
-  "use_when": "用户在飞书私聊或群话题中请求本机/远端外援，结果需要回到这段对话。",
+  "use_when": "A Feishu private chat/group topic requests local or remote help and needs results returned to that conversation.",
   "capabilities": [
     "cc_connect",
     "conversation_notifications",
@@ -540,11 +575,19 @@
     "notifications"
   ],
   "configuration": [
-    "通过 Skill call.py 发起 request_assistance 或 start_run，只随业务请求携带 chat_context；平台保存来源及可用thread_root，适配器复用根消息直接调用cc-connect，不作渠道预检。",
-    "通过 read_cc_connect 发现 Bot，在具名 Agent 的 notification_bot 直接选择 project/platform；群内执行确认和结果优先该 Bot，私聊仍由入口回复。",
-    "保存原始session_key和话题信息；发送时优先使用thread_root，缺失时原样交给cc-connect，Agent无需查飞书、补密钥或配置预检。桥接负责实际话题回复和发送权限；发送已开始后的未知结果不自动重发，通知失败不阻断任务。"
+    "Skill call.py sends request_assistance/start_run with chat_context alongside the business request. The platform stores origin/available thread_root; the adapter reuses roots directly with cc-connect, without channel preflight.",
+    "Discover Bots through read_cc_connect and select project/platform in the named agent notification_bot. Group confirmations/results prefer that Bot; private chats retain the entry Bot.",
+    "Preserve raw session_key/topic information. Use thread_root when present; otherwise pass the session unchanged to cc-connect. Agents need not query Feishu, supply secrets, or configure preflights. The bridge owns actual topic delivery/permissions. Unknown outcomes after sending are not automatically resent; notification failure does not block work."
   ],
-  "author_provides": "具名Agent对应Bot引用（notification_bot）；复用已有cc-connect接入；Loop不需要Bot凭据。",
+  "loop_configuration": {
+    "tool": "read_capabilities",
+    "arguments": {
+      "capability": "loop_configuration"
+    },
+    "reference": "references/loop-config.md",
+    "guidance": "When sharing or moving a Loop, expose paths/services as startup inputs and provide config.example.json. Recipients adapt agents/environments with separate runtime configuration, without copying the workflow or building configuration loaders."
+  },
+  "author_provides": "A named-agent Bot reference (notification_bot) and existing cc-connect access. Loops do not need Bot credentials.",
   "verification": [
     "read_assistance",
     "communication_workspace"
@@ -554,11 +597,11 @@
 
 ### group_cc_connect_delivery
 
-没有聊天来源时，A 请求 B 工作，通知优先由动作发生的机器发送，无入口时回退 A。
+Without chat origin, A requests B; notifications prefer the action machine, falling back to A only if no outlet exists.
 
 ```json
 {
-  "use_when": "没有聊天来源时，A 请求 B 工作，通知优先由动作发生的机器发送，无入口时回退 A。",
+  "use_when": "Without chat origin, A requests B; notifications prefer the action machine, falling back to A only if no outlet exists.",
   "capabilities": [
     "conversation_notifications",
     "group_notifications",
@@ -567,11 +610,19 @@
     "notifications"
   ],
   "configuration": [
-    "在 A、B 各自通过 read_cc_connect / configure_cc_connect 接入桥接；固定出口使用 cc_connect={project,platform} 和明确 destination，无需拼接命令。",
-    "各机器调用 communication_config operation=group_notifications；修改需带本机当前 binding_id，互不覆盖其他机器。",
-    "communication_status 返回按机器索引的 notification_bindings；请求省略 notification_route，执行/返回事件优先 B，无 B 入口回退 A，均无入口只记录。"
+    "Configure the bridge on A/B with read_cc_connect/configure_cc_connect. Fixed outlets use cc_connect={project,platform} and explicit destination, without command assembly.",
+    "Each machine calls communication_config(operation=group_notifications); changes include its current binding_id without overwriting others.",
+    "communication_status exposes per-machine notification_bindings. Omit request.notification_route: execution/result events prefer B, then A if B has no outlet, otherwise platform records only."
   ],
-  "author_provides": "群组及各机器实际聊天目标；业务 Agent 无需编写通知队列、选发送方或自行调用 cc-connect。",
+  "loop_configuration": {
+    "tool": "read_capabilities",
+    "arguments": {
+      "capability": "loop_configuration"
+    },
+    "reference": "references/loop-config.md",
+    "guidance": "When sharing or moving a Loop, expose paths/services as startup inputs and provide config.example.json. Recipients adapt agents/environments with separate runtime configuration, without copying the workflow or building configuration loaders."
+  },
+  "author_provides": "The group and each machine's actual chat destination. Business agents need not implement queues, select senders, or invoke cc-connect themselves.",
   "verification": [
     "communication_status",
     "read_assistance",
@@ -582,23 +633,31 @@
 
 ### named_agent_assistance
 
-当前节点或普通对话需要临时外援；外援可在本机，也可在明确选定的团队中。
+A current node or ordinary conversation needs temporary help locally or in an explicitly selected team.
 
 ```json
 {
-  "use_when": "当前节点或普通对话需要临时外援；外援可在本机，也可在明确选定的团队中。",
+  "use_when": "A current node or ordinary conversation needs temporary help locally or in an explicitly selected team.",
   "capabilities": [
     "agent_communication",
     "agent_terminal",
     "assistance_session_resume"
   ],
   "configuration": [
-    "communication_status 发现显式开放的本机目录和获准群组，使用 agent_id 与必要的 instance_id 消歧。",
-    "request_assistance 返回持久请求ID，可信工作区按ID读取；本机调用不要求 NAS，独立调用由内置协作 Run 跟踪；后续求援传 collaboration_id，追问自动沿用原 Run。",
-    "平台托管节点先记录原生 session 和恢复配置，再使用 wait_assistance 持久等待并 finish；回复或期限到达后在原机器恢复同一个 CLI session，以新凭据和外援结果继续同一个 Task；不可恢复时明确阻塞，不新建会话。",
-    "外援通过限定客户端 read_context 按需读取关联上下文，通过 complete 提交协助结果；不取得原节点写权限。"
+    "communication_status discovers exposed local agents/allowed groups. Disambiguate with agent_id and instance_id as needed.",
+    "request_assistance returns a durable ID readable by trusted workspaces. Local requests need no NAS. A built-in Run tracks standalone collaboration; further requests use collaboration_id and follow-ups continue that Run.",
+    "Managed nodes register native sessions/resume configuration, then wait_assistance and finish. Reply/deadline resumes the same CLI session and Task on the original machine with new credentials/results. Inability to resume blocks explicitly, without a new session.",
+    "Helpers use scoped read_context for associated context and complete for results, without write authority over the original node."
   ],
-  "author_provides": "具体问题、需分享的上下文、结果要求和不可用时的业务判断；机器所有者配置具名 CLI 与开放范围。",
+  "loop_configuration": {
+    "tool": "read_capabilities",
+    "arguments": {
+      "capability": "loop_configuration"
+    },
+    "reference": "references/loop-config.md",
+    "guidance": "When sharing or moving a Loop, expose paths/services as startup inputs and provide config.example.json. Recipients adapt agents/environments with separate runtime configuration, without copying the workflow or building configuration loaders."
+  },
+  "author_provides": "The question, shared context, result requirements, and business choice if unavailable. Machine owners configure named CLIs/exposure.",
   "verification": [
     "communication_config",
     "read_assistance"
@@ -608,22 +667,30 @@
 
 ### group_agent_node
 
-某个正式 Agent 节点需要在其他机器完成。
+A formal agent node needs to execute on another machine.
 
 ```json
 {
-  "use_when": "某个正式 Agent 节点需要在其他机器完成。",
+  "use_when": "A formal agent node needs to execute on another machine.",
   "capabilities": [
     "agent_communication",
     "implementation_selection",
     "lifecycle"
   ],
   "configuration": [
-    "保持 kind=agent，设置 dispatch.location=group 和 agent_id 或 capability；绑定 Run 群组。",
-    "派单固定唯一机器与Agent，接收端持久化后启动，无需来源二次grant；来源平台继续拥有业务 Run。其他本地节点不发布到群组。",
-    "通过限定 platform_client/URL 使用 read_task、report_task 和 finish，沿用原结果契约与操作范围。"
+    "Keep kind=agent, set dispatch.location=group plus agent_id or capability, and bind the Run group.",
+    "Dispatch fixes one machine/agent; the receiver persists then starts without a second source grant. The source retains the business Run. Other local nodes are not published.",
+    "Use read_task/report_task/finish through scoped platform_client/URL with the original contracts and scope."
   ],
-  "author_provides": "节点业务契约、成员选择；执行端提供 CLI、环境和可访问的产物。",
+  "loop_configuration": {
+    "tool": "read_capabilities",
+    "arguments": {
+      "capability": "loop_configuration"
+    },
+    "reference": "references/loop-config.md",
+    "guidance": "When sharing or moving a Loop, expose paths/services as startup inputs and provide config.example.json. Recipients adapt agents/environments with separate runtime configuration, without copying the workflow or building configuration loaders."
+  },
+  "author_provides": "Node business contracts/member selection; the executor supplies CLI, environment, and accessible artifacts.",
   "verification": [
     "communication_config",
     "read_assistance"
@@ -633,11 +700,11 @@
 
 ### result_to_batch_and_review
 
-源节点给出多组已确定参数，每项工作执行后汇总本批结果。
+A source produces several resolved parameter sets; execute each and aggregate this batch's results.
 
 ```json
 {
-  "use_when": "源节点给出多组已确定参数，每项工作执行后汇总本批结果。",
+  "use_when": "A source produces several resolved parameter sets; execute each and aggregate this batch's results.",
   "capabilities": [
     "event_routes",
     "plans",
@@ -645,7 +712,7 @@
     "task_scheduler",
     "scopes"
   ],
-  "prerequisites": "源节点输出 jobs 数组，每项有 id 和 params；work 输出 result；review 输入 results 数组。作者补齐真实实现与业务参数契约。",
+  "prerequisites": "The source outputs jobs, each with id and params. work outputs result; review accepts a results array. Authors supply real implementations and business parameter contracts.",
   "source_routes": [
     {
       "id": "dispatch",
@@ -696,7 +763,7 @@
       }
     }
   },
-  "execution": "源节点报告 completed 并提交 jobs 后，平台创建工作和汇总任务；依赖就绪时调度。源 Agent 提交后 finish 释放范围。循环使用时给 ref 加轮次。",
+  "execution": "After the source reports completed with jobs, the platform creates work/review Tasks and schedules them when dependencies are ready. The source agent then calls finish. Include rounds in refs when repeating.",
   "verification": [
     "preview_plan",
     "test_loop"
@@ -706,11 +773,11 @@
 
 ### external_job
 
-外部系统提交后需要持续查询，结束后消费结果。
+An external submission needs repeated status queries, then result consumption.
 
 ```json
 {
-  "use_when": "外部系统提交后需要持续查询，结束后消费结果。",
+  "use_when": "An external submission needs repeated status queries, then result consumption.",
   "capabilities": [
     "implementation_selection",
     "lifecycle",
@@ -718,11 +785,19 @@
     "event_routes"
   ],
   "configuration": [
-    "同一 external 候选的 command 提交，observe 查询；报告 submitted 时保存 external_id。",
-    "observer 报告 progress/completed 或已声明失败事件；lifecycle 定义 retry/agent 等处理。",
-    "完成事件可通过 routes 生成后继，输入/after 让消费者等待结果。"
+    "An external candidate uses command for submission and observe for queries; submitted saves external_id.",
+    "Observers report progress/completed or declared failure events; lifecycle defines retry/agent handling.",
+    "Completion routes can generate successors; inputs/after make consumers await results."
   ],
-  "author_provides": "外部 API、执行身份、状态翻译、产物检查与提交幂等策略。",
+  "loop_configuration": {
+    "tool": "read_capabilities",
+    "arguments": {
+      "capability": "loop_configuration"
+    },
+    "reference": "references/loop-config.md",
+    "guidance": "When sharing or moving a Loop, expose paths/services as startup inputs and provide config.example.json. Recipients adapt agents/environments with separate runtime configuration, without copying the workflow or building configuration loaders."
+  },
+  "author_provides": "External APIs, execution identity, status translation, artifact checks, and submission idempotency.",
   "verification": [
     "smoke_runtime",
     "test_loop"
@@ -732,22 +807,30 @@
 
 ### question_then_continue
 
-发送问题，等待对应回复，再生成后续工作。
+Ask a question, wait for its correlated reply, then generate later work.
 
 ```json
 {
-  "use_when": "发送问题，等待对应回复，再生成后续工作。",
+  "use_when": "Ask a question, wait for its correlated reply, then generate later work.",
   "capabilities": [
     "notifications",
     "waits",
     "event_routes"
   ],
   "configuration": [
-    "notify.reply 声明问题的 event/key/schema。",
-    "创建 event Task 等待同一 event/key；收到的 payload 对应节点输出。",
-    "该节点的 completed route 使用回复参数展开后继。"
+    "notify.reply declares event/key/schema.",
+    "Create an event Task for the same event/key; received payload maps to node outputs.",
+    "Its completed route expands successors using the reply parameters."
   ],
-  "author_provides": "提问内容、通知出口、外部回复桥接和回复后的业务处理。",
+  "loop_configuration": {
+    "tool": "read_capabilities",
+    "arguments": {
+      "capability": "loop_configuration"
+    },
+    "reference": "references/loop-config.md",
+    "guidance": "When sharing or moving a Loop, expose paths/services as startup inputs and provide config.example.json. Recipients adapt agents/environments with separate runtime configuration, without copying the workflow or building configuration loaders."
+  },
+  "author_provides": "Question text, notification outlet, reply bridge, and business handling of the answer.",
   "verification": [
     "test_loop"
   ]

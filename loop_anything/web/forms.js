@@ -54,43 +54,8 @@ function resultView(value){
   if(typeof value==='object')return `<dl class="result-fields">${Object.entries(value).map(([k,v])=>`<div><dt>${esc(k)}</dt><dd>${resultView(v)}</dd></div>`).join('')}</dl>`;
   return `<span class="result-text">${esc(typeof value==='boolean'?(value?'是':'否'):value)}</span>`;
 }
-function sourceField(name,source,schema,choices=[],plan=false){
-  const modes=[...(plan?['unset']:[]),'literal','record','records','run','settings',...(plan?['from','value','template']:source?.revisions?['template']:[])],mode=source?.revisions?'template':plan&&source?.literal&&typeof source.literal==='object'&&Object.hasOwn(source.literal,'$')?'value':plan&&(JSON.stringify(source||{}).includes('"$"')||source?.task_ref||source?.task_refs)?'template':modes.find(k=>Object.hasOwn(source || {},k)) || (plan?'unset':'literal');
-  const names={unset:'待指定来源',literal:'直接填写',record:'单个结果',records:'多个结果',run:'初始输入字段',settings:'运行设置字段',from:'本批次上游输出',value:'本批参数或当前列表项',template:'参数化来源（高级）'};
-  return `<fieldset class="source-field" data-source-name="${esc(name)}" data-source-schema="${esc(pretty(schema))}" data-source-original="${esc(pretty(source || {}))}" data-source-choices="${esc(pretty(choices))}"><legend>${esc(schema.title || name)}</legend><select data-source-mode aria-label="${esc(name)} 来源">${modes.map(m=>`<option value="${m}" ${m===mode?'selected':''}>${names[m]}</option>`).join('')}</select><div data-source-body>${sourceBody(mode,source || {},schema,choices)}</div></fieldset>`;
-}
-function sourceBody(mode,s,schema,choices){
-  if(mode==='unset')return '<p class="input-gap">尚未指定输入来源；可先保存草稿。</p>';
-  if(mode==='template')return valueField(s,{type:'object'},'参数化来源');
-  if(mode==='value')return `<label>引用路径<input data-source-path value="${esc(s.literal?.$ || 'item')}" placeholder="item 或 values.字段"></label>`;
-  if(mode==='literal')return valueField(Object.hasOwn(s,'literal')?s.literal:undefined,schema,'内容');
-  if(mode==='record'||mode==='records'){
-    const available=[...choices.filter(c=>c.id),...(s.records || (s.record?[s.record]:[])).filter(id=>!choices.some(c=>c.id===id)).map(id=>({id}))];
-    const field=mode==='records'?valueField(s.records || [],{type:'array',items:{type:'string',enum:available.map(c=>c.id)}},'结果来源（按此顺序传入）'):`<select data-source-record aria-label="结果来源"><option value="">请选择结果</option>${available.map(c=>`<option value="${esc(c.id)}" ${s.record===c.id?'selected':''}>${esc(c.label || c.id)}</option>`).join('')}</select>`;
-    return field+`<label>结果内字段路径（可选）<input data-source-path value="${esc(s.path || '')}"></label><label>固定版本（留空使用最新）<input data-source-revision type="number" min="1" value="${esc(s.revision || '')}"></label>`;
-  }
-  if(mode==='from')return `<select data-source-from aria-label="上游输出"><option value="">请选择输出</option>${choices.filter(c=>c.step).map(c=>`<option value="${esc(JSON.stringify([c.step,c.port]))}" ${c.step===s.from&&c.port===s.port?'selected':''}>${esc(c.label)}</option>`).join('')}</select><label class="inline-check"><input type="checkbox" data-source-collect ${s.collect?'checked':''}>汇总该步骤全部结果</label>`;
-  return `<input data-source-path value="${esc(s[mode] || '')}" aria-label="字段路径">`;
-}
-function readSources(root){return Object.fromEntries([...root.querySelectorAll('.source-field')].map(el=>{
-  const mode=el.querySelector('[data-source-mode]').value,body=el.querySelector('[data-source-body]');let source;
-  if(mode==='unset')return null;
-  if(mode==='literal')source={literal:readValue(body.querySelector('[data-value-type]'))};
-  else if(mode==='record'||mode==='records'){
-    const values=mode==='records'?readValue(body.querySelector('[data-value-type]')):[body.querySelector('[data-source-record]').value];if(values.some(v=>typeof v!=='string'||!v))throw new Error('请选择 '+el.dataset.sourceName+' 的结果来源');
-    source=mode==='record'?{record:values[0]}:{records:values};
-    const path=body.querySelector('[data-source-path]').value,revision=body.querySelector('[data-source-revision]').value;if(path)source.path=path;if(revision){if(!Number.isInteger(Number(revision))||Number(revision)<1)throw new Error('版本必须是正整数');source.revision=Number(revision);}
-  }else if(mode==='from'){const raw=body.querySelector('[data-source-from]').value;if(!raw)throw new Error('请选择上游输出');const [from,port]=JSON.parse(raw);source={from,port};if(body.querySelector('[data-source-collect]').checked)source.collect=true;}
-  else if(mode==='template')source=readValue(body.querySelector('[data-value-type]'));
-  else if(mode==='value')source={literal:{$:body.querySelector('[data-source-path]').value}};
-  else source={[mode]:body.querySelector('[data-source-path]').value};
-  return [el.dataset.sourceName,source];
-}).filter(Boolean));}
-document.addEventListener('change',e=>{if(!e.target.matches('[data-source-mode]'))return;const el=e.target.closest('.source-field');el.querySelector('[data-source-body]').innerHTML=sourceBody(e.target.value,JSON.parse(el.dataset.sourceOriginal),JSON.parse(el.dataset.sourceSchema),JSON.parse(el.dataset.sourceChoices));});
-
 document.addEventListener('input',e=>{const row=e.target.closest('[data-value-content]')?.parentElement;if(row){const include=row.querySelector(':scope > .value-row-head > label > [data-value-include]');if(include)include.checked=true;}});
 
 // Line-per-argument remains convenient; JSON preserves embedded newlines exactly.
 function argvText(argv=[]){return argv.some(a=>/[\r\n]/.test(a))?JSON.stringify(argv,null,2):argv.join('\n');}
 function readArgv(text){const value=text.trimStart().startsWith('[')?JSON.parse(text):text.split('\n').filter(Boolean);if(!Array.isArray(value)||value.some(a=>typeof a!=='string'))throw new Error('命令必须是字符串参数数组');return value;}
-function argvPreview(text){try{return readArgv(text);}catch{return [];}}

@@ -14,6 +14,7 @@ def main():
     parser.add_argument('--prefix', type=Path, default=data_directory() / 'app', help='Application directory; runtime data is stored separately')
     parser.add_argument('--package', type=Path, help='Local source directory or wheel to install (default: bundled wheel, otherwise this source directory)')
     parser.add_argument('--no-service', action='store_true', help='Install without registering a macOS background service')
+    parser.add_argument('--role',choices=['platform','local'],default='platform',help='local installs the shared runtime without a background platform or automatic task startup')
     parser.add_argument('--db', type=Path, help='Existing workspace for the macOS service; upgrades retain the saved workspace')
     parser.add_argument('--port', type=int, help='macOS service port; upgrades retain the saved port')
     parser.add_argument('--host', help='macOS service bind address; default is loopback')
@@ -37,7 +38,7 @@ def main():
         # this venv can overwrite its interpreter links before pip can run.
         subprocess.run([str(python), '-I', '-c',
                         'import sys; assert sys.version_info >= (3, 9), "Python 3.9+ required"'], check=True)
-    background = sys.platform == 'darwin' and not args.no_service
+    background = sys.platform == 'darwin' and not args.no_service and args.role!='local'
     if background:
         from loop_anything.runtime.service import configuration, manage, definition, available
         previous = configuration()
@@ -52,13 +53,16 @@ def main():
     subprocess.run([str(python), '-m', 'pip', '--disable-pip-version-check', 'install', '--upgrade', '--force-reinstall', '--no-deps', str(source)], check=True)
     if windows:
         launcher = prefix / 'Loop Anything.cmd'
-        launcher.write_text('@echo off\n"%~dp0venv\\Scripts\\python.exe" -I -m loop_anything %*\nif errorlevel 1 pause\n', encoding='ascii')
+        default='if "%~1"=="" (\n"%~dp0venv\\Scripts\\python.exe" -I -m loop_anything local --help\nexit /b\n)\n' if args.role=='local' else ''
+        launcher.write_text('@echo off\n'+default+'"%~dp0venv\\Scripts\\python.exe" -I -m loop_anything %*\nif errorlevel 1 pause\n', encoding='ascii')
     else:
         launcher = prefix / ('Loop Anything.command' if sys.platform == 'darwin' else 'loop-anything')
         command = shlex.quote(str(python)) + ' -I -m loop_anything'
         script = '#!/bin/sh\n'
         if background:
             script += 'if [ "$#" -eq 0 ]; then\n  exec ' + command + ' service start --open\nfi\n'
+        elif args.role=='local':
+            script += 'if [ "$#" -eq 0 ]; then\n  exec ' + command + ' local --help\nfi\n'
         launcher.write_text(script + 'exec ' + command + ' "$@"\n', encoding='utf-8')
         launcher.chmod(0o755)
     print('\nInstalled. Open or run: ' + str(launcher))
@@ -79,6 +83,11 @@ def main():
     else:
         print('Foreground launcher: keep its terminal running. Ctrl+C exits.')
     print('CLI Python: ' + str(python))
+    if args.role=='local':
+        print('Install only the local scheduling Skill:')
+        print(str(python)+' -m loop_anything skills --only local --install-dir <Agent-Skill-directory>')
+        print('Register/list do not start tasks. Explicitly start selected IDs with: -m loop_anything local --root <registry-directory> start <ID>')
+        return
     print('Install the platform entry Skill into your Agent Skill directory (also required after upgrading the platform):')
     print(str(python) + ' -m loop_anything skills --install-dir <Agent-Skill-directory> --url <platform-url>')
     print('For an existing generated Skill, keep its platform URL and add --replace to update it. Reload the Skill in your Agent, then run scripts/call.py check.')

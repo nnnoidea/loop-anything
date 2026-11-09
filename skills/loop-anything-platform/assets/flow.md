@@ -1,23 +1,23 @@
 ---
-title: Loop 业务流程
-subtitle: 替换为这个 Loop 要完成的目标
+title: Loop workflow
+subtitle: Replace with this Loop's goal
 template: sheet
 cols: 1
 theme: paper
-lang: zh-CN
+lang: en
 ---
 
-## 整体流程
+## Workflow overview
 
 ```flow TB
-(明确目标) -> 制定方案: 需要探索
-明确目标 -> 执行任务: 方案已确定
-制定方案 -> 执行任务: 提交参数
-执行任务 -> 分析结果: 结果齐备
-分析结果 -> 制定方案: 继续下一轮
-分析结果 -> (结束): 目标已达成
+(Clarify goal) -> Plan work: exploration needed
+Clarify goal -> Execute work: plan already known
+Plan work -> Execute work: submit parameters
+Execute work -> Analyze results: results ready
+Analyze results -> Plan work: another round
+Analyze results -> (Done): goal achieved
 ```
 
-## 怎样继续与结束
+## Continuation and completion
 
-用真实业务替换示例节点和关系。对照 Loop 定义逐一画出全部节点，包括初始化、按需分支和异常兜底；不能用一个汇总框替代多个真实节点。写清下一轮如何安排、什么条件下结束，以及异常交给谁处理。
+Replace the example with real business nodes and relationships. Show every declared node, including initialization, optional branches, and recovery. Never replace several real nodes with one aggregate box. Explain how later rounds are arranged, what ends the Run, and who handles exceptions.

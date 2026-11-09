@@ -1,193 +1,218 @@
-# 启动和操作 Run
+# Starting and operating Runs
 
-本页是直接使用通用工具的参考，不是运行时必读流程。作者已提供封装时，按其节点 Skill 操作；封装内部仍调用这些工具。业务要求见 Loop 作者说明；处理节点任务时通过 `read_task` 读取该节点绑定的作者 Skill。已被唤醒的 Agent 使用现有 Run 和令牌。
+This is a reference for direct tool use, not a mandatory runtime procedure. If the author supplies a wrapper, follow the node Skill; wrappers still call these tools. Business requirements belong in the Loop handbook; read_task returns the node's author Skill. An awakened agent uses its existing Run and token.
 
-上下文提供 `tool_url` 时，先读[限定工具入口](scoped-entry.md)；本页普通入口示例的 run_id/token 参数不能直接套用。
+If the context includes tool_url, read [Scoped tool entry](scoped-entry.md) first. The ordinary run_id/token examples here cannot be copied directly to that entry.
 
-## 查看任务推进还是执行阶段
+When receiving a Loop or adapting paths, agents, and services, use [separate runtime configuration](loop-config.md). start_run, web launch, and child Loop calls read the installed version's configuration. This call's inputs take precedence; explicit bindings replace the configured selection as a whole. Existing Runs retain their creation snapshot.
 
-read_timeline/next_tasks 用于查看任务是否已安排、为何等待和哪些问题需处理；read_task 的 execution_state 与 last_transition 用于查看当前执行的阶段、报告和实际转移。任务的 status 与执行的 lifecycle_state 属于这两个层次，不能相互替代。
+## Task progression versus execution phases
 
-通过 `read_task` 读取任务依赖、等待原因和当前执行，通过 `read_run` 按执行 ID 查历次参数、实现、生命周期及转移历史。重试保留原 Task，新一轮安排产生新 Task。完成报告提交结果后，平台重新检查已有下游任务；finish 只释放 Agent 操作权。
+read_timeline/next_tasks show whether work is scheduled, why it is waiting, and what needs attention. read_task.execution_state and last_transition show the current execution phase, reports, and actual transitions. Task status and execution lifecycle_state describe different layers and are not interchangeable.
 
-## 从任意入口继续已有 Run
+Use read_task for dependencies, waiting reasons, and the current execution; read_run retrieves previous parameters, implementations, lifecycles, and transition history by execution ID. A retry keeps the same Task; scheduling another round creates new Tasks. After a completion report commits results, the platform reevaluates existing downstream Tasks. finish only releases the agent's operation identity.
 
-不同入口的 Agent 连接同一个平台实例，读取同一条 Timeline。Run 不属于聊天会话；换入口不新建 Run，也不要求读取之前的聊天历史。
+## Run lists, attribution, and management
 
-1. 已知 Run ID 就直接读取；否则用 `list_runs`，可传 query 按名称、Run ID、Loop 名称或目标筛选，或传 status 按运行状态筛选。返回列表按创建时间从新到旧；多个候选无法区分时请用户选择，不猜测“最近一个”就是目标。
-2. 无需 token，调用 `read_timeline` 查看最新目标、要求、指导、授权、记录索引、任务和异常。需要时用 `next_tasks`、`read_task`、`read_record`、`read_plans` 读取详情；完整事实和变更历史由 `read_run` 读取。查看状态不取得操作权，其他 Agent 可以继续工作。
-3. 普通工作区操作可直接调用写入工具并传 run_id，无需额外口令或手动 token；平台为本次调用建立独立临时身份并在结束后释放。提交携带读取结果中的 basis，平台只在提交事务中检查相关版本与当前执行状态，不等待其他 Agent 结束思考。
-4. 按最新 `read_timeline` / `read_task` 的修订和 task_version 落实用户要求。需要持续执行身份时可显式 acquire_run（task_id 指定支线），使用新 token 并在完成后 finish。平台唤醒的节点使用 prompt 身份，不能通过普通入口扩大范围。既有执行记录和结果保留；改变目标不自动作废旧任务。
+The initiator is a team display name, not an account or permission boundary. Use a user-provided or already confirmed name; do not infer it from the server's OS username. Once configured on the client, start_run, start_collaboration, and request_assistance that creates standalone collaboration carry it automatically. Child Runs inherit the parent Run's attribution. An unset name does not block startup; historical records appear as unattributed.
 
 ```sh
-python3 scripts/call.py list_runs --arguments '{"query":"研究","status":"running"}'
-python3 scripts/call.py read_timeline --arguments '{"run_id":"RUN_ID"}'
-# 普通操作携带读取的 basis；持续执行可按需 acquire_run
+python3 scripts/call.py profile --name tdh
+python3 scripts/call.py profile
+python3 scripts/call.py list_runs --arguments '{"created_by":"tdh","query":"research","sort":"last_activity_at","limit":30,"root_only":true}'
 ```
 
-`read_timeline` 返回 `read_only: true` 时只是查看，不授予写入权；此时 scope_task 的 null 不能理解为有全局权限。带有效 token 读取时，`read_only: false`，scope_task 才表示本次操作范围；写入仍受 Run 终态及已派发任务的保护。显式传入过期或错误令牌会报错，不会默默切成只读。
+The caller's `.config/loop-anything/profile.json` stores the name; LOOP_ANYTHING_PROFILE can select a file, and Skill updates do not overwrite it. On creation, --created-by or arguments.created_by overrides it explicitly; LOOP_ANYTHING_USER_NAME overrides the saved default. Web launch remembers the entered name in that browser. Attribution organizes records without changing the objective or authorization. A corrupt optional profile does not block queries; creation warns and omits that default. Supply created_by explicitly or repair it with profile --name.
 
-把影响后续工作的已确认目标、约束和决定写入现有 settings、任务安排或任务结果，分别使用 change_settings、change_task/build_plan/add_task、report_task；不要只在聊天里说“记住了”。无需另外维护一份跨入口摘要或复制全部聊天记录。通知接收位置独立于操作入口；换聊天不会自动更改它。
+list_runs returns runs, total, groups (matching counts by person), loops (including archived versions represented in the matches), and next_offset, without execution history or result bodies. HTTP API revision 3 GET /api/runs returns this paginated object rather than a full array. limit defaults to 50, maximum 200. Keep filters unchanged and pass next_offset as offset for another page. Filters:
 
-## 思考不占用，提交检查版本
+- created_by exactly matches a name; an empty string selects unattributed Runs. query searches titles, Run IDs, names, Loop names, and objectives.
+- loop_key selects an installed version; loop_id spans versions of one Loop; status filters runtime status.
+- sort=last_activity_at|created_at and order=desc|asc. created_from/created_to and active_from/active_to select startup/activity intervals in Unix seconds, inclusive lower bound and exclusive upper bound. Interpret dates in the user's timezone.
+- archived=exclude|include|only defaults to hiding archived Runs. root_only=true lists parents; parent_run_id pages through their children. kind selects workflow or collaboration.
 
-父子、全局与其他支线 Agent 可以同时思考，权限范围仍按 Task 归属限定；相同 Task 和同一 CLI 会话仍不能重复执行。finish 释放身份后进程可能仍在退出；同 Task 的历史恢复终端、仍存活的已登记外部调用者及未结束的远端执行同样阻止重复启动，其他任务继续推进。read_task.execution_state 可查看 worker_active 和 communication_state；未知进程需走已有确认停止入口。不要靠 acquire_run 阻塞其他 Agent，也无需等待它们 finish 才修改自己的工作。
+Activity includes dispatch, state changes, results, meaningful progress changes, and user actions. Viewing, heartbeats, check calls, and unchanged progress do not update activity. Do not bulk read_run just for summaries; select a Run, then read Tasks and records as needed.
 
-读取结果带 `basis`。托管 Agent 沿 prompt token 调用 read_task/read_timeline/next_tasks/read_record/read_run 等工具时，平台自动记住所读版本；后续修改自动校验。没有持续 token 的普通工作区调用，要把这次决策读取的 `basis` 原样放入 add_task/build_plan/change_task/edit_tasks/change_settings/command 等修改参数。显式 basis 也可选择这次操作实际依赖的定点读取，而不使用先前较宽的工作列表。设置仍需 settings.revision，结果仍需同次读取的 task_version 和稳定 report_id。
+update_run(run_id, metadata_revision, title?, created_by?, archived?) edits names, attribution, or archival, including ended Runs. Read metadata_revision from the list summary; it is separate from execution revision. Updates do not rewrite objectives, Tasks, or results. Use Timeline tools for business changes. Archival affects ordinary lists and does not stop work.
 
-只修改一个任务时优先 read_task；依据“没有下一轮”“所有任务都结束”作决定时，应读取对应任务集合，不能只检查某个 Task。读取整个 Timeline 会检查更广的相关变化，定点读取不会因无关支线完成或新增日志而失败。最新 read_record 的值会参与校验；明确指定固定 revision 则保持该历史值。
+delete_run(run_id, metadata_revision) deletes the platform Run and Timeline only after it has ended, with no live execution or unfinished assistance, confirmed original-process status, and persisted remote receipts. A child cannot be deleted while its parent needs the result; explicitly handle retained children before deleting a parent. Deletion does not cascade to other Runs, stop external jobs, or delete native agent sessions or external/NAS artifacts. Full collaboration replies remain; their deleted Run association no longer advances.
 
-`edit_tasks` 携带 basis 可整组预览或提交；旧 revision 参数继续提供整个 Run 的保守校验。冲突返回 `error.code=conflict` 和 `conflicts` 中的变化字段，失败不部分写入。读取变化、重新判断后再提交，不能只换上最新版本号原样重试。自身成功修改自动推进已观察版本；网络重试使用相同 report_id / 稳定任务 key，不重建任务。
+Use existing draft tools to edit Loops. archive_loop(archived, key|draft_id, revision?) archives/restores a version or draft; find these with list_loops(include_archived=true). delete_loop(key|draft_id, revision?) deletes an entire draft or an unreferenced installed version; drafts require their current revision. Versions referenced by Runs or other Loops remain; archive them to hide them. Historical Runs still show their actual version. Source packages, recipient configuration, and external artifacts are not removed. If an installed directory contains runtime-generated files or user changes, the whole directory is retained; the receipt includes package_files_retained=true and retained_package_path. These files are not treated as disposable package assets.
 
-## 被平台命令唤醒时
+Discover these operations through read_capabilities(capability="run_library"). Organizing a list is not restarting, recreating a Run, or editing its business workflow.
 
-平台执行用户提供的命令并向标准输入传入任务 prompt。根据其中的 Run、task_id 和 token 处理当前任务，遵守用户授权；无需新建 Run。Agent 的工具与模型配置由用户负责；未显式配置 timeout 时，平台不会按默认时限终止 Agent。
+## Continuing an existing Run from any entry
 
-使用本 Skill 自带的 `scripts/call.py`，传入 prompt 提供的运行身份；如果其中有 `platform_url`，用 `--url` 指向该地址。
+Agents using different entries connect to the same platform instance and Timeline. A Run does not belong to a chat session; changing entry neither creates a Run nor requires old chat history.
 
-在 Skill 根目录执行；其他工作目录使用脚本绝对路径：
+1. Read a known Run ID directly. Otherwise use list_runs by initiator, keyword, Loop, status, or dates; it defaults to recent activity. Follow next_offset; see [Run management](#run-lists-attribution-and-management). Ask the user to distinguish ambiguous candidates instead of assuming the latest is correct.
+2. Without a token, read_timeline retrieves current objectives, requirements, guidance, authorization, record index, Tasks, and issues. Use next_tasks, read_task, read_record, and read_plans for details; read_run for full facts/history. Reading does not acquire operation rights or stop other agents.
+3. Ordinary workspace writes accept run_id without a password or manual token. The platform creates and releases a temporary identity for that call. Supply the basis from the relevant reads; only the commit transaction checks related versions and current execution state, without waiting for another agent to finish thinking.
+4. Apply user requests against current revisions and task_version from read_timeline/read_task. For a sustained execution identity, explicitly acquire_run (task_id selects a branch), use the new token, and finish afterward. Platform-awakened nodes use their prompt identity and cannot widen scope through an ordinary entry. Existing history/results remain; changing the objective does not automatically invalidate old Tasks.
+
+```sh
+python3 scripts/call.py list_runs --arguments '{"query":"research","status":"running"}'
+python3 scripts/call.py read_timeline --arguments '{"run_id":"RUN_ID"}'
+# Ordinary edits carry the basis returned by the reads; acquire_run is optional for sustained execution.
+```
+
+read_timeline with read_only:true grants no writing rights; scope_task:null in this view does not imply global scope. With a valid token, read_only:false makes scope_task describe this identity's scope; terminal Runs and dispatched Tasks remain protected. Explicit invalid/expired tokens fail rather than silently becoming read-only.
+
+Persist confirmed objectives, constraints, and decisions that affect later work through change_settings, change_task/build_plan/add_task, or report_task, as appropriate. Saying "remembered" in chat is not persistence. No separate cross-entry summary or full chat copy is needed. Notification destinations are independent of the operation entry; changing chat does not change them automatically.
+
+## Think concurrently; check versions at commit
+
+Parent, child, global, and other branch agents can think simultaneously, within Task ownership scopes. The same Task and native CLI session still cannot execute twice. A process may still be exiting after finish releases its identity. Resumed historical terminals, live registered external callers, and unfinished remote executions for the same Task also block duplicates; other Tasks continue. read_task.execution_state exposes worker_active and communication_state. Resolve an unknown process through the existing confirm-stopped recovery entry. Do not use acquire_run to block other agents or wait for their finish before editing your own work.
+
+Reads return basis. For managed agents using their prompt token, the platform remembers versions read through read_task/read_timeline/next_tasks/read_record/read_run and validates subsequent writes automatically. Ordinary workspace calls without a sustained token must pass this decision's basis unchanged to add_task/build_plan/change_task/edit_tasks/change_settings/command. Explicit basis can select the focused reads actually used, instead of an earlier broader work list. Settings still require settings.revision; reports require task_version from the same read and a stable report_id.
+
+Prefer read_task for one Task. Decisions such as "there is no next round" or "all work has ended" require reading the corresponding collection, not one Task. Reading the whole Timeline checks broader changes; focused reads do not conflict over unrelated branch completions or logs. Latest read_record values participate in validation; an explicitly fixed revision remains that historical value.
+
+edit_tasks previews or commits a group with basis; legacy revision still provides conservative whole-Run validation. Conflicts return error.code=conflict with changed fields in conflicts, without partial writes. Read the changes and reconsider before resubmitting; do not merely swap in a new version. Successful writes advance the caller's observed versions. Network retries reuse report_id/stable Task keys instead of creating new work.
+
+## When awakened by a platform command
+
+The platform runs the user-provided command and sends a Task prompt on stdin. Use its Run, task_id, and token for this work under the user's authorization; do not create a Run. Users configure agent tools/models. Without an explicitly configured timeout, the platform does not kill the agent after a default time limit.
+
+Use this Skill's scripts/call.py with the prompt identity. If platform_url is provided, select it with --url. Run from the Skill root, or use the script's absolute path elsewhere:
 
 ```sh
 python3 scripts/call.py read_task --arguments '{"run_id":"RUN_ID","token":"TOKEN","task_id":"TASK_ID"}'
 ```
 
-命令名可换为下文列出的运行工具，`--arguments` 提供对应参数。读取任务时会返回作者 Skill 与输入输出要求；结果用 report_task（event=completed）提交，最后 finish 释放操作权。无需导入平台模块或直接访问数据库。
+Replace the tool name and supply its parameters via --arguments. read_task returns author Skills and input/output requirements. Submit results with report_task(event=completed), then finish. Do not import platform modules or access its database directly.
 
-### 一次调用怎样才算完成
+### Completing one invocation
 
-1. 带本次操作令牌 `read_task` 读取当前 `task_version`、`outputs` 中每个端口的契约、输入与作者 Skill。按任务上下文中的 `scope_task` 限定修改范围：null 为全局，否则仅该 Task 及其后代。需要全局指导、记录目录或工作列表时再 read_timeline / next_tasks；定点工作无需先读取整个 Timeline。
-2. 按作者要求完成工作。先读 read_task.routes：已有规则时只需提供所需结果/参数，平台接受事件后自动生成任务；检查回执 routes，勿再次创建同一批工作。临时工作仍可用 add_task / build_plan 安排，但安排任务本身不提交当前结果。
-3. `report_task`（event=completed）：带上稳定的 `report_id` 和刚读取的 `task_version`，一次提交当前任务的全部 `envelope.outputs`。节点有 routes 时，结果与命中规则产生的任务一起校验并提交。只有工具返回 `ok: true` 且 `accepted: true` 才算写入成功；失败时按错误修正当前提交，不要重复创建后续任务。
-4. `next_tasks`：检查自己范围内的任务和异常。完成本次任务、处理异常或用 `defer_task` 明确等待后，可将已安排的后续任务留给 Engine。不必清空任务列表；父 Agent 尚未 finish 时，就绪的子任务也可以由 Engine 派发。
-5. `finish`：确认返回 `ok: true` 和 `finished: true` 后退出。它释放本次操作权，不会替你提交结果，也不代表整个 Run 已达成目的。终态见下文。
+1. With the operation token, read_task for current task_version, output-port contracts, inputs, and author Skills. Respect scope_task: null means global scope; otherwise only that Task and descendants. Read read_timeline/next_tasks when global guidance, record indexes, or work lists are needed; focused work need not read the whole Timeline first.
+2. Do the author's work. Read read_task.routes first: declared rules may only need results/parameters, after which the platform creates Tasks when accepting the event. Inspect receipt.routes; do not schedule those Tasks again. Use add_task/build_plan for ad hoc work; scheduling alone does not submit the current result.
+3. report_task(event=completed) with a stable report_id, the just-read task_version, and all envelope.outputs in one submission. With routes, results and generated Tasks validate and commit together. Only ok:true and accepted:true confirm success. Correct failed submissions without duplicating downstream work.
+4. next_tasks checks work/issues in your scope. After completing this Task, resolving issues, or explicitly waiting via defer_task, leave scheduled downstream work to Engine. You need not empty the list; ready children can dispatch before their parent agent calls finish.
+5. finish, verify ok:true and finished:true, then exit. This releases the identity; it neither submits results nor means the Run objective is fulfilled. See terminal-state rules below.
 
-例如 `read_task` 的 outputs 只有一个名为 result 的字符串端口时，提交参数形如：
+If read_task.outputs has one string port named result, a report looks like:
 
 ```json
-{"run_id":"RUN_ID","token":"TOKEN","task_id":"TASK_ID","task_version":"读取到的版本","event":"completed","report_id":"本次交付的稳定ID","envelope":{"outputs":{"result":"实际工作结果"}}}
+{"run_id":"RUN_ID","token":"TOKEN","task_id":"TASK_ID","task_version":"VERSION_FROM_READ","event":"completed","report_id":"STABLE_DELIVERY_ID","envelope":{"outputs":{"result":"Actual work result"}}}
 ```
 
-端口名和数据类型必须使用实际契约；初始化任务还需要按 `settings_schema` 提交已讨论的 `envelope.settings`。无输出端口时提交空对象 `{}`。不要照抄示例创建业务字段。
-
-仍使用同一个脚本调用 finish：
+Use actual port names/types. Initialization also submits the discussed envelope.settings under settings_schema. With no output ports, submit {}. Do not invent business fields by copying examples.
 
 ```sh
 python3 scripts/call.py finish --arguments '{"run_id":"RUN_ID","token":"TOKEN"}'
 ```
 
-每次命令都检查 JSON 中的 `ok`，失败时脚本退出码为 2；文字回复“已完成”不能替代成功回执。若请求超时、结果不确定，先读取当前状态确认哪些操作已生效，再决定下一步；不要盲目重交结果或改 key 重建任务。当前工具无需 seal。
+Check JSON ok for every call; script failure exits with code 2. A text claim of completion cannot replace a successful receipt. If a timeout leaves the outcome unknown, read current state before choosing the next action; do not blindly resubmit or change keys to recreate Tasks. Current tools do not require seal.
 
-作者 Skill 带 `resolved_path` 时，直接读取该位置的 SKILL.md，并以它所在目录查找其中的相对引用。Loop Skill 可由 read_loop/read_timeline 获取，节点 Skill 随 read_task 返回；普通文件读取和脚本执行沿用 Agent 自己的工具。
+When an author Skill includes resolved_path, read SKILL.md there and resolve its references relative to that directory. read_loop/read_timeline provide the Loop Skill; read_task provides node Skills. Use the agent's own tools for ordinary file reads and script execution.
 
-## 用户自己的 Agent 启动
+## Starting with the user's own agent
 
-1. 通过 `list_loops` 找到用户选择的 Loop，取得实际 key，显式传给 `read_loop`，了解所选 Loop 的作者说明、入口要求和节点实现，与用户讨论并确认目标和授权。
-2. 调用 `start_run`，提供 `key`、`title`、已讨论的 `inputs` 和自然语言 `authorization`。返回 `run_id`、`token`、`entry_task_id`。当前 Agent 已取得操作权，Engine 不会抢先重复初始化。
-3. 调用 `read_task`，带 run_id/token/task_id=entry_task_id，读取初始化要求和 `task_version`。
-4. 入口选择 Agent 实现时，用 `report_task`（event=completed） 提交完整 `envelope.outputs` 和讨论确定的 `envelope.settings`。遵循 read_task 返回的契约，不能凭空添加字段。入口结果持久保存。若入口选择脚本实现，则由 Engine 执行，读取其结果，不代写脚本输出。
-5. 使用后面的当前任务与问题/构建工具继续处理，最后 `finish`。
+1. Find the user's selected Loop with list_loops, pass its actual key to read_loop, and read the handbook, entry requirements, and implementations. Discuss/confirm objectives and authorization.
+2. start_run with key, title, discussed inputs, and natural-language authorization. It returns run_id, token, and entry_task_id. The caller already owns this initialization identity; Engine does not initialize it again.
+3. read_task with run_id/token/task_id=entry_task_id for requirements and task_version.
+4. For an agent entry implementation, report_task(event=completed) submits complete envelope.outputs and agreed envelope.settings under the returned contracts. Do not invent fields. Entry results persist. A script entry runs through Engine; read its results rather than authoring script outputs yourself.
+5. Continue with task/issue and construction tools below, then finish.
 
-已被 Engine 唤醒的 Agent 已有 Run 和令牌，跳过创建步骤；操作范围由 prompt 和 read_timeline 的 scope_task 确定。
+An Engine-awakened agent already has a Run/token and skips creation. Prompt/read_timeline.scope_task determines its scope.
 
-## 支线归属与操作范围
+## Branch ownership and operation scope
 
-- 持有效操作令牌时，`scope_task` 为任务 ID：可操作该 Task 及其后代；为 null：本次有全局操作权。普通节点的 Agent 默认负责自己的 Task 支线，入口初始化、兜底任务和明确配置的 `global_agent_node` 使用全局范围。
-- `parent_id` 表示具体 Task 的归属，独立于输入来源和 `after`。两个任务即便使用同一 Node 模板，也可能是独立支线。读取兄弟支线结果不会获得修改权限。
-- `add_task`、`build_plan` 默认将新工作挂到当前 scope_task；全局 Agent 默认挂到唤醒任务。可提供本范围内的 `parent_id` 指定父任务；全局 Agent 可传空字符串明确创建顶层任务。父任务关系建立后不更改，公共汇总应由上层创建，不能因依赖多个支线就归各支线共同修改。
-- 普通 Agent 可调整自己支线内尚未执行任务的输入、参数、实现和依赖。全局设置、Run 暂停/结束及用户请求处理需要全局操作权。已派发任务保持保护。
-- 同一 Run 的父子、全局与其他支线可同时思考，提交时校验版本与执行状态；同 Task 不重复执行。`acquire_run` 不带 task_id 登记全局身份，带 task_id 登记该 Task 子树身份；不抢占已有 Task 执行者。
-- 完成本次唤醒任务并处理本范围的异常后可 `finish`，已安排的后续 Agent 任务可以交还 Engine 并行派发，无需在本次会话中全部做完。finish 只释放自己的令牌。
+- With a valid operation token, scope_task=Task ID grants that subtree; null grants global scope. Ordinary node agents own their branch; initialization, fallback, and an explicitly configured global_agent_node have global scope.
+- parent_id represents Task ownership, independent of input sources and after. Tasks sharing a Node template may be separate branches. Reading a sibling's result does not grant write access.
+- add_task/build_plan attach new work to scope_task by default; global agents default to the awakening Task. Specify an in-scope parent_id to choose a parent; global agents may pass an empty string for a top-level Task. Parentage is immutable. A shared aggregation belongs to an upper-level creator, not every branch whose outputs it consumes.
+- Ordinary agents can change inputs, parameters, implementation, and dependencies of undispatched Tasks in their branch. Global settings, Run pause/end, and user-request handling need global scope. Dispatched Tasks remain protected.
+- Parent, child, global, and branch identities may think concurrently; commits validate versions/state and same-Task execution stays exclusive. acquire_run without task_id registers global identity; with task_id it registers that subtree. It does not preempt an existing executor.
+- After the awakening Task and in-scope issues are handled, finish and leave later agent Tasks to Engine for parallel dispatch. They need not all complete in this session. finish releases only the caller's token.
 
-这些检查作用于平台工具调用；Agent 使用外部文件和服务仍沿用用户配置，不是操作系统隔离。需要并行修改文件时，由作者安排独立工作目录或明确串行依赖。
+These are platform-tool checks, not OS isolation. External files/services use user configuration. Authors needing concurrent file edits should use separate working directories or explicit serial dependencies.
 
-## 运行中的统一操作
+## Common runtime operations
 
-- `next_tasks` 和 `read_timeline` 读取当前节点任务与异常、用户授权及作者整体说明。read_timeline 的 records 列出记录 ID、类型和最新版本，需要正文时用 `read_record`。正常运行或等待的脚本不需要 Agent 接管。
-- 对每项可处理任务先 `read_task`，读取最新输入、输出契约及作者节点 Skill，再 `report_task`（event=completed） 写入完整结果。结果当次生效；不能代写脚本、事件或审批结果。
-- `read_plans` 查看模板，`build_plan` 提供 name、稳定 key、values。默认安排无条件或 when 为真的步骤；steps.<步骤>.skip=true 明确不安排。省略不会创建 Task、skipped 占位或假输出，回执 omitted 与安排记录说明原因。需要其输出的下游必须显式提供复用输入来源。相同 key 重试必须保持参数与安排不变；不要用重复 key 隐式撤回已安排任务。已存在的任务不再需要时，明确取消，保留事实。
-- 成组任务变更用 `edit_tasks`：使用此次决策的 basis（旧 revision 可作整个 Run 的保守校验），changes 按顺序列出 `{"tool":"add_task/build_plan/change_task 中的一种","arguments":{...}}`。`preview:true` 返回变化前后的 Task、实际生成的 ID 和省略原因，不落盘或派发；检查后用同一 basis 和 `preview:false` 提交，任意一步失败整组回滚。提交回执只返回 run_id、revision 和 applied；需要详情再读 Timeline。预览也遵守当前操作范围。若要给刚展开的批次增加后继，可从预览的 changes[].after 中取 Task ID，加入 add_task.after 后再次预览；不要自行复制生成 ID 的算法。此事务不包含 report_task、change_settings 或 finish，不能把整个业务 helper 的多次调用当成一次事务。
-- 若作者的 Loop 有轮次，build_plan 可传 `round`，例如作者确定的轮次名称。它只组织显示，不强制串行、不控制何时推进；不要给没有轮次的业务强加轮次。
-- `add_task` 从已声明的非入口节点安排单项工作：提供稳定 `key`、`node_id`、`inputs`，可选 `parameters`、`implementation`、`after` 和 `round`。返回任务 ID 与自动分配的输出记录 ID，供后续输入引用；不手写完整任务。
-- `change_task` 修正尚未执行的 `inputs`、`parameters`、`implementation` 和 `after`（前置任务 ID 列表）；重试前先核实是否已经产生外部副作用。执行中的正常脚本不应被当成待修复问题。
-- `change_settings` 修改已授权的要求；提供刚读到的 settings.revision。`command` 使用暂停、恢复、暂停点放行等已支持操作。
-- 无法按现有授权解决时 `defer_task`，记录需要用户输入的具体事项。不要伪造成功或自行扩大授权。
-- 每次写入后重新 `next_tasks`，本次任务完成且本范围异常已处理或明确等待后 `finish`。旧令牌立即失效，已安排的后续任务交给 Engine。
+- next_tasks/read_timeline show current work, issues, authorization, and the Loop handbook. read_timeline.records lists IDs, types, and latest revisions; read_record fetches bodies. Healthy running/waiting scripts do not need agent takeover.
+- For each actionable Task, read_task first, then report_task(event=completed) with full results under current contracts. Results take effect immediately. Do not submit script, event, or approval results on their behalf.
+- read_plans lists templates; build_plan takes name, stable key, and values. It schedules unconditional/true-when steps; steps.<step>.skip=true explicitly omits one. Omission creates no Task, skipped placeholder, or fake output. Receipt.omitted and scheduling records explain why. Consumers must explicitly supply reusable input sources for omitted producers. Reusing a key requires identical parameters/scheduling; it cannot silently withdraw prior Tasks. Explicitly cancel unnecessary existing Tasks while preserving facts.
+- edit_tasks groups changes using this decision's basis (legacy revision can conservatively validate the whole Run). changes is an ordered list of {"tool":"add_task","arguments":{...}}, using add_task, build_plan, or change_task. preview:true returns before/after Tasks, actual generated IDs, and omission reasons without persistence/dispatch. Commit with the same basis and preview:false; any failure rolls back the group. The commit receipt returns only run_id, revision, and applied; read the Timeline for details. Preview respects scope. To add a successor to a freshly expanded batch, obtain IDs from preview.changes[].after, add them to add_task.after, and preview again; do not duplicate the ID-generation algorithm. This transaction excludes report_task, change_settings, and finish; a helper's multiple calls are not one transaction.
+- If the authored business has rounds, build_plan accepts round. It organizes display, not serialization or progression timing; do not impose rounds on unrelated work.
+- add_task schedules one declared nonentry node with stable key, node_id, inputs, and optional parameters, implementation, after, and round. It returns a Task ID and allocated output record IDs for later references; do not handwrite whole Tasks.
+- change_task edits undispatched inputs, parameters, implementation, and after (predecessor Task IDs). Check external side effects before retrying; healthy scripts are not repair targets.
+- change_settings updates authorized requirements with the just-read settings.revision. command supplies supported pause, resume, and pause-point release operations.
+- If current authorization is insufficient, defer_task with the specific user input needed. Do not fake success or expand authorization.
+- After writes, reread next_tasks. Once this Task and in-scope issues are handled or explicitly waiting, finish. The old token expires immediately; Engine handles scheduled successors.
 
-新增或修改任务造成循环依赖时，整次写入会被拒绝，不会留下部分任务或结果。读取最新任务及来源后修正；不要把循环的 Loop 定义误当成运行时同一批任务可以互相等待。
+An added/edited cyclic dependency rejects the entire write without partial Tasks/results. Read current Tasks and sources to correct it. A looping workflow does not mean one runtime batch may wait cyclically on itself.
 
-## 选择节点实现
+## Selecting node implementations
 
-候选与默认值在 `read_loop` 的 implementations 中；多候选保存为 `{options:{ID:配置}, default:ID或null}`。已有单个实现是名为 default 的默认候选简写。不要为更换候选复制 Loop。
+read_loop.implementations contains candidates/defaults. Multiple candidates use {options:{ID:configuration},default:ID-or-null}; a single legacy implementation abbreviates a default candidate named default. Do not copy a Loop to switch candidates.
 
-- `start_run` 可带 bindings 映射，例如 `{"train":"cluster"}`。省略节点沿用 Loop 默认；值 null 暂不选用。
-- 运行中 `change_settings` 的 change.bindings 更新 Run 选择，带最新 settings revision。映射整体替换，保留仍需覆盖的其他节点。
-- `build_plan` 的 steps.<step>.implementation 为本批任务指定候选；空字符串恢复继承 Run 默认。`change_task` 的 implementation 改选未派发任务，或结合 retry 在确认副作用后切换失败任务的实现；空字符串恢复继承。
-- 优先使用任务明确指定的实现，其次 Run 选择，再其次 Loop 默认。`read_task` 会返回候选、当前选择及 task_version；改选后重新读取再提交。
+- start_run.bindings maps nodes to candidates, e.g. {"train":"cluster"}. Omitted nodes inherit Loop defaults; null leaves selection unset.
+- change_settings.change.bindings changes Run selection with current settings revision. It replaces the whole mapping; retain other desired overrides.
+- build_plan.steps.<step>.implementation selects for that batch; an empty string restores Run inheritance. change_task.implementation changes an undispatched Task, or accompanies retry to switch a failed Task after checking side effects. Empty restores inheritance.
+- Task override wins over Run selection, then Loop default. read_task returns candidates, current selection, and task_version; reread after changes before reporting.
 
-已派发的执行保留当时的实现与配置。候选为空或未设默认不阻止创建 Run；实际需要执行任务时才报告 missing_implementation。用工具落实选择，或明确等待用户提供实现，不伪造执行结果。
+Dispatched executions retain their chosen configuration. No candidates/default does not prevent Run creation; missing_implementation is reported only when execution is needed. Make a real selection or wait explicitly for the user, without fabricating results.
 
-## 可选 Agent 兜底
+## Optional agent fallback
 
-`read_loop` 返回 Loop 的 fallback_node。`start_run` 可传 fallback_node 覆盖，空字符串表示本次关闭；省略沿用 Loop。运行中用 change_settings 的 change.fallback_node 设节点 ID 或 null。兜底 Agent 通过该节点的 bindings 选择，不会隐式借用其他节点命令。
+read_loop returns fallback_node. start_run may override it; an empty string disables it for that Run, omission inherits the Loop. During a Run set change_settings.change.fallback_node to an ID or null. Its bindings select the fallback agent; commands are not borrowed implicitly from another node.
 
-兜底是普通的已声明节点：read_task 返回其 Skill、输出契约及 origin 中的进入原因。处理当前问题后，用 report_task（event=completed）完成兜底任务自身，再 finish；其他全局 Agent 可在授权内协助处理问题；兜底 Task 自身仍由唯一执行者完成。全局与支线身份可同时存在，提交检查相关版本，正常脚本仍继续。
+Fallback is an ordinary declared node. read_task returns its Skill, output contract, and entry cause in origin. Resolve the issue, report_task(event=completed) for the fallback Task itself, then finish. Other authorized global agents may help, but one executor completes the fallback Task. Global/branch identities coexist; commits check related versions while healthy scripts continue.
 
-## 用户中途提出新要求
+## New user requirements during a Run
 
-按上面的继续运行流程，先查看最新状态，普通操作由平台处理执行标识，长操作按需显式 acquire_run，决定怎样落实用户要求。其他 Agent 思考期间不阻塞修改；提交检查相关依据，同 Task 的执行仍不可重复启动。修改要求本身不会作废旧任务、审批或结果。由用户决定哪些工作需要改变，再按授权用 change_task 明确取消或修改；必要时先暂停推进。待确认审批可以取消，已派发脚本不能靠取消假定外部操作已停止。保留已有结果和来源，再检查当前任务与问题并结束。
+Follow the continuation procedure: read current state, let the platform establish ordinary call identities, or acquire_run for a long operation. Other agents thinking do not block edits; commits validate dependencies and same-Task execution remains exclusive. Changing requirements does not invalidate old Tasks, approvals, or results. The user decides what should change; explicitly cancel/edit with change_task under authorization, pausing progression first if necessary. Pending approvals can be canceled; canceling a dispatched script does not prove external work stopped. Preserve results/provenance, check current work/issues, and finish.
 
-工具报错时读取 error 和当前状态：输入版本变化就重新 read_task；Timeline 版本变化就重新 read_timeline；缺字段按输出契约补齐。不要通过重复创建另一批任务绕过原错误，也不要重建 Run。
+On tool errors, read error and current state: reread read_task for input-version changes, read_timeline for Timeline changes, and output contracts for missing fields. Do not bypass an error by creating another batch or Run.
 
-## 终态由 Engine 推进
+## Engine advances terminal states
 
-用户目的在 Timeline 中。结束有两条路径，都用 `change_settings` 写入，由 Engine 推进到终态；任务查询不承担终态判定，也不生成结束判断任务。
+The objective lives in the Timeline. Both completion paths use change_settings, then Engine advances the terminal state. Task queries neither decide completion nor create completion-decision Tasks.
 
-- 可机械判断：写 `completion_rule`，使用现有确定性表达式。支持 eq/le/ge/add/len/and/or，`path` 可为点分隔字符串或路径段数组。求值根为 settings、inputs、records（每个记录 ID 的最新正式值）、completed（各节点已完成 Task 数）和 active_tasks（尚未结束的业务 Task 数）。and/or 按顺序短路；只有实际求值访问的记录尚未产生时规则才暂不成立；规则类型错误作为实际异常报告。
-- Agent 已判断目的达成：写 `termination_signal`，内容为结束原因。Engine 识别后进入终态，保留原因与 Timeline revision。
+- Mechanical completion: set completion_rule using deterministic expressions eq/le/ge/add/len/and/or. path is a dotted string or path-segment array. Roots: settings, inputs, records (latest formal value per record ID), completed (completed Task counts per node), and active_tasks (unfinished business Task count). and/or short-circuit in order. A missing record only defers the rule if evaluation actually visits it; type errors become real issues.
+- Agent-decided completion: set termination_signal to the reason. Engine marks the Run completed and records the reason and Timeline revision. This completion signal differs from command(action=terminate), which aborts as terminated.
 
-例如已完成至少两次 review 且没有其他在途业务工作：
+For at least two review completions and no other in-flight business work:
 
 ```json
 {"completion_rule":{"op":"and","args":[{"op":"ge","args":[{"path":["completed","review"]},2]},{"op":"eq","args":[{"path":"active_tasks"},0]}]}}
 ```
 
-使用真实节点 ID 和业务条件，不机械照抄。带点的记录 ID 用路径段数组，例如 `["records","metric.round-2","score"]`。
-规则不应无意截断仍需完成的工作；若需等待在途工作结束，明确纳入条件。终态会取消尚未结束的 Task 并拒绝其后续提交，不撤销已发生的外部副作用。
+Use actual node IDs/business conditions. For dotted record IDs, use segments, e.g. ["records","metric.round-2","score"]. Avoid unintentionally cutting off required work; include in-flight completion in the condition when needed. Terminal states cancel unfinished Tasks and reject later reports without undoing external side effects.
 
-没有 Task 不等于完成。`finish` 只释放本次 Agent 操作权；它不会直接把 Run 置为完成。已写入终止信号时可以交还操作权，随后由 Engine 执行终态转移。不要创建 terminal 节点或额外完成判断任务。
+No Tasks does not mean completion. finish only releases this identity, not the Run. After writing a termination signal, release it and let Engine apply the terminal transition. Do not create terminal nodes or extra completion-decision Tasks.
 
-`set_loop.global_agent_node`、`start_run.global_agent_node` 或 `change_settings.change.global_agent_node` 可指定正常全局决策节点，选用该节点的现有 Agent 实现。留空默认使用兜底；设置该资格不会自动创造业务任务或启动 Agent。兜底触发仍要求显式启用。
+set_loop.global_agent_node, start_run.global_agent_node, or change_settings.change.global_agent_node can select a normal global decision node using its existing agent implementation. Empty defaults to fallback. This eligibility does not create Tasks or start agents; fallback still requires explicit enablement.
 
-## 配置通知出口
+## Notification destinations
 
-使用 read_notification_channels 查看平台已配置出口，在 start_run.notification_route 或 change_settings.change.notification_route 中选择本 Run 的默认出口。workspace 表示平台通知区。所有入口共用该设置，切换聊天不会自动更换接收位置。个人发送配置只保存在平台与 Run，不放在 Loop 定义中。
+read_notification_channels lists configured outlets. Select the Run default through start_run.notification_route or change_settings.change.notification_route. workspace means the platform notification area. All entries share this setting; changing chat does not change it. Personal delivery configuration lives in the platform/Run, not the Loop definition.
 
-通知、询问、回复和适配器参数见 [notifications.md](notifications.md)。Agent 调用 notify 时沿用当前操作权，支线关联自己的 task_id；不要为了发消息再安排一个业务 Task。重复请求保持 key 和内容一致。询问不会暂停其他工作，需要答案时安排等待节点，完成当前工作后 finish 释放 Agent，不持权守候。
+See [notifications.md](notifications.md) for notifications, questions, replies, and adapters. notify uses the current identity; branch agents associate their task_id. Do not add a business Task merely to send a message. Retries keep the same key/content. A question does not pause other work; schedule a wait node if its answer is required, finish current work, and release the agent instead of holding it open.
 
-read_task.execution_state.wait 显示实际等待时刻、事件关联和截止时间。通过 `send_event` 提交回复或事件。使用稳定 event_id，回复的 payload 必须符合等待节点输出契约；重复事件不重复推进。时间和事件等待可通过现有 change_task cancel 取消，已完成输出不会被撤回。
+read_task.execution_state.wait shows actual wait times, event correlation, and deadlines. send_event supplies replies/events with stable event_id and payload matching the waiting node's outputs. Duplicate events do not advance twice. Existing change_task cancel can cancel time/event waits without retracting completed outputs.
 
-## Agent 异常退出与通知
+## Agent exits and failure notifications
 
-平台启动的 Agent 命令退出后，若 Loop 仍异常且启用了兜底，会按同一操作权规则进入指定兜底节点并唤醒 Agent。未启用兜底则保留未处理问题，不自动挑选 Agent。初次失败加两次重试，连续三次后暂停并自动发出通知请求；支线转交兜底时继续计入初次失败，不重新计数；异常成功解决后清零，用户明确恢复后开始新的计数。
-用户明确暂停或等待用户输入不作为失败。旧命令不能确认已经停止时保留操作权，使用现有确认停止恢复入口；交互 Agent 同样须先确认旧进程停止，再通过该入口恢复。
+After a platform-started agent command exits, an enabled fallback is awakened through the same operation rules if the Loop still has issues. Without fallback, issues remain; no agent is selected automatically. An initial failure plus two retries pauses after three consecutive failures and automatically requests notification. Branch handoff retains the initial failure count; successful resolution clears it, and explicit user resume starts a fresh count.
 
-通知使用上述通用出口。非零退出、超时或未确认送达都会记录失败；显式指定的出口未配置时记录 waiting_configuration，等待用户补配后重试，不计入 unexpected 或触发兜底。默认出口没有发送命令时使用平台通知区。
-执行前通知与业务运行并行；执行前暂停拦住目标 Task，直到放行。普通通知使用本 Run 的默认出口；未选外部出口的新 Run 使用平台通知区。`route: workspace` 可明确选择仅在工作台留存。
+Explicit pause or waiting for user input is not failure. If the old command cannot be confirmed stopped, its execution identity remains. Interactive agents likewise require confirming the old process stopped before the existing recovery entry can resume them.
 
-不同支线的失败计数分别保留，进入全局兜底后沿用未解决支线的最长失败链，不把并行支线的失败次数相加；恢复运行会清零这些计数；一个 Agent 退出不会释放其他 Agent 的操作权。无法确认旧进程停止时保留它的执行身份，同 Task 或同 CLI 原生会话不得启动第二个执行者，其他任务可继续。
+Notifications use the outlets above. Nonzero exit, timeout, or unconfirmed delivery records failure. An explicit unconfigured outlet records waiting_configuration until configuration/retry, without counting as unexpected or triggering fallback. A default outlet without a send command uses the platform notification area. Pre-execution notifications run alongside work; a pre-execution pause blocks its Task until released. Ordinary notifications use the Run default; new Runs without an external outlet use workspace, which can also be selected explicitly.
 
+Branch failure counts remain separate. Global fallback inherits the longest unresolved branch chain, not the sum of parallel failures. Resuming clears these counts. One agent's exit does not release another's identity. Unknown process status blocks a second executor for the same Task/native session, while other Tasks continue.
 
-## 统一报告事件与结果
+## Unified event and result reporting
 
-`report_task` 参数包含 task_id、event、稳定 report_id。Agent 先 read_task，读取实际生命周期、当前执行阶段及 last_transition，附带最新 task_version；脚本/监控使用本次上下文的 execution_id。普通工作区入口传 run_id，token 可省略；平台唤醒的节点必须带 prompt 中的 token，限定的 tool_url 入口自动提供身份。completed 报告的 envelope 包含全部 outputs，初始化时还包含 settings；progress 等报告只带 detail，不提前发布结果或安排任务。
+report_task takes task_id, event, and stable report_id. Agents first read_task for the actual lifecycle, phase, and last_transition, then include current task_version. Scripts/observers use execution_id from their context. Ordinary workspace calls supply run_id and may omit token; awakened nodes must use their prompt token, while scoped tool_url supplies identity automatically. completed includes all envelope.outputs, plus settings for initialization. progress and similar events use detail without prematurely publishing results or scheduling work.
 
 ```json
-{"task_id":"任务ID","task_version":"read_task返回的版本","report_id":"这次交付的稳定ID","event":"completed","envelope":{"outputs":{"result":"实际结果"}}}
+{"task_id":"TASK_ID","task_version":"VERSION_FROM_READ_TASK","report_id":"STABLE_DELIVERY_ID","event":"completed","envelope":{"outputs":{"result":"Actual result"}}}
 ```
 
-检查 `ok=true` 且 `accepted=true`。工具接收了格式正确但未覆盖的事件时会返回 accepted=false，并保存原状态、事件和异常原因；先检查当前任务及规则，不盲目重试。网络回执不确定时用相同 report_id 和相同内容重试，不生成新 ID。相同报告不会重复产生结果；改变报告内容须使用新 ID。失效的执行或操作令牌始终不能再写入。
+Check ok=true and accepted=true. A well-formed but uncovered event returns accepted=false and preserves the original state, event, and issue reason. Inspect current work/rules before retrying. If a network receipt is unknown, retry with the same report_id/content. An identical report does not duplicate results; changed content requires a new ID. Expired execution/operation identities cannot write again.
 
-脚本从 stdin 读取 JSON 上下文，其中 report_client 是随平台 Skill 提供的 scripts/report.py 绝对路径。它可作为命令行工具调用，也可按该路径导入 `report`：
+Scripts read JSON context from stdin; report_client is the absolute path to this Skill's scripts/report.py. Invoke it as a CLI or import report from that path:
 
 ```python
 import importlib.util, json, sys
@@ -195,47 +220,44 @@ context = json.load(sys.stdin)
 spec = importlib.util.spec_from_file_location("loop_report", context["report_client"])
 client = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(client)
-# 在业务工作完成并验证后，最后提交；不要仅凭进程退出判断业务成功。
-client.report(context, "completed", report_id="final", envelope={"outputs": {"result": "实际结果"}})
+# Submit after completing and verifying the business work; process exit alone is not business success.
+client.report(context, "completed", report_id="final", envelope={"outputs": {"result": "Actual result"}})
 ```
 
-也可调用 `python3 REPORT_CLIENT completed --context 上下文.json --data @报告.json`。作者可把接入封装进已有业务脚本，无需修改远端服务。
+Alternatively: `python3 REPORT_CLIENT completed --context context.json --data @report.json`. Authors can wrap this integration in existing scripts without changing remote services.
 
-异步提交用 `submitted` 携带 external_id 和可选 poll_after 秒数；监控使用上下文中的 external_id，报告 progress（detail 中放进度）或 completed（envelope 中放结果），业务明确失败才报告 failed。查询失败与业务失败不同；查询脚本可以抛出异常交给平台记录 check_error。作者可以将 check_error 明确转到 agent，由已启用的兜底节点处理；未启用时保留问题。查询失败后用 change_task retry 恢复原外部任务的监控，并回到转交前的监控状态；此操作不能同时改变输入或实现。确认原工作失败且需要重新提交时，走正常任务重试并核实外部副作用。
+Asynchronous submission reports submitted with external_id and optional poll_after seconds. Observers use context.external_id and report progress (detail) or completed (envelope); only confirmed business failure is failed. Query failure differs from business failure; the query script may raise an exception recorded as check_error. Authors may explicitly route check_error to agent for enabled fallback; otherwise the issue remains. change_task retry after query failure resumes observation of the original external job in its pre-handoff monitoring state, without simultaneously changing inputs/implementation. For confirmed failed work needing resubmission, use normal Task retry after checking side effects.
 
-旧 `complete_task` 仍作为 completed 报告的兼容入口；旧脚本的 JSON stdout 结果也汇入同一转移处理。直接调用工具后，stdout 可用于普通日志，回执以工具为准。完成任务不会自动释放 Agent 操作权，最后仍需 finish。
+Legacy complete_task remains a completed-report alias; legacy JSON stdout results enter the same transition handling. After direct tool calls, stdout may contain ordinary logs; tool receipts are authoritative. Completion does not release an agent identity; finish remains required.
 
+### Transitions and duplicate reports
 
-### 转移与重复报告
+The matrix decides whether current state plus event can transition; report_id identifies the logical event within one execution. Identical concurrent/retried reports are accepted once; state validation, result writes, receipts, and completion hooks share a transaction. Reusing an ID with different content fails. A send retry must reuse its ID; a new ID denotes a new event.
 
-矩阵判断“当前状态＋事件”能否转移；同一次执行中的 report_id 识别是否为同一个逻辑事件。相同 ID、相同内容的并发或重试只确认一次，状态检查、结果写入、报告回执及完成 Hook 在同一事务中处理。相同 ID 却改变内容会被拒绝。程序重试一次发送时必须沿用原 ID；若每次生成新 ID，平台会将其视为新事件。
+A matrix row is not limited to one use per Run. Progress may self-loop, and after leaving and reentering A its outgoing edges can apply again. Once A is left, new events match current-state rules, not A's old edges. Completed Tasks reject new reports. The matrix does not support arbitrary state-entry actions or notification configuration. Existing hooks deduplicate by hook/Task; repeated state observation is not a way to notify once per reentry.
 
-不要把矩阵行理解为整个 Run 只能命中一次：进度可以合法自循环；离开 A 后又进入 A，也可以再次使用 A 的出边。已离开 A 时，新事件只能匹配当前状态的规则，不能再次执行 A 的旧出边；已完成的任务拒绝新的状态报告。当前矩阵没有任意“状态进入动作”或通知配置，已有通知 Hook 按 Hook/Task 去重；如果业务需要每次重新进入都通知，不能靠持续观察“当前处于 A”反复发送。
+### Task revisions and execution attempts
 
+New Tasks start at revision 1. Changes to inputs, parameters, implementation, or after increment it; same-configuration retries, observation recovery, and no-op edits do not. change_task/read_task return task_revision. Concurrent reports still use the freshly read task_version, not the integer revision.
 
-### Task 修订与执行尝试
+Each execution saves task_revision, task_spec, and actual input/parameter/implementation snapshots. Attempt 2 may still use revision 1; changed parameters can make attempt 3 use revision 2. History preserves before/after revisions, configuration, reason, and identifiable actor, not tokens. Consumers keep the same Task ID/output location; they are not rebuilt automatically.
 
-新 Task 的 revision 从 1 开始；修改其 inputs、parameters、implementation 或 after 才递增，原配置重试、恢复监控和无实际配置变化不递增。change_task 回执和 read_task 返回 task_revision；并发提交仍使用刚读取的 task_version，不能用整数修订号替代。
+Run default implementation or input-record changes do not rewrite the Task declaration or increment its revision. Executions separately save their selected implementation, settings revision, and consumed record versions. Old history without revisions is marked unrecorded; tracking begins with later edits/executions, without reconstructing history.
 
-每次执行保存 task_revision、task_spec 及实际输入、参数和实现快照。原参数重试可以是修订 1 的第 2 次执行；改参后重试则是修订 2 的第 3 次执行。历史修改保留前后修订、配置、原因与可识别的操作者，不记录操作令牌。下游继续引用同一个 Task ID 和输出位置，不自动重建。
+### Recovery scheduled by the state machine
 
-Run 默认实现或输入记录的变化不直接改写 Task 声明，因此不自动增加 Task 修订；执行记录另存实际选用的实现、运行设置修订及消费的记录版本。旧历史没有修订号时标为未记录，只从后续修改或新执行开始记录，不推算已有历史。
+A report returning state=retry records a retry transition and puts the Task in retrying. Application waits for the original process to exit and its identity to release. read_task.execution_state.retry exposes pending/applied/blocked/superseded and resolved parameters. Agents still finish after reporting. An explicit transition to agent also permits finish to hand this issue to configured fallback; other unresolved issues retain scope rules.
 
+Do not add_task as a substitute for retry. Replay the same report_id/content; applied transitions do not reapply parameter changes/resubmission. After restart, if old-process outcome is unknown, verify it stopped and check external side effects before change_task retry. The platform does not automatically risk resubmission. Automatic/manual recovery share Task revisions, parameter contracts, and scope.
 
-### 状态机安排的恢复
+An observer receipt with stale:true means its check ended or recovery/retry replaced its credentials; the report remains evidence only. Bundled report.py returns this as an ordinary stale receipt. Stop that old check and do not advance state; incorrect credentials still fail.
 
-报告返回 state=retry 时，表示重试转移已记录，Task 处于 retrying，需等待原执行进程结束、同 Task 的旧执行身份释放后才能应用。read_task 的 execution_state.retry 可查看 pending/applied/blocked/superseded 和已确定的参数。Agent 报告后仍需 finish 释放操作权；本任务明确转入 agent 时也可 finish，将该问题交还给已配置兜底，其他未处理问题仍须遵守原范围规则。
+Execution failure_kind=command_start means command/cwd startup failed; agent_command means an abnormal agent command. Neither proves external training/business failure. Read the raw error and actual cwd; check command and agent trust/login configuration without changing trust or resubmitting external work on your own.
 
-不要重复 add_task 代替重试。报告重放沿用同一 report_id 和内容，已应用的转移不会再次改参或重提。服务重启后若标明旧进程结局未知，先核实它已停止及外部副作用，再用 change_task retry；平台不会自动冒险重提。自动恢复与手动操作共用 Task 修订、参数契约和操作范围。
+## Discovering capabilities and Task references
 
-监控报告返回 `stale: true` 表示旧检查已结束或凭证已被恢复/重试替换，报告只保留为证据。随 Skill 提供的 report.py 将其作为正常的过期回执返回；调用者应停止该旧检查，不再推进状态。错误凭证仍会被拒绝。
+read_capabilities returns current service capabilities and tools/docs without acquiring operation rights. The current entry's list is authoritative. Scoped entries permit only their listed tools; do not change addresses to bypass scope. Background context.platform gives version/capability identifiers.
 
-执行记录的 `failure_kind=command_start` 表示命令/工作目录无法启动，`agent_command` 表示 Agent 命令异常；它们不证明外部训练等业务失败。读取原始错误和实际 cwd，检查命令及 Agent 信任/登录配置，不擅自修改信任范围或重提外部任务。
+resolve_refs resolves stable Task refs to Task IDs/output records. add_task.ref/after_refs and task_ref/task_refs input sources resolve to actual dependencies at write time. build_plan/route receipts also return references. See [contracts.md](contracts.md).
 
-## 发现已有能力与任务引用
-
-`read_capabilities` 返回当前服务能力及对应工具/文档，不需要取得操作权。实际可调用工具以当前入口的 list 为准；限定入口只允许其工具目录提供的操作，不换地址绕过范围限制。后台唤醒上下文的 platform 字段提供版本和能力标识。
-
-有稳定 ref 的 Task 可用 `resolve_refs` 查找 Task ID 和输出 record 引用。add_task 的 ref/after_refs 和 task_ref/task_refs 输入来源在写入时解析为真实依赖；build_plan/route 回执也返回 references。详细语义见 [contracts.md](contracts.md)。
-
-后台 Agent 实时输出与可选 CLI 交互终端由平台提供，配置和限制见 [执行终端](terminal.md)。无需自建日志页或交互服务。
+The platform provides live output and optional CLI interaction terminals; see [execution terminals](terminal.md). Do not build separate log pages or interaction services.

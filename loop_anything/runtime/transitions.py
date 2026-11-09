@@ -5,20 +5,25 @@ against its contracts before applying effects in the existing transaction.
 """
 import copy
 
-from loop_anything.runtime.checks import evaluate
-from loop_anything.runtime.timeline_model import expand
-
-
-def decide_transition(lifecycle, state, event, context, parameters):
-    candidates = [r for r in lifecycle['transitions'] if r['from'] == state and r['event'] == event]
+def select_transition(rules, state, event, context=None):
+    """Select one rule; usable without a Loop, Timeline, storage or platform service."""
+    candidates = [r for r in rules if r['from'] == state and r['event'] == event]
     matches, issue = [], None
     try:
+        from loop_anything.runtime.checks import evaluate
         matches = [r for r in candidates if 'when' not in r or evaluate(r['when'], context) is True]
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         issue = 'Invalid transition condition: ' + str(exc)
     if len(matches) != 1 and issue is None:
         issue = ('Ambiguous transitions' if len(matches) > 1 else 'No matching transition' if candidates else 'Uncovered transition') + ': ' + state + ' + ' + event
     rule = matches[0] if len(matches) == 1 and issue is None else None
+    return {'state':state,'event':event,'rule':copy.deepcopy(rule),'matches':copy.deepcopy(matches),'issue':issue}
+
+
+def decide_transition(lifecycle, state, event, context, parameters):
+    from loop_anything.runtime.timeline_model import expand
+    decision=select_transition(lifecycle['transitions'],state,event,context)
+    rule,issue=decision['rule'],decision['issue']
     parameters = copy.deepcopy(parameters)
     if rule and rule['to'] == 'retry':
         try:
@@ -32,8 +37,7 @@ def decide_transition(lifecycle, state, event, context, parameters):
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             notice_issue = 'Invalid notification parameters: ' + str(exc)
     # Keep notice expansion failure separate: retry contract failures take priority.
-    return {'state': state, 'event': event, 'rule': copy.deepcopy(rule),
-            'matches': copy.deepcopy(matches), 'issue': issue, 'parameters': parameters,
+    return {**decision, 'issue': issue, 'parameters': parameters,
             'notices': notices, 'notice_issue': notice_issue}
 
 
@@ -61,7 +65,7 @@ def transition_effects(decision, report, kind, external_id, delay, now, issue=No
                 execution['retry'] = {'status': 'pending', 'report_id': report['report_id'],
                                       'parameters': copy.deepcopy(decision['parameters'])}
                 task['wait_reasons'] = [{'reason': 'retry_pending', 'detail': 'Waiting for process exit and operation scope before retry'}]
-        elif target != 'completed' and kind == 'external' and external_id:
+        elif target != 'completed' and kind in ('external','loop') and external_id:
             execution.update(external_id=external_id, poll_after=delay, wake_at=now + delay, status='waiting')
             task['status'] = 'waiting'
         execution['lifecycle_state'] = target

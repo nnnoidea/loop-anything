@@ -70,6 +70,11 @@ def validate_v2(bp, implementations):
         validate_fallback(bp, implementations, bp.get('fallback_node'))
         location = ['global_agent_node']
         validate_global_agent(bp, implementations, bp.get('global_agent_node'))
+        location = ['flow_agent']
+        from loop_anything.runtime.flow_agent import validate as validate_flow_agent
+        validate_flow_agent(bp.get('flow_agent'))
+        if bp.get('flow_agent') is not None and '$flow_agent.decision' in bp.get('records', {}):
+            raise Invalid('$flow_agent.decision is reserved for built-in decision results')
         location = ['implementations']
         if '$notifications' in implementations:
             raise Invalid('Loop notification senders are retired; configure local notification outlets and remove implementations.$notifications before sharing')
@@ -124,6 +129,9 @@ def validate_v2(bp, implementations):
                 raise Invalid('Invalid node id')
             if not node.get('instructions'):
                 raise Invalid('Node operation instructions required: ' + name)
+            if 'description' in node and not isinstance(node['description'], str):
+                location = ['nodes', name, 'description']
+                raise Invalid('Node description must be text')
             if not isinstance(node.get('inputs'), dict) or not isinstance(node.get('outputs'), dict):
                 raise Invalid('Node inputs and outputs must be explicit objects: ' + name)
             if not isinstance(node.get('plan_nodes', []), list):

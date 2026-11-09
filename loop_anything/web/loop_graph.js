@@ -14,7 +14,7 @@ function loop_definitionEdges(bp){
 function loopRelationships(bp,fallback=bp.fallback_node){
   const edges=[];
   function add(from,to,kind,detail){
-    if(!Object.hasOwn(bp.nodes,from)||!Object.hasOwn(bp.nodes,to))return;
+    if(!Object.hasOwn(bp.nodes,from)||!Object.hasOwn(bp.nodes,to)||(from==='$flow_agent'&&bp.nodes[from].builtin==='flow_agent')||(to==='$flow_agent'&&bp.nodes[to].builtin==='flow_agent'))return;
     let edge=edges.find(e=>e.from===from&&e.to===to&&e.kind===kind);
     if(!edge){edge={from,to,kind,details:[]};edges.push(edge);}
     if(!edge.details.includes(detail))edge.details.push(detail);
@@ -27,6 +27,10 @@ function loopRelationships(bp,fallback=bp.fallback_node){
   if(typeof fallback==='string'&&Object.hasOwn(bp.nodes,fallback))for(const id of Object.keys(bp.nodes))if(id!==fallback)add(id,fallback,'recovery','失败或未覆盖情况仍未解决时，按操作权与运行限制进入已配置兜底；正常等待不触发');
   return edges;
 }
+function overviewNodeMessage(event,iframe,nodes){
+  const data=event.data;
+  return iframe&&event.source===iframe.contentWindow&&data?.type==='loop-node-select'&&typeof data.node==='string'&&Object.hasOwn(nodes,data.node)?data.node:null;
+}
 // Agent-authored explanatory page; execution still comes from the Loop definition.
 function overviewFlowHTML(item){
   const asset=(item.assets||[]).find(a=>a.path==='docs/flow.html');
@@ -34,9 +38,16 @@ function overviewFlowHTML(item){
   try{
     const html=new TextDecoder('utf-8',{fatal:true}).decode(Uint8Array.from(atob(asset.base64),c=>c.charCodeAt(0)));
     // Opaque-origin sandbox: an imported page cannot access platform cookies, DOM or APIs.
-    const policy=`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">`;
-    const style='<style>.am-toolbar,.am-reply-bar,.am-comment-toggle,.am-colophon{display:none!important}body{padding:16px!important}.am-sheet,.am-doc{padding:0!important}.am-head{padding-inline-end:0!important}</style>';
-    return `<iframe class="authored-flow" title="Loop 整体流程图" sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${esc('<!doctype html>'+policy+style+html.replace(/<!doctype[^>]*>/i,''))}"></iframe>`;
+    const bridgeURL=location.origin+'/flow_bridge.js';
+    const policy=`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${bridgeURL}; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">`;
+    // Keep overview sections stacked when opening the inspector changes the iframe width.
+    const style='<style>.am-toolbar,.am-reply-bar,.am-comment-toggle,.am-colophon{display:none!important}body{padding:16px!important}.am-sheet,.am-doc{padding:0!important}.am-grid{grid-template-columns:minmax(0,1fr)!important}.am-grid>.am-panel{grid-column:1/-1!important}.am-head{padding-inline-end:0!important}[data-loop-node][role=button]{cursor:pointer}[data-loop-node][role=button]:focus-visible{outline:3px solid #446aff;outline-offset:4px}[data-loop-node][aria-pressed=true]{filter:drop-shadow(0 0 4px #446aff)}[data-loop-node][aria-pressed=true]>:is(rect,path,polygon,ellipse){stroke:#446aff;stroke-width:3px}</style>';
+    const nodes=JSON.stringify(Object.entries(item.loop_definition?.nodes||{}).map(([id,n])=>[id,n.label||id]));
+    const bridge=`<script src="${esc(bridgeURL)}" data-nodes="${esc(nodes)}" defer></script>`;
+    // The host's script-src 'self' is inherited by srcdoc. Use a trusted external bridge,
+    // and one viewer policy instead of the exported page's inline-script hash policy.
+    const pageHTML=html.replace(/<!doctype[^>]*>/i,'').replace(/<meta\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi,tag=>/\bhttp-equiv\s*=\s*(?:"content-security-policy"|'content-security-policy'|content-security-policy(?=[\s/>]))/i.test(tag)?'':tag);
+    return `<iframe class="authored-flow" title="Loop 整体流程图" sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${esc('<!doctype html>'+policy+style+bridge+pageHTML)}"></iframe>`;
   }catch(error){return '<p class="view-description">流程图文件无法读取，请更新 docs/flow.html。</p>';}
 }
 
@@ -48,11 +59,10 @@ function mapImplementationLabel(item,id,bindings){
 function mapImplementations(item,id,bindings,action){
   const entry=item.implementations[id],options=implementationOptions(entry),defaultId=defaultImplementation(entry);
   const inherited=!Object.hasOwn(bindings,id),selected=inherited?defaultId:bindings[id];
-  const button=(value,text)=>action==='prepare'?`<button type="button" data-map-choice="${esc(id)}" data-choice="${esc(value)}">${text}</button>`:action==='detail'&&item.key?`<button type="button" data-prepare-choice="${esc(id)}" data-choice="${esc(value)}" data-loop-key="${esc(item.key)}">用此实现准备运行</button>`:'';
-  return `<section class="map-implementations"><h4>已有实现 · ${Object.keys(options).length}</h4><p class="small muted">${action==='prepare'?'选择仅用于本次运行，自动保存。':action==='run'?'这里是 Run 默认选择；已派发任务保留执行时的实现。':'这里展示 Loop 默认值；选择候选将进入本次运行准备。'}</p>${Object.entries(options).sort(([a],[b])=>Number(b===selected)-Number(a===selected)).map(([key,b])=>`<article class="map-candidate ${key===selected?'chosen':''}" data-candidate="${esc(key)}"><div class="candidate-heading"><strong>${esc(b.label || key)}</strong>${key===selected?'<span class="badge completed">当前选用</span>':''}</div><p>${esc(executionLabel(b))}</p>${b.description?`<p>${esc(b.description)}</p>`:''}<small>${esc(key)}${key===defaultId?' · Loop 默认':''}</small><details class="candidate-execution" ${key===selected?'open':''}><summary>查看阶段与转移</summary>${lifecycleMatrix(b)}</details><details><summary>查看命令与配置</summary><pre>${esc(pretty(b.kind==='agent'&&typeof promptDefaults!=='undefined'?{...b,prompt:b.prompt??promptDefaults.task}:b))}</pre></details>${button(JSON.stringify(key),key===selected?'保持此实现':'选用此实现')}</article>`).join('')||'<p class="muted">作者尚未提供实现。可在 Loop 定义中添加。</p>'}${action==='prepare'?`<div class="candidate-options">${button('',inherited?'✓ 沿用 Loop 默认':'恢复 Loop 默认')}${button('null',!inherited&&selected===null?'✓ 暂不选用':'暂不选用')}</div>`:''}${docView('节点 Skill（候选共用）',item.loop_definition.nodes[id].skills?.length?item.loop_definition.nodes[id].skills:null)}</section>`;
+  return `<section class="map-implementations"><h4>已有实现 · ${Object.keys(options).length}</h4><p class="small muted">显示当前默认方案；已派发任务保留执行时的实现。</p>${Object.entries(options).sort(([a],[b])=>Number(b===selected)-Number(a===selected)).map(([key,b])=>`<article class="map-candidate ${key===selected?'chosen':''}" data-candidate="${esc(key)}"><div class="candidate-heading"><strong>${esc(b.label || key)}</strong>${key===selected?'<span class="badge completed">当前选用</span>':''}</div><p>${esc(executionLabel(b))}</p>${b.description?`<p>${esc(b.description)}</p>`:''}<small>${esc(key)}${key===defaultId?' · Loop 默认':''}</small><details class="candidate-execution" ${key===selected?'open':''}><summary>查看阶段与转移</summary>${lifecycleMatrix(b)}</details><details><summary>查看命令与配置</summary><pre>${esc(pretty(b.kind==='agent'&&typeof promptDefaults!=='undefined'?{...b,prompt:b.prompt??promptDefaults.task}:b))}</pre></details></article>`).join('')||'<p class="muted">作者尚未提供实现。可在 Loop 定义中添加。</p>'}${docView('节点 Skill（候选共用）',item.loop_definition.nodes[id].skills?.length?item.loop_definition.nodes[id].skills:null)}</section>`;
 }
 function loopNodePositions(bp,{rowGap=210,maxColumns=3}={}){
-  const ids=Object.keys(bp.nodes),edges=loopRelationships(bp).filter(e=>e.kind!=='recovery'),ordered=[],remaining=new Set(ids);
+  const ids=Object.keys(bp.nodes).filter(id=>!(id==='$flow_agent'&&bp.nodes[id].builtin==='flow_agent')),edges=loopRelationships(bp).filter(e=>e.kind!=='recovery'),ordered=[],remaining=new Set(ids);
   while(remaining.size){
     const ready=[...remaining].filter(id=>!edges.some(e=>e.kind==='dependency'&&e.to===id&&e.from!==id&&remaining.has(e.from)));
     const priority=id=>(edges.some(e=>e.from===ordered.at(-1)&&e.to===id)?100:0)+edges.filter(e=>e.from===id&&remaining.has(e.to)).length;
@@ -104,14 +114,35 @@ function nodeNotices(item,id,config){
 }
 function nodeSignalsHTML(item,id,config){
   const wait=waitSummary(config),notices=nodeNotices(item,id,config),conditional=Object.entries(item.loop_definition.plans||{}).flatMap(([plan,p])=>Object.entries(p.steps).filter(([,s])=>s.node===id&&s.when).map(([step])=>plan+' / '+step));
-  return `<div class="node-signals">${item.loop_definition.nodes[id].routes?.length?`<span class="node-routes">事件触发 · ${item.loop_definition.nodes[id].routes.length} 条规则</span>`:''}${conditional.length?`<span class="node-conditional" title="${esc(conditional.join('；'))}">◇ 含条件安排 · ${conditional.length} 个模板步骤</span>`:''}${wait?`<span class="node-wait" title="${esc(wait)}">${esc(wait)}</span>`:''}${notices.length?`<span class="node-notifies" title="${esc(notices.map(n=>n.stage+' · '+n.event).join('；'))}">◇ ${esc([...new Set(notices.map(n=>n.event||n.stage))].join(' / '))}通知 · ${notices.length}</span>`:''}</div>`;
+  return nodeAxesHTML(item,id,config)+`<div class="node-signals">${item.loop_definition.nodes[id].routes?.length?`<span class="node-routes">事件触发 · ${item.loop_definition.nodes[id].routes.length} 条规则</span>`:''}${conditional.length?`<span class="node-conditional" title="${esc(conditional.join('；'))}">◇ 含条件安排 · ${conditional.length} 个模板步骤</span>`:''}${wait?`<span class="node-wait" title="${esc(wait)}">${esc(wait)}</span>`:''}${notices.length?`<span class="node-notifies" title="${esc(notices.map(n=>n.stage+' · '+n.event).join('；'))}">◇ ${esc([...new Set(notices.map(n=>n.event||n.stage))].join(' / '))}通知 · ${notices.length}</span>`:''}</div>`;
+}
+function nodeExecutorText(config){
+  const kind=config?.kind;
+  const who=({agent:'Agent',command:'脚本',external:'脚本提交 → 外部执行 → 脚本检查',timer:'平台计时',event:'平台等待外部事件',approval:'用户确认',loop:'平台调用子 Loop',mock:'平台模拟'})[kind]||'未选用实现';
+  const executor=config?.dispatch?.agent_id||config?.dispatch?.capability||[config?.agent_cli,config?.executor].filter(Boolean).join(' · ');
+  return who+(executor?' · '+executor:'');
+}
+function nodeAxesHTML(item,id,config,status=undefined){
+  const node=item.loop_definition.nodes[id],routes=node.routes||[],agent=routes.some(r=>r.flow_agent===true);
+  const rules=routes.some(r=>r.plan)||loop_definitionEdges(item.loop_definition).some(e=>e.from===id);
+  const mode=agent?(rules?'mixed':'agent'):(rules?'rules':node.plan_nodes?.length?'task':'none');
+  const kind=config?.kind||'unknown',symbol=({agent:'✦',command:'⌘',external:'↗',event:'◇',timer:'◷',approval:'?',loop:'↳'})[kind]||'?';
+  const who=nodeExecutorText(config);
+  const advancement=({mixed:'平台规则 / 流程 Agent',agent:'流程 Agent',rules:'平台按规则',task:'执行者安排后续任务',none:'未声明后续'})[mode];
+  const details=routes.map(r=>`${r.event}${hasTransitionCondition(r)?'（有条件）':''} → ${r.flow_agent?'流程 Agent':r.plan}`).join('；');
+  const state=status===undefined?(item.tasks?'按具体 Task 查看':'未运行'):status;
+  return `<span class="node-axes"><span class="node-axis"><span class="executor-shape executor-${esc(kind)}" aria-hidden="true">${symbol}</span><span>运行：${esc(who)}</span></span><span class="node-axis advancement advancement-${mode}" title="${esc(details||advancement)}">推进：${esc(advancement)}</span>${state!==null?`<span class="node-axis axis-state">状态：${esc(state)}</span>`:''}</span>`;
+}
+function flowRoutesHTML(bp,id,config){
+  const routes=(bp.nodes[id].routes||[]).filter(r=>r.flow_agent);
+  return routes.length?`<section class="flow-route-details"><h4>内置流程 Agent · ${routes.length} 个决策点</h4>${routes.map(r=>`<article class="flow-route-role"><strong>${esc(r.event)} → 流程 Agent</strong>${transitionRolesHTML(executionRole(config),{kind:'agent',label:'流程 Agent'},{kind:'unknown',label:'由 Agent 选择'},['来源执行','后续判断','目标执行'])}<p class="small muted">入口由状态机匹配事件与条件；触发后由流程 Agent 决定后续安排。</p>${hasTransitionCondition(r)?`<div class="flow-route-condition">触发条件：${transitionConditionHTML(r)}</div>`:''}<details><summary>完整规则 · ${esc(r.id)}</summary><pre>${esc(pretty(r))}</pre></details></article>`).join('')}<p class="small muted">读取 Loop 说明与事件证据，决定后续安排；实际选择、结果和会话保存在来源任务下。</p></section>`:'';
 }
 function noticeScheduleHTML(item,bindings={}){
   const rows=Object.entries(item.loop_definition.nodes).flatMap(([id,n])=>nodeNotices(item,id,chosenImplementation(item,id,bindings)).map(notice=>({...notice,node:n.label||id})));
   return `<details class="notice-schedule" open><summary>通知发生在什么时候 · ${rows.length} 项安排</summary><p class="small muted">按当前选用的实现展示；切换实现会采用对应规则。脚本或 Agent 临时发送的通知见运行记录。</p>${rows.length?`<div class="matrix-scroll"><table><thead><tr><th>节点 / 阶段</th><th>通知 / 询问</th><th>出口</th></tr></thead><tbody>${rows.map(n=>`<tr><td><strong>${esc(n.node)}</strong><small>${esc(n.stage)} · ${esc(n.event)}${n.when?' · 满足条件时':''}</small>${n.when?`<details><summary>条件</summary><pre>${esc(pretty(n.when))}</pre></details>`:''}</td><td>${esc(n.message)}${n.reply?'<small>需要回复；是否等待由等待任务决定</small>':''}</td><td>${esc(n.route==='workspace'?'平台通知区':!n.route||n.route==='default'?'本次 Run 的通知出口':n.route)}</td></tr>`).join('')}</tbody></table></div>`:'<p class="small muted">当前实现没有声明阶段通知。</p>'}<p class="small">平台还会在 Run 完成、Agent 连续失败三次并暂停时通知。实际发送目标由本次 Run 选择。</p></details>`;
 }
 function executionOverviewHTML(item,bindings={},editable=false){
-  return `<div class="execution-overview"><p class="small muted">${item.tasks?'以下展示本 Run 默认选用的实现；实际任务的状态与执行快照在上方运行过程中查看。':'先看平台会做什么，再按需展开完整状态图。'}箭头表示「当前状态 + 报告事件 / 条件 → 下一状态」；节点间的依赖另看任务关系。</p><div class="execution-overview-grid">${Object.entries(item.loop_definition.nodes).map(([id,n])=>{const config=chosenImplementation(item,id,bindings),selected=Object.hasOwn(bindings,id)?bindings[id]:defaultImplementation(item.implementations[id]);return `<section class="execution-overview-node"><h3>${esc(n.label||id)}</h3><p class="small muted">${esc(mapImplementationLabel(item,id,bindings))}</p>${nodeSignalsHTML(item,id,config)}${config?executionResponsibilities(config)+executionRulesSummary(config)+`<details><summary>完整状态图与矩阵</summary>${lifecycleMatrix(config)}</details>`:'<p>尚未选用实现。</p>'}${editable?`<button type="button" data-editor-node="${esc(id)}" ${selected?`data-editor-implementation="${esc(selected)}"`:''}>编辑执行方式与处理规则 ↗</button>`:''}</section>`;}).join('')}</div></div>`;
+  return `<div class="execution-overview"><p class="small muted">${item.tasks?'以下展示本 Run 默认选用的实现；实际任务的状态与执行快照在上方运行过程中查看。':'先看平台会做什么，再按需展开完整状态图。'}箭头表示「当前状态 + 报告事件 / 条件 → 下一状态」；节点间的依赖另看任务关系。</p><div class="execution-overview-grid">${Object.entries(item.loop_definition.nodes).filter(([id,n])=>!(id==='$flow_agent'&&n.builtin==='flow_agent')).map(([id,n])=>{const config=chosenImplementation(item,id,bindings),selected=Object.hasOwn(bindings,id)?bindings[id]:defaultImplementation(item.implementations[id]);return `<section class="execution-overview-node"><h3>${esc(n.label||id)}</h3><p class="small muted">${esc(mapImplementationLabel(item,id,bindings))}</p>${nodeSignalsHTML(item,id,config)}${config?executionResponsibilities(config)+executionRulesSummary(config)+`<details><summary>完整状态图与矩阵</summary>${lifecycleMatrix(config)}</details>`:'<p>尚未选用实现。</p>'}</section>`;}).join('')}</div></div>`;
 }
 function nodeInputRows(bp,id){
   const node=bp.nodes[id],contexts=id===bp.entry?[{step:bp.seed,plan:null,key:null}]:Object.entries(bp.plans||{}).flatMap(([plan,p])=>Object.entries(p.steps||{}).filter(([,s])=>s.node===id).map(([key,step])=>({plan,key,step})));
@@ -124,15 +155,30 @@ function nodeInputRows(bp,id){
 }
 function nodeInputsHTML(bp,id,editable=false){
   const rows=nodeInputRows(bp,id);if(!Object.keys(bp.nodes[id].inputs||{}).length)return '';
-  return `<section class="node-input-sources"><h4>输入从哪里来</h4>${rows.length?rows.map(row=>`<div class="input-source ${row.missing?'input-gap':''}"><strong>${esc(row.port)}</strong><span>${esc(row.text)}</span><small>${esc(row.plan?row.plan+' / '+row.key:'入口输入')}</small>${editable?`<button type="button" data-input-location="${esc(JSON.stringify(row.plan?['plans',row.plan,'steps',row.key,'inputs',row.port]:['nodes',id,'inputs',row.port]))}">定位输入</button>`:''}</div>`).join(''):'<p class="small muted">尚未加入构建模板；创建具体任务时需提供这些输入。</p>'}</section>`;
+  return `<section class="node-input-sources"><h4>输入从哪里来</h4>${rows.length?rows.map(row=>`<div class="input-source ${row.missing?'input-gap':''}"><strong>${esc(row.port)}</strong><span>${esc(row.text)}</span><small>${esc(row.plan?row.plan+' / '+row.key:'入口输入')}</small></div>`).join(''):'<p class="small muted">尚未加入构建模板；创建具体任务时需提供这些输入。</p>'}</section>`;
 }
-function nodeStateHTML(item,id,config){
-  const bp=item.loop_definition,edges=loopRelationships(bp,effectiveFallback(item));
+// The selected flow node is the single source of inspector context. Candidate browsing is read-only.
+function nodeStateInspectorHTML(item,id,candidate){
+  const options=implementationOptions(item.implementations[id]);
+  const selected=candidate??defaultImplementation(item.implementations[id])??Object.keys(options)[0];
+  const config=options[selected],node=item.loop_definition.nodes[id];
+  const refs=[...new Set([...(config?.command||[]),...(config?.observe||[])].map(x=>x.replace(/^\.\//,'')))].filter(path=>(item.assets||[]).some(a=>a.path===path));
+  return `<section class="state-task-context"><strong>“${esc(node.label||id)}”任务的执行规则</strong><details><summary>任务说明与事件来源</summary><p class="small muted">${item.tasks?'这里展示节点规则，具体 Task 的参数与执行记录在运行列表中查看。':'定义视图：描述该节点生成的任务，尚不是某次实际执行。'}</p><p>${esc(node.instructions||'作者尚未填写任务职责。')}</p><p class="small muted">自定义事件由业务实现判断并报告；“附加条件”是平台收到事件后再检查的条件。具体阈值以脚本、Skill 及它们引用的实现为准。</p>${refs.map(path=>`<button type="button" data-open-scheme-asset="${esc(path)}">查看 ${esc(path)}</button>`).join('')}</details></section>${config?`<p class="state-implementation-caption">规则对应方案：<strong>${esc(config.label||selected)}</strong>${selected===defaultImplementation(item.implementations[id])?' · 默认方案':''}</p>`:''}${config?nodeSignalsHTML(item,id,config):''}${nodeStateHTML(item,id,config,false)}`;
+}
+function relationshipRolesHTML(item,edge,selectedId,config){
+  const implementation=id=>id===selectedId?config:chosenImplementation(item,id,item.settings?.bindings||{});
+  const source=executionRole(implementation(edge.from)),target=executionRole(implementation(edge.to));
+  const decision=edge.kind==='planning'?{...source,label:source.kind==='agent'?'Agent 显式安排':source.kind==='script'||source.kind==='external'?'脚本显式安排':'执行者显式安排'}:{kind:'machine',label:'状态机'};
+  return transitionRolesHTML(source,decision,target,['来源执行','推进判断',edge.to===selectedId?'目标执行':'目标执行（默认）']);
+}
+function nodeStateHTML(item,id,config,matrixOpen=true){
+  const bp=item.loop_definition,fallback=effectiveFallback(item),edges=loopRelationships(bp,fallback);
+  const context={taskLabel:bp.nodes[id]?.label||id,fallback:fallback?(bp.nodes[fallback]?.label||fallback):null,fallbackNode:bp.nodes[fallback]?fallback:null};
   const label=n=>bp.nodes[n]?.label||n;
-  const cards=rows=>rows.map(e=>{const [from,to,condition]=relationshipText(e),tone=e.kind==='recovery'?'failure':e.kind==='planning'?'other':'normal';return `<article class="state-relation tone-${tone}"><span class="transition-tag tone-${tone}">${{dependency:'依赖就绪',routing:'事件创建任务',planning:'可安排任务',recovery:'异常兜底'}[e.kind]}</span><strong>${esc(label(e.from))} → ${esc(label(e.to))}</strong><p>${esc(from)} → ${esc(to)}</p><small>${esc(condition)}</small><details><summary>关系依据</summary><p>${esc(e.details.join('；'))}</p></details></article>`;}).join('');
-  const incoming=edges.filter(e=>e.to===id&&e.from!==id),outgoing=edges.filter(e=>e.from===id&&e.to!==id),self=edges.filter(e=>e.from===id&&e.to===id);
-  const section=(direction,title,rows,empty)=>`<section class="state-direction" data-state-panel="${direction}" hidden><h4>${title}<span>${rows.length} 条关系</span></h4>${cards(rows)||`<p class="small muted">${empty}</p>`}</section>`;
-  return `<div class="node-state-view"><div class="state-direction-tabs" role="group" aria-label="转移方向"><button type="button" data-state-direction="internal" aria-pressed="true">↺ 本节点内</button><button type="button" data-state-direction="outgoing" aria-pressed="false">↗ 转出本节点 · ${outgoing.length}</button><button type="button" data-state-direction="incoming" aria-pressed="false">↙ 转入本节点 · ${incoming.length}</button></div><section class="state-internal" data-state-panel="internal"><h3>↺ 本节点内</h3>${self.length?`<details class="state-self"><summary>再次安排本节点 · ${self.length} 条关系（创建新 Task）</summary>${cards(self)}</details>`:''}${config?lifecycleMatrix(config,undefined,true):'<p class="muted">该节点尚未配置实现。</p>'}</section>${section('outgoing','↗ 从本节点转出',outgoing,'未声明此节点到其他节点的关系。')}${section('incoming','↙ 转入本节点',incoming,'未声明其他节点到此处的关系。')}<p class="small muted" data-state-panel="relations-note" hidden>转入／转出为定义中声明的任务关系：依赖推进已有任务，事件或显式安排可创建新任务；不是一次执行内的状态跳转。运行中由 Agent / 脚本临时安排的关系不在此推断。</p></div>`;
+  const cards=rows=>rows.map(e=>{const [from,to,condition]=relationshipText(e),tone=e.kind==='recovery'?'failure':e.kind==='planning'?'other':'normal';return `<article class="state-relation tone-${tone}"><span class="transition-tag tone-${tone}">${{dependency:'依赖就绪',routing:'事件创建任务',planning:'可安排任务',recovery:'异常兜底'}[e.kind]}</span><strong>${esc(label(e.from))} → ${esc(label(e.to))}</strong>${relationshipRolesHTML(item,e,id,config)}<p>${esc(from)} → ${esc(to)}</p>${e.from===e.to?`<p>${['planning','routing'].includes(e.kind)?'再次安排同一节点，创建新 Task。':'同一节点的不同 Task 之间的依赖。'}这不是当前 Task 的重试。</p>`:''}<small>${esc(condition)}</small><details><summary>关系依据</summary><p>${esc(e.details.join('；'))}</p></details></article>`;}).join('');
+  const incoming=edges.filter(e=>e.to===id&&e.from!==id),outgoing=edges.filter(e=>e.from===id);
+  const section=(direction,title,rows,empty,extra='')=>`<section class="state-direction" data-state-panel="${direction}" hidden><h4>${title}<span>${rows.length} 条关系</span></h4>${cards(rows)||`<p class="small muted">${empty}</p>`}${extra}</section>`;
+  return `<div class="node-state-view"><div class="state-direction-tabs" role="group" aria-label="转移方向"><button type="button" data-state-direction="internal" aria-pressed="true">执行状态</button><button type="button" data-state-direction="outgoing" aria-pressed="false">↗ 转出关系 · ${outgoing.length}</button><button type="button" data-state-direction="incoming" aria-pressed="false">↙ 转入关系 · ${incoming.length}</button></div><section class="state-internal" data-state-panel="internal"><h3>执行状态</h3>${config?lifecycleMatrix(config,undefined,matrixOpen,context):'<p class="muted">该节点尚未配置实现。</p>'}</section>${section('outgoing','↗ 从本节点转出',outgoing,'未声明到固定业务节点的关系。')}${flowRoutesHTML(bp,id,config)}${section('incoming','↙ 转入本节点',incoming,'未声明其他节点到此处的关系。',nodeInputsHTML(bp,id))}<p class="small muted" data-state-panel="relations-note" hidden>转入／转出为定义中声明的任务关系：依赖推进已有任务，事件或显式安排可创建新任务；不是一次执行内的状态跳转。运行中由 Agent / 脚本临时安排的关系不在此推断。</p></div>`;
 }
 document.addEventListener('click',event=>{
   const button=event.target.closest('[data-state-direction]');if(!button)return;
@@ -140,9 +186,10 @@ document.addEventListener('click',event=>{
   root.querySelectorAll('[data-state-direction]').forEach(b=>b.setAttribute('aria-pressed',String(b===button)));
   root.querySelectorAll('[data-state-panel]').forEach(p=>p.hidden=p.dataset.statePanel==='relations-note'?direction==='internal':p.dataset.statePanel!==direction);
 });
-function nodeFlowHTML(bp,id,edges,editable=false){
+function nodeFlowHTML(item,id,edges,editable=false,config=chosenImplementation(item,id,item.settings?.bindings||{})){
+  const bp=item.loop_definition;
   const related=edges.filter(e=>e.from===id||e.to===id),label=n=>bp.nodes[n]?.label||n;
-  return `<section class="node-flow"><h4>任务关系与推进</h4>${related.length?related.map(e=>{const [from,to,condition]=relationshipText(e);return `<div class="flow-relation ${e.kind}" data-related-from="${esc(e.from)}" data-related-to="${esc(e.to)}" data-related-kind="${esc(e.kind)}"><strong>${esc(label(e.from))} → ${esc(label(e.to))}</strong><span>${esc(from)} → ${esc(to)}</span><small>${esc(condition)}</small><small>${esc(e.details.join('；'))}</small></div>`;}).join(''):'<p class="small muted">未声明固定关联；具体工作按运行中明确安排的任务推进。</p>'}${nodeInputsHTML(bp,id,editable)}</section>`;
+  return `<section class="node-flow"><h4>任务关系与推进</h4>${related.length?related.map(e=>{const [from,to,condition]=relationshipText(e);return `<div class="flow-relation ${e.kind}" data-related-from="${esc(e.from)}" data-related-to="${esc(e.to)}" data-related-kind="${esc(e.kind)}"><strong>${esc(label(e.from))} → ${esc(label(e.to))}</strong>${relationshipRolesHTML(item,e,id,config)}<span>${esc(from)} → ${esc(to)}</span><small>${esc(condition)}</small><small>${esc(e.details.join('；'))}</small></div>`;}).join(''):'<p class="small muted">未声明固定关联；具体工作按运行中明确安排的任务推进。</p>'}${flowRoutesHTML(bp,id,config)}${nodeInputsHTML(bp,id,editable)}</section>`;
 }
 function loopProgressHTML(item,fallbackOverride,bindings=item.settings?.bindings||{}){
   const bp=item.loop_definition,fallback=effectiveFallback(item,fallbackOverride),configured=typeof fallback==='string'&&Object.hasOwn(bp.nodes,fallback),edges=loopRelationships(bp,fallback),label=id=>bp.nodes[id]?.label||id;
@@ -152,11 +199,11 @@ function loopProgressHTML(item,fallbackOverride,bindings=item.settings?.bindings
   return `<details class="loop-progress"><summary>推进条件与异常处理</summary><div class="flow-track normal"><span>任务已安排</span><b>→</b><span>等待输入 / 前置任务</span><b>→</b><span>就绪，等待执行条件</span><b>→</b><span>执行并报告结果</span><b>→</b><span>已有下游任务重新检查就绪条件</span></div><p class="small muted">正常依赖尚未就绪则等待；缺失来源等无法推进的情况会列为异常。暂停点未放行、同一任务仍有执行者或并发名额不足时暂不派发。下一轮任务由节点声明的触发规则自动生成，也可由 Agent 或脚本主动安排。</p><div class="flow-track recovery"><span>执行内恢复后仍未解决的异常 / 明确转交 Agent</span><b>→</b><span>${configured?'兜底：'+esc(label(fallback)):'异常待处理 · 未启用自动兜底'}</span><b>→</b><span>问题处理后，恢复受影响的工作</span></div>${configured?`<div class="flow-track retry"><span>Agent 退出，异常仍存在</span><b>↻</b><span>按权限与限额再唤醒兜底</span><b>→</b><span>连续失败 3 次仍异常：暂停</span><b>→</b><span>尝试通知用户</span></div><p class="small muted">其他正常支线可继续推进。首次失败计入三次；支线交给兜底后沿用失败链。同一任务的旧进程未确认停止时等待处理，不并发接管。${item.tasks?` 当前失败计数：${failures}。`:''}</p>`:'<p class="small muted">问题保留在 Timeline，等待用户或已有授权 Agent 处理；不会自动选择其他 Agent。</p>'}<div class="flow-notice"><span>通知出口：${esc(outlet==='default'?'启动时由使用者选择':outlet==='workspace'?'平台通知区':notificationChannels.channels[outlet]?.label||outlet)}</span>${notice?`<strong class="${notice.status==='fault'?'issue':''}">最近失败暂停通知：${esc(noticeLabel[notice.status]||notice.status)}</strong>`:''}</div><details class="loop-transition-table"><summary>任务关系说明 · ${edges.length} 条关系</summary><div class="matrix-scroll"><table><thead><tr><th>来源 → 目标</th><th>触发与目标状态</th><th>条件</th></tr></thead><tbody>${edges.map(e=>{const [from,to,condition]=relationshipText(e);return `<tr><td>${esc(label(e.from))} → ${esc(label(e.to))}</td><td>${esc(from)} → ${esc(to)}</td><td>${esc(condition)}<small>${esc(e.details.join('；'))}</small></td></tr>`;}).join('')||'<tr><td colspan="3">尚未声明节点关系。</td></tr>'}</tbody></table></div></details><p class="small muted">运行结束：Timeline 的完成条件成立，或收到终止信号，由 Engine 进入终态；没有待执行任务本身不代表完成。</p></details>`;
 }
 function loopGraphHTML(item,{bindings={},focus='',action='detail',fallbackNode}={}){
-  const bp=item.loop_definition,fallback=effectiveFallback(item,fallbackNode),edges=loopRelationships(bp,fallback),ids=Object.keys(bp.nodes);
+  const bp=item.loop_definition,fallback=effectiveFallback(item,fallbackNode),edges=loopRelationships(bp,fallback),ids=Object.keys(bp.nodes).filter(id=>!(id==='$flow_agent'&&bp.nodes[id].builtin==='flow_agent'));
   if(!ids.length)return '<p class="muted">还没有节点。</p>';
   const dependencyReach=(from,to,seen=new Set())=>from===to||(!seen.has(from)&&(seen.add(from),edges.some(e=>e.kind==='dependency'&&e.from===from&&dependencyReach(e.to,to,seen))));
   const redundant=e=>e.kind==='planning'&&edges.some(other=>other!==e&&other.kind==='planning'&&other.from===e.from&&other.to!==e.to&&dependencyReach(other.to,e.to)&&(!dependencyReach(e.to,other.to)||edges.indexOf(other)<edges.indexOf(e)));
-  const positions=loopNodePositions(bp,{rowGap:250});for(const p of positions.values())p.height=164;const ordered=[...positions.keys()],width=Math.max(400,...[...positions.values()].map(p=>p.x+260)),height=Math.max(320,...[...positions.values()].map(p=>p.y+230));
+  const positions=loopNodePositions(bp,{rowGap:350});for(const p of positions.values())p.height=264;const ordered=[...positions.keys()],width=Math.max(400,...[...positions.values()].map(p=>p.x+260)),height=Math.max(320,...[...positions.values()].map(p=>p.y+330));
   const label=id=>bp.nodes[id].label || id;
   const uid='loop-map-'+(++loopGraphHTML.serial);
   const paths=edges.map((e,i)=>{
@@ -166,7 +213,7 @@ function loopGraphHTML(item,{bindings={},focus='',action='detail',fallbackNode}=
   const cards=ordered.map(id=>{const p=positions.get(id),n=bp.nodes[id],tasks=Object.values(item.tasks || {}).filter(t=>t.spec.node===id),attempts=(item.executions || []).filter(e=>e.node===id),kind=chosenImplementation(item,id,bindings)?.kind,repeat=edges.some(e=>e.from===id&&e.repeats);
     return `<button type="button" class="map-node ${['timer','event','approval'].includes(kind)?'is-wait':''}" data-map-node="${esc(id)}" ${action==='run'?`data-node="${esc(id)}"`:''} style="left:${p.x}px;top:${p.y}px" aria-pressed="false"><small>${id===fallback?'异常兜底':id===bp.entry?'入口':repeat?'↻ 可再次安排工作':kindNames[kind] || '待接入'}</small><strong>${esc(label(id))}</strong><span class="map-current-implementation" title="${esc(mapImplementationLabel(item,id,bindings))}">${esc(mapImplementationLabel(item,id,bindings))}</span>${nodeSignalsHTML(item,id,chosenImplementation(item,id,bindings))}${action==='run'?`<span>${tasks.length?`${tasks.length} 项任务 · ${attempts.length} 次执行`:'未安排 Task'}</span>`:''}</button>`;
   }).join('');
-  const details=ordered.map(id=>`<div data-map-details="${esc(id)}" hidden><div class="map-inspector-heading"><strong>${esc(label(id))}</strong><button type="button" data-map-close aria-label="关闭节点详情">×</button></div><div class="node-view-switch" aria-label="节点详情视图"><button type="button" data-node-view="relations">任务关系</button><button type="button" data-node-view="execution">实现与生命周期</button></div><div data-node-panel="relations">${nodeFlowHTML(bp,id,edges)}</div><div data-node-panel="execution">${mapImplementations(item,id,bindings,action)}</div></div>`).join('');
+  const details=ordered.map(id=>`<div data-map-details="${esc(id)}" hidden><div class="map-inspector-heading"><strong>${esc(label(id))}</strong><button type="button" data-map-close aria-label="关闭节点详情">×</button></div><div class="node-view-switch" aria-label="节点详情视图"><button type="button" data-node-view="relations">任务关系</button><button type="button" data-node-view="execution">实现与生命周期</button></div><div data-node-panel="relations">${nodeFlowHTML(item,id,edges,false,chosenImplementation(item,id,bindings))}</div><div data-node-panel="execution">${mapImplementations(item,id,bindings,action)}</div></div>`).join('');
   return `<section class="loop-map" data-map-focus="${esc(focus)}"><div class="loop-map-heading"><div><strong>Loop 的任务关系与状态机</strong><p class="small muted">关系图表达任务依赖、事件触发和可安排范围；执行状态机展示真正的状态转移。</p><div class="graph-layer-switch"><button type="button" data-graph-layer="relations" aria-pressed="true">任务关系</button><button type="button" data-graph-layer="states" aria-pressed="false">执行状态机</button></div></div><label class="map-expand"><input type="checkbox" data-map-expand>全部安排连线</label></div><div class="map-legend"><span class="dependency">实线 · 数据 / 先后依赖</span><span class="routing">绿色实线 · 事件触发模板任务</span><span class="planning">虚线 · 可安排新任务（非自动跳转）</span><span class="repeat">↻ 再次安排该节点的新任务</span><span class="recovery">红色虚线 · 未解决异常 → 已配置兜底</span></div><div class="map-body"><div class="loop-map-scroll"><div class="loop-map-canvas" style="width:${width}px;height:${height}px"><svg width="${width}" height="${height}"><defs>${['dependency','planning','routing','recovery'].map(k=>`<marker id="${uid}-${k}" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7" fill="${k==='routing'?'#368977':k==='recovery'?'#bd705f':k==='planning'?'#9564cf':'#7293bb'}"/></marker>`).join('')}</defs>${paths}</svg>${cards}</div></div><aside class="map-relations"><p data-map-help>点击连线查看推进条件，选中节点查看输入来源和候选实现。循环安排创建新 Task；重试保留同一 Task，在执行记录中查看。</p>${details}</aside></div>${executionOverviewHTML(item,bindings)}${noticeScheduleHTML(item,bindings)}${loopProgressHTML(item,fallback,bindings)}</section>`;
 }
 loopGraphHTML.serial=0;

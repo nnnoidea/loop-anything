@@ -1,217 +1,220 @@
-# 接单平台与团队通信
+# Receiving platforms and team communication
 
-派单、查结果和追问统一使用独立 `loop-anything-dispatch` Skill。它可单独安装，普通调用不依赖本机平台服务；本文件说明接单配置及 Loop 集成。托管节点通过原有限定入口提交，由平台调用同一派单实现；不要自建 NAS 队列或表格收发脚本。
+Use the standalone loop-anything-dispatch Skill for dispatch, result lookup, and follow-up. It installs independently; ordinary callers need no local platform service. This reference covers receiving configuration and Loop integration. Managed nodes submit through their existing scoped entry, which invokes the same dispatch implementation. Do not build NAS queues or table send/receive scripts.
 
-## 当前连接的是谁
+## Which machine is connected
 
-先确认服务支持 `machine_identity` 能力；旧服务只有 instance_id 时，它仍只是工作区寻址标识，需要升级才能提供独立机器身份，不要自行生成替代值。
+First confirm the service supports machine_identity. On an old service with only instance_id, that value is a workspace address, not an independent machine identity. Upgrade rather than inventing a replacement.
 
-直接调用 `communication_status`，读取返回的 `self`；平台唤醒节点、具名外援或限定入口 Agent 时，上下文也提供同样的字段：
-
-```json
-{"self":{"machine_id":"machine-完整UUID","machine_name":"训练服务器","workspace_id":"工作区ID"}}
-```
-
-`self` 指当前连接的平台所在机器及工作区。连接远端平台时，它不一定是发出工具调用的电脑；远端外援的唤醒上下文标识实际执行端，不是任务来源。无需自己找 MAC、读数据库或从聊天记忆猜 ID。
-
-机器 UUID 缺失时按需生成并保存，复用同一平台用户环境的多个工作区共享 machine_id。每个工作区独立寻址；顶层 `instance_id` 是 `self.workspace_id` 的兼容别名，发请求继续使用成员返回的 instance_id 和 agent_id，不把 machine_id 填进 instance_id。旧工作区可能保留 machine- 前缀的历史 instance_id，前缀不改变它的工作区含义。
-
-`communication_config(operation=identity, name=...)` 修改显示名称，不改变 ID。重启、升级及正常移动数据库保留身份。发现副本或机器归属不符时，`identity_conflict` / `identity_error` 给出原因；明确为副本配置 `regenerate=true` 才建立新工作区身份。复制过来的 Run 和请求保留为只读历史，新工作应创建新 Run，不接管原执行。无机器身份的旧库首次升级如果原主机不同，需明确处理归属，不能猜测为改名。
-
-## 首次组网：一个团队链接
-
-接单机器安装并运行平台，然后调用：
+Call communication_status and read self. Awakening contexts for nodes, named helpers, and scoped agents provide the same fields:
 
 ```json
-{"operation":"team","link":"飞书 Base 链接或本机 NAS 团队目录"}
+{"self":{"machine_id":"machine-FULL_UUID","machine_name":"Training server","workspace_id":"WORKSPACE_ID"}}
 ```
 
-`communication_config` 保留已加入连接，返回 `team.id`，`configuration.default_team` 表示当前默认选择：启用的 Base 优先，没有 Base 才用 NAS；后来加入 NAS 不会覆盖 Base。未单独绑定的新 Run 固定这个选择；既有 Run 不改绑，人工绑定与显式解绑也不会被默认值覆盖。Base 断网、权限不足或找不到目标时不会转 NAS 重派。operation=leave 停用指定团队的新接单/默认选择，已承接工作沿原介质收尾。NAS 首次创建加 `create:true`，其他机器路径可不同但应指向同一目录。Base 使用本机已认证的 `lark-cli`（默认用户身份，可传 `identity:"bot"` 或自定义 `lark_cli` 路径），内部表和字段自动管理。链接不包含权限，实际需要所用身份能读写这个 Base。无需逐项复制表 ID。旧 `space/group` 配置继续兼容。 Base 表、字段、记录与视图统一复用新版 `lark-cli base +…`，已验证 CLI 1.0.98，按键/收件箱用 `--filter-json` 精确筛选；旧 CLI 不支持时执行 `lark-cli update`。不申请旧版 `bitable:app` 或回退旧接口；认证和实际缺失的新版权限由 CLI 报错说明，不增加权限预检。既有表、团队 ID、请求和等待恢复关系保留。
+self identifies the connected platform's machine/workspace, not necessarily the computer making the tool call. A remote helper's context identifies its actual execution host, not the source. Do not find MAC addresses, read databases, or guess IDs from chat memory.
 
-接着由用户确认本机 Agent 的主要任务、配置本机 CLI / cwd / resume_command，把返回的团队 ID 放入 `agent.groups`。加入团队本身不会公开 Agent，也不会启动模型。`communication_status` 查看成员，`communication_workspace(group_id=...)` 返回可转交的团队链接。仅派单的人安装独立派单 Skill，用同一个链接执行 join 即可。
+A missing machine UUID is generated and persisted on demand. Workspaces using the same platform user environment share machine_id but have separate addresses. Top-level instance_id aliases self.workspace_id for compatibility. Address requests with the directory's instance_id and agent_id, not machine_id in place of instance_id. Old workspace IDs may retain a machine- prefix; the prefix does not change their meaning.
 
-Base 收发至少间隔 15 秒，纯心跳至少间隔 60 秒、离线阈值至少 180 秒；纯心跳只修改已有成员记录的时间字段，不新增心跳行、不重复写目录。目录内容变化时才发布新版。不要把几秒无回应当成失败。接单前固定唯一 Agent 与机器，接收方不再等发起端在线发送 grant。旧在途 claim/grant 请求继续处理。
+communication_config(operation=identity,name=...) changes the display name without changing IDs. Restarts, upgrades, and ordinary database relocation preserve identity. identity_conflict/identity_error explains copies or host mismatches. Explicit regenerate=true for a copy establishes a new workspace identity. Copied Runs/requests remain read-only history; create new Runs instead of taking over original executions. A legacy database first acquiring machine identity on a different host needs explicit ownership resolution, not an assumed rename.
 
-## 配置（平台所有者）
+## First connection: one team link
 
-注册或重新加入时，用 `communication_workspace({"registered_agents":true})` 查看本机已知工作区的已有注册。返回名称、主要任务、agent_id、归属工作区/database、命令程序/cwd、已绑定团队及启用状态，不读取团队网络或请求历史，也不启动其他工作区。离线或停用不表示没注册；`unavailable_workspaces` 非空表示有登记未能读取，不要宣称本机没有已有注册。
+Install/run the receiving platform, then call communication_config:
 
-结合用户目标比较名称和职责；发现相似条目时，展示相关信息，请用户选择复用、修改或新增。用户已经明确选择时直接照做，不重复确认。不要求当前对话辨认自己是不是某个具名 Agent，不做相似度阈值或同名禁止。当前工作区复用/修改使用原 agent_id；确实新增时省略 agent_id，让平台生成独立记录，即使显示名称相同也可以。其他工作区的记录以返回的归属为准；复用它的既有团队地址即可派单，若要修改需连接其所属工作区，不将那个 ID 填进当前工作区冒充更新。工作区保留运行归属，内部寻址组合仍是 workspace_id + agent_id。
+```json
+{"operation":"team","link":"FEISHU_BASE_LINK_OR_LOCAL_NAS_TEAM_DIRECTORY"}
+```
 
-用 `communication_config` 配置本机具名 Agent 的名称、能力、CLI argv、cwd、接单上限及开放范围：
+Existing connections remain. The result includes team.id; configuration.default_team reports the default: an enabled Base takes precedence, with NAS used only when no Base is enabled. Joining NAS later does not replace Base. New unbound Runs pin this choice; existing Runs, manual bindings, and explicit unbinding are not overridden. Base network/permission/target failures do not redispatch over NAS. operation=leave disables new acceptance/default selection for that team; accepted work finishes through its original transport.
 
-- **开放群组前先询问用户主要任务**，将用户回答整理成简短 description（适合什么任务、需要什么输入、返回什么结果），并确认开放群组。只有用户已明确确认该说明和开放范围，才能传顶层 `task_confirmed: true`；不要根据模型/CLI 或 Agent 自拟文字代替用户回答。说明修改或新增开放群组须重新确认。旧配置缺确认记录会显示待确认并停止接收新群组任务，已承接工作保留。
-- `operation: agent`：`agent_id` 可省略生成；`agent` 包含 name、description、capabilities（字符串数组）、local、enabled、groups、capacity、implementation。implementation 使用现有 `kind: agent` 命令契约。
-- `operation: space`：path 是已挂载的共享空间目录；首次可给 name。保存空间映射，不加入或公开 Agent。
-- `operation: group`：可使用上面的 space_id 发现流程；兼容旧版直接 path。path 是本机挂载目录；已有目录群组直接加入，首次创建需 `create: true`。各机器路径可以不同，但必须指向同一共享群组。
-- `operation: leave`：group_id。停止该组接新任务；已有执行、通信回执和历史仍保留。
-- `operation: probe`：group_id。本机写入、读回并清理测试文件；不将此结果当作双机 NAS 验收。
-- `operation: bind_loop`：loop_key 或 run_id，以及 group_id。Loop 默认在新 Run 创建时固定；Run 覆盖只影响新请求。
-- `operation: context`：创建/更新 context_id 与默认 group_id，供无 Loop 的对话使用。
-- `operation: group_notifications`：在实际发送机器上，为 group_id 选择本地 notification_route 和 notification_level；仅绑定当前机器的入口，不覆盖其他机器。替换/停用需传本机当前 binding_id，enabled=false 只停用本机入口。具体流程见下节。
+For a new NAS team add create:true. Mount paths may differ but must identify the same directory. Base uses the local authenticated lark-cli (user identity by default; identity:"bot" or a custom lark_cli path is optional). Internal tables/fields are managed automatically. A link grants no access; the selected identity must be able to read/write that Base. Do not copy individual table IDs. Legacy space/group configuration remains compatible. Tables, fields, records, and views use newer `lark-cli base +…` commands (verified with CLI 1.0.98); keys/inboxes use precise --filter-json queries. If an older CLI lacks them, run lark-cli update. Do not request legacy bitable:app or fall back to old APIs. Let actual CLI authentication/new-scope errors explain missing access, without permission preflight checks. Existing tables, team IDs, requests, and wait/resume associations remain.
 
-普通节点 CLI 和正在运行的 session 不会自动注册。local 开关与 groups 开放范围分开；本机调用无需 NAS。命令由执行机器所有者配置，请求不能提供任意启动命令。组目录是可信内部传输，不是多租户认证系统。
+Next, have the user confirm the local agent's main duties; configure CLI/cwd/resume_command and put the returned team ID in agent.groups. Joining alone neither publishes an agent nor starts a model. communication_status lists members; communication_workspace(group_id=...) returns a shareable team link. Send-only users install the dispatch Skill and join with that link.
 
-## 调用外援
+Base send/receive intervals are at least 15 seconds; heartbeat-only updates at least 60 seconds, with an offline threshold of at least 180 seconds. Heartbeats update existing member timestamps without new rows or repeated directory writes; directory content changes publish a new version. A few seconds without response is not failure. Dispatch fixes one agent/machine before acceptance; receivers no longer await a second grant from an online sender. Legacy in-flight claim/grant requests remain supported.
 
-使用独立 `loop-anything-dispatch` Skill；下列工具是托管 Loop 与兼容客户端的同义入口，均复用相同发布协议。
+## Configuration by the platform owner
 
-1. `communication_status` 查看显式开放的本机成员和群组目录，无需任务/请求 token。Loop 调用带 run_id；此时只显示其群组范围。查询不授权启动工作。
-2. `request_assistance` 传 `location: local` 和 agent_id；或 `location: group`、明确 group_id 和 agent_id/capability。无默认群组时先选择，不跨组广播；同名目标以稳定 ID 消歧。
-3. 提供 message、需要分享的 context，以及可选 result_schema（默认 object）。context 顶层须为 JSON 对象，内部业务字段可为文字、数组、null 等 JSON 值；例如 `{"task":"查找相关论文"}` 合法，不要求把 context.task 包装成平台 Task 对象。节点内调用带 `source: {run_id, task_id}`；托管节点使用当前操作 token，普通工作区操作可省略，由平台处理。独立请求可不传 source，平台创建内置协作 Run，调用方无需成为接单成员；已有协作继续传 collaboration_id。若已用 start_collaboration 承接当前 Agent，则沿用其 source 和 token。
-4. 返回精简 request 摘要、request.collaboration（独立协作的 run_id/task_id）、request.id 和兼容旧客户端的 request_token。之后 `read_assistance(request_id)` 默认只取状态、结构化结果和最近通知状态，不附带日志、原始上下文及完整历史；读取不会启动 Agent。
-5. **pending/offered 表示仍在等待接单，不能判断为无人接单。** 默认接单期限为 300 秒，接收端首次接受前校验 deadline；几秒钟无接单回执、目录暂时无成员或几次查询仍 pending，都不能作为取消/重建请求的依据。可以继续其他工作，或用 wait_assistance 挂起；非托管外部会话可结束本轮对话并保留请求，等待通知。只有平台返回 unavailable 等终态才按该结果处理；用户撤回或任务已无需要时仍可显式取消，并可填写 reason。
-6. `control_assistance` 可 cancel、input、followup。followup 默认要求继续准确记录的 session；明确 `resume: false` 才新建。取消已发出不等于远端已经停止。
+Before registration/rejoining, communication_workspace({"registered_agents":true}) reads registrations across known local workspaces. It returns name, duties, agent_id, owning workspace/database, command program/cwd, teams, and enabled state. It does not read team networks/request history or start other workspaces. Offline/disabled does not mean unregistered. Nonempty unavailable_workspaces means some registrations could not be read; do not claim no registrations exist.
 
-旧在途 claim/grant 请求的接单拒绝会返回 selection_decision：包含 reason、发起端当时的 source_state、deadline 以及可用的取消原因或已分配执行者。not_selected 本身不等于“被取消”；旧版本空回执仍需查发起端详情。
+Compare names/duties against the user's goal. Show similar entries and let the user choose reuse, edit, or addition; follow an already explicit choice without asking again. The current chat need not identify itself as a named agent. Do not impose similarity thresholds or ban duplicate names. Reuse/edit in the current workspace uses the existing agent_id; a genuinely new registration omits it so the platform allocates a distinct record, even with the same display name. Other-workspace entries belong to the returned owner: dispatch to their existing team address, or connect to that workspace to edit them. Do not paste their IDs into this workspace as if updating them. Internal addressing remains workspace_id + agent_id.
 
-对话默认群组通过 context_id 引用，单次 group_id 可覆盖，但不能绕过 Run 群组和执行范围。没有原生 session ID 也可以发送普通协助请求。可信工作区可按 request_id 读取或控制请求；worker 写回必须使用本次执行身份。
+communication_config configures local names, capabilities, CLI argv, cwd, capacity, and exposure:
 
-目录提供 instance_id 和 agent_id，跨机器同名或自定义 ID 重复时一并指定，不能猜测目标。外援执行端可通过限定入口的 `read_context` 按需读取关联 Loop 和 Task 上下文；这是只读授权，不授予原节点结果写入权。独立请求没有 Loop 时返回请求方提供的上下文。
+- **Ask the user for the agent's main duties before exposing it to a group.** Turn the answer into a short description of suitable tasks, required inputs, and delivered results; confirm the allowed groups. Set top-level task_confirmed:true only after the user confirms duties/scope. Do not substitute model/CLI names or an agent-invented description. Changed descriptions or newly allowed groups require confirmation. Legacy configurations lacking confirmation show pending confirmation and stop accepting new group work; accepted work remains.
+- operation:agent accepts optional agent_id; agent contains name, description, capabilities (string array), local, enabled, groups, capacity, and implementation, using the existing kind:agent command contract.
+- operation:space saves a mounted shared-space path, optionally name on first use. It does not join a group or publish agents.
+- operation:group accepts the space_id discovery flow or legacy direct path. Existing groups join directly; creating one requires create:true. Local mount paths may differ but must point to the same group.
+- operation:leave takes group_id and stops new acceptance there; executions, receipts, and history remain.
+- operation:probe takes group_id and writes/reads/cleans a local test file. This is not two-machine NAS acceptance.
+- operation:bind_loop takes loop_key or run_id plus group_id. Loop defaults pin at Run creation; Run overrides affect new requests only.
+- operation:context creates/updates context_id and default group_id for conversations without a Loop.
+- operation:group_notifications binds this machine's notification_route/notification_level to group_id without overwriting others. Replacing/disabling requires its current binding_id; enabled=false disables only this machine. See notification priority below.
 
-## 正式远程节点
+Ordinary node CLIs/running sessions do not register automatically. local exposure is separate from groups; local assistance needs no NAS. The receiving owner configures commands; requests cannot supply arbitrary startup commands. Group directories are trusted internal transport, not multitenant authentication.
 
-节点保持 `kind: agent`，配置 `dispatch: {location: group, agent_id: ...}` 或 capability。绑定实际 Run 群组；成员使用执行端已配置的 CLI。普通本地节点保持原有默认行为，远端只响应明确的执行请求，不调度来源 Run 的其他节点。
+## Requesting assistance
 
-节点的正式 read_task/report_task/finish 通过执行端限定客户端转送来源平台，沿用任务修订、操作范围、输出契约和结果校验。不要用 CLI 最后一段文字代替结构化结果。原 Task 关联通信请求，远端不创建业务 Run。
+Use loop-anything-dispatch. These tools are equivalent entries for managed Loops/compatible clients and share the publication protocol:
 
-Loop 包资源经受限 `read_asset` 调用取回到执行端请求资源目录；资源分块传递并核对包内校验值，沿用既有包大小上限；较大业务产物应使用可访问的共享引用。资源缺失明确失败；模型登录、依赖和工作目录由执行环境配置。消息发布不证明实际 NAS 环境可用。
+1. communication_status discovers explicitly exposed local/group members without Task/request tokens. Loop calls include run_id and see only its group scope. Discovery does not authorize execution.
+2. request_assistance takes location:local with agent_id, or location:group with explicit group_id and agent_id/capability. Select a group if no default exists; do not broadcast across groups. Disambiguate names with stable IDs.
+3. Supply message, shared context, and optional result_schema (object by default). context must be a JSON object; its business fields may be strings, arrays, null, or other JSON values. For example {"task":"Find relevant papers"} is valid; context.task need not be a platform Task object. Node calls include source:{run_id,task_id}; managed nodes use their current token, while ordinary workspace calls may omit it. Standalone requests can omit source; the platform creates a built-in collaboration Run without making the caller a receiving member. Continue existing collaboration with collaboration_id. After start_collaboration adopts the caller, reuse its source/token.
+4. The response contains a compact request, request.collaboration (standalone run_id/task_id), request.id, and legacy request_token. read_assistance(request_id) defaults to status, full structured result, and recent notification state, without logs/raw context/full history. Reading does not awaken an agent.
+5. **pending/offered means awaiting acceptance, not nobody will accept.** The default acceptance deadline is 300 seconds, checked before first acceptance. A few seconds without a receipt, a temporarily empty directory, or repeated pending queries do not justify cancellation/recreation. Do other work or suspend with wait_assistance. An unmanaged external session may end its turn and await notification while retaining the request. Only terminal states such as unavailable establish that outcome. Explicit cancellation is still available when the user withdraws or work is no longer needed, with optional reason.
+6. control_assistance supports cancel, input, and followup. followup defaults to the exactly recorded session; only explicit resume:false starts a new one. Sending cancellation does not prove remote execution stopped.
 
-## 独立协作：内置 Loop
+Legacy claim/grant rejection includes selection_decision with reason, sender source_state, deadline, and available cancellation/assignee details. not_selected alone does not mean canceled. Empty old-version receipts require checking the sender's record.
 
-### 入口 Agent 与 session 登记
+context_id selects a conversation default group; a one-call group_id override cannot bypass Run or execution scopes. Ordinary assistance does not require a native session ID. Trusted workspaces read/control by request_id; worker reports require their current execution identity.
 
-“把这次工作交给平台管理等待和续跑”指关联一次具体执行与原生 CLI session，不是把飞书 Bot 或当前 Agent 注册为长期接单成员。按实际需求选择：
+Use both directory instance_id and agent_id where names/custom IDs repeat across machines. Do not guess. Helpers can read associated Loop/Task context through scoped read_context; this is read-only and grants no authority to report the original node's result. Standalone requests without a Loop return caller-provided context.
 
-| 场景 | 使用方式 | 当前 Agent 需要什么 |
+## Formal remote nodes
+
+Keep kind:agent and configure dispatch:{location:group,agent_id:...} or capability. Bind the actual Run group; the receiving member uses its configured CLI. Ordinary local nodes retain their behavior. Remote machines respond only to explicit execution requests, not scheduling other source-Run nodes.
+
+Formal read_task/report_task/finish calls forward through the receiver's scoped client to the source platform, preserving revisions, scope, contracts, and validation. CLI final text does not replace structured output. The original Task links to a communication request; the remote side creates no business Run.
+
+Scoped read_asset retrieves Loop package assets into the receiver's request asset directory. Chunks verify package checksums and existing size limits; large business artifacts should use accessible shared references. Missing assets fail explicitly. Model login, dependencies, and cwd belong to execution-environment configuration. Published messages do not prove a real NAS deployment works.
+
+## Standalone collaboration: a built-in Loop
+
+### Entry agents and session registration
+
+Letting the platform manage waiting/resumption means associating one execution with its native CLI session, not registering a Feishu Bot/current agent as a permanent receiving member. Choose by need:
+
+| Scenario | Entry | What the current agent needs |
 |---|---|---|
-| 飞书/终端入口请求外援，结果通知回来或稍后读取 | 独立派单 Skill | 不需要本机平台、自身 execution_id 或具名成员注册；接单平台建立结果跟踪 Run |
-| 当前入口 Agent 暂停，结果到达后自动恢复原会话继续 | `start_collaboration(caller=…)` | 提供真实 session、当前 Agent 进程 PID 和恢复配置；平台创建并返回 execution_id，随后沿用其 Run/Task/token |
-| 已在平台节点中执行，需补充当前 CLI 的真实 session ID | `register_agent_session` | 使用当前唤醒上下文中的自身 execution_id 和操作身份 |
-| 希望其他成员以后能向本机 Agent 发布任务 | `communication_config(operation=agent)` | 配置具名 Agent 及开放范围；向群组开放前由用户确认主要任务 |
+| Request help from Feishu/terminal, receive notification or read results later | Standalone dispatch Skill | No local platform, own execution_id, or named-member registration; the receiving platform creates a result-tracking Run |
+| Suspend the current entry agent and automatically resume its original session on arrival | start_collaboration(caller=…) | Actual session, current agent process PID, and resume configuration; the platform returns execution_id, Run/Task/token |
+| Register the actual CLI session of a node already running under the platform | register_agent_session | Its own execution_id and operation identity from the awakening context |
+| Allow others to publish future work to a local agent | communication_config(operation=agent) | Named agent and exposure configuration; user-confirmed duties/scope before group exposure |
 
-没有 execution_id 的入口不可遍历其他 Run 选择无关执行挂接。cc-connect 不会自动调用 start_collaboration；由入口 Agent/集成按需提供真实运行信息，用户无需手工登记，无法交接进程时使用普通求援与通知。
+An entry without execution_id must not search other Runs to attach an unrelated execution. cc-connect does not call start_collaboration automatically; the entry agent/integration supplies actual runtime information as needed, without manual user registration. If process handoff is unavailable, use ordinary assistance/notification.
 
-Codex 的 `CODEX_THREAD_ID` 属于原生 Agent session，用于恢复上下文；飞书的 chat_id、thread_id、thread_root 用于通知定位。保存飞书通知来源不需要调用 register_agent_session，这两组标识不能互换。
+Codex CODEX_THREAD_ID is a native agent session identifier for context recovery. Feishu chat_id/thread_id/thread_root locate notifications. Saving chat origin does not require register_agent_session; these identifiers are not interchangeable.
 
-读取 `read_capabilities({"capability":"standalone_collaboration"})` 和实时工具 schema。一次完整协作对应一个 Run；后续求援用返回的 `run_id`（或 `request.collaboration.run_id`）填写 `collaboration_id`，追问 `control_assistance(action: followup)` 自动延续原 Run。消息、日志和进度不会各建一个 Run。
+Read read_capabilities({"capability":"standalone_collaboration"}) and live schemas. One complete collaboration is one Run. Later requests use returned run_id (or request.collaboration.run_id) as collaboration_id; control_assistance(action:followup) automatically continues that Run. Messages, logs, and progress do not each create Runs.
 
-普通求援的返回结果通过内置事件等待 Task 写入 Timeline。`request_assistance` 立即返回；`wait_seconds` 是承接期限，不是工具阻塞时间。以下仅用于需要协调 Agent 持续推进的场景：
-- **让平台启动协调 Agent**：`start_collaboration({"message":"完整协作任务","agent_id":"本机已开放的具名 Agent ID","group_id":"已加入群组"})`。返回 Run/Task；平台启动协调 Agent，它用普通节点工具提交、等待和恢复。纯本机协作可省略 group_id。
-- **承接当前正在对话的 Agent**：入口适配器或当前 Agent 在同一机器调用 `start_collaboration`，提供 `caller.implementation`（本机 CLI 启动/准确恢复配置）、`caller.native_session`（实际 provider/id，可带 cwd）和 `caller.process_id`（当前 Agent 进程 PID，不是执行工具的临时子进程）。不能从聊天 ID 猜 session，不能使用最近会话或另一台机器的 PID。平台登记现有执行并返回 run_id/task_id/execution_id/token，不重复启动 Agent。
+Ordinary assistance results enter the Timeline through built-in event-wait Tasks. request_assistance returns immediately; wait_seconds is an acceptance deadline, not a blocking tool duration. For ongoing coordination:
 
-承接当前会话后，外援请求使用 `source={run_id,task_id}` 与返回的 token。需等待时调用 `wait_assistance`，成功后调用 `finish`，然后结束当前 Agent 进程。平台在外援结束/等待到期且原进程退出后，以原 session 和新凭据继续；任意外部聊天窗口并不自动具备进程移交能力。长驻入口应由适配器完成这一移交；无法准确提供上述信息时使用结果跟踪模式。
+- **Platform-started coordinator:** start_collaboration({"message":"Complete collaboration task","agent_id":"EXPOSED_LOCAL_AGENT_ID","group_id":"JOINED_GROUP"}) returns Run/Task. The coordinator uses ordinary node reporting/wait/resume tools. Omit group_id for purely local collaboration.
+- **Adopt the current conversational agent:** on the same machine, the adapter/current agent calls start_collaboration with caller.implementation (local startup/exact-resume configuration), caller.native_session (actual provider/id, optional cwd), and caller.process_id (the current agent PID, not a temporary tool subprocess). Do not infer sessions from chat IDs, use the latest session, or supply another machine's PID. The platform records this execution and returns run_id/task_id/execution_id/token without launching another agent.
 
-恢复后的协调节点仍需 `report_task(event: completed)` 提交 `outputs.result`（对象）；首次完成入口同时提交 `settings.objective`，然后 `finish`。通过 `read_task` 获取实时 task_version。不要把外援返回当作协调任务已完成，不要自建轮询或另一个通信调度器。Run 的暂停/终止、事件去重和会话恢复均由原有 Engine 承担。
+After adoption, requests use source={run_id,task_id} and the returned token. To wait, call wait_assistance, then finish after success, and end the agent process. When assistance ends/wait expires and the original process has exited, the platform resumes the same session with new credentials. Arbitrary external chat windows do not automatically support process handoff; long-lived entries need adapter support. Use result tracking if exact runtime details cannot be supplied.
 
-## 普通会话的轻量等待与目录
+The resumed coordinator still reports event:completed with outputs.result (object). First completion of the entry also supplies settings.objective; then finish. Read current task_version through read_task. A helper's response does not complete the coordinator's task. Do not build polling or another communication scheduler; existing Engine handles pause/termination, event deduplication, and session recovery.
 
-独立派单 Skill 的 wait(request_id 或 request_ids, timeout) 在脚本内等待，返回各请求状态与完整结果。等待超时或被中断不取消任务；需要释放 Agent CLI 并恢复原会话时仍使用下面的 wait_assistance。request_assistance 支持 agent_name，按目录解析名称；明确提供 Agent/机器 ID 也必须在目录中找到，离线保留的目录条目可排队。接单 Agent 启用前必须有主要任务说明，公开到团队还须用户确认职责和范围。已承接 Loop 节点的等待续跑仍沿用原执行归属与 session，不受停止接新任务或退组影响。
+## Lightweight waiting and directory discovery
 
-一个 Base 链接自动配置可读字段与“Agent 目录”“请求与结果”“机器心跳”视图；请求与回复按同一请求 ID 对应，内部协议 JSON 不在这些视图默认展示。可读字段由平台维护，修改成员仍走接单机器配置。工具只按目录/请求 ID 取内容并自动解析附件，不要求 Agent 读取整表。
+The dispatch Skill's wait(request_id or request_ids,timeout) waits inside its script and returns each request's status/full result. Timeout/interruption does not cancel work. To release an agent CLI and later resume its original session, use wait_assistance below. request_assistance supports agent_name resolved through the directory; explicit agent/machine IDs must also exist there. Retained offline directory entries may queue work. Receiving agents need a duties description before enablement; team exposure also needs user-confirmed duties/scope. Accepted node work retains its execution/session ownership despite disabling new work or leaving a group.
 
-## 等待回复后继续
+One Base link automatically configures readable fields and views for the agent directory, requests/results, and machine heartbeats. Requests/replies correlate by request ID; internal protocol JSON is hidden from those default views. The platform maintains readable fields; edit members through receiving-machine configuration. Tools query only directory/request IDs and resolve attachments automatically; agents need not read entire tables.
 
-需要自动续跑时检查 `assistance_session_resume` 能力；依赖它的 Loop 应声明 `requires: ["assistance_session_resume"]`。
+## Continuing after assistance
 
-1. 已在平台执行的节点登记真实原生 session，并配置准确恢复命令，见[保存 ID 与恢复命令](terminal.md#保存真实原生-id)。已通过 start_collaboration 接入的 caller 沿用返回的执行身份。
-2. 调用 `wait_assistance(run_id, token, task_id, request_ids, seconds)`。只有成功后才 `finish` 并退出；远端节点还需在来源 finish 被接受后 complete 执行请求。
-3. 回复到达或等待到期后，平台在原进程退出、操作权释放后恢复**同一 CLI session、同一 Task**，提供 `assistance_results` 和新凭据。远端固定原机器、具名 Agent、工作目录及恢复配置；原 token 作废，不添加业务图节点，也不把等待当完成。
+For automatic resumption, check assistance_session_resume; dependent Loops declare requires:["assistance_session_resume"].
 
-缺少 session/恢复配置时 wait_assistance 拒绝；旧等待任务缺此信息时也不能通过通用重试新开会话。进程状态未知、会话文件丢失或 CLI 恢复失败时明确阻塞/失败，不能改用新会话。CLI 存储须保留在原机器；目前自动恢复使用 macOS/Linux 交互终端后端。
+1. A managed node registers its actual native session and accurate resume command; see [saving native IDs](terminal.md#store-the-real-native-id). An adopted start_collaboration caller reuses its returned execution identity.
+2. Call wait_assistance(run_id,token,task_id,request_ids,seconds). Only after success, finish and exit. A remote node also completes its execution request after the source accepts finish.
+3. After reply/deadline and original-process exit/identity release, the platform resumes **the same CLI session and Task**, with assistance_results and fresh credentials. Remote resumption pins the original machine, named agent, cwd, and resume configuration. The old token expires; no business node is added and waiting is not completion.
 
-Run 暂停或 Task 取消时不自动续跑，Run 终止后保留迟到结果但不推进。停用 Agent 或退出群组只影响新工作，已承接任务仍由原机器恢复。可选外援不可用由请求方判断如何继续；固定节点缺执行者不能伪造完成。
+Missing session/resume configuration causes rejection. Legacy waits lacking it cannot start a fresh session through generic retry. Unknown process status, missing session files, or resume failure blocks/fails explicitly rather than switching sessions. CLI storage must remain on the original machine; automatic resume currently uses the macOS/Linux interactive-terminal backend.
 
-## 控制通信上下文大小
+Paused Runs or canceled Tasks do not resume automatically. Terminated Runs retain late results without progressing. Disabling an agent/leaving a group affects new work only; accepted Tasks resume on their original machine. The requester decides how to proceed without optional help; a required node lacking an executor cannot be marked complete falsely.
 
-先检查运行服务的 `communication_context` 能力或实际工具 schema。`read_assistance` 默认精简的是请求视图，`result` 仍完整返回；日志和历史按需读取，平台保留必要执行状态与交付结果，已确认 Base 消息进入云端历史；原生 session 中已有的完整执行过程不另存副本。
+## Controlling communication context size
 
-排错时显式读取：
+Check communication_context or the live schema. read_assistance's default compact view still returns full result. Logs/history are on demand. The platform retains required execution state and deliveries; acknowledged Base messages become cloud history. It does not duplicate a native session's full execution transcript.
+
+For diagnostics, explicitly request:
 
 ```json
-{"request_id":"请求ID","include_logs":true,"max_chars":4000}
+{"request_id":"REQUEST_ID","include_logs":true,"max_chars":4000}
 ```
 
-Base 的终端日志留在执行机器，不自动传输。显式 include_logs 才按需读取，返回 `logs_pending:true` 时保留游标稍后查询，不把它当成空日志，也不持续占用 Agent 轮询。镜像子请求的日志可在其来源或执行平台读取。网页只有展开运行输出才获取日志。每页日志默认最多 4000 字符，可设置 1–16000。返回 `logs`、`log_cursor`、`log_offset` 和 `log_more`。需要继续时用 `after=log_cursor`、`offset=log_offset`；单个日志块也可以跨页，不会因截断丢字。不要每次从零重读，定位问题后停止获取多余日志。
+Base terminal logs stay on the execution machine until include_logs requests them. With logs_pending:true, retain the cursor and query later; it is not an empty log or a reason for continuous agent polling. Mirrored child logs are readable at their source/execution platform. The web fetches logs only when output is expanded. Pages default to 4000 characters, configurable 1–16000; responses include logs, log_cursor, log_offset, and log_more. Continue with after=log_cursor and offset=log_offset, including across a single large chunk without dropped characters. Do not reread from zero or keep fetching after diagnosis.
 
-需要原始业务上下文、完整通知与历史时使用 `include_details:true`；它不自动打开日志，仍需 `include_logs:true`。详细诊断可能较大，仅在当前问题确实需要时读取。结构化业务结果保持完整，不做自动语义裁剪；大业务产物仍应通过文件或共享引用交付。
+include_details:true retrieves original business context/full notifications/history, not logs unless include_logs is also true. Read potentially large diagnostics only when relevant. Structured business results remain complete, without automatic semantic truncation; large artifacts should still use files/shared references.
 
-等待外援后的 `assistance_results` 只带请求摘要与结果；追问上下文只保留最近请求摘要和 `original_context`，不递归嵌入旧请求档案。原 session 恢复保持不变。普通 `read_context` 仍可按授权读取所需的业务上下文。
+assistance_results on resume contains only request summaries/results. Follow-up context keeps recent request summaries and original_context without recursively nesting old archives. Native-session resumption remains unchanged. Ordinary read_context retrieves authorized business context as needed.
 
-## 远端执行客户端
+## Remote execution client
 
-平台提供 `scripts/communication.py`，唤醒上下文包含其本机绝对路径、platform_url、request_id、限定 token。
+The platform supplies scripts/communication.py; awakening context includes its local absolute path, platform_url, request_id, and scoped token.
 
-同时提供本机标准 platform_client 与限定 platform_url，原有 call.py 的 read_task/report_task/finish 操作可以通过该地址使用；平台负责经团队介质转送。communication.py 使用 execution_url 调用执行端工具，或在未提供时使用 platform_url。限定地址的工具目录说明当前允许的操作，不需要作者再写桥接客户端。
+It also supplies standard local platform_client and scoped platform_url. Existing call.py read_task/report_task/finish calls use that URL and forward through the team transport. communication.py uses execution_url for receiver tools when provided, otherwise platform_url. The scoped tool list states permitted operations; authors need not write a bridge client.
 
 ```sh
-python3 /实际客户端路径/communication.py --context 请求上下文.json progress --arguments '{"message":"正在检索"}'
-python3 /实际客户端路径/communication.py --context 请求上下文.json complete --arguments '{"result":{"papers":[]}}'
+python3 /actual/client/path/communication.py --context request-context.json progress --arguments '{"message":"Searching"}'
+python3 /actual/client/path/communication.py --context request-context.json complete --arguments '{"result":{"papers":[]}}'
 ```
 
-正式节点用 `source_call` 调用来源工具，返回持久 call.id。只有 call.state=completed 才表示来源已接受；pending/executing 时调用 `source_result` 查看，failed 时检查错误及可能已产生的副作用，不盲目重复。
+Formal nodes use source_call for source tools, returning durable call.id. Only call.state=completed means source acceptance. For pending/executing, query source_result; on failed, inspect errors/possible effects rather than blindly repeat.
 
-远端节点需要本机外援时，直接通过该客户端调用 communication_status/request_assistance/read_assistance；本机指执行端平台，群组范围限于父请求群组。本机外援会保留父请求的群组调用范围，但本机请求本身不经 NAS。子请求结果也会回传到来源记录。
+A remote node needing local help calls communication_status/request_assistance/read_assistance through this client. Local means the execution platform; group scope is restricted to the parent request's group. Local helpers retain that group-call scope, but their local request does not traverse NAS. Child results return to the source record too.
 
-`read_context` 提供关联 Loop 与任务的只读上下文，必要时经父请求转送来源平台；关联上下文不代表有权完成原节点。无 Loop 时返回提供的上下文。
+read_context provides read-only associated Loop/Task context, forwarding through the parent request when needed. This association does not grant authority to complete the original node. Without a Loop it returns supplied context.
 
-`native_session` 登记实际 provider/id。认领按 agent_id，session 只用于执行连续性。恢复需匹配原来源、具名 Agent 和父任务范围；session ID 不授予跨任务调用权。查看日志不唤醒，原会话不可访问时不猜测最近会话。
+native_session registers actual provider/id. agent_id determines assignment; session only preserves continuity. Resumption must match the source, named agent, and parent Task scope. Session IDs grant no cross-task authority. Reading logs does not awaken agents; never guess the latest session when the original is unavailable.
 
-## 退出、断线与通知
+## Leaving, disconnection, and notifications
 
-平台维护心跳、接单状态和执行回报，不需要模型常驻。忙碌、停用、离线和退出不是同一状态。失联的在途工作标为未知，不能仅因超时重新执行；确认停止后再处理。来源恢复后按消息 ID 去重并接受结果，发送与被接受分别记录。
+The platform handles heartbeats, availability, and execution reports without a resident model. Busy, disabled, offline, and left are different states. Disconnected in-flight work is unknown; timeout alone cannot justify reexecution. Confirm stopping before recovery. When the source returns it deduplicates by message ID and accepts results; sending and acceptance are recorded separately.
 
-对未知执行发送取消只记录取消意图，不能证明旧进程已停。核实后使用 confirm_stopped；远端请求须等执行端确认，本机相关终端的占用记录也会同步释放。
+Cancellation of unknown execution records intent, not proof of stopping. After verification use confirm_stopped. Remote requests await receiver confirmation; related local-terminal occupancy is released too.
 
-共享目录发布完整消息或分块消息，单个逻辑消息上限 32 MiB；大业务数据使用产物引用。未确认消息保留重发，日志按序号单独持久化。
+Shared directories publish complete/chunked messages with a 32 MiB logical-message limit. Large data uses artifact references. Unacknowledged messages persist for retry; logs persist separately by sequence number.
 
-NAS 自动分离待收消息与历史：`messages/<机器ID>/` 是待收区，`messages/broadcast/` 仅兼容旧在途公告，新派单直接投递唯一目标，已确认消息进入 `archive/<日期>/<接收方>/`，普通轮询不扫描归档。接收确认只表示消息已持久化，不代表任务完成；公告由发起方在分配、取消或到期后归档。ACK 发布后停止定时重发，重复原消息可触发同一回执补发。归档失败保留待办和诊断，重启继续，不阻断其他消息；历史及去重记录继续保留，不自动按日期删除。Agent 使用已有通信工具，无需自己搬移文件或编写清理脚本。
+NAS separates inboxes/history: messages/<machine-ID>/ holds pending messages; messages/broadcast/ supports old in-flight announcements only. New dispatch targets one receiver. Acknowledged messages enter archive/<date>/<receiver>/, excluded from normal polling. Receipt confirms durable storage, not completion. Senders archive announcements after assignment/cancel/expiry. Publishing ACK stops periodic resends; duplicate original messages can trigger the same receipt again. Archival failure retains pending work/diagnostics and resumes after restart without blocking other messages. History/deduplication persists without age-based automatic deletion. Use communication tools, not custom moving/cleanup scripts.
 
-任务资料与产物只在确认双方可访问时优先保存在共享 NAS，通过 context/result 传路径和用途；挂载点不同则补充共享目录标识及相对路径。这与团队通信选用 Base 还是 NAS 无关，平台不会读取或上传引用文件。外援保留完整产物，不用 summary 替代全文。对方无法访问 NAS 或明确需要云端副本时，可选用飞书原生附件；命令与引用示例见派单 Skill 的[共享文件与可选附件](../../loop-anything-dispatch/references/artifacts.md)。读取结果不确认引用文件已读取，也不清理 NAS 产物。
+Prefer NAS artifact paths only after confirming both sides can access them. Pass path and purpose in context/result; if mounts differ include shared-directory identity/relative path. This is independent of Base versus NAS communication. The platform does not read/upload referenced files. Helpers preserve complete artifacts rather than replacing them with summaries. If NAS is inaccessible or a cloud copy is requested, optional Feishu native attachments are available; see dispatch [shared files and optional attachments](../../loop-anything-dispatch/references/artifacts.md). Reading a result does not confirm its referenced file was read or clean NAS artifacts.
 
-Base 的已确认消息和回执改标为云端历史，退出日常轮询；原记录与交付结果保留，按需人工清理已处理历史，不要求日常通信有删除权限。新版独立 Skill 按 ID 直接读取团队结果，不自动复制结果全文到本机，也不发送结果读回执；离线副本显式用 --output 保存。旧版缓存和在途读回执仍兼容。小状态原地更新，未发出进度合并；超过 90000 个 UTF-16 单位的内联消息自动用附件兜底，过时版本进入历史。
+Acknowledged Base messages/receipts become cloud history outside ordinary polling; original records/results remain for optional manual cleanup. Daily communication needs no deletion permission. The new standalone Skill reads team results by ID without automatically copying full results locally or sending result-read receipts; use --output for an explicit offline copy. Old caches/in-flight read receipts remain compatible. Small states update in place and unsent progress coalesces. Inline messages exceeding 90000 UTF-16 units automatically use attachments; obsolete versions enter history.
 
-本机保留执行状态、交付结果、session 定位和消息指纹去重；待发数据持久保存到交付完成。Base 消息不再另存本机完整归档。已登记原生 session 的成功执行不保留重复终端全文，include_logs 返回 logs_source=native_session 和查看提示，使用原机器上的恢复能力查看；无 session、失败和脚本执行仍有诊断输出。
+Locally, execution state, deliveries, session locations, and deduplication fingerprints remain. Outbound payloads persist until delivered. Base messages no longer create full local archives. Successful executions with a registered native session do not retain duplicate terminal transcripts: include_logs returns logs_source=native_session with viewing guidance, using the original machine's resume facility. Executions without sessions, failures, and scripts retain diagnostics.
 
-为兼容在途消息，保留旧传输路径和消息格式；服务启动或切换挂载后会一次性检查待收目录中的旧记录，只归档本机有权处理且已确认的内容。各机器升级后才能完整停止旧版 ACK 的定时重发。本机数据库仍保留历史，真实多机 NAS 的性能与故障恢复需在安装环境验收。
+Old paths/message formats remain compatible. Service startup or mount changes make a one-time scan of old inbox records, archiving only acknowledged records this machine may handle. All machines must upgrade to fully stop old periodic ACK resends. Local database history remains; real multi-machine NAS performance/recovery requires deployment acceptance.
 
-通知使用已有出口和下述优先级。通信消息标题显示 Agent 与进展，首条实际通知带请求预览（即使请求很快进入执行或完成），后续只通过同一请求 ID 关联，不重复原请求。完成通知可展示结果中已有的简短文本 summary，否则显示“结果已返回”；不把截断 JSON 当摘要，不要求外援另写 summary。请求方读取和恢复时继续取得完整 result。默认不展示机器名、内部 Run/通知 ID；投递和重试仍保留内部标识及原通知快照。飞书/微信聊天仅用于通知；飞书 Base 是单独的通信介质。未配置通知时不猜接收人，也不阻断任务结果。
+Notification titles show agent/progress. The first actual notification includes a request preview even if already executing/completed; later ones correlate by request ID without repeating it. Completion can show an existing short textual summary, otherwise a result-returned message. Do not present truncated JSON as a summary or require the helper to write summary. Requesters/resumed agents still receive full result. Machine names/internal Run/notification IDs are hidden by default; delivery/retry keeps identifiers/original snapshots. Feishu/WeChat chats are notification channels; Feishu Base is a separate communication transport. Missing notification configuration neither guesses recipients nor blocks results.
 
-### 群组按机器绑定出口与通知优先级
+### Per-machine group outlets and priority
 
-先检查 `group_notification_priority` 能力。没有聊天来源的新群组请求省略 notification_route 时，按每条事件选择一个发送方：**动作发生方的群组入口 → 本次请求直接发起方的群组入口 → 不发外部通知，仅平台记录**。请求、超时和无人承接等由发起方负责；开始执行、进度、完成或执行失败优先执行方。A 请求 B、B 又请求 C 时，子请求按 C → B 回退，不回退根请求 A。
+Check group_notification_priority. For new group requests without chat origin and without explicit notification_route, choose one sender per event: **action machine's group outlet → immediate requester's group outlet → no external notification, platform record only**. The requester owns request/timeout/unavailable events; the executor is preferred for start/progress/completion/execution failure. For A→B→C, the child falls back C→B, not root A.
 
-1. 在各台需要提供通知入口的机器上配置本地命名出口，例如 cc-connect 的 project 和聊天 session；各机器可以绑定自己的目标。聊天 session 与 Agent CLI session 是不同标识。
-2. 在“Agent 通信 → 群组 → 通知绑定”保存**本机入口**，或调用：
+1. Configure a named local outlet on each sending machine, e.g. cc-connect project and chat session. Each machine can use its own destination. Chat sessions differ from native agent CLI sessions.
+2. Bind the current machine through communication_config:
 
 ```json
-{"operation":"group_notifications","group_id":"group-实际ID","notification_route":"feishu-research","notification_level":"key"}
+{"operation":"group_notifications","group_id":"group-ACTUAL_ID","notification_route":"feishu-research","notification_level":"key"}
 ```
 
-3. `communication_status.groups[].notification_bindings` 按 instance_id 列出各机器绑定。修改时传本机绑定的 id 作为 binding_id；enabled=false 仅停用本机入口。不同机器互不覆盖。目录公开发送机器、目的地和档位，命令与凭据留在各自本地。保存配置不会发送消息。
-4. 已托管请求由来源平台生成和去重通知；独立 Skill 派单由接收平台生成通知，经团队介质交给选定机器调用本地适配器。`read_assistance.notifications[].routing` 给出 actor_instance、request_origin、sender_instance、binding_id 和 reason；action_machine 表示动作方，request_origin 表示回退发起方，no_bound_outlet 表示两者都没有入口。无入口状态为 skipped，不会影响任务执行。
+3. communication_status.groups[].notification_bindings indexes bindings by instance_id. Changes require the local binding's id as binding_id; enabled=false disables only that outlet. Machines do not overwrite each other. The directory exposes sender/destination/level, while commands/credentials stay local. Saving sends no message.
+4. Source platforms generate/deduplicate managed notifications; standalone dispatch notifications originate at the receiver. Team transport delivers them to the selected local adapter. read_assistance.notifications[].routing includes actor_instance, request_origin, sender_instance, binding_id, and reason: action_machine, request_origin, or no_bound_outlet. No outlet yields skipped without affecting execution.
 
-缺少绑定或明确停用才回退。绑定存在但机器离线、发送失败或送达未知时，保留 awaiting_delivery/fault 等状态，不切换机器重发。已经生成的通知和显式重试固定当时的发送机器、目的地及命令；更改绑定只影响后续新生成的通知。通知档位默认取选中入口的 level，请求明确指定 notification_level 时优先使用请求值；过滤掉的事件不会改投另一个入口。
+Fallback applies only to absent/explicitly disabled bindings. A bound machine that is offline, fails, or has unknown delivery retains awaiting_delivery/fault rather than switching senders. Created notifications/explicit retries pin their original sender, destination, and command; binding changes affect future notifications only. Level defaults to the selected outlet unless request.notification_level overrides it. Filtered events do not move to another outlet.
 
-显式请求 notification_route 仍优先；无群组请求沿用 Run 默认或 workspace。业务 lifecycle/notify 的 Run 出口不变。嵌套外援仍由根来源平台保存通知回执以避免重复，路由回退对象使用子请求的直接发起方。
+Explicit request.notification_route still wins. Requests without groups use Run default/workspace. Business lifecycle/notify routing is unchanged. Nested assistance retains notification receipts at the root source to prevent duplicates, while fallback targets the child's immediate requester.
 
-旧单一群组绑定读取为原发送机器自己的入口，不作为新请求的任意第三方兜底。升级前已创建的请求和通知保留原策略；新群组请求及沿用群组绑定的追问采用新优先级。所有参与平台应升级以使用新路由；不会自动迁移运行中的任务或重发历史通知。
+Legacy single bindings belong to their original sending machine, not arbitrary third-party fallback. Existing requests/notifications keep old policy; new group requests and group-bound follow-ups use new priority. All participants should upgrade; no automatic migration of running work or replay of historical notifications occurs.
 
-通知档位支持 attention（仅需处理）、key（默认关键进展）、detailed（含进度摘要）。可选外援无人承接时 attention 不一律报警。失败回执通过 control_assistance(action: retry_notification, notification_id: ...) 显式重试；结果未知先核实。真实 NAS、多机、模型及渠道送达仍在安装时分别验收。
+Levels: attention (action needed), key (default milestones), detailed (progress summaries). Unavailable optional help does not always alert at attention level. Explicitly retry failed receipts with control_assistance(action:retry_notification,notification_id:...); verify unknown delivery first. Real NAS, multiple machines, models, and channels need separate deployment acceptance.
 
-## 聊天入口通知
+## Chat-origin notifications
 
-有聊天来源时通知跟随原会话；显式出口覆盖，无来源时使用上面的群组/Run 路由。飞书入口采集、Bot 映射、根消息保存与回退细则集中在 [cc-connect](cc-connect.md#自动跟随原聊天)。
+With chat origin, follow the original conversation unless an explicit outlet overrides it. Without origin use group/Run routing above. Feishu capture, Bot mapping, saved roots, and fallback rules are in [cc-connect](cc-connect.md#follow-the-original-conversation-automatically).
 
-## 目录查询与操作凭据
+## Directory reads and operation credentials
 
-`communication_status` 是公开的只读发现接口，独立会话无需先创建 Run、获取 token 即可发现已开放成员。目录不包含 CLI 命令、本机挂载路径及操作凭据。
+communication_status is public read-only discovery. Independent sessions need no Run/token to discover exposed members. The directory excludes CLI commands, local mount paths, and operation credentials.
 
-可信工作区的配置、请求、状态读取和取消/追问无需 request_token。读取结果默认只返回精简状态；日志和完整上下文按需读取。旧 request_token 参数保留兼容，不承担工作区登录作用。
+Trusted workspace configuration, requests, reads, cancellation, and follow-up need no request_token. Results default to compact status/full result, with logs/context on demand. Legacy request_token remains compatible but is not workspace login.
 
-- Run/Task token：平台为实际执行 Agent 提供的操作范围标识，退出或恢复时沿用既有生命周期。普通用户操作可省略，平台自动处理临时范围；显式错误 token 仍拒绝。
-- worker token：承接者写回本次外援的进度和结果，不能操作其他请求；限定 worker 入口只能查看其相关请求。
+- Run/Task token identifies an actual executor's operation scope and follows existing exit/resume lifecycle. Ordinary user calls may omit it; the platform manages temporary scope. Explicit invalid tokens still fail.
+- Worker token allows progress/results for this accepted request only. Scoped worker entries can view only associated requests.
 
-原生 CLI session ID 只用于恢复上下文。任务认领依赖具名 Agent、实例与群组匹配，session 不决定认领；过期执行写回仍校验。平台托管节点须沿用唤醒入口和身份，不能借公开工作区入口扩大范围。
+Native CLI session IDs restore context only. Assignment matches named agent, instance, and group, not session; stale execution writes are still checked. Managed nodes must retain their awakening entry/identity rather than widen scope through public workspace entry.
 
-cc-connect 接入用 `read_cc_connect` / `configure_cc_connect`；具名 Agent 直接绑定 Bot，固定接收位置才建立 `cc_connect={project,platform}` 通知出口。见[本机接入与 Bot 发现](cc-connect.md#本机接入与-bot-发现)。
+Use read_cc_connect/configure_cc_connect for bridge access. Named agents bind directly to Bots; create cc_connect={project,platform} notification outlets only for fixed destinations. See [local setup and Bot discovery](cc-connect.md#local-setup-and-bot-discovery).

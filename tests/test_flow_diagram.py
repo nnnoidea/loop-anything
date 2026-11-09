@@ -34,7 +34,7 @@ class FlowDiagramTests(unittest.TestCase):
             output = root / 'flow.html'
             renderer.render(source, output)
             self.assertIn('<svg', output.read_text())
-            self.assertIn('制定方案', output.read_text())
+            self.assertIn('Plan work', output.read_text())
             writes = []
             def accept(url, data):
                 args = json.loads(data)['arguments']; writes.append(args)

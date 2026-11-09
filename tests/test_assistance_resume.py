@@ -23,6 +23,7 @@ from pathlib import Path
 from urllib.request import Request,urlopen
 state_path,mode,native,prompt=sys.argv[1:]
 c=json.loads(prompt);remote=c.get('kind')=='node_execution'
+if c.get('node_id')=='$flow_agent':assert c.get('flow_trigger',{}).get('event')=='completed','Flow trigger missing on this executor'
 def call(name,args):
  if not remote and name not in ('request_assistance','read_assistance'):args=dict(args,run_id=c['run_id'],token=c['token'])
  r=Request(c['platform_url']+'/api/tools',data=json.dumps({'tool':name,'arguments':args}).encode(),headers={'Content-Type':'application/json','X-Loop-Anything':'workspace'})
@@ -53,7 +54,8 @@ else:
  if not remote:lookup['token']=state['helper_token']
  assert call('read_assistance',lookup)['request']['result']['paper']=='paper-found'
  info=call('read_task',{'task_id':c['task_id']})
- call('report_task',{'task_id':c['task_id'],'task_version':info['task_version'],'event':'completed','report_id':'after-assistance','envelope':{'settings':{'objective':'continuous reasoning'},'outputs':{'a':state['memory'],'b':c['assistance_results'][0]['result']['paper']}}})
+ envelope={'outputs':{'decision':{'memory':state['memory'],'paper':c['assistance_results'][0]['result']['paper']}}} if c.get('flow_trigger') else {'settings':{'objective':'continuous reasoning'},'outputs':{'a':state['memory'],'b':c['assistance_results'][0]['result']['paper']}}
+ call('report_task',{'task_id':c['task_id'],'task_version':info['task_version'],'event':'completed','report_id':'after-assistance','envelope':envelope})
 call('finish',{})
 if remote:call('communication_execute',{'request_id':c['request_id'],'token':c['token'],'tool':'complete','arguments':{'result':{}}})
 '''
@@ -76,7 +78,13 @@ class AssistanceResumeTests(unittest.TestCase):
         for remote in (False,True):
             with self.subTest(remote=remote):self.exercise(remote,fail=True)
 
-    def exercise(self,remote,fail=False):
+    def test_builtin_flow_resumes_same_session_after_assistance(self):
+        self.exercise(False,builtin=True)
+
+    def test_remote_builtin_flow_resumes_same_session_after_assistance(self):
+        self.exercise(True,builtin=True)
+
+    def exercise(self,remote,fail=False,builtin=False):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);script=root/'node.py';script.write_text(NODE_CLI)
             processes=[];logs=[];urls=[]
@@ -109,13 +117,19 @@ class AssistanceResumeTests(unittest.TestCase):
                         tool(1,'communication_config',{'operation':'agent','task_confirmed':True,'agent_id':'research','agent':{'name':'research','description':'Research experimental results','groups':[gid],'implementation':implementation}})
                         case.implementations['init']={'kind':'agent','dispatch':{'location':'group','agent_id':'research'}}
                     else:case.implementations['init']=implementation
+                    if builtin:
+                        case.bp['flow_agent']=case.implementations['init']
+                        case.bp['nodes']['init']['routes']=[{'id':'decide','event':'completed','flow_agent':True}]
+                        initial={'settings':{'objective':'Use help in a flow decision'},'outputs':{'a':'initial','b':'initial'}}
+                        case.implementations['init']={'kind':'command','command':[sys.executable,'-c','print('+repr(json.dumps(initial))+')']}
                     key=source.publish(case.bp,case.implementations)['key']
                     if remote:tool(0,'communication_config',{'operation':'bind_loop','loop_key':key,'group_id':gid})
                     rid=source.create(key,'wait and resume')['id']
                     paused_admission=False
                     deadline=time.monotonic()+40
                     while time.monotonic()<deadline:
-                        run=source.get(rid);task=run['tasks']['init']
+                        run=source.get(rid);task=next((t for t in run['tasks'].values() if t.get('origin',{}).get('flow_agent')),None) if builtin else run['tasks']['init']
+                        if task is None:time.sleep(.1);continue
                         if remote and not fail and task.get('assistance_wait') and not paused_admission:
                             tool(1,'communication_config',{'operation':'agent','agent_id':'research','agent':{'enabled':False}})
                             tool(1,'communication_config',{'operation':'leave','group_id':gid})
@@ -126,14 +140,21 @@ class AssistanceResumeTests(unittest.TestCase):
                             request=tool(0,'read_assistance',{'request_id':run['executions'][-1]['communication_id']})['request']
                             if request['state'] in ('completed','failed'):break
                         time.sleep(.1)
-                    self.assertEqual(task['status'],'fault' if fail else 'completed',run['history'])
-                    self.assertEqual(len(run['tasks']),1)
-                    self.assertEqual(len(run['executions']),2,run['history'])
+                    diagnostic = run['history']
+                    if remote and task['status'] == 'fault' and not fail:
+                        with Store(root/'1.db').connection() as db:
+                            diagnostic = [r[0] for r in db.execute('SELECT text FROM communication_logs ORDER BY rowid DESC LIMIT 8')]
+                    self.assertEqual(task['status'],'fault' if fail else 'completed',diagnostic)
+                    self.assertEqual(len(run['tasks']),2 if builtin else 1)
+                    self.assertEqual(len(run['executions']),3 if builtin else 2,run['history'])
                     state=json.loads((root/'session.json').read_text())
                     self.assertEqual(state['calls'],['new','fail' if fail else 'resume'])
                     self.assertNotEqual(state['tokens'][0],state['tokens'][1])
-                    self.assertEqual([e['native_session']['id'] for e in run['executions']],[state['session']]*2)
+                    self.assertEqual([e['native_session']['id'] for e in run['executions'] if e['implementation']['kind']=='agent'],[state['session']]*2)
                     if fail:self.assertEqual(run['records'],{})
+                    elif builtin:
+                        value=run['records'][task['spec']['outputs']['decision']['id']][0]['value']
+                        self.assertEqual(value,{'memory':'reasoning-before-assistance','paper':'paper-found'})
                     else:
                         self.assertEqual(run['records']['a'][0]['value'],'reasoning-before-assistance')
                         self.assertEqual(run['records']['b'][0]['value'],'paper-found')

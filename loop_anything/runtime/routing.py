@@ -22,17 +22,22 @@ def validate_routes(bp):
         ids = set()
         for index, route in enumerate(routes):
             here = location + [index]
-            if not isinstance(route, dict) or not {'id', 'event', 'plan', 'values'} <= set(route) or set(route) - {'id', 'event', 'plan', 'values', 'each', 'when', 'steps', 'round'}:
-                raise Invalid('Route needs id, event, plan, values and optional each/when/steps/round', path=here)
+            flow = isinstance(route, dict) and route.get('flow_agent') is True
+            required = {'id', 'event', 'flow_agent'} if flow else {'id', 'event', 'plan', 'values'}
+            allowed = required | ({'when'} if flow else {'each', 'when', 'steps', 'round'})
+            if not isinstance(route, dict) or not required <= set(route) or set(route) - allowed:
+                raise Invalid('Route needs id/event and either flow_agent=true (+when) or plan/values (+each/when/steps/round)', path=here)
+            if flow and bp.get('flow_agent') is None:
+                raise Invalid('Configure Loop flow_agent before using a flow_agent route', path=here)
             for field in ('id', 'event'):
                 if not isinstance(route[field], str) or not re.fullmatch(r'[a-zA-Z0-9_-]+', route[field]):
                     raise Invalid('Route ' + field + ' must be a nonempty identifier', path=here + [field])
             if route['id'] in ids:
                 raise Invalid('Route IDs must be unique within the node', path=here + ['id'])
             ids.add(route['id'])
-            if not isinstance(route['plan'], str) or route['plan'] not in bp.get('plans', {}):
+            if not flow and (not isinstance(route['plan'], str) or route['plan'] not in bp.get('plans', {})):
                 raise Invalid('Route must name an existing plan', path=here + ['plan'])
-            if any(bp['nodes'][s['node']].get('initialize_timeline') for s in bp['plans'][route['plan']]['steps'].values()):
+            if not flow and any(bp['nodes'][s['node']].get('initialize_timeline') for s in bp['plans'][route['plan']]['steps'].values()):
                 raise Invalid('Routes cannot create initialization tasks', path=here + ['plan'])
             for field in ('values', 'steps'):
                 if field in route and not isinstance(route[field], dict):
@@ -88,7 +93,9 @@ def prepare_routes(run, execution, report, context):
         try:
             items = path(context, route['each']) if 'each' in route else [None]
             if not isinstance(items, list):raise Invalid('each must resolve to an array')
-            firing = {'route_id': route['id'], 'plan': route['plan'], 'batches': [], 'omitted_items': []}
+            firing = {'route_id': route['id'], 'plan': route.get('plan'), 'batches': [], 'omitted_items': []}
+            if route.get('flow_agent'):
+                firing['flow_agent'] = True
             for index, item in enumerate(items):
                 current = dict(context, item=item, index=index)
                 if 'when' in route:
@@ -97,6 +104,12 @@ def prepare_routes(run, execution, report, context):
                     if not included:
                         firing['omitted_items'].append(index)
                         continue
+                if route.get('flow_agent'):
+                    from loop_anything.runtime.flow_agent import prepare
+                    spec, origin = prepare(run, execution, report, route, current)
+                    prepared.append((spec, origin))
+                    firing['batches'].append({'task_ids': [spec['id']]})
+                    continue
                 values, steps = expand(route['values'], current), expand(route.get('steps', {}), current)
                 if not isinstance(values, dict) or not isinstance(steps, dict):
                     raise Invalid('values and steps must resolve to objects')

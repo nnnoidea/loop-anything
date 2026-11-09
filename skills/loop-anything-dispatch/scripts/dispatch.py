@@ -259,9 +259,17 @@ def main():
         if not tool:raise ValueError('Join a team using its link or communication_config(operation=team)')
         url=(args.tool_url or args.platform_url).rstrip('/')+'/api/tools'
         def invoke(arguments):
-            req=Request(url,json.dumps({'tool':tool,'arguments':arguments}).encode(),{'Content-Type':'application/json','X-Loop-Anything':'workspace'})
-            with urlopen(req,timeout=30) as response:result=json.load(response)
-            if result.get('ok') is False:raise ValueError(json.dumps(result,ensure_ascii=False))
+            data=json.dumps({'tool':tool,'arguments':arguments}).encode()
+            if url.startswith('nas:'):
+                import importlib.util
+                path=Path(__file__).resolve().parents[2]/'loop-anything-platform/scripts/platform_transport.py'
+                spec=importlib.util.spec_from_file_location('_loop_platform_transport',path)
+                client=importlib.util.module_from_spec(spec);spec.loader.exec_module(client)
+                result=client.fetch(url,data)
+            else:
+                req=Request(url,data,{'Content-Type':'application/json','X-Loop-Anything':'workspace'})
+                with urlopen(req,timeout=30) as response:result=json.load(response)
+            if result.get('ok') is False or result.get('pending'):raise ValueError(json.dumps(result,ensure_ascii=False))
             return result
         if args.operation=='wait':
             common={k:v for k,v in values.items() if k not in ('request_id','request_ids','timeout','poll_interval')}

@@ -9,10 +9,10 @@ from urllib.request import Request, urlopen
 def call(context, tool, arguments):
     def invoke(name, values):
         body = {'tool': 'communication_execute', 'arguments': {'request_id': context['request_id'], 'token': context['token'], 'tool': name, 'arguments': values}}
-        request = Request((context.get('execution_url') or context['platform_url']).rstrip('/') + '/api/tools', data=json.dumps(body).encode(),
-                          headers={'Content-Type':'application/json','X-Loop-Anything':'workspace'})
-        with urlopen(request, timeout=30) as response:
-            result = json.load(response)
+        from call import fetch
+        result=fetch((context.get('execution_url') or context['platform_url']).rstrip('/')+'/api/tools',json.dumps(body).encode())
+        if result.get('pending'):
+            raise RuntimeError('Tool call remains pending; retrieve NAS receipt '+result['request_id']+' before retrying')
         if not result.get('ok'):
             raise RuntimeError(json.dumps(result, ensure_ascii=False))
         return result

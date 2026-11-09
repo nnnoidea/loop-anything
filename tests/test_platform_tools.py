@@ -48,6 +48,23 @@ class PlatformToolTests(unittest.TestCase):
         self.assertTrue(run['initialized']);self.assertEqual(run['settings']['objective'],'Goal from conversation')
         self.assertEqual(run['records'],{});self.assertFalse(run['agent_sessions'])
 
+    def test_user_description_does_not_replace_agent_instructions_or_skills(self):
+        self.edit('set_loop',handbook='Use the agreed goal.')
+        self.edit('put_node',node_id='initialize',instructions='Full execution instructions.',
+                  skills=[{'name':'Method','content':'Keep this operational detail.'}])
+        self.edit('put_node',node_id='initialize',description='Prepare the agreed work.')
+        key=self.tools.call('publish_loop',{'draft_id':self.draft['draft_id'],'revision':self.draft['revision']})['key']
+        node=self.tools.call('read_loop',{'key':key})['loop']['loop_definition']['nodes']['initialize']
+        self.assertEqual(node['description'],'Prepare the agreed work.')
+        run=self.tools.call('start_run',{'key':key,'title':'Description check','authorization':'Initialize only'})
+        task=self.tools.call('read_task',{'run_id':run['run_id'],'token':run['token'],'task_id':run['entry_task_id']})
+        self.assertEqual(task['instructions'],'Full execution instructions.')
+        self.assertEqual(task['skills'][0]['content'],'Keep this operational detail.')
+        self.edit('put_node',node_id='initialize',description='')
+        draft=self.tools.call('read_loop',{'draft_id':self.draft['draft_id']})['loop']
+        self.assertEqual(draft['loop_definition']['nodes']['initialize']['instructions'],task['instructions'])
+        self.assertTrue(self.tools.call('validate_loop',{'draft_id':self.draft['draft_id']})['valid'])
+
     def test_removal_cleans_generated_types_and_protects_shared_and_published_types(self):
         self.edit('set_loop',handbook='A draft with shared output types.')
         for node in ('a','b'):
@@ -247,7 +264,7 @@ class PlatformToolTests(unittest.TestCase):
         self.assertEqual([], bp['nodes']['convert']['skills'])
         self.assertEqual(bp['nodes']['finish']['skills'], info['skills'])
         with zipfile.ZipFile(io.BytesIO(bundle('http://localhost:1234'))) as archive:
-            self.assertEqual(['platform/loop-anything-dispatch/SKILL.md','platform/loop-anything-platform/SKILL.md'], [n for n in archive.namelist() if n.endswith('/SKILL.md')])
+            self.assertEqual(['platform/loop-anything-dispatch/SKILL.md','platform/loop-anything-local/SKILL.md','platform/loop-anything-platform/SKILL.md'], [n for n in archive.namelist() if n.endswith('/SKILL.md')])
             self.assertFalse(any(n.startswith('author/') for n in archive.namelist()))
             connection = json.loads(archive.read('platform/loop-anything-platform/connection.json'))
             self.assertEqual({'url': 'http://localhost:1234'}, connection)

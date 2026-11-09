@@ -90,6 +90,11 @@ class Communication:
             db.commit()
         with self.transaction() as db:
             config=self.settings(db)
+            if getattr(store,'hosting_team',False):
+                # The NAS service lock was acquired before Store construction. Its
+                # logical workspace survives a deliberate restart on another host.
+                config['machine_id']=self.machine_identity.read()['machine_id']
+                config.pop('identity_location',None)
             self.identity_error = self.machine_identity.claim(config['instance_id'], store.filename,
                 config.get('machine_id'), config.get('identity_location'))
             self.identity_conflict = bool(self.identity_error)
@@ -458,7 +463,9 @@ class Communication:
         if type(deadline) not in (int, float) or not 1 <= deadline <= 2592000:
             raise Invalid('Acceptance deadline must be 1–2592000 seconds')
         ident = identifier(a.get('request_id') or uid('request'))
-        request = {'id': ident, 'origin': config['instance_id'], 'location': location,
+        from loop_anything.runtime.run_library import user_name
+        created_by = run.get('created_by','') if source.get('run_id') else user_name(a.get('created_by') or '')
+        request = {'id': ident, 'origin': config['instance_id'], 'location': location, 'created_by':created_by,
                    'group_id': group_id if location == 'group' else None, 'kind': 'node_execution' if node else 'assistance',
                    'scope_group_id':scope_group_id,
                    'agent_id': a.get('agent_id'), 'target_instance':a.get('instance_id'), 'capability': a.get('capability'), 'source': source,
@@ -742,7 +749,7 @@ class Communication:
                         call.update(state='failed', error='Source interrupted during tool call; inspect its effect before retry')
                         if row['origin']==self.settings(db)['instance_id'] and row.get('executor')!=row['origin']:
                             self.emit(db,row,row['executor'],'rpc_result',call)
-                if not row.get('mirror') and row.get('executor') == self.settings(db)['instance_id'] and row['state'] in ('starting', 'running', 'cancelling'):
+                if not row.get('mirror') and row.get('executor') == self.settings(db)['instance_id'] and row['state'] in ('starting', 'running', 'cancelling') and row.get('terminal_id') not in getattr(self.engine,'remote_recovery',{}):
                     row['state'] = 'unknown'
                     self.event(row, 'interrupted', {'message': 'Verify the old process before starting again'})
                 self.save(db, row)
@@ -832,6 +839,7 @@ class Communication:
         context['asset_manifest'] = list(document.get('files', {}))
         context['handbook']=resolve_skill(self.store.filename,snapshot['loop_key'],context['handbook'])
         context.update(loop_key=snapshot['loop_key'],node_id=execution['node'],parameters=execution['parameters'])
+        if info.get('flow_trigger') is not None:context['flow_trigger']=info['flow_trigger']
         dispatch = dict(execution['implementation']['dispatch'])
         continuation=execution.get('assistance_resume')
         previous_request=None
@@ -1249,24 +1257,31 @@ class Communication:
             self.live[ident] = True
         self.engine.futures.add(self.engine.pool.submit(self.execute, ident))
 
-    def execute(self,ident):
-        try:self._execute(ident)
+    def execute(self,ident,reconnect=False):
+        deferred=False
+        try:deferred=self._execute(ident,reconnect)
         except Exception as exc:
             with self.transaction() as db:
                 row=self.get(ident,db)
                 if row['state'] not in END:
                     row.update(state='unknown' if row.get('pid') else 'failed',error=str(exc))
                     self.event(row,row['state']);self.save(db,row)
-        finally:self.live.pop(ident,None)
+        finally:
+            if not deferred:self.live.pop(ident,None)
 
-    def _execute(self, ident):
+    def _execute(self, ident, reconnect=False):
         from loop_anything.runtime.host_runtime import run_command, CommandNotStopped, CommandStartError
         from loop_anything.runtime.native_sessions import Capture, provider_for
         from loop_anything.paths import platform_skill_directory
-        row = self.get(ident)
-        session = self.engine.terminals.create('', ident, row['terminal_id'], row['launch'].get('terminal', False),
-                                              [row['worker_token']], {'owner_type': 'communication', 'request_id': ident,'native_session':row.get('native_session'),
-                                              'native_history':bool(row['launch'].get('resume_command')) or provider_for(row['launch']) in ('codex','claude')})
+        from loop_anything.runtime.executors import RemotePending
+        from loop_anything.runtime.agent_prompt import process_prompt
+        row = self.get(ident);row['launch']=self.engine.implementation(row['launch'])
+        if reconnect or row.get('terminal_id') in getattr(self.engine,'remote_recovery',{}):
+            session=self.engine.terminals.attach(row['terminal_id'],[row['worker_token']])
+        else:
+            session = self.engine.terminals.create('', ident, row['terminal_id'], row['launch'].get('terminal', False),
+                                                  [row['worker_token']], {'owner_type': 'communication', 'request_id': ident,'native_session':row.get('native_session'),
+                                                  'native_history':bool(row['launch'].get('resume_command')) or provider_for(row['launch']) in ('codex','claude')})
         session.check = lambda: 'revoked' if self.get(ident)['state'] == 'cancelling' or row['session']['mode']=='resume' and session.doc.get('native_session_error') else 'finished' if self.get(ident).get('worker_finished') else None
         def native(provider, native_id):
             with self.transaction() as db:
@@ -1293,15 +1308,17 @@ class Communication:
                    'execution_url': getattr(self.engine, 'platform_url', None),
                    'client': str(platform_skill_directory() / 'scripts/communication.py')}
         base=getattr(self.engine,'platform_url','') or ''
-        context['platform_url']=base+'/communication/'+ident+'/'+row['worker_token']
+        from loop_anything.runtime.tool_client import scoped_url
+        context['platform_url']=scoped_url(base,ident,row['worker_token'])
         context['platform_client']=str(platform_skill_directory()/'scripts/call.py')
         context['platform_guide']=str(platform_skill_directory()/'references/communication.md')
         context['dispatch_skill']=str(platform_skill_directory().parent/'loop-anything-dispatch/SKILL.md')
         context.update(row['source'])
         context['self'] = self.self_info()
+        if row['launch'].get('executor'):context['execution_executor']=row['launch']['executor']
         if row.get('collaboration'):context['collaboration']=copy.deepcopy(row['collaboration'])
         if row.get('source_reference'):context['source_reference']=row['source_reference']
-        context.update({k:row['context'][k] for k in ('handbook','inputs','scope_task','loop_key','node_id','parameters','resource_root','assistance_results','assistance_resume') if k in row['context']})
+        context.update({k:row['context'][k] for k in ('handbook','inputs','scope_task','loop_key','node_id','parameters','resource_root','assistance_results','assistance_resume','flow_trigger') if k in row['context']})
         task_info=row['context'].get('task')
         if not isinstance(task_info,dict):task_info={}
         context.update({k:task_info.get(k) for k in ('skills','instructions')})
@@ -1317,18 +1334,24 @@ class Communication:
                   'For a node waiting on assistance, call source wait_assistance with task_id/request_ids/seconds, then source finish and complete with an empty result. The platform continues the same Task with replies; do not keep a CLI occupied just to poll. '
                   'read_context reads associated Loop/task context without granting writes, including for assistance; it may return a pending call handle. '
                   'The self field identifies this executor machine and workspace, not the source platform; instance_id routing uses workspace_id. '
-                  'Use native_session to register {"provider":...,"id":...} if available.\n' + json.dumps(context, ensure_ascii=False))
-        if 'prompt' in row['launch']:
-            prompt=row['launch']['prompt'].replace('{{context}}',json.dumps(context,ensure_ascii=False))
-        error = None
+                  'Use native_session to register {"provider":...,"id":...} if available.\n{{context}}')
+        prompt=process_prompt(row['launch'],context,row['launch'].get('prompt',prompt))
+        error = None;deferred=False;uncertain=False
         try:
-            result = run_command(row['launch']['command'], prompt, row['launch'].get('timeout'), row['launch'].get('cwd'), self.engine.stopping, session)
+            if row['launch'].get('executor'):
+                from loop_anything.runtime.executors import run as remote_run
+                result=remote_run(self.engine,row['launch'],row['launch']['command'],prompt,row['launch'].get('timeout'),
+                    row['launch'].get('cwd'),self.engine.stopping,session,row['terminal_id'],{'kind':'communication','request_id':ident})
+            else:
+                result = run_command(row['launch']['command'], prompt, row['launch'].get('timeout'), row['launch'].get('cwd'), self.engine.stopping, session)
             if row['session']['mode']=='resume' and session.doc.get('native_session_error'):raise Invalid(session.doc['native_session_error'])
             if result.returncode and not self.get(ident).get('worker_finished'):
                 raise Invalid('Agent command exited: ' + str(result.returncode))
             current = self.get(ident)
             if not current.get('worker_finished') and current['state'] != 'cancelling':
                 raise Invalid('Agent exited without submitting a structured result')
+        except RemotePending:
+            deferred=True
         except Exception as exc:
             error = str(exc)
             uncertain = isinstance(exc, CommandNotStopped)
@@ -1344,6 +1367,10 @@ class Communication:
         else:
             uncertain = False
         finally:
+            if deferred:return True
+            if uncertain and row['launch'].get('executor') and self.engine.stopping.is_set():
+                self.live.pop(ident,None)
+                return  # Reconnect the durable process on restart; the receiver is still running.
             with self.transaction() as db:
                 current = self.get(ident, db)
                 if uncertain or self.engine.stopping.is_set() and not current.get('worker_finished'):
@@ -1358,6 +1385,9 @@ class Communication:
                 self.event(current, current['state'])
                 self.save(db, current)
             self.live.pop(ident, None)
+            if row['launch'].get('executor'):
+                try:self.engine.executors.applied(row['terminal_id'])
+                except Invalid:pass
 
     def worker_call(self, ident, token, tool, arguments):
         if not self.authorized({'request_id': ident, 'token': token}, worker=True):

@@ -3,7 +3,7 @@
 The module contains no application names, simulated outcomes or domain policies.
 """
 import copy
-from loop_anything.runtime.agent_prompt import task_context, render_prompt, mask_prompt
+from loop_anything.runtime.agent_prompt import task_context, mask_prompt
 import json
 import time
 import math
@@ -245,7 +245,12 @@ class TimelineRuntime:
             if diagnostics:
                 Store.log(run, 'diagnostics', 'Run readiness needs inspection', detail=diagnostics)
 
+    def advance_loops(self, run_id):
+        from loop_anything.runtime.loop_calls import advance
+        advance(self,run_id)
+
     def tick(self, run_id):
+        self.advance_loops(run_id)
         jobs, deliveries = [], []
         with self.store.edit(run_id) as run:
             if not run.get('operator_protocol'):
@@ -264,6 +269,8 @@ class TimelineRuntime:
                     if e['status'] != 'waiting' or e.get('worker_active') or e.get('observation_error') or monitor_ended(run, e):
                         continue
                     implementation = e['implementation']
+                    if implementation['kind']=='loop':
+                        continue  # The called Run is observed in the transaction above, without a worker.
                     if implementation['kind'] == 'event':
                         event = next((v for v in run['events'] if not v.get('consumed_by') and
                             (not v.get('task_id') or v['task_id']==tasks['id']) and v['name'] == implementation['event'] and v.get('key') == e.get('wait',{}).get('key',tasks['spec'].get('parameters', {}).get('event_key')) and (e.get('wait',{}).get('deadline') is None or v['at'] <= e['wait']['deadline'])), None)
@@ -284,7 +291,7 @@ class TimelineRuntime:
                         e['status'] = tasks['status'] = 'executing'
                         jobs.append((copy.deepcopy(e), copy.deepcopy(run), True))
                 active = sum(w['status'] in {'executing', 'decision'} or (w['status'] == 'waiting' and
-                    (selected(run, w)[1] or {}).get('kind') == 'external') for w in run['tasks'].values())
+                    (selected(run, w)[1] or {}).get('kind') in ('external','loop')) for w in run['tasks'].values())
                 candidates = sorted(run['tasks'].values(), key=lambda task: scope_for(run, task) is not None)
                 for tasks in candidates:
                     if tasks['status'] not in PENDING:
@@ -321,9 +328,12 @@ class TimelineRuntime:
                     if implementation['kind'] not in ('event', 'approval', 'timer') and active >= run['settings']['max_parallel']:
                         continue
                     e = self.new_execution(run, tasks, implementation, values, sources)
-                    if implementation['kind'] == 'agent':
+                    from loop_anything.runtime.flow_agent import NODE as FLOW_AGENT
+                    if implementation['kind'] == 'agent' and (e['node'] != FLOW_AGENT or implementation.get('command') or implementation.get('dispatch')):
                         acquire_in_run(run, 'background', e['token'], e['id'])
-                    if implementation['kind'] in ('event','timer'):
+                    if implementation['kind']=='loop':
+                        e['status']='waiting'
+                    elif implementation['kind'] in ('event','timer'):
                         try:
                             e['wait']=wait_values(implementation,{'inputs':values,'parameters':e['parameters'],'settings':run['settings']})
                             e['status']='waiting'
@@ -338,7 +348,7 @@ class TimelineRuntime:
                     if e['status'] in ('decision', 'approval', 'waiting'):
                         e['started_at'] = time.time()
                     tasks['status'] = e['status']
-                    if e['status'] in ('executing', 'decision'):
+                    if e['status'] in ('executing', 'decision') or implementation['kind']=='loop':
                         active += 1
                     Store.log(run, 'dispatched', tasks['id'] + ' → ' + e['node'], e['id'], {'sources': sources, 'origin': tasks['origin']})
                 self.diagnose(run)
@@ -538,14 +548,14 @@ class TimelineRuntime:
         delay = report.get('poll_after', 10)
         if type(delay) not in (int, float) or not math.isfinite(delay) or delay <= 0:
             raise Invalid('poll_after must be positive and finite')
-        if 'external_id' in report and (kind != 'external' or not isinstance(external_id, str) or not external_id):
+        if 'external_id' in report and (kind not in ('external','loop') or not isinstance(external_id, str) or not external_id):
             raise Invalid('external_id requires an external implementation and a nonempty ID')
         if e.get('external_id') and external_id != e['external_id']:
             raise Conflict('A monitor cannot replace the external task identity')
         event = report['event']
-        if event == 'check_error' and (kind != 'external' or not external_id):
+        if event == 'check_error' and (kind not in ('external','loop') or not external_id):
             raise Invalid('check_error requires an external task already submitted')
-        if event == 'submitted' and (kind != 'external' or not external_id):
+        if event == 'submitted' and (kind not in ('external','loop') or not external_id):
             raise Invalid('submitted needs the external task ID')
         if 'envelope' in report and event != 'completed':
             raise Invalid('Only completed reports may commit outputs or arrange tasks')
@@ -601,7 +611,7 @@ class TimelineRuntime:
             for spec, origin in routed_tasks:
                 add_task(run, spec, origin)
             for firing in route_firings:
-                Store.log(run, 'route_fired', 'Event expanded plan: ' + firing['plan'], e['id'],
+                Store.log(run, 'route_fired', 'Flow decision requested' if firing.get('flow_agent') else 'Event expanded plan: ' + firing['plan'], e['id'],
                           dict(firing, task_id=task['id'], report_id=report['report_id'], event=event))
         detail = {'from': state, 'event': event, 'to': target, 'source': source, 'accepted': matched,
                   'report_id': report['report_id'], 'detail': copy.deepcopy(report.get('detail', {})),
@@ -665,8 +675,10 @@ class TimelineRuntime:
             self.check_owner(run, e, token)
             self.report_in_run(run, e, {'event': 'completed', 'report_id': 'submit:' + digest(envelope), 'envelope': envelope}, 'submission')
 
-    def execute(self, run_id, e, snapshot, observe=False):
-        implementation = e['implementation']
+    def execute(self, run_id, e, snapshot, observe=False, invocation=None, reconnect=False):
+        from loop_anything.runtime.executors import RemotePending
+        from loop_anything.runtime.agent_prompt import process_prompt, DEFAULTS
+        implementation = self.engine.implementation(e['implementation'])
         if implementation.get('dispatch'):
             try:
                 self.engine.communication.submit_node(run_id, e, snapshot)
@@ -677,19 +689,24 @@ class TimelineRuntime:
                     if owner_for(current_run,e['token']):release_in_run(current_run,e['token'])
             return
         exit_error = None
-        invocation = uid('call')
+        deferred=False
+        invocation = invocation or uid('call')
         try:
             if e.get('assistance_resume'):
                 from loop_anything.runtime.native_sessions import resume_config,active_native
                 native=e['assistance_resume']['native_session']
-                implementation=resume_config(e['assistance_resume']['implementation'],native)
+                implementation=self.engine.implementation(resume_config(e['assistance_resume']['implementation'],native))
                 with self.store.connection() as db:active=active_native(db,native['provider'],native['id'],self.store)
                 if active and (active['run_id'],active['execution_id'])!=(run_id,e['id']):
                     raise Conflict('The original CLI session is still active or its stop is unconfirmed')
-            if implementation['kind'] == 'agent':
+            if reconnect:
+                # finish may already have released the scope before the service stopped.
+                # The existing process needs its receipt, not a newly constructed prompt.
+                request_text=self.engine.executors.get(invocation)['payload'].get('prompt','')
+            elif implementation['kind'] == 'agent':
                 context = task_context(self.store, snapshot, e, getattr(self.engine, 'platform_url', None),
                                        owner_for(snapshot, e['token']).get('scope_task'))
-                request_text = render_prompt(implementation, 'task', context)
+                request_text = process_prompt(implementation,context,implementation.get('prompt',DEFAULTS['task']),2)
             else:
                 node = node_for(snapshot, e['node'])
                 request = {'run_id': run_id, 'execution_id': e['id'], 'task_id': e['task_id'], 'token': e['token'],
@@ -701,27 +718,36 @@ class TimelineRuntime:
                            'report_client': str(platform_skill_directory() / 'scripts/report.py'),
                            'lifecycle': lifecycle_definition(implementation), 'state': e.get('lifecycle_state'),
                            'invocation_id': invocation, 'observing': observe}
-                request_text = json.dumps(request)
-            # A queued worker must recheck its ownership before launching a command.
-            with self.store.edit(run_id) as current_run:
-                current = self.engine.execution(current_run, e['id'])
-                if observe and (current.get('token') != e['token'] or monitor_ended(current_run, current) or current.get('observation_error')):
-                    Store.log(current_run, 'monitor_skipped', 'Queued monitor no longer applies', e['id'])
-                    return
-                self.check_owner(current_run, current, e['token'])
-                current['worker_active'] = invocation
-                current['call_reported'] = False
-                if observe:
-                    Store.log(current_run, 'observation', 'Checking external task', e['id'], {'external_id': current.get('external_id'), 'invocation_id': invocation})
-                if current.get('started_at') is None:
-                    current['started_at'] = time.time()
-                if implementation['kind'] == 'agent':
-                    current['prompt_text'] = mask_prompt(request_text, e['token'])
+                request_text = process_prompt(implementation,request)
+            if not reconnect:
+                # A queued worker must recheck its ownership before launching a command.
+                with self.store.edit(run_id) as current_run:
+                    current = self.engine.execution(current_run, e['id'])
+                    if observe and (current.get('token') != e['token'] or monitor_ended(current_run, current) or current.get('observation_error')):
+                        Store.log(current_run, 'monitor_skipped', 'Queued monitor no longer applies', e['id'])
+                        return
+                    self.check_owner(current_run, current, e['token'])
+                    current['worker_active'] = invocation
+                    current['call_reported'] = False
+                    if observe:
+                        Store.log(current_run, 'observation', 'Checking external task', e['id'], {'external_id': current.get('external_id'), 'invocation_id': invocation})
+                    if current.get('started_at') is None:
+                        current['started_at'] = time.time()
+                    if implementation['kind'] == 'agent':
+                        current['prompt_text'] = mask_prompt(request_text, e['token'])
             session = None
             if implementation['kind'] == 'agent':
-                session = self.engine.terminals.create(run_id, e['id'], invocation, implementation.get('terminal', False), [e['token']])
+                session = self.engine.terminals.attach(invocation,[e['token']]) if reconnect else self.engine.terminals.create(run_id, e['id'], invocation, implementation.get('terminal', False), [e['token']])
                 from loop_anything.runtime.native_sessions import configure_capture
-                configure_capture(self.store, run_id, e['id'], session, implementation,e.get('assistance_resume',{}).get('native_session'))
+                native=e.get('assistance_resume',{}).get('native_session')
+                if reconnect:
+                    native=native or e.get('native_session')
+                    if not native:
+                        from loop_anything.runtime.native_sessions import provider_for
+                        saved=self.engine.executors.get(invocation)['payload']
+                        if saved.get('native_id'):native={'provider':provider_for(implementation),'id':saved['native_id']}
+                configure_capture(self.store, run_id, e['id'], session, implementation,native)
+                if reconnect:session.on_started=None
                 def session_state():
                     if e.get('assistance_resume') and session.doc.get('native_session_error'):return 'revoked'
                     current_run = self.store.get(run_id)
@@ -731,9 +757,15 @@ class TimelineRuntime:
                     if current_run['status'] == 'terminated' or current.get('token') != e['token']:
                         return 'revoked'
                 session.check = session_state
-            result = run_command(implementation['observe'] if observe else implementation['command'], request_text,
-                                 implementation.get('timeout', None if implementation['kind'] == 'agent' else 60), implementation.get('cwd'),
-                                 stop=self.engine.stopping if implementation['kind'] == 'agent' else None, **({'session': session} if session else {}))
+            if implementation.get('executor'):
+                from loop_anything.runtime.executors import run as remote_run
+                result=remote_run(self.engine,implementation,implementation['observe'] if observe else implementation['command'],
+                    request_text,implementation.get('timeout',None if implementation['kind']=='agent' else 60),implementation.get('cwd'),
+                    self.engine.stopping,session,invocation,{'kind':'task','run_id':run_id,'execution_id':e['id'],'observe':observe})
+            else:
+                result = run_command(implementation['observe'] if observe else implementation['command'], request_text,
+                                     implementation.get('timeout', None if implementation['kind'] == 'agent' else 60), implementation.get('cwd'),
+                                     stop=self.engine.stopping if implementation['kind'] == 'agent' else None, **({'session': session} if session else {}))
             if e.get('assistance_resume') and session.doc.get('native_session_error'):raise Invalid(session.doc['native_session_error'])
             if observe:
                 with self.store.edit(run_id) as run:
@@ -780,8 +812,12 @@ class TimelineRuntime:
                     raise Invalid('Program exited before completing its task')
                 if implementation['kind'] == 'external' and not current.get('external_id') and current['status'] not in END | {'fault'}:
                     raise Invalid('Submitter exited without an external task ID or result')
+        except RemotePending:
+            deferred=True
         except Exception as exc:
             exit_error = exc
+            if implementation.get('executor') and self.engine.stopping.is_set() and isinstance(exc,CommandNotStopped):
+                return  # The same durable remote call is reattached after service restart.
             with self.store.edit(run_id) as run:
                 current = self.engine.execution(run, e['id'])
                 if observe and not isinstance(exc, CommandNotStopped) and (current.get('token') != e['token'] or monitor_ended(run, current)):
@@ -808,20 +844,25 @@ class TimelineRuntime:
                         if owner_for(run, e['token']).get('scope_task') is None:
                             run['attention_error'] = str(exc)
         finally:
+            if deferred:return
             with self.store.edit(run_id) as run:
                 current = self.engine.execution(run, e['id'])
-                if current.get('worker_active') == invocation and not (implementation['kind'] == 'agent' and isinstance(exit_error, CommandNotStopped)):
+                if current.get('worker_active') == invocation and not isinstance(exit_error, CommandNotStopped):
                     current.pop('worker_active', None)
                     current.pop('call_reported', None)
             if e['implementation']['kind'] == 'agent':
                 with self.store.edit(run_id) as run:
                     owner = owner_for(run, e['token'])
-                    if owner and not owner.get('recovery_required'):
+                    if owner and not owner.get('recovery_required') and not (implementation.get('executor') and isinstance(exit_error,CommandNotStopped)):
                         release_in_run(run, e['token'])
                     if not owner_for(run, e['token']):
                         previous = owner_for(snapshot, e['token'])
                         if previous and not self.engine.stopping.is_set():
                             agent_exited(run, self, exit_error, previous.get('scope_task'))
+
+            if implementation.get('executor'):
+                try:self.engine.executors.applied(invocation)
+                except Invalid:pass
 
     def deliver(self, run_id, notification, snapshot):
         configuration_error = False
@@ -975,18 +1016,21 @@ class TimelineRuntime:
             sessions = {row['execution_id']: row['id'] for row in db.execute(
                 'SELECT id, execution_id, document FROM execution_sessions WHERE run_id=? ORDER BY rowid', (run['id'],))
                 if json.loads(row['document'])['state'] in ('starting', 'running', 'interrupted')}
+        remote={j['metadata'].get('execution_id') for j in getattr(self.engine,'remote_claims',{}).values() if j['metadata'].get('run_id')==run['id']}
         for attempt in run['executions']:
+            if attempt['id'] in remote:continue
             if attempt.get('worker_active'):
                 self.block_retry(run, attempt, 'Engine interrupted while process was active; verify stopped before retry')
             if attempt['id'] in sessions:attempt['worker_active'] = sessions[attempt['id']]
             else:attempt.pop('worker_active', None)
             attempt.pop('call_reported', None)
         for owner in run.get('agent_sessions', []):
-            if owner.get('execution_id'):
+            if owner.get('execution_id') and owner['execution_id'] not in remote:
                 primary = self.engine.execution(run, owner['execution_id'])
                 if primary['implementation'].get('command') and not primary['implementation'].get('dispatch') or owner.get('resume_session'):
                     owner['recovery_required'] = True
         for e in run['executions']:
+            if e['id'] in remote:continue
             if e['status'] in IN_FLIGHT and 'lifecycle' not in e['implementation']:
                 # Adopt the explicit contract for active pre-lifecycle attempts, without rewriting history.
                 e['implementation']['lifecycle'] = lifecycle_definition(e['implementation'])

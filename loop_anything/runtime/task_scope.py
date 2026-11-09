@@ -33,7 +33,8 @@ def owner_for(run, token):
 
 def scope_for(run, task):
     node = task['spec']['node']
-    if (run['loop_definition']['nodes'][node].get('initialize_timeline') or task['origin'].get('fallback') or
+    from loop_anything.runtime.flow_agent import NODE as FLOW_AGENT
+    if (node == FLOW_AGENT or run['loop_definition']['nodes'][node].get('initialize_timeline') or task['origin'].get('fallback') or
             node == (run['settings'].get('global_agent_node') or run['settings'].get('fallback_node'))):
         return None
     return task['id']

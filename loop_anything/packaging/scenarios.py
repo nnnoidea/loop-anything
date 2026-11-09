@@ -104,6 +104,7 @@ def run_scenarios(document, scenarios=None):
             engine=Engine(store);engine.pool.shutdown(wait=True);engine.pool=InlinePool()
             intercepted=[]
             engine.timeline_runtime.execute=lambda run_id,e,snapshot,observe:intercepted.append({'task_id':e['task_id'],'kind':e['implementation']['kind'],'observe':observe})
+            engine.timeline_runtime.advance_loops=lambda run_id:None  # Child outcomes are supplied as scenario reports, just like external work.
             def delivery(run_id, notice, snapshot):
                 with store.edit(run_id) as current:
                     row=next(n for n in current['notifications'] if n['id']==notice['id'])

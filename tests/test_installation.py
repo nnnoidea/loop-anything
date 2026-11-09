@@ -12,6 +12,13 @@ from loop_anything.runtime.store import Store
 
 
 class InstallationTests(unittest.TestCase):
+    def test_local_skill_export_needs_no_platform_connection(self):
+        with tempfile.TemporaryDirectory() as folder:
+            result=install_skills(bundle('unused',only='local'),folder)
+            self.assertEqual(result['skills'],['loop-anything-local'])
+            self.assertFalse((Path(folder)/'loop-anything-platform').exists())
+            self.assertEqual(result['check'][-2:],['local','--help'])
+
     def test_build_identity_includes_portable_runtime_code(self):
         from loop_anything.capabilities import _source_build
         with tempfile.TemporaryDirectory() as folder:

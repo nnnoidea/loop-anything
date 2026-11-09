@@ -1,123 +1,142 @@
-# 构建 Loop
+# Build a Loop
 
-用平台机制组合用户需要的复杂流程，复用已有实现。Agent 负责发现能力、选择表达和完成接入；用户需要决定业务意图、资源与授权边界。具体工具字段按需查 [构建工具与接入契约](build-reference.md)，调用方式见 [平台 Skill](../SKILL.md)。
+Compose platform mechanisms for the user's workflow and reuse existing implementations. The agent discovers capabilities, chooses representations, and integrates them; the user determines business intent, resources, and authorization. Read [authoring fields/contracts](build-reference.md) and the [platform Skill](../SKILL.md) as needed.
 
-## 从已有 Skill 或不完整规则开始
+## Start from an existing Skill or incomplete rules
 
-用户已有操作 Skill，或下一步需要临场判断时，主动建议[流程 Agent 与确定规则混合推进](flow-agent.md)：先剥离长时间执行和等待，已明确的转移直接声明，其余由按需唤醒的流程 Agent 决定。初版不要求穷举状态矩阵；流程 Agent 直接完整读取 Loop 说明，推进选择与依据随正常结果保留。纯确定性流程无需增加 Agent，不把这种建议变成强制构建流程。
+For an existing operating Skill or decisions requiring judgment, suggest [flow agents combined with deterministic rules](flow-agent.md). Separate long execution/waits, declare known transitions, and use an on-demand flow agent for the remaining decisions. A first version need not enumerate every state transition. The flow agent reads the complete Loop handbook and records its decisions/rationale through normal results. Deterministic workflows need no extra agent; this is a suggestion, not a mandatory construction process.
 
-## 先明确平台和作者的分工
+## Three instruction layers and on-demand reading
 
-创建/复制 Loop 或完整读取定义时，先看返回的 authoring_context。平台已经负责持久化 Timeline、依赖调度、并发与操作范围、执行快照和重启恢复；按声明负责批量、路由、重试、等待、通知与收口；平台已有结构、任务、结果、来源和历史查看能力。作者负责业务方法、节点契约、真实实现与外部接口适配。
+Organize business guidance as a main Loop Skill with node references, divided by decision scope:
 
-按需查询 read_capabilities(capability=...) 中的生效方式、配置和边界；同一份说明也随 Skill 提供：[平台能力与分工](platform-capabilities.md)。平台已有能力需要配置时，优先把需求落成对应声明。确有缺口时指出具体缺少的语义，再决定最小适配，避免在业务包内重建调度、控制权、状态存储或基本 viewer。
+| Layer | Purpose |
+| --- | --- |
+| Platform Skill | Discover capabilities and construction choices; reference common build/run/wait/communication/report operations. |
+| Loop Skill (handbook) | Preserve applicable goals, overall business methods, node responsibilities, shared constraints, progression decisions, and completion criteria; point to relevant node/platform references. |
+| Node reference | Context, methods, script entry points, inputs/outputs, success criteria, and recovery for this responsibility; reference shared rules in the handbook and generic operations in platform topics. |
 
-例如“给出参数 → 并行执行 → 汇总判断”：先用 source.routes 映射参数，再用 plan.each/collect/after 和稳定 ref，最后让 Engine 调度并由任务提交结果。平台负责展示，作者提供执行命令和判断方法。read_capabilities.patterns 提供可改用的声明片段。
+When importing a Skill, preserve its business reasoning and decision methods, then move stage-specific operations into references. The handbook must still explain the business, not become a list of fields, files, or architecture. Each reference identifies when to read it and its real path. Maintain implementation lists, contracts, and steps in their responsible documents rather than duplicating them.
 
-## 先把业务需求对应到平台机制
+Use [author Skill file bindings](build-reference.md#author-skill-files-and-references) for the handbook and node files. Link the same bound node file from the handbook; distinguish tool arguments from stored fields. Existing node SKILL.md files need not be renamed, copied, separately registered, or independently installed. Resolve platform references from the installed Skill/context, not hardcoded author-machine paths. Short inline instructions remain supported.
 
-先读取运行中服务的 `read_capabilities` 和 `list`，查看 instructions 和有关工具的参数；目录是当前可用接口的依据。已有 Loop 用 `list_loops` 找当前草稿和版本，读取定义及相关包文件，继续同一个 Loop。迁入已有系统时，先读它的业务方法、可调用入口与运行依赖，区分可直接复用的实现、需要适配的接口和平台已经承担的职责。
+Read by role: building agents use platform construction guidance, handbook, and affected node references; flow agents read the complete handbook plus relevant references; node agents use shared business rules and their current node reference, consulting platform operations when needed. Script nodes need an execution contract, not an extra agent to read it. Neither preload every reference nor prohibit further reading when relevant.
 
-从已有对话和材料得到：用户从什么意图开始、哪些地方需要判断、确定后的工作如何执行、用什么结果决定继续或结束。用简短说明或一张小表把这些对应关系告诉用户；已有明确答案直接落实，只有影响业务含义或授权的缺口才提问。不要要求用户逐项设计节点、schema、工具参数。
+Skills hold reusable methods/rules. Read current goals, constraints, state, and results from Run settings, Tasks, and records, without another document copy of runtime state. Natural-language progression still requires explicit flow_agent routes; prose alone does not enable an agent.
 
-先验证一条代表性的完整路径，再扩展本轮要求的其他实现和分支。完整路径包括任务结果如何被下游消费，以及何时继续、等待或结束。先跑通少量样例有助于提早发现接口问题；交付范围仍以用户要求为准。
+Propose separation based on the goal. Do not force splitting, extra nodes, or a fixed directory template when material is already clear. Evaluate usefulness by whether an agent can find required references and complete representative work. Needing a reference beyond the main file is not itself a defect.
 
-## 将职责放到已有能力中
+## Separate platform and author responsibilities
 
-| 需要表达的事 | 使用的平台能力 | 作者需提供的内容 |
+Read returned authoring_context when creating/copying a Loop or reading a complete definition. The platform already persists Timeline state, schedules dependencies, enforces concurrency/scope, snapshots executions, and recovers after restart. Declared mechanisms handle batches, routes, retries, waits, notifications, and completion. It also displays structure, tasks, results, provenance, and history. Authors provide business methods, contracts, real implementations, and external adaptations.
+
+Inspect activation, configuration, and limits through read_capabilities(capability=...) or the same [capability guide](platform-capabilities.md). Prefer declarations for existing mechanisms. When capability is genuinely missing, identify the absent semantics and minimum adapter rather than rebuilding scheduling, ownership, storage, or viewers in the business package.
+
+For "parameters → parallel work → aggregate judgment", use source.routes parameter mapping, plan.each/collect/after and stable refs, then let the Engine schedule and tasks submit results. The platform displays them; authors supply commands and reasoning methods. read_capabilities.patterns provides adaptable examples.
+
+## Map business needs to mechanisms first
+
+Read live read_capabilities/list instructions and tool arguments. Find existing drafts/versions with list_loops, inspect definitions/assets, and continue the same Loop. When adapting another system, inspect its business methods, stable entry points, and dependencies; distinguish reusable implementations, adapters, and responsibilities already handled here.
+
+Use the conversation/materials to establish entry intent, judgment points, execution after decisions, and the evidence for continuing or ending. Explain this mapping concisely. Act on clear existing answers; ask only about gaps affecting business meaning or authorization. Do not require users to design every node/schema/tool field.
+
+Verify a representative complete path before expanding other requested branches/implementations. Include how downstream tasks consume results and when work continues, waits, or ends. Small examples expose interface issues early without reducing the requested delivery scope.
+
+## Assign responsibilities to existing capabilities
+
+| Need | Platform mechanism | Author supplies |
 | --- | --- | --- |
-| 目标、约束、指导与授权 | Timeline settings | 对话中确认的业务语义 |
-| 需要临场决定后续安排 | 流程 Agent（普通 agent 节点）＋事件 routes／依赖 | 自然语言判断规则、唤醒点、可安排工作与结束条件；见 [流程 Agent](flow-agent.md) |
-| 已确定的自动工作 | command 或 external 候选 | 实际命令、参数、输入输出；异步工作另有 observe |
-| 条件、互斥及组合参数要求 | parameter_schema、validate_parameters | 候选真实接受的契约；见 [contracts.md](contracts.md) |
-| 按业务项选择任务及其结果 | ref、after_refs、task_ref/task_refs、resolve_refs | 唯一引用名、汇总成员和输出端口 |
-| 展开预览与流程验收 | preview_plan、test_loop、set_loop.scenarios | 样例输入、模拟节点报告及可观察的预期；见 [testing.md](testing.md) |
-| 一组可复用工作 | plan、输入来源与 after | 节点职责、真实数据交接与先后关系 |
-| 按列表批量工作，再汇总本批结果 | plan each、输入 collect | 列表路径、逐项参数与汇总需要的输出；复用平台生成的 Task/record ID |
-| 是否安排某步骤 | plan when 或本次 build_plan.steps.skip | 本次明确选择；省略后下游如何获得输入 |
-| 预览或一次提交多项任务变更 | edit_tasks | 有序的 add_task/build_plan/change_task 操作及当前 Timeline revision |
-| 根据结果或事件创建下一轮 | 节点 routes → plan | 触发事件、条件、模板参数来源；Agent/脚本只提交结果，平台生成 Task |
-| 临时追加未预定义的工作 | add_task / build_plan | 明确节点、参数、输入和依赖 |
-| 外部进度与失败恢复 | external 报告、lifecycle、可选 fallback | 有限事件、机械条件、允许的重试或接手动作 |
-| 暂停、通知与等待 | Hooks、notify、timer/event | 触发位置、用户问题或外部事件 |
-| 整个 Run 收口 | settings.completion_rule / termination_signal | 可机械判定的条件，或 Agent 已作出的完成判断 |
+| Goals, constraints, guidance, authorization | Timeline settings | Agreed business meaning |
+| Situational progression decisions | Built-in flow agent + explicit event routes | Natural-language rules, decision points, executor; no default progression or extra flow node; [flow agents](flow-agent.md) |
+| Known automatic work | command/external candidates | Real commands, parameters, inputs/outputs; observe for async work |
+| Conditional, exclusive, composed parameters | parameter_schema, validate_parameters | Actual candidate contracts; [contracts](contracts.md) |
+| Select tasks/results by business item | ref, after_refs, task_ref/task_refs, resolve_refs | Unique refs, members, output ports |
+| Expansion and workflow acceptance | preview_plan, test_loop, set_loop.scenarios | Sample inputs, simulated reports, observable expectations; [testing](testing.md) |
+| Reusable work group | plan, input sources, after | Responsibilities, real data handoffs, ordering |
+| Batch a list then collect results | plan each, input collect | List path, item parameters, required outputs; reuse generated Task/record IDs |
+| Include a step or omit it | plan when, build_plan.steps.skip | Explicit choice and valid downstream inputs after omission |
+| Preview/commit several task edits | edit_tasks | Ordered add_task/build_plan/change_task operations and current Timeline revision |
+| Generate another round from results/events | node routes → plan | Event, condition, parameter sources; upstream reports, platform creates Tasks |
+| Append unplanned work | add_task / build_plan | Explicit node, parameters, inputs, dependencies |
+| External progress and recovery | external reports, lifecycle, optional fallback | Finite events, mechanical conditions, permitted retries/handoffs |
+| Pause, notify, wait | Hooks, notify, timer/event | Trigger locations, questions, events |
+| End the Run | settings.completion_rule / termination_signal | Mechanical condition or an agent's actual completion judgment |
 
-节点用于有独立业务职责、交付结果或需要单独跟踪的工作。不要把源系统的调度器、状态仓库、控制权或 viewer 原样复制成业务节点。源系统内部对象若是复用某个 API 的必要适配，只保留在该适配边界，并说明依赖。
+Nodes represent independent business responsibilities, deliverables, or work worth tracking separately. Do not copy another system's scheduler, state store, ownership, or viewer into business nodes. Keep internal source-system objects only at the adapter boundary where a stable API genuinely requires them, and explain that dependency.
 
-复杂需求先尝试组合这些机制。条件、批量展开、聚合、后继安排和恢复各有明确作用，不因单个工具无法独立完成整个场景就重建控制器。组合仍无法表达时，记录所需行为、现有机制的限制和缺少的接口；不要把能力缺口藏进业务脚本。节点或候选数量由真实需求决定，不以数量少作为正确性的标准。
+Try composing these mechanisms for complex requirements. Conditions, batching, collection, follow-up scheduling, and recovery serve distinct roles; one tool not solving the entire problem is no reason to rebuild a controller. If composition is insufficient, record desired behavior, limits, and missing interface rather than hiding the gap in business scripts. Real needs determine node/candidate counts; fewer is not inherently more correct.
 
-普通模式差异优先用任务参数或是否安排任务表达。一个 Agent 能处理的不同入口意图，不必各建一个实现；共享执行骨架不因入口不同而复制 plan。确有不同执行机制、后端或参数契约时，才登记对应候选。
+Represent ordinary mode differences through Task parameters or task inclusion. One agent can handle several entry intents without separate implementations; reuse a shared execution skeleton rather than copying plans. Register distinct candidates for genuinely different mechanisms, backends, or parameter contracts.
 
-关系和状态要分别核实：`after` 让**已创建的任务**等待；`routes` 声明事件到模板的自动生成规则；`plan_nodes` 声明脚本主动安排任务的范围。作者已定义 routes 时，Agent 或上游只提交参数与结果，平台自动创建下一批任务，不再手动重复调用 build_plan。提前安排一个带 after 的后续决策任务，通常就能表达“这一批结果齐了再分析”，无需增加常驻协调器。
+Verify relationships separately from execution states. `after` delays already-created tasks. `routes` generates tasks from events/templates. `plan_nodes` permits explicit script scheduling. With routes declared, upstream agents/scripts report parameters/results and the platform creates the batch; do not also call build_plan manually. Prearranging a follow-up decision with after usually expresses "analyze when this batch is ready" without a resident coordinator.
 
-## 声明事件与参数来源
+## Declare events and parameter sources
 
-用 `put_node.routes` 配置“什么事件 → 哪个 plan → 参数从哪里取”。例如研究节点的 `completed` 事件将 `outputs.requests` 映射到 plan 的 `experiments`；plan 内用 each 生成实验，再用 collect 生成汇总。运行时只提交 `{requests:[第一组参数,第二组参数]}`，平台生成 Task、依赖和输出 ID。汇总节点可用 `when` 判断是否继续，并通过同样的规则开启下一轮。
+Use put_node.routes for event → plan → parameter origin. For example, research.completed maps outputs.requests to plan experiments; each expands experiments and collect aggregates them. Runtime submits `{requests:[PARAMETER_SET_1,PARAMETER_SET_2]}` and the platform generates Tasks, dependencies, and output IDs. An aggregation node can use when to decide whether the same rules should create another round.
 
-`routes` 的参数映射可同时绑定候选、Task 参数和输入；沿用原 plan 的条件、省略、批量与聚合。定时器到期或外部事件节点收到匹配数据后，也报告 completed 并触发规则。作者需明确源输出 schema、条件和目的模板；平台不推断业务决策。完整示例和上下文见 [事件触发任务](build-reference.md#事件触发任务)。
+Route mapping can bind candidates, Task parameters, and inputs while retaining plan conditions, omission, batching, and collection. Timers or matching external-event nodes report completed and trigger routes too. Authors specify source output schemas, conditions, and destination plans; business decisions are not inferred. See [event-driven generation](build-reference.md#event-triggered-task-generation).
 
-结果提交、事件转移与所有命中规则生成的任务一并生效；任一参数或任务不合法则不提交这一批。稳定 report_id 重试返回同一回执，`receipt.routes` 给出生成结果。不需要再写“提交结果后逐次创建流水线”的 helper。
+Result submission, state transition, and all matching routes' generated tasks commit together. Invalid parameters/tasks reject the batch. Retrying a stable report_id returns the same receipt, with generated work in receipt.routes. No separate post-report pipeline-creation helper is needed.
 
-## 在安排工作时确定执行契约
+## Set execution contracts when arranging work
 
-对自动执行的步骤，在创建 Task 时选定实现及参数。需要在执行时继续作业务判断的步骤才用 Agent。构建前读选中候选的 `parameter_schema`；平台同时检查节点公共契约和候选契约，不自动补参数默认值。
+Choose implementations/parameters when creating automatic Tasks. Use agents for steps still needing business judgment at execution. Read the selected candidate's parameter_schema; node and candidate contracts both apply, without default injection.
 
-| 信息 | 平台中的执行来源 |
+| Information | Execution source |
 | --- | --- |
-| 选哪个候选 | Task implementation；批量安排用 steps.<step>.implementation |
-| 本次实现参数 | Task parameters；模板可用 `parameters: {"$":"values.options"}` 整体引用已确定对象，或调用时传 steps.<step>.parameters |
-| 上游数据或产物 | 显式 input 来源，引用上游输出或已有 record |
-| Run 的目的和约束 | Timeline settings |
+| Candidate | Task implementation; steps.<step>.implementation for a batch |
+| Implementation parameters | Task parameters; a template may use `parameters:{"$":"values.options"}` or call-time steps.<step>.parameters |
+| Upstream data/artifacts | Explicit input sources referencing outputs/records |
+| Run purpose and constraints | Timeline settings |
 
-领域计划对象可以保留研究意图和参数副本，但要说清哪个字段控制实际执行、谁把它写进 Task，以及修改后如何保持一致。不要为每个 Loop 再建立一套实现选择、参数校验或运行状态的事实来源。平台仅校验参数，不会自动把它们拼成命令行；适配脚本明确区分业务命令接受的参数、编排参数和产物声明。
+A domain plan may retain intent and parameter copies, but identify what actually controls execution, who writes the Task, and how edits remain consistent. Do not create a second implementation selector, parameter validator, or runtime truth store per Loop. The platform validates parameters but does not turn them into argv; adapters distinguish business CLI parameters, orchestration fields, and artifact declarations.
 
-省略步骤时检查实际任务与数据流：不需要执行也不需要交付结果的阶段直接不创建任务；仍须生成可消费 manifest/引用的阶段，可以保留真正完成交付的任务。不要用 completed 加一个 skipped 字段代替“没有安排”。输入需要多个上游产物时，分别声明，不能只连最显眼的一条边。
+For omitted stages, inspect actual tasks/data flow. Do not create a task when neither execution nor a deliverable is needed. Keep a genuine delivery task when a usable manifest/reference must still be produced. completed plus a skipped flag is not equivalent to not arranging work. Declare every upstream artifact needed by inputs, not only the most obvious edge.
 
-## 接入现有实现，保持适配可解释
+## Reuse implementations with understandable adapters
 
-先使用已有稳定入口。平台已有 `scripts/call.py` 和报告客户端；有重复的业务操作时才写随包 helper。helper 的职责是把节点契约映射到现有接口，并把真实结果提交回来。新增依赖、身份解析或外部注册表应说明用途和部署条件；绑定了命令不代表其运行环境已经可用。
+Prefer stable existing entry points. The platform supplies call.py and reporting clients. Add a package helper only for repeated business operations; it maps node contracts to existing interfaces and submits real results. Explain added dependencies, identity resolution, and registries. A bound command does not prove its environment works.
 
-同一计划的不同入口应共用参数映射、校验和提交恢复逻辑，避免各自复制一份。外部实现自己的复杂逻辑留在其实现中；若复用必须构造内部上下文，先确认这是稳定的接口要求，再决定适配范围。不要把大量旧控制面代码整体搬进来后逐个修补。
+Share mapping, validation, submission, and recovery across entry intents for the same plan. Keep external implementation complexity in that implementation. Confirm that constructing its internal context is a stable interface requirement before adapting it. Avoid importing a whole old control plane and patching it piecemeal.
 
-节点 Skill 写给执行这个任务的 Agent：读取哪些上下文、需要作什么判断、可调用哪个现有入口、参数在哪里、如何判断提交成功、异常从哪里继续。直接引用实际候选和共用参数契约；同一份实现清单、schema 或业务方法不在多个 Skill 中反复抄写。纯脚本节点需要执行接口说明，不需要假设另一个 Agent 来补参数。
+Node references point directly to actual candidates, shared contracts, and business entry points using [instruction layers](#three-instruction-layers-and-on-demand-reading). Script stages must not depend on another agent filling in parameters at runtime.
 
-随包路径按包内目录组织；外部路径和依赖按目标机器实际配置。helper 从唤醒上下文取得平台地址和客户端位置。普通带 run_id/token 的接口与已绑定身份的 tool_url 是两种实际入口，仅支持其中一种时写清适用范围。详细封装、prompt 和恢复说明见 [接入契约](build-reference.md#给运行时-agent-提供简洁入口)。
+Use package-relative paths internally and real target-machine configuration externally. Helpers obtain platform/client locations from wake-up context. Ordinary run_id/token interfaces and identity-bound tool_url are different entries; state which a wrapper supports. See [integration contracts](build-reference.md#simple-entry-points-for-runtime-agents) for wrappers, prompts, and recovery.
 
-需要成组调整任务时，用 `edit_tasks(preview=true)` 查看生成的任务 ID、参数、依赖与省略原因，再用同一 revision 提交整组变更。后继依赖刚展开的任务时，可利用预览返回的 ID 加入 add_task 后再次预览；revision 冲突就重新读取并检查。edit_tasks 只包含任务编辑。需要把结果和自动生成后继一起提交时用节点 routes；多次独立工具调用仍不是同一个事务。
+For grouped task changes, preview with edit_tasks(preview=true), inspect IDs/parameters/dependencies/omissions, and submit against the same revision. A later task can use preview-returned IDs and be previewed again. Reread/reassess conflicts. edit_tasks covers task editing only. Use routes to commit results and generated successors together; separate calls remain separate transactions.
 
-## 验证意图是否落实为动作
+## Verify that intent becomes action
 
-构建草稿时先用 validate_parameters 和 preview_plan 检查实际参数与任务展开，再把有意义的代表路径保存为 scenarios 并用 test_loop 验收。它运行真实 Engine、拦截所有命令和模型；外部环境仍用显式 smoke_runtime 或真实接入验收验证。不可把模拟报告当作业务实测。
+Use validate_parameters and preview_plan, then save meaningful paths as scenarios and run test_loop. It uses the real Engine while intercepting commands/models. Explicit smoke_runtime or real integration tests verify external environments; simulated reports are not real business evidence.
 
+Check observable behavior along representative paths, limited to branches this Loop uses:
 
-沿代表路径核对可观察行为；只检查当前 Loop 用到的分支。
-
-| 用户意图或发生的事 | 应检查的实际结果 |
+| Intent/event | Expected observation |
 | --- | --- |
-| 只执行已确定工作 | 初始化后直接安排所需任务，自动阶段无需再次决策 |
-| 需要探索和迭代 | 决策结果创建本轮任务；后继决策引用准确的前置 Task/结果 |
-| 跳过阶段或复用产物 | 被省略任务确实不存在，保留的下游输入仍可解析 |
-| 参数或候选已确定 | Task 中的选择、参数和实际命令一致，编排字段没有混入业务 CLI |
-| 外部排队、失败或观察失败 | 事件进入声明的状态；查询失败不冒充业务失败；重试不重复提交已成功工作 |
-| 提交中途失败后继续 | 读取已提交结果，沿稳定 key 恢复剩余安排，不重做已完成的副作用 |
-| 用户目的已达成 | 完成判断写到平台的 completion_rule 或 termination_signal，Engine 进入终态 |
+| Execute known work | Initialization directly arranges needed tasks; automatic stages need no new decision |
+| Explore and iterate | Decisions create this round's work; successors reference exact predecessor Tasks/results |
+| Omit stages or reuse artifacts | Omitted tasks are absent and remaining inputs resolve |
+| Parameters/candidate already decided | Task choices, parameters, and actual command agree; orchestration fields do not leak into business argv |
+| Queue, failure, or observation failure | Declared state transitions occur; check failure is not business failure; retry does not duplicate successful work |
+| Continue after partial submission failure | Read committed results and resume remaining arrangements using stable keys |
+| Goal satisfied | completion_rule or termination_signal is written to platform settings; Engine reaches terminal state |
 
-业务输出里的 `satisfied`、`terminated` 或名为 `completion_rule` 的字符串，本身不会结束 Run。必须明确由谁写入平台 settings，并检查 helper 没有过滤或遗漏这一步。`finish` 只释放操作权；没有任务也不等于完成。暂停或通知等字段也应有明确消费者和对应平台动作。
+Business output fields named satisfied, terminated, or completion_rule do not end a Run themselves. Identify who writes platform settings and ensure helpers do not filter that step out. finish only releases scope, and no remaining tasks does not imply completion. Pause/notification fields likewise need actual consumers/platform actions.
 
-用 `validate_loop` 检查定义和资源；在隔离样例中检查任务构建、参数交接与提交恢复；需要时显式做 [运行级检查](build-reference.md#运行级验证)，再按授权做目标环境的业务验收。dry-run 打印调用计划、静态校验、最小 Agent 响应、真实外部业务是不同证据，分别报告通过与未验证项。先证明一条接入路径可用，再批量扩展同类候选。
+Validate definitions/assets with validate_loop; check task construction, parameter handoff, and submission recovery in isolation; use [runtime checks](build-reference.md#runtime-verification) when needed, then authorized real-business acceptance. A dry-run plan, static validation, minimal agent response, and real external work are distinct evidence; report what passed and remains unverified. Prove one integration path before expanding similar candidates.
 
-出现问题先定位负责层：节点业务方法、Loop 适配、运行环境或平台通用契约。平台能力确实缺失时记录具体用例和最小缺口；当前 Loop 可自行补齐的接口映射继续在其实现中完成。手册不把某个业务的固定超时、修复阈值或研究对象升级为所有 Loop 的规则。
+Locate faults in business methods, Loop adaptation, environment, or generic platform contracts. Record concrete cases/minimal gaps for missing platform capability; business-specific mappings remain in the implementation. Do not promote one workflow's timeouts, repair thresholds, or research objects into universal rules.
 
-## 给用户解释整体流程
+## Explain the workflow to users
 
-首次完成结构，或改动节点、业务分支、循环与任务生成逻辑后，由当前 Agent 用[现成流程图模板与渲染工具](flow-diagram.md)维护流程图。逐一展示定义中的所有节点，包括按需分支和异常兜底，不用汇总框替代真实节点；结合定义、Skill 和脚本说明业务关系，源稿和页面随同一 Loop 保存。网页不会自动启动绘图；普通参数修改不必重画，不新增强制检查。
+On initial completion or changes to nodes, branches, cycles, or task generation, the current agent updates the diagram with [existing components/tools](flow-diagram.md). Show every node, including optional/recovery paths, without aggregate replacements. Explain evidenced relationships and save source/page together with the Loop. Viewing does not launch drawing, ordinary parameter edits need no redraw, and no mandatory gate is added.
 
-## 保存、使用与分享
+## Save, use, and share
 
-网页主要供用户阅读、理解和运行操作，只保留轻量修改。结构、契约、Skill／脚本和状态规则由 Agent 使用下述工具修改；不要要求用户到网页完成复杂配置。
+The web interface supports reading and runtime operations, not lightweight editing, changing defaults, or standalone chat. An external building agent edits definitions, contracts, Skills/scripts, and rules through authoring tools, or edits source and repackages. Node sessions only handle their current Run tasks.
 
-编辑持续保存同一 draft，用返回的 revision 继续修改。用户要求更新本机可用版本或启动该版本时，再调用 `publish_loop`。分享时才 `export_loop`，无需每次编辑都生成可用版本或导出包。已有 Run 使用自己的版本快照。
+Keep saving the same draft using returned revisions. Use `publish_loop` when the user requests an updated locally usable version or wants to start it. Use `export_loop` for sharing, not every edit. Existing Runs keep their snapshots.
 
-交付时简要说明实际业务路径、实现与环境依赖、验证到哪一步，以及确实需要用户补充的内容。具体编辑、版本冲突和资源操作见 [构建工具与接入契约](build-reference.md#修改既有设计)，运行操作见 [run.md](run.md)。
+Report the actual business path, implementation/environment dependencies, verification boundary, and genuinely missing user information. See [authoring details](build-reference.md#modify-an-existing-design) for edits/conflicts/assets and [run.md](run.md) for operations.
 
-后台 Agent 实时输出与可选 CLI 交互终端由平台提供，配置和限制见 [执行终端](terminal.md)。无需自建日志页或交互服务。
+Live background-agent output and optional CLI terminals are built in; see [terminal configuration/limits](terminal.md). Do not create another log page or interaction service.

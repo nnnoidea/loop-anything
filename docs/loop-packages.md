@@ -20,6 +20,12 @@
 这不是完整的凭证扫描器：作者仍需检查 JSON、命令参数和其它文件，不要把密钥或个人数据写进包。
 校验值只验证完整性，不证明作者可信；仅运行可信来源的实现。执行器没有新增隔离沙箱。
 
+## 接收方运行配置
+
+每个导出包自动带 `config.example.json`；作者提供同名资源时原样保留。安装后，接收方配置保存在服务工作区的 `loop-configs/<安装key>.json`，不修改包内定义或资源，不随再次导出泄漏。`read_loop_config` 返回实际路径与 revision，`set_loop_config` 保存配置；新 Run 快照配置，旧 Run 和重试保持原样。
+
+配置支持启动参数、候选选择、命令／cwd／executor／具名 Agent 等执行字段，以及既有内置流程 Agent。网页“运行配置”可查看和下载；草稿“更多 → 运行配置模板”查看分享模板。字段、覆盖顺序和例子见 [平台 Skill 运行配置](../skills/loop-anything-platform/references/loop-config.md)。没有配置仍沿用现有 Loop；安装不探测外部服务或启动业务任务。
+
 ## 工作台
 
 1. 在 Studio 中设计Loop 定义。通过候选实现表单选择执行方式；新节点不自动绑定 Agent。
@@ -67,7 +73,7 @@ pack 不覆盖已有输出。install 返回内容标识 `pkg-...` 和缺失绑�
 ## 路径与配置：解析约定不等于自动修复
 
 - 默认工作目录为包安装目录；作者声明的相对 cwd 基于该目录解析。
-- argv 和绝对 cwd 原样保留，不替换 Python、Agent、数据目录、服务地址或模型。
+- 原定义中的 argv 和绝对 cwd 原样保留；接收方可通过独立运行配置显式覆盖执行字段或启动输入，平台不猜测替换 Python、Agent、数据目录、服务地址或模型。
 - 原始 manifest/绑定不修改，解析后的 cwd 只作为本机节点实现。
 - 不展开命令字符串里的 `~` 或 `${VAR}`，不猜测作者意图。命令仍为 argv，不自动调用 shell。
 - 更改包内容后重新打包、安装；不要手工覆盖安装缓存。smoke 发现清单/资源变化只报错，不修复。
@@ -107,14 +113,14 @@ CLI 有明确失败时退出码为 2；无已知失败时为 0。unknown 不能�
 
 ## 可选运行级检查
 
-在 Loop 的“使用准备 → 运行级检查”中显式执行，或使用 CLI：
+由 Agent 显式调用 `smoke_runtime`，或使用 CLI：
 
 ```sh
 python3 -m loop_anything --db ./state/runs.sqlite3 smoke-runtime <key> --timeout 30
 python3 -m loop_anything --db ./state/runs.sqlite3 smoke-runtime <key> --node runtime_repair --implementation repair_agent
 ```
 
-平台工具 `smoke_runtime` 接受相同的 key、node_id、implementation_id、timeout，以及可选 cases 数组。此工具会运行命令，网页需编辑授权；原有 `smoke` 继续只读。
+平台工具 `smoke_runtime` 接受相同的 key、node_id、implementation_id、timeout，以及可选 cases 数组。此工具会运行命令；原有 `smoke` 继续只读，网页“环境检查”仅调用后者。
 
 - Agent 检查按已安装候选的原始 argv、实际 cwd 和当前进程环境发送最小响应请求，包含兜底候选；可能调用已配置模型。timeout 是每次检查的上限，候选更短的显式超时仍有效。平台不添加信任参数、替换模型或修复环境。
 - external 检查在临时 Timeline 中使用真实的 report/retry 写入逻辑，覆盖已声明事件和 process_error/check_error，检查重复事件、原 Task 重试及重试后的观察失败。不会执行真实 submit/observe、发送外部通知或修改业务 Run；模拟输出契约为空，业务输出和服务连通性另行验收。
@@ -128,7 +134,7 @@ python3 -m loop_anything --db ./state/runs.sqlite3 smoke-runtime <key> --node ru
 
 ## 构建验收与能力发现
 
-`read_capabilities` 返回服务版本、启动时 build、磁盘 source_build、restart_required 和全部公开工具的能力分组。CLI list 与 HTTP 工具目录同样包含 service 信息；网页显示运行服务版本，后台/网页 Agent 上下文携带实际服务能力。源码更新不会自动升级已启动进程。
+`read_capabilities` 返回服务版本、启动时 build、磁盘 source_build、restart_required 和全部公开工具的能力分组。CLI list 与 HTTP 工具目录同样包含 service 信息；网页显示运行服务版本，后台 Agent 上下文携带实际服务能力。源码更新不会自动升级已启动进程。
 
 `preview_plan` 只展开和校验草稿，`test_loop` 在隔离数据库中运行作者提供的模拟报告和断言。场景保存在 loop_definition.scenarios 并随包交付，编辑器「更多 → 流程验收」可保存和运行。入口与详细示例见 [平台测试手册](../skills/loop-anything-platform/references/testing.md)。
 

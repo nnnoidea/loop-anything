@@ -1,21 +1,21 @@
-# 参数契约和稳定任务引用
+# Parameter contracts and stable task references
 
-先调用 `read_capabilities`，确认运行服务支持 `conditional_contracts`、`task_refs`。字段以实时 `list` 工具 schema 为准；参考文档与服务不一致时先处理版本差异。
+Read `read_capabilities` for `conditional_contracts` and `task_refs`. The live `list` schemas are authoritative; resolve service/documentation version differences first.
 
-## 一份参数契约，多个入口共用
+## One parameter contract across entry points
 
-节点的 `parameter_schema` 声明公共参数，候选实现的 `parameter_schema` 声明候选要求。创建、预览、编辑、重试与执行检查使用同一套校验；同一参数对象必须同时满足两份契约。不会注入默认值、转换类型或过滤字段，实际命令的参数转换由实现负责。
+Node `parameter_schema` declares shared parameters; candidate `parameter_schema` declares implementation requirements. Creation, preview, editing, retry, and execution use the same validation. One parameter object must satisfy both contracts. Defaults are not injected, types are not coerced, and fields are not filtered. Implementations translate parameters into actual commands.
 
-支持的 JSON Schema 子集由 `read_capabilities.schema_keywords` 返回：
+The supported JSON Schema subset is returned by `read_capabilities.schema_keywords`:
 
-- `type`：object、array、string、number、integer、boolean、null，或这些类型的数组。
-- `properties`、`required`、`additionalProperties`（布尔或子 schema）、`items`、`dependentRequired`。
-- `oneOf`（恰好一个匹配）、`anyOf`、`allOf`、`not`、`if/then/else`。分支 schema 可不写 type。
-- `enum`、`const`、数值上下界及 exclusiveMinimum/exclusiveMaximum、字符串长度与 pattern、数组长度和 uniqueItems、对象字段数量。
-- `title`、`description`、`default`、`examples`、`format` 是描述性字段；default 如提供会校验其合法性，但不会自动填入运行参数。format 不证明文件存在或符合某种格式。保留已有 nonempty 扩展。
-- 布尔 schema true/false 表示允许/拒绝所有值。未列出的关键字（包括 $ref、$defs、patternProperties）明确拒绝，不能依赖它们的语义。
+- `type`: object, array, string, number, integer, boolean, null, or an array of these types.
+- `properties`, `required`, `additionalProperties` (boolean or schema), `items`, `dependentRequired`.
+- `oneOf` (exactly one match), `anyOf`, `allOf`, `not`, `if/then/else`. Branch schemas may omit type.
+- `enum`, `const`, numeric bounds including exclusiveMinimum/exclusiveMaximum, string length/pattern, array length/uniqueItems, and object property counts.
+- `title`, `description`, `default`, `examples`, `format` are descriptive. A supplied default is validated but never filled into runtime parameters. Format does not prove a file exists or satisfies a format. The existing nonempty extension remains supported.
+- Boolean schemas true/false accept/reject all values. Unlisted keywords, including $ref, $defs, and patternProperties, are rejected explicitly.
 
-例如，在 `set_implementation.parameter_schema` 中声明：
+For example, `set_implementation.parameter_schema`:
 
 ```json
 {
@@ -34,19 +34,19 @@
 }
 ```
 
-这会拒绝 existing 缺少 source、build 同时提供或均未提供 preset/template，以及任何未声明字段。条件中的 required 很重要：只有 properties 不会要求该字段存在。
+This rejects existing without source, build with both or neither preset/template, and undeclared fields. `required` in a condition matters: properties alone does not require presence.
 
-创建 Task 前可调用：
+Before creating a Task, call `validate_parameters`:
 
 ```json
 {"draft_id":"DRAFT_ID","node_id":"work","implementation_id":"local","parameters":{"mode":"build","preset":"small"}}
 ```
 
-工具名为 `validate_parameters`；也可用安装后的 key 替代 draft_id。返回 `valid/errors/implementation_id`，不创建任务。它可以帮助 Agent 修正缺失字段，但业务上应选哪组参数仍须依据用户意图和作者 Skill。
+An installed key can replace draft_id. It returns `valid/errors/implementation_id` without creating work. Validation helps fix missing fields; business parameter choices still follow user intent and the author Skill.
 
-## 稳定任务引用
+## Stable task references
 
-在模板步骤上设置 `ref`，如 `"work:{item.id}"`。它是整个 Run 内唯一、由作者确定的引用名称，不是显示轮次或新调度实体；多轮循环应包含轮次，例如 `"{values.round}:work:{item.id}"`。
+Set step `ref`, such as `"work:{item.id}"`, to an author-chosen name unique across the Run. It is neither a display round nor a scheduling entity. Include the round for repeated work, for example `"{values.round}:work:{item.id}"`.
 
 ```json
 {
@@ -55,7 +55,7 @@
 }
 ```
 
-汇总步骤直接引用业务项：
+An aggregation step can reference business items directly:
 
 ```json
 {
@@ -65,25 +65,25 @@
 }
 ```
 
-本批 values 可为 `{"id":"selected","members":["work:A","work:C"]}`。平台将 after_refs 解析为实际 Task IDs，将 task_refs 解析为对应的 result 记录列表，顺序与 members 一致。
+For values `{"id":"selected","members":["work:A","work:C"]}`, after_refs resolves to actual Task IDs and task_refs to the corresponding result records in members order.
 
-- `task_ref` 读取一个任务的输出，`task_refs` 收集多个任务的同名输出端口；默认固定到各生产者声明的输出版本，避免后来覆盖同一 record 时读错结果。可显式提供 path/revision；显式 revision 优先。
-- 普通 records 来源可配 revisions 数组，逐项指定版本，长度必须与 records 一致、每项为正整数，不能同时提供 revision。使用此字段需要 record_versions 能力；任务引用收集不同版本时也使用该表示。编辑器和任务关系图均保留这些版本。
-- `after` 仍引用同模板步骤；`after_refs` 引用明确的任务名称。解析后都成为原有依赖，不增加新的任务组状态机。
-- 同一 plan 内允许前向引用；同一次接受报告的所有 routes/each 批次也一起解析，规则顺序不影响结果。
-- 单独 build_plan 或 add_task 可引用本次生成或 Run 内已存在的 Task；后续独立调用尚未创建的任务不可引用。需要跨规则前向引用时，将生成放在同一次报告的 routes 中。
-- 缺失引用、重复名称、未知输出端口和依赖循环均拒绝整次提交。省略步骤不会留下可引用的占位 Task；消费者需显式复用有效输入或一起省略。
-- 引用解析后固定为 Task/record 身份；取消某任务不会把名称重新绑定到另一个任务。替代工作应使用新 ref。
-- `build_plan` 和 route 回执的 references 返回名称到 Task ID/输出记录的映射。运行中用只读 `resolve_refs` 查询，例如 `{"run_id":"RUN_ID","refs":["work:A"]}`；省略 refs 返回全部。附带 token 时遵守既有操作范围检查。
+- `task_ref` reads one task's output; `task_refs` collects the same output port from several tasks. Both pin producer-declared output versions by default, avoiding later overwrites of the same record. Explicit path/revision is allowed; explicit revision wins.
+- Ordinary records sources can supply a revisions array, one positive integer per record, instead of revision. This requires record_versions support and also represents task-reference collections spanning different versions. Definition and task-relationship views preserve the versions.
+- `after` references steps in the same template; `after_refs` references explicit task names. Both resolve to ordinary dependencies, not another task-group state machine.
+- Forward references are supported within a plan and across all routes/each batches in one accepted report, independent of rule order.
+- Independent build_plan/add_task calls may reference tasks created in that call or already in the Run, not tasks that a future call may create. Use routes on the same report for cross-rule forward references.
+- Missing references, duplicate names, unknown ports, and dependency cycles reject the entire submission. Omitted steps create no referencable placeholder; consumers must explicitly reuse valid inputs or also be omitted.
+- Resolved references stay bound to Task/record identities. Cancellation does not rebind a name; replacement work uses a new ref.
+- `build_plan` and route receipts return name-to-Task/output mappings in references. Query them through read-only `resolve_refs`, e.g. `{"run_id":"RUN_ID","refs":["work:A"]}`; omit refs for all. A supplied token retains scope checks.
 
-直接 `add_task` 也支持 ref、after_refs 和这些输入来源。已有 Run 的整组任务编辑使用 `edit_tasks(preview=true)`；原子编辑组按操作顺序执行，后项可引用前项生成的任务。
+Direct `add_task` supports ref, after_refs, and these input sources. For existing Runs, use `edit_tasks(preview=true)` for grouped edits. Atomic groups execute in order; later operations may reference tasks created earlier in the group.
 
-## 展开预览
+## Expansion preview
 
-`preview_plan` 对草稿或安装版本展开一个模板，不创建 Run，不启动命令：
+`preview_plan` expands a template from a draft or installed version without creating a Run or starting commands:
 
 ```json
 {"draft_id":"DRAFT_ID","name":"work","batch_key":"preview-1","values":{"jobs":[{"id":"A","params":{"mode":"build","preset":"small"}}]}}
 ```
 
-返回 tasks、references、omitted，检查节点与有效候选参数和实际依赖。可传 steps、bindings、round；无已有 Run，因此不能引用真实 Run 的其他任务。模板是否符合业务预期可进一步用 [流程验收](testing.md) 验证。
+It returns tasks, references, and omitted, validating node/effective-candidate parameters and actual dependencies. Optional steps, bindings, and round are accepted. There is no existing Run, so real Run tasks cannot be referenced. Use [scenario testing](testing.md) to verify business expectations.

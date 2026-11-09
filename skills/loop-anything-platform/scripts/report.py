@@ -1,5 +1,6 @@
 """Report from a script/monitor using the command's JSON stdin context. Standard library only."""
 import argparse
+import importlib.util
 import json
 import sys
 import uuid
@@ -11,9 +12,17 @@ from urllib.error import HTTPError
 def _call(context, tool, fields):
     url = context.get('platform_url')
     if not url:
-        raise RuntimeError('Reporting requires the running platform HTTP address from command context')
+        raise RuntimeError('Reporting requires the running platform NAS or HTTP address from command context')
     arguments = {key: context[key] for key in ('run_id', 'task_id', 'execution_id', 'token')}
     arguments.update(fields)
+    if url.startswith('nas:'):
+        # Scripts may load report.py by path without its directory on sys.path.
+        spec=importlib.util.spec_from_file_location('_loop_report_transport',Path(__file__).with_name('platform_transport.py'))
+        transport=importlib.util.module_from_spec(spec);spec.loader.exec_module(transport)
+        result=transport.invoke(url,tool,arguments)
+        if not result.get('ok') or result.get('pending'):
+            raise RuntimeError(json.dumps(result,ensure_ascii=False))
+        return result
     request = Request(url.rstrip('/') + '/api/tools',
                       data=json.dumps({'tool': tool, 'arguments': arguments}).encode(),
                       headers={'Content-Type': 'application/json', 'X-Loop-Anything': 'workspace'})

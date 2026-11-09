@@ -1,62 +1,62 @@
 ---
 name: loop-anything-dispatch
-description: 跟远端或其他机器上的具名 Agent 通信、求助、发布或委派任务，查询完整协作结果及追问。只派单无需安装或启动 Loop Anything 平台；一个团队链接接入 NAS 或飞书多维表格。Loop 节点派单也使用本 Skill，沿用已有运行身份与等待恢复机制。接单、配置本机 Agent、构建和运行 Loop 使用 loop-anything-platform。
+description: Contact named agents on remote or other machines; request help, publish or delegate tasks, read complete collaboration results, and follow up. Dispatch-only clients need no Loop Anything platform installation or service. Connect through one NAS or Feishu Base team link. Loop nodes use the same Skill with their existing execution identity and wait/resume mechanism. Use loop-anything-platform for receivers, local agent configuration, and building or running Loops.
 ---
 
-# 给 Agent 派任务
+# Dispatch work to agents
 
-本目录的 `scripts/dispatch.py` 可单独使用，只需 Python 3.9+。接单机器安装并运行平台。默认立即返回请求 ID，发起 Agent 可以离开，接收端不需要发起方在线授权第二次。
+`scripts/dispatch.py` works independently with Python 3.9+. A platform service receives work; a centralized team service can delegate execution to lightweight receivers without a full platform on every machine. Submission normally returns a request ID immediately. The caller may leave; the receiver does not need a second online grant from it.
 
-## 普通会话
+## Ordinary sessions
 
-首次保存团队链接，之后不用重复提供。可以先后 join NAS 和 Base，旧连接会保留；默认始终优先已配置、启用的 Base，没有或明确停用 Base 才使用 NAS，不取决于加入顺序。Base 断网、权限不足或找不到目标 Agent 时明确报告问题，不自动改向 NAS 重发。NAS 使用本机挂载目录，各机器路径可不同；飞书使用 Base 链接（含知识库 Base 链接也可以），复用本机已认证的 `lark-cli`，默认用户身份，`identity: "bot"` 可使用应用身份。链接本身不授予访问权限；认证问题沿用 lark-cli 的说明处理，无需复制其他进程的凭据。 Base 通信统一使用新版 Base API，复用 `lark-cli base +…`（已验证 1.0.98）；旧 CLI 若不支持 `--filter-json`，先用 `lark-cli update` 升级。不要为平台申请旧版 `bitable:app`，也不回退旧 API；实际缺少的新版操作权限按 CLI 报错处理。
+Save the team link once. You may join both NAS and Base; old connections remain. An enabled, configured Base always has priority, irrespective of join order. NAS is used only if no Base exists or Base is explicitly disabled. Network, permission, and missing-agent errors on Base are reported, not retried through NAS. Use each machine's local NAS mount path. Feishu accepts Base links, including Wiki-hosted Base links, and reuses authenticated local `lark-cli`; user identity is the default, `identity:"bot"` selects app identity. A link grants no access by itself. Follow CLI authentication guidance rather than copying another process's credentials. Communication uses the new Base API through `lark-cli base +…` (verified with 1.0.98). If `--filter-json` is unsupported, run `lark-cli update`. Do not request legacy `bitable:app` or fall back to the old API; address the specific missing new-API scopes reported by the CLI.
 
 ```sh
-python3 scripts/dispatch.py join --arguments '{"link":"团队 Base 链接或 NAS 目录"}'
-python3 scripts/dispatch.py agents --arguments '{"name":"论文 Agent"}'
-python3 scripts/dispatch.py submit --arguments '{"agent_name":"论文 Agent","message":"检索支持这个实验假设的论文，并说明证据与限制","context":{"hypothesis":"…"}}'
-python3 scripts/dispatch.py read --arguments '{"request_id":"返回的请求 ID"}'
+python3 scripts/dispatch.py join --arguments '{"link":"TEAM_BASE_LINK_OR_NAS_DIRECTORY"}'
+python3 scripts/dispatch.py agents --arguments '{"name":"Papers Agent"}'
+python3 scripts/dispatch.py submit --arguments '{"agent_name":"Papers Agent","message":"Find papers relevant to this experimental hypothesis; explain evidence and limitations","context":{"hypothesis":"..."}}'
+python3 scripts/dispatch.py read --arguments '{"request_id":"RETURNED_REQUEST_ID"}'
 ```
 
-根据成员**主要任务说明**选择帮手；用户指定名称时也先查目录。submit 支持 agent_name，工具解析为真实 agent_id + instance_id；重名时使用目录返回的 ID 明确机器，两个 ID 都提供也不跳过目录。已离线但仍留在目录的成员可以排队，未知 ID 不会被猜测或直接发布。只配置团队链接不会把当前 Agent 公开为接单成员。发布失败或结果未知时，保留原 ID，使用相同 `request_id` 重试，不重复建任务。`pending` 表示尚未观察到接单；默认接单期限 300 秒，不能几秒没回应就取消重发。无需让 Agent 长轮询；可以稍后读结果，或由已托管的 Loop 等待。
+Choose helpers by their **main-purpose descriptions**. Look up even a user-specified name in the directory. `submit` resolves `agent_name` to the real agent_id + instance_id; disambiguate duplicate names using returned IDs. Supplying both IDs still requires directory resolution. Offline members that remain registered can queue work; unknown IDs are not guessed or published blindly. Joining does not expose the caller as a receiver. On failed or uncertain publication, retain and retry the same `request_id`, not a new task. `pending` means acceptance has not yet been observed; the default acceptance deadline is 300 seconds. Do not cancel and resend after seconds. Read results later or use a managed Loop wait rather than agent polling.
 
-文字回复通常直接放入 result，由 Base 保存并通过工具完整读取。文件交付**只有确认双方可读取同一 NAS 时才优先传共享路径**；不能把“大部分机器共享 NAS”当成本次接收方必然可访问。通过 `context` 或 `result` 传路径和用途；挂载点不同时补充共享目录标识及相对路径。平台原样传引用，不读取或上传路径指向的文件。保留完整产物，别用 summary 替代全文。对方无法访问 NAS 或明确需要云端副本时，可使用[飞书原生附件](references/artifacts.md)，复用现成命令。
+Text replies normally go directly in `result`, are stored in Base, and are read in full through tools. **Prefer shared paths only after confirming both parties can read that NAS.** Most machines sharing NAS does not prove that this recipient can. Put paths and their purposes in `context` or `result`; include a shared-directory identity and relative path when mounts differ. The platform passes references unchanged and does not read/upload the referenced files. Preserve complete deliverables; do not substitute a summary for the full answer. Use [native Feishu attachments](references/artifacts.md) when the recipient cannot access NAS or a cloud copy is explicitly needed.
 
-`read` 返回完整业务结果；执行日志不会自动塞入上下文。Base 超过 90000 个 UTF-16 单位的**内联消息**由传输层自动用原生附件保存并完整读回，这是兜底，不要求把共享文件读进消息或每次上传。NAS 通信继续使用分片。消息超过 32 MiB 应传可访问的产物引用。大回答不想一次塞进上下文时，可给 `read` 加 `--output /绝对路径/result.json`，保存完整响应后按需读文件，内容不会被摘要或截断。
+`read` returns complete business results without automatically adding execution logs. Base inline messages over 90000 UTF-16 units automatically use native attachments and are read back in full. This fallback does not require reading shared files into messages or uploading every artifact. NAS retains chunked transport. Over 32 MiB, pass an accessible artifact reference. To keep a large answer out of immediate context, use `read --output /absolute/path/result.json` and inspect the saved complete response as needed; it is not summarized or truncated.
 
-Base 保留请求和完整结果，已处理消息留在云端历史区，退出日常轮询；不逐条删除，也不要求日常通信有删除权限。用户可按需清理已处理历史，保留在途请求。`read` 直接读取团队结果，不自动缓存全文或发结果读回执；终态请求本机只留云端引用。需要离线结果时显式使用 `--output`。已有旧版缓存仍可读取；连接旧版接收平台时兼容原读回执协议。平台保留推进流程所需的状态、交付结果和 session 定位，原生会话中的完整过程无需再复制；查看已完成 Agent 的执行过程时恢复原 session。
+Base retains requests and complete results. Handled messages move out of routine polling into cloud history; normal communication neither deletes them one by one nor requires delete permission. Users may clean handled history while retaining in-flight work. `read` accesses team results directly, without automatically caching the full answer or sending a result-read receipt. For requests in a terminal state, the local client retains only cloud references; use `--output` explicitly for offline results. Old caches remain readable, and old receivers retain read-receipt compatibility. The platform keeps workflow state, delivered results, and session locations, not another full copy of native conversation history. Resume the original session to inspect a completed agent's execution history.
 
-## 等返回：轻量 wait
+## Wait for results with lightweight wait
 
 ```sh
-python3 scripts/dispatch.py wait --arguments '{"request_id":"返回的请求 ID","timeout":300}'
+python3 scripts/dispatch.py wait --arguments '{"request_id":"RETURNED_REQUEST_ID","timeout":300}'
 python3 scripts/dispatch.py wait --arguments '{"request_ids":["request-A","request-B"],"timeout":300}'
 ```
 
-脚本自行查询，收到终态或等待超时才一次返回完整结果；多请求按各自 ID 返回，已完成的请求不反复读取。finished 表示全部请求已到终态（包含失败），timed_out 只表示本次等待到期，不取消、重发或重启任务；以后可继续 read/wait。Base 最快每 15 秒检查，NAS 默认每秒；timeout 默认 300 秒，与 submit 的 wait_seconds（接单期限）不同。按需设置 poll_interval 放慢检查。该工具占用当前 CLI 进程但不让模型持续轮询；调用它的终端工具需允许相应执行时长，或用后台命令会话等待。中断等待也不撤单。它同样支持 --output 保存完整结果，避免过长回答直接进入上下文。
+The script polls and returns once with complete results on terminal status or timeout. Multiple results are associated by request ID; completed requests are not repeatedly fetched. `finished` means every request is terminal, including failures. `timed_out` ends only this wait, without cancellation, resubmission, or restart; later `read`/`wait` remains available. Base checks no faster than every 15 seconds, NAS defaults to every second. `timeout` defaults to 300 seconds and differs from submit's acceptance deadline `wait_seconds`. Increase `poll_interval` when appropriate. The CLI process waits, not the model. Give the terminal tool enough execution time or use a background command session. Interrupting the wait does not withdraw requests. `--output` also saves complete results without filling agent context.
 
-平台托管的 Loop 节点优先使用 wait_assistance / finish，让 CLI 退出后恢复原 session；不要用轻量 wait 替换既有状态机等待。
+Managed Loop nodes should use `wait_assistance` / `finish` and exit the CLI for original-session recovery. Do not replace their state-machine wait with this lightweight command.
 
-需要明确选团队时，agents/submit 使用 `group_id`。同介质多个团队沿用已选项；没有明确选项时须指定。`leave --arguments '{"group_id":"团队 ID"}'` 停止将该连接用于新派单，省略 ID 则停用当前默认连接；重新 join 可启用。旧请求的 read/wait、重试、取消和追问始终沿原连接，默认值改变不影响它们；混合介质的多个请求可以一起 wait。
+Use `group_id` in agents/submit to select a team explicitly. Among several teams on the same medium, the selected team remains; specify one when none is selected. `leave --arguments '{"group_id":"TEAM_ID"}'` disables that connection for new work; omitting the ID disables the current default. Rejoining reenables it. Reading, waiting, retrying, cancelling, and following up existing requests always use their original connection, regardless of a changed default. One wait can include requests across media.
 
-追问：`control` 参数 `{"request_id":"…","action":"followup","message":"…"}`，默认复用记录的原 session；缺少 session 会明确提示，用户确需新会话时传 `resume:false`。取消用 `action:"cancel"`，交互输入用 `action:"input", message:"…"`。取消提交不代表进程已经结束。
+Follow up using `control` with `{"request_id":"...","action":"followup","message":"..."}`. It reuses the recorded original session by default. Missing sessions are reported; use `resume:false` only when the user explicitly wants a new session. Cancel with `action:"cancel"`; send interactive input with `action:"input",message:"..."`. A cancellation submission is not proof that the process has ended.
 
-飞书 cc-connect 入口自动携带 `CC_PROJECT` / `CC_SESSION_KEY`；调用方已有 `chat_context`（含真实 `thread_root`）时直接传入。接收平台按既有 Bot 映射和原会话规则通知，不做消息历史或权限预检。消息发送依靠接收平台配置的 cc-connect/通知出口，任务记录和结果不依赖通知成功。
+Feishu cc-connect entry automatically carries `CC_PROJECT` / `CC_SESSION_KEY`. Pass existing `chat_context`, including a real `thread_root`, directly. The receiver uses existing Bot mappings and original-conversation rules, without message-history or permission preflights. Delivery depends on configured cc-connect/notification outlets; task records and results do not depend on notification success.
 
-## 已有 Loop 与本机 Agent
+## Existing Loops and local agents
 
-在提供 `tool_url` 的限定入口中沿用该地址（与平台 call.py 的 --url 相同）：
+When the context supplies a scoped `tool_url`, retain it (the same endpoint as platform call.py's `--url`):
 
 ```sh
-python3 scripts/dispatch.py submit --tool-url '已有的限定工具 URL' --arguments '{"location":"group","agent_id":"papers","message":"…"}'
+python3 scripts/dispatch.py submit --tool-url 'EXISTING_SCOPED_TOOL_URL' --arguments '{"location":"group","agent_id":"papers","message":"..."}'
 ```
 
-平台登记请求与当前 Task 的关系，并调用相同派单实现；源 Run 仍由原平台维护。运行上下文已有原生工具时可直接调用同义的 `request_assistance` / `read_assistance`，无需额外 CLI 包装。不要绕过限定入口自行创建无关的独立请求。
+The platform associates the request with the current Task and uses the same dispatch implementation. The source platform retains ownership of the Run. Use equivalent native `request_assistance` / `read_assistance` tools when provided; no extra CLI wrapper is needed. Do not bypass the scoped endpoint to create unrelated standalone requests.
 
-普通后台节点若提供 platform_url / run_id / token，则用 `--platform-url` 和 `source:{run_id,task_id}`、token 登记请求；不要丢掉当前 Task 关联。
+For background nodes supplied with platform_url / run_id / token, use `--platform-url`, `source:{run_id,task_id}`, and the token to register the request. Keep its Task association.
 
-普通工作区、本机具名 Agent 可用 `--platform-url` 指向接单平台，`submit` 参数 `location:"local"`；本机调用不发布到远端团队。Loop 中需要外援结果才能继续时，使用平台 Skill 的 `wait_assistance` / `finish`，恢复真实原 session。只装派单 Skill 的普通聊天不会自动变成平台托管会话；自动恢复需先用 `start_collaboration` 接入现有会话。
+An ordinary workspace or local named-agent call can use `--platform-url` with `location:"local"`; it is not published to remote teams. Loop nodes needing assistance before continuing use the platform Skill's `wait_assistance` / `finish` and restore their real original session. Installing only the dispatch Skill does not make an ordinary chat platform-managed; automatic recovery requires `start_collaboration` first.
 
-Base 自动提供“Agent 目录”“请求与结果”和“机器心跳”视图；名称、职责、状态和回复可直接查看，协议 JSON 默认隐藏。目录与接单设置由接单机器发布，改职责通过该机器平台配置；是否在线由工具根据机器心跳计算。Agent 用 agents/read/wait 获取所需记录，不遍历或手动解析整张表。
+Base creates Agent directory, requests/results, and machine-heartbeat views with readable names, purposes, states, and replies; protocol JSON is hidden by default. Receivers publish directory and acceptance settings; edit purpose through the owning platform. Tools derive online status from heartbeat. Agents use agents/read/wait for the needed records rather than scanning or manually parsing the whole Base.
 
-配置文件默认在 `~/.config/loop-anything-dispatch`，可用 `--config-dir` 或 `LOOP_ANYTHING_DISPATCH_HOME` 指定。它同时保存已加入的团队连接、派单身份和每条请求的原连接；旧版单连接配置可直接继续使用。若旧版已覆盖某条请求所需连接，重新 join 原链接恢复，工具不会把它转到新团队。需要彼此独立的派单身份时可使用不同配置目录。
+Configuration defaults to `~/.config/loop-anything-dispatch`, overridable with `--config-dir` or `LOOP_ANYTHING_DISPATCH_HOME`. It stores team connections, caller identity, and each request's original connection. Old single-connection configuration remains usable. If it overwrote a connection required by an old request, rejoin the original link; the tool will not redirect that request to a new team. Separate configuration directories provide independent dispatch identities.

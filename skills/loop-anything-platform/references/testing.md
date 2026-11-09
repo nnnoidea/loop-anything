@@ -1,57 +1,57 @@
-# 构建预览与流程验收
+# Construction previews and workflow acceptance
 
-使用运行服务的 `read_capabilities` 和 `list` 发现入口。验证分四层：
+Discover the running service's tools with `read_capabilities` and `list`. There are four verification levels:
 
-| 需要确认的事 | 入口 | 实际行为 |
+| Question | Entry | Actual behavior |
 | --- | --- | --- |
-| 定义和契约结构正确 | validate_loop、validate_parameters | 静态校验，不运行命令 |
-| 模板最终生成哪些任务 | preview_plan；已有 Run 用 edit_tasks preview | 展开真实参数、候选、引用、依赖，返回省略原因 |
-| 整条路径按作者预期推进 | test_loop | 隔离数据库，真实 Engine，作者提供模拟报告和断言 |
-| 外部环境和 Agent 启动可用 | smoke_runtime 及作者真实接入验收 | smoke_runtime 会启动实际 Agent 命令，可能调用模型；需按任务授权执行 |
+| Are definitions and contracts structurally valid? | validate_loop, validate_parameters | Static validation; no commands |
+| Which tasks will a template create? | preview_plan; edit_tasks preview for an existing Run | Expand real parameters, candidates, references, dependencies, and omission reasons |
+| Does the path progress as the author expects? | test_loop | Isolated database, real Engine, authored simulated reports/assertions |
+| Are external environments and agent startup usable? | smoke_runtime and real business integration checks | smoke_runtime starts actual agent commands and may invoke a model; follow task authorization |
 
-流程验收不调用训练、下载、模型或通知发送命令。它不证明真实模型会遵循 Skill，也不验证远程身份、依赖或产物可用性。
+Workflow acceptance does not execute training, downloads, models, or notification senders. It does not prove model compliance with a Skill, remote identity, dependencies, or artifact availability.
 
-## 保存和运行场景
+## Save and run scenarios
 
-用 `set_loop` 的 scenarios 数组保存到当前草稿，也随导出的 Loop 包交付；普通编辑保留这些场景。未传 scenarios 保留现值，传入整体替换。调用 `test_loop`，传 draft_id 或已安装 key 二选一；省略 scenarios 运行保存的场景，也可传临时 scenarios，覆盖仅作用于本次验收。
+Use `set_loop.scenarios` to save scenarios in the draft/package. Ordinary edits preserve them; omission retains the current list, while supplying it replaces the list. Call `test_loop` with either draft_id or installed key. Omitted scenarios use the saved list; supplied scenarios override it only for this test.
 
 ```json
 {"draft_id":"DRAFT_ID"}
 ```
 
-检查工具 `ok` 和结果 `passed`：ok=true 只表示工具调用完成，passed=false 表示验收发现问题。每项结果包含 error/failed_step、assertions、state、receipts 和 intercepted_calls。真实数据库、草稿和 Run 不受影响。
+Check both tool `ok` and result `passed`. ok=true means the call completed; passed=false means acceptance found a problem. Each result includes error/failed_step, assertions, state, receipts, and intercepted_calls. The real database, drafts, and Runs remain unchanged.
 
-## 场景结构
+## Scenario structure
 
-每个场景包含 name、steps、assertions，可选 inputs（Run 初始输入）和 bindings（本次候选选择）。入口语义仍须在初始化的完成报告中给出，不能绕过初始化契约。
+Each scenario has name, steps, assertions, and optional initial inputs and bindings. Entry semantics still come from its initialization completion report; the initialization contract is not bypassed.
 
-steps 按序执行，每步之前用真实 Engine tick 一次：
+Steps execute in order with one real Engine tick before each:
 
-- 报告：选择 task_id、ref、node 三者之一，提供 report 对象。node 必须唯一匹配一个 Task；多任务使用 ref。可用 attempt 选择某次执行。
-- report 使用统一生命周期字段 event、report_id、envelope、detail、external_id、poll_after；未写 report_id 时按步骤生成稳定 ID。
-- `duplicate:true` 用同一执行和 report_id 再次提交，必须得到去重回执。
-- accepted 默认 true；显式 false 用于检查未覆盖转移。expect_error 填预期错误文本片段，用于检查契约拒绝和整体回滚。
-- `{"send_event":{"event_id":"reply-1","name":"reply","key":"question-1","payload":{"answer":"yes"}}}` 使用现有外部事件入口。
-- `{"ticks":2}` 推进两次调度。使用真实时钟，不提供虚拟时间；长时间等待可直接提供声明的模拟生命周期报告，不能声称验证了实际等待时长。
+- Reports select exactly one of task_id, ref, or node and supply a report object. node must uniquely identify a Task; use ref for several tasks at the same node. attempt optionally selects an execution attempt.
+- Reports use lifecycle event, report_id, envelope, detail, external_id, and poll_after. Omitted report_id is generated stably from the step.
+- `duplicate:true` resubmits the same execution/report_id and must receive a deduplication receipt.
+- accepted defaults to true; explicit false checks an uncovered transition. expect_error contains an expected error substring for contract rejection and atomic rollback.
+- `{"send_event":{"event_id":"reply-1","name":"reply","key":"question-1","payload":{"answer":"yes"}}}` uses the existing external-event entry.
+- `{"ticks":2}` advances scheduling twice. Tests use real time, not a virtual clock. A simulated lifecycle report can stand in for long waiting, but does not verify elapsed duration.
 
-Agent Task 完成报告后，验收器通过现有 finish 释放范围；自定义非完成事件继续保留范围。命令型候选的实际启动/观察调用被拦截，由场景报告代替。通知投递回执明确标记 simulated。
+After an agent Task completion report, the runner releases scope using finish. Custom noncompletion events retain it. Actual command startup/observation is intercepted and replaced by scenario reports. Notification receipts are explicitly simulated.
 
-每次最多 20 个场景、每场景 200 步、每个 ticks 步 1–20 次。验收有 1000 Task 的执行保护；大型展开应先用小样本验证结构。
+Limits are 20 scenarios, 200 steps per scenario, 1–20 ticks per ticks step, and 1000 Tasks per test. Validate large expansion structure with a small sample first.
 
-## 完整场景示例：A、C 汇总，B 独立执行
+## Complete example: aggregate A and C while B runs independently
 
-假设 Loop 具有以下声明（配置字段见 [参数与引用](contracts.md)）：
+Assume these declarations; fields are described in [contracts](contracts.md):
 
-- initialize 输出 jobs、groups；完成时 routes 分别展开 work 和 review 两个模板。
-- work 按 jobs 展开，Task ref 为 `work:{item.id}`，parameters 为 item.params，输出 result 数字。
-- review 按 groups 每项展开，Task ref 为 `review:{values.id}`，输入 results 通过 task_refs 读取 values.members 指定任务的 result，after_refs 同样取 members，输出 done 布尔值。
-- 两份模板都从同一初始化报告生成，因此 review 可引用该次报告生成的 work Tasks。
+- initialize outputs jobs/groups and completed routes expand work/review templates.
+- work expands jobs, uses ref `work:{item.id}`, parameters item.params, and a numeric result output.
+- review expands each group, uses ref `review:{values.id}`, collects result from values.members through task_refs, uses the same members in after_refs, and outputs boolean done.
+- Both templates are generated by the same initialization report, so review can reference its new work Tasks.
 
-将下列对象放进 scenarios 数组：
+Put this object in scenarios:
 
 ```json
 {
-  "name":"选择性汇总与去重",
+  "name":"Selective aggregation and deduplication",
   "steps":[
     {
       "node":"initialize", "duplicate":true,
@@ -59,7 +59,7 @@ Agent Task 完成报告后，验收器通过现有 finish 释放范围；自定�
         "event":"completed", "report_id":"initial",
         "envelope":{
           "settings":{
-            "objective":"汇总 A 和 C",
+            "objective":"Aggregate A and C",
             "completion_rule":{"op":"and","args":[
               {"op":"eq","args":[{"path":"active_tasks"},0]},
               {"op":"eq","args":[{"path":["completed","review"]},1]}
@@ -82,23 +82,23 @@ Agent Task 完成报告后，验收器通过现有 finish 释放范围；自定�
     {"ref":"review:selected","report":{"event":"completed","envelope":{"outputs":{"done":true}}}}
   ],
   "assertions":[
-    {"message":"Run 已收口","test":{"op":"eq","args":[{"path":"status"},"completed"]}},
-    {"message":"没有重复生成","test":{"op":"eq","args":[{"path":"task_count"},5]}},
-    {"message":"只汇总 A、C","test":{"op":"eq","args":[{"path":["by_ref","review:selected","resolved_inputs","results"]},[0,2]]}}
+    {"message":"Run completed","test":{"op":"eq","args":[{"path":"status"},"completed"]}},
+    {"message":"No duplicate tasks","test":{"op":"eq","args":[{"path":"task_count"},5]}},
+    {"message":"Only A and C aggregated","test":{"op":"eq","args":[{"path":["by_ref","review:selected","resolved_inputs","results"]},[0,2]]}}
   ]
 }
 ```
 
-jobs.params 必须满足作者实际选择的候选契约；上例仅假设其接受 value。不要把示例参数强加给其他候选。
+jobs.params must satisfy the actually selected implementation contract. This example assumes value is accepted; do not impose those parameters on other candidates.
 
-## 断言上下文
+## Assertion context
 
-沿用平台确定性表达式 path/op/args，支持 eq/le/ge/add/len/and/or；path 可用数组，避免引用名含点号时被拆分。
+Use deterministic path/op/args expressions with eq/le/ge/add/len/and/or. Array paths avoid splitting reference names containing dots.
 
-- status、task_count、route_count。
-- tasks：最终 Task 数组，含实际 spec、status、attempt、resolved_inputs 和 outputs_value。
-- by_ref、by_id：同一 Task 数据按稳定引用或 Task ID 索引。
-- counts：每个节点的 total、completed 和实际出现的各状态计数。没有出现的其他状态字段不存在。
-- records：最新业务结果值，按 record ID 索引。
+- status, task_count, route_count.
+- tasks: final Task array with actual spec, status, attempt, resolved_inputs, and outputs_value.
+- by_ref, by_id: the same Task data indexed by stable reference or Task ID.
+- counts: each node's total, completed, and states actually observed; other state fields are absent.
+- records: latest business result values by record ID.
 
-断言必须精确描述作者期望的行为。平台不会从自然语言说明猜测“正确结果”。参数错误、缺失引用、非预期转移与等待中的任务会保留在结果中，不能把测试没报异常当作 Loop 已完成。
+Assertions must state the author's expected behavior precisely. The platform does not infer a correct answer from prose. Parameter errors, missing references, unexpected transitions, and waiting tasks remain in results; a lack of exceptions does not establish Run completion.

@@ -3,6 +3,7 @@
 .state-loop/
 .local-history/
 .semantic-alignment/
+/docs/audits/
 /SEMANTICS.md
 /semantics/
 

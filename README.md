@@ -1,47 +1,62 @@
 # Loop Anything
 
-**把已有 Skill 变成能持续运行的 Loop。**
+**English** | [简体中文](README.zh-CN.md)
 
-![Agent 运行长程 Loop 的四个痛点](docs/images/long-loop-pain-points.svg)
+**Turn a long Skill into a workflow you can see, understand, and change.**
 
-把目标和 Skill 交给你的 Agent：确定的动作交给脚本和状态机，需要临场判断的地方交给流程 Agent，长时间执行和等待由平台接手。先跑起来，保留过程与结果，再逐步固化稳定规则。
+Research, training, analysis: an agent can handle each step. As the steps and iterations multiply, the whole process becomes harder to follow. Progress gets buried in conversations, one change affects pages of instructions, and the agent keeps rereading context and checking external jobs.
 
-## 看见整个流程
+Loop Anything brings that process together through **visual workflows** and **Skills split by responsibility**. Bring your goal and an existing Skill; the platform Skill guides your agent through turning them into a Loop.
 
-网页供你理解流程、查看节点和结果，以及启动、暂停、恢复和轻量修改；复杂构建交给 Agent。
+## See the whole workflow—and every step
 
-![Auto Research 的整体流程视图](docs/images/loop-overview.jpg)
+See where agents make decisions, where scripts execute work, and how results reach the next step. During a run, progress, results, waiting, and failures have a place you can inspect.
 
-*当前本地平台的 r624 整体流程页实拍：展示八个节点及业务关系，不代表已启动真实训练。*
+![Auto Research workflow and node details](docs/images/loop-overview.jpg)
 
-## 只给其他 Agent 派任务
+*An actual Auto Research workflow view, shown with Chinese labels: eight nodes and two execution types. Select a node to inspect its purpose, implementation, and state transitions.*
 
-安装 [`loop-anything-dispatch`](skills/loop-anything-dispatch/SKILL.md) 即可：保存一个团队链接（NAS 目录或飞书多维表格），发现成员、发布任务、查询完整结果。只派单不需要运行平台；接单机器安装下面的平台。Loop 内的派单复用同一协议，保留等待和原 session 恢复。
+To change the workflow, point your agent to a node: **“Try a different approach here. Keep the rest.”**
 
-## 安装平台
+## Split a long Skill into parts you can work on
 
-把本 README 交给你的 Agent，按[安装与升级说明](docs/installation.md)完成平台安装和 Skill 配置。需要 Python 3.9+；已有平台和工作区应继续复用。
+The platform Skill guides the building agent to separate responsibilities. Shared goals, constraints, and progression rules stay in the Loop handbook. Each node keeps its own methods, input/output contracts, and execution implementation.
 
-在源码或安装包目录执行：
+An example of how the instructions are organized:
 
-```sh
-python3 install.py
+```mermaid
+flowchart TB
+    source["Existing long Skill"] --> builder["Platform Skill guides the building agent"]
+    builder --> loop["Loop handbook: shared goals, constraints and progression rules"]
+    loop -. read as needed .-> research["Research node<br/>Methods and decision criteria"]
+    loop -. read as needed .-> experiment["Experiment node<br/>Scripts and execution contracts"]
+    loop -. read as needed .-> analysis["Analysis node<br/>Interpretation and next steps"]
+    classDef agent fill:#eee9f7,stroke:#8061bc,color:#302244
+    classDef script fill:#e8f1f8,stroke:#367db5,color:#193b55
+    class research,analysis agent
+    class experiment script
 ```
 
-macOS 默认安装后台服务；Windows/Linux 当前使用前台启动。安装器返回实际平台 Python、启动入口和工作区信息。日常构建、运行、通信和通知直接使用[平台 Skill](skills/loop-anything-platform/SKILL.md)。
+**Understand, change, and verify each part on its own.** To change data preparation, focus on that node. Preserve its input/output contract and reuse the rest. Agents read the instructions relevant to their current task, reducing unrelated context, repeated instructions, and the risk of drift during long tasks.
 
-## 本地预览
+Start with room for judgment: scripts and state machines handle known actions; a flow agent handles decisions that depend on the situation. After a few runs, you and your agent can turn stable paths into explicit rules.
 
-在源码目录运行：
+## Less busywork during long tasks
 
-```sh
-python3 -m loop_anything serve --demo --open
-```
+![Four problems in long-running agent loops](docs/images/long-loop-pain-points.en.svg)
 
-默认地址为 http://127.0.0.1:8767。示例只展示模拟流程，不执行真实训练或预订；前台预览需要保持进程运行。
+While training waits in a queue, the agent can finish its current work. The platform takes over with script checks or event waits, then advances the workflow when the condition is met. Progress and results remain available for subsequent tasks, reducing the time and tokens spent polling, rereading instructions, and rebuilding context.
 
-## 按需查阅
+Work can also run on agents or scripts on other machines. When a task needs outside help, the collaboration result returns to the original workflow.
 
-- [平台 Skill](skills/loop-anything-platform/SKILL.md)：Agent 构建、运行和协作的统一入口。
-- [网页使用说明](docs/user-guide.md)：查看详情、结果与运行操作。
-- [开发说明](docs/development.md)：源码结构、测试和构建发布。
+## Start with the Skill you already have
+
+Give your agent this README, your Skill, and your goal:
+
+> Turn this Skill into a Loop. Split nodes by responsibility, draw the workflow and its relationships, and let the platform handle long waits. Keep decisions flexible where judgment is still needed; improve the workflow after it runs.
+
+- [Install and get started](docs/installation.md) (Chinese): let your agent set up the platform and Skills, or try a local preview.
+- [User guide](docs/user-guide.md) (Chinese): inspect progress and results, and control runs.
+- [Platform Skill](skills/loop-anything-platform/SKILL.md): construction and runtime guidance for your agent.
+- [Lightweight dispatch Skill](skills/loop-anything-dispatch/SKILL.md): send work to other agents without running the full platform.
+- [Developer guide](docs/development.md) (Chinese): development, tests, and distribution builds.

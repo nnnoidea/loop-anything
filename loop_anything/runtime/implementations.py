@@ -17,8 +17,22 @@ def default_id(entry):
 
 
 def validate_implementation(implementation):
-    if not isinstance(implementation, dict) or implementation.get('kind') not in ('agent', 'command', 'external', 'event', 'approval', 'timer'):
+    if not isinstance(implementation, dict) or implementation.get('kind') not in ('agent', 'command', 'external', 'event', 'approval', 'timer', 'loop'):
         raise Invalid('Invalid execution implementation', path=['kind'])
+    if implementation['kind']=='loop':
+        call=implementation.get('loop')
+        if not isinstance(call,dict) or set(call)-{'key','inputs','result'} or not isinstance(call.get('key'),str) or not call['key'].strip():
+            raise Invalid('Loop calls need loop.key and optional inputs/result mappings',path=['loop'])
+        if any(k in call and not isinstance(call[k],dict) for k in ('inputs','result')):
+            raise Invalid('Loop inputs/result mappings must be objects',path=['loop'])
+        if set(implementation)&{'command','observe','cwd','timeout','executor','dispatch','event','wait'}:
+            raise Invalid('Loop calls use the service scheduler; clear command/observe/cwd/timeout/executor/dispatch/event/wait')
+    elif 'loop' in implementation:raise Invalid('loop configuration belongs to kind=loop',path=['loop'])
+    if 'executor' in implementation:
+        if implementation['kind'] not in ('agent','command','external') or 'dispatch' in implementation:
+            raise Invalid('executor belongs to a command/Agent/external implementation without group dispatch')
+        if not isinstance(implementation['executor'],str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',implementation['executor']):
+            raise Invalid('executor must be an ID returned by list_executors')
     if 'dispatch' in implementation:
         value = implementation['dispatch']
         if implementation['kind'] != 'agent' or not isinstance(value, dict) or set(value) - {'location','agent_id','instance_id','capability'} or value.get('location') != 'group' or not (value.get('agent_id') or value.get('capability')):

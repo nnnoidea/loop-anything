@@ -1,94 +1,92 @@
-# 通知接口与可选桥接
+# Notification interface and optional bridges
 
-平台工具与通知发送是两条独立接口。任何入口里的 Agent 都可用 `scripts/call.py` 查找、读取和编辑同一个 Run；写入按 [run.md](run.md) 取得操作权。聊天桥接负责收消息和 Agent 会话，不参与 Engine 的状态判断。
+Platform tools and notification sending are independent interfaces. Agents from any entry use `scripts/call.py` to discover, read, and edit the same Run, following [run.md](run.md) for write scope. Chat bridges receive messages and manage agent sessions, not Engine state decisions.
 
-通知适配器只做三件事：接收通知 JSON，向明确目标发送消息，返回真实结果。它是一个普通命令，无需插件注册、SDK 或平台内部模块。用户可以自行选择桥接；平台附带的 [cc-connect 适配](cc-connect.md)是可选示例。
+A notification adapter receives JSON, sends to an explicit destination, and reports the actual result. It is an ordinary command, without plugin registration, SDK, or internal platform dependencies. Users choose the bridge; the supplied [cc-connect adapter](cc-connect.md) is optional.
 
-## 配置平台出口
+## Configure platform outlets
 
-用 `read_notification_channels` 获取 `revision`、已有 `channels` 和本机 `cc_connect` Bot 列表。然后用 `set_notification_channels` 传入最新 revision 和修改后的完整 channels；保留不需要修改的出口。配置只保存在当前平台，不进入 Loop 包，也不会立即发送。
+Use `read_notification_channels` for revision, channels, and discovered local cc_connect Bots. Pass the latest revision and complete edited channels mapping to `set_notification_channels`, preserving unchanged outlets. Configuration stays on this platform, is excluded from Loop packages, and sends nothing immediately.
 
-每个出口有独立 ID，以及 label、channel、identity、destination、command（argv）、可选 cwd 和 timeout。command 使用下文的通用发送契约；平台内置的 workspace 出口无需配置。身份和目的地由适配器解释，不能只给任意脚本填写这些字段就假定它会采用。
+Each outlet has an ID, label, channel, identity, destination, command (argv), and optional cwd/timeout. Commands implement the contract below. The built-in workspace outlet needs no configuration. Adapters interpret identity/destination; setting these fields on an arbitrary script does not make it honor them.
 
-使用 cc-connect 时先通过 `read_cc_connect` / `configure_cc_connect` 接入本机桥接。出口使用 `cc_connect={project,platform}` 和明确的 `destination`，不填写 command/identity/channel。仅做具名 Agent Bot 映射时不需要创建出口，直接设置 agent.notification_bot。见 [cc-connect.md](cc-connect.md)。
+For cc-connect, configure the local bridge with read_cc_connect/configure_cc_connect. Outlets use `cc_connect={project,platform}` plus explicit destination, without command/identity/channel. Named-agent Bot mapping needs only agent.notification_bot, not an outlet. See [cc-connect](cc-connect.md).
 
-`start_run.notification_route` 或 `change_settings.change.notification_route` 选择本次运行的默认出口 ID，也可选 workspace。切换聊天入口不改变出口。
+Choose the Run's default outlet ID with start_run.notification_route or change_settings.change.notification_route; workspace is also valid. Changing chat entry does not change the outlet.
 
-Loop 中的通知只能选择 default（本次 Run 出口）或 workspace（平台通知区），不得写入个人出口。旧 implementations.$notifications 已停用；导入或分享旧 Loop 前先将发送配置移到本地通知出口，再从草稿移除该字段。Run 的 notification_command 仍是本地调用配置，不随 Loop 分享。
+Loop declarations may select only default (this Run's outlet) or workspace, not personal outlet IDs. Retired implementations.$notifications must be moved to local outlets and removed from drafts before importing/sharing old Loops. Run notification_command remains local invocation configuration and is not shared with Loops.
 
-## 主动通知与询问
+## Proactive messages and questions
 
-`notify` 参数：run_id、稳定 key、message；可选 task_id、route、reply。Agent 提供持有的 token；支线 Agent 必须指定自己范围内的 task_id。脚本提供上下文里的 token、task_id 和 execution_id。可信工作区的用户 Agent 可按授权调用；平台托管节点仍须沿用自身操作范围。
+`notify` takes run_id, stable key, message, and optional task_id/route/reply. Agents supply their token; branch agents specify a task_id in their scope. Scripts supply context token, task_id, and execution_id. Authorized trusted-workspace user agents may call directly; managed nodes retain their own scope.
 
 ```json
-{"run_id":"RUN_ID","token":"TOKEN","task_id":"TASK_ID","key":"TASK_ID:progress-1","message":"阶段结果已记录","route":"default"}
+{"run_id":"RUN_ID","token":"TOKEN","task_id":"TASK_ID","key":"TASK_ID:progress-1","message":"Stage results recorded","route":"default"}
 ```
 
-相同 key 和内容返回原通知，不重复发送；同 key 不同内容会冲突。无需为通知新建 Task。脚本可按 context.report_client 导入 `notify(context, key, message, **fields)`，在本次执行结束前调用；完成后的通知可以挂到 completed 转移。
+Identical key/content returns the original notification without another send; different content under the same key conflicts. No new Task is needed. Scripts may import notify(context,key,message,**fields) from context.report_client and call before execution ends. Post-completion notifications can attach to the completed transition.
 
-询问增加 reply，包含 event、key 和 schema：
+Questions add reply with event, key, and schema:
 
 ```json
 {"event":"reply","key":"question-1","schema":{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}}
 ```
 
-询问本身不暂停运行；需要答案时安排同 event/key 的等待节点，其输出契约应与回复 schema 一致。Agent 通过 read_run 查看通知、read_task 查看等待节点，再调用 `send_event`，提供稳定 event_id、name、key、payload，可带 notification_id 检查回复 schema。支线 Agent 还需指定自己范围内的等待 task_id；用户授权的外部入口可直接提交事实，不需要占用 Agent 会话。发送通知的渠道和提交回复的入口可以不同。
+A question does not itself pause work. If an answer is required, arrange an event-wait node with the same event/key and an output contract matching the reply schema. Inspect notifications with read_run and the wait with read_task; submit send_event using stable event_id, name, key, payload, and optional notification_id for reply-schema validation. Branch agents also specify their scoped waiting task_id. Authorized external entries can submit facts without occupying an agent session. The sending channel and reply-submission entry may differ.
 
-## 作者和用户选择时机
+## Author and user timing choices
 
-作者在已有 lifecycle 转移行中增加 notify 数组：
+Authors add a notify array to an existing lifecycle row:
 
 ```json
-{"from":"executing","event":"completed","to":"completed","notify":[{"message":"结果：{outputs.result}","route":"default"}]}
+{"from":"executing","event":"completed","to":"completed","notify":[{"message":"Result: {outputs.result}","route":"default"}]}
 ```
 
-保留矩阵其他行；notify 支持上述 message/route/reply，引用使用已有的 inputs、parameters、settings、detail、outputs、attempt 上下文。一次报告的转移与通知入队共同保存，重报相同 report_id 不再产生通知。
+Preserve other matrix rows. notify supports message/route/reply and existing inputs, parameters, settings, detail, outputs, attempt references. A report's transition and queued notifications commit together; duplicate report_id does not enqueue again.
 
-用户可以通过 change_settings 调整原 hooks：notify 除 before/after 外支持 phase=transition，可按 event、from、to 筛选，target 仍选择 node 或 tasks。once 表示本 Hook 在 Run 中仅一次；always 对每次不同的匹配转移生效。修改现有 Hook 的定义需换新 ID，停用可改 enabled=false。
+Users can change existing hooks through change_settings. notify hooks support before/after and phase=transition, with event/from/to filters and node/tasks targets. once applies once per Run; always applies to each distinct matching transition. Changing a Hook definition requires a new ID; enabled=false disables it.
 
-## 输入：stdin JSON
+## Input: stdin JSON
 
-平台传入一条 UTF-8 JSON 对象，适配器应忽略不使用的字段，不把运行通知解释成新的 Agent 指令。
+The platform sends one UTF-8 JSON object. Ignore unused fields and do not interpret notifications as new agent instructions.
 
-| 字段 | 内容 |
+| Field | Content |
 | --- | --- |
-| id | 通知 ID，重试时保持不变 |
-| run_id、title | Run ID 和运行名称 |
-| message | 通知正文 |
-| reason | 可选的完成原因或错误原因 |
-| tasks | 关联 Task ID；运行级通知可为 null |
-| run_status | 发送尝试所读取的 Run 状态 |
-| task_label、task_status | 关联任务名称、状态；无关联任务时为空字符串 |
-| route | 通知路由；workspace 路由不调用外部适配器 |
-| outlet | 命名出口的 channel、identity、destination；由适配器解释 |
-| reply | 可选询问关联及回复 schema；不代表发送渠道自动支持回调 |
-| attempt、at | 发送尝试次数、通知创建时间 |
+| id | Notification ID, stable across retries |
+| run_id, title | Run identity and title |
+| message | Body |
+| reason | Optional completion/failure reason |
+| tasks | Related Task ID; null for Run-level notices |
+| run_status | Run state observed for this delivery attempt |
+| task_label, task_status | Related task label/state, or empty strings |
+| route | Notification route; workspace never calls an external adapter |
+| outlet | Named outlet's channel, identity, destination, interpreted by the adapter |
+| reply | Optional question correlation/schema, not proof of channel callback support |
+| attempt, at | Delivery-attempt count and creation time |
 
-输入不包含内部操作令牌或发送命令。业务结果仍从 Timeline 的正式记录读取，不把发送回执当成业务结果。
+Input excludes internal operation tokens and send commands. Read business results from committed Timeline records; delivery receipts are not business outputs.
 
-## 输出：stdout JSON 与退出码
+## Output: stdout JSON and exit status
 
-成功：进程退出码为 0，stdout 是一个 JSON 对象，`delivered` 必须为 true。可附带 channel 和 reference，说明渠道及回执标识：
+Success requires exit 0, one JSON object on stdout, and delivered=true. Optional channel/reference identify the channel and receipt:
 
 ```json
 {"delivered":true,"channel":"your-bridge","reference":"message-or-receipt-id"}
 ```
 
-失败：退出码非 0；stdout 可返回 `{"delivered":false,"error":"原因"}`，或把错误说明写到 stderr。日志不要混入 stdout 的成功 JSON。退出码为 0 但未确认 delivered，也不会记为送达。平台默认发送超时为 30 秒，适配器应及时返回。
+Failure exits nonzero, optionally returning `{"delivered":false,"error":"reason"}` or writing an explanation to stderr. Do not mix logs into successful stdout JSON. Exit 0 without delivered confirmation is not recorded as delivered. The default send timeout is 30 seconds; return promptly.
 
-只有外部发送接口确认成功后才返回 delivered=true；不因为请求已写入本地文件或加入适配器自己的待发队列就声称已送达。送达不等于用户已读。
+Return delivered=true only after the external interface confirms success, not after a local file write or enqueue into the adapter's own queue. Delivered does not mean read by the user.
 
-## 触发、失败与重试
+## Triggers, failures, and retries
 
-- 脚本和 Agent 可以主动 notify；作者可配置转移通知，用户可配置前后或转移 Hooks。
-- Engine 正常进入完成终态生成一次完成通知；未选出口且没有旧发送命令时，使用平台通知区；用户主动 terminate 不冒充成功。
-- Agent 连续失败三次的暂停通知使用同一出口，不额外唤醒模型来发送。
-- 新通知入队时固定出口与发送配置，后续修改只影响新通知，重试保留原目的地。尚未配置的出口进入 waiting_configuration，补配后显式重试，不计入 runtime unexpected、不唤醒兜底；历史通知在首次发送时固定配置。
-- `retry_notification` 带 run_id、notification_id；持有全局操作权时再带 token。Run 已结束也可单独重试通知，不重开 Run。
-- 超时可能表示消息已发出但回执未收到。重试前先核实；桥接支持幂等键时可使用通知 ID 去重，平台不承诺跨系统恰好一次送达。
+- Scripts/agents can notify proactively; authors configure transition notifications, users configure before/after/transition hooks.
+- Normal Engine completion generates one completion notification. Without an outlet or legacy command, use the platform notification area. User terminate is not successful completion.
+- Pause after three consecutive agent failures uses the same outlet, without waking a model to send it.
+- New notifications pin the outlet/send configuration when queued. Later changes affect only new notifications; retries retain the destination. Missing configuration becomes waiting_configuration, requiring explicit retry after setup; it is not runtime unexpected and does not wake fallback. Historical notices pin configuration on first send.
+- retry_notification takes run_id and notification_id, plus token if holding global scope. It can retry after Run completion without reopening the Run.
+- Timeout may mean delivery occurred but the receipt was lost. Verify before retrying; adapters can use notification IDs as idempotency keys when supported. Cross-system exactly-once delivery is not promised.
 
-适配器只需要遵守上述契约，无需实现聊天历史、Timeline 副本或另一套 Agent 调度。
+Adapters need no chat history, duplicate Timeline, or separate agent scheduler. Actual failures preserve fault/receipts; all delivery records remain in the notification area for verification and explicit retry.
 
-真实发送失败记录 fault 和回执，平台通知区保留所有发送记录；由用户核实后使用显式重试入口。
-
-cc-connect 接入用 `read_cc_connect` / `configure_cc_connect`；具名 Agent 直接绑定 Bot，固定接收位置才建立 `cc_connect={project,platform}` 通知出口。见[本机接入与 Bot 发现](cc-connect.md#本机接入与-bot-发现)。
+Use read_cc_connect/configure_cc_connect for bridge setup. Named agents bind Bots directly; create a cc_connect outlet only for fixed destinations. See [local setup and Bot discovery](cc-connect.md#local-setup-and-bot-discovery).

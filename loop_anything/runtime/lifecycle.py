@@ -4,20 +4,20 @@ import re
 from loop_anything.runtime.model import Invalid, digest
 from loop_anything.runtime.checks import validate_expression
 
-KINDS = ('command', 'external', 'agent', 'event', 'approval', 'timer')
+KINDS = ('command', 'external', 'agent', 'event', 'approval', 'timer', 'loop')
 TERMINAL = {'completed', 'fault', 'retry', 'agent'}
 
 
 def template(kind):
-    initial = {'external': 'submitting', 'event': 'waiting', 'timer': 'waiting', 'approval': 'approval'}.get(kind, 'executing')
-    states = [initial] + (['waiting'] if kind == 'external' else [])
+    initial = {'external': 'submitting', 'loop':'submitting', 'event': 'waiting', 'timer': 'waiting', 'approval': 'approval'}.get(kind, 'executing')
+    states = [initial] + (['waiting'] if kind in ('external','loop') else [])
     rows = []
     for state in states:
         rows.extend({'from': state, 'event': event, 'to': target} for event, target in
                     [('progress', state), ('completed', 'completed'), ('failed', 'fault'), ('process_error', 'fault')])
     if kind == 'event':
         rows.append({'from': initial, 'event': 'timeout', 'to': 'fault'})
-    if kind == 'external':
+    if kind in ('external','loop'):
         rows += [{'from': 'submitting', 'event': 'submitted', 'to': 'waiting'},
                  {'from': 'waiting', 'event': 'check_error', 'to': 'waiting'}]
     return {'initial': initial, 'transitions': rows}

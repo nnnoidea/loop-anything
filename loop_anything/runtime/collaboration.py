@@ -11,7 +11,9 @@ EVENT = 'platform-assistance-result'
 
 
 def ensure_loop(store):
-    if getattr(store, '_collaboration_loop_key', None):return store._collaboration_loop_key
+    if getattr(store, '_collaboration_loop_key', None):
+        with store.connection() as db:
+            if db.execute('SELECT 1 FROM loop_definitions WHERE key=?',(store._collaboration_loop_key,)).fetchone():return store._collaboration_loop_key
     definition = {
         'schema_version': 2, 'id': LOOP_ID, 'version': '1', 'name': '独立协作',
         'requires': ['standalone_collaboration'],
@@ -36,8 +38,8 @@ def ensure_loop(store):
     return key
 
 
-def create(comm, key, title, message, group_id, db, observer=False):
-    run = comm.store.create(key, title, {'message': message}, authorization=message, _db=db)
+def create(comm, key, title, message, group_id, db, observer=False, created_by=None):
+    run = comm.store.create(key, title, {'message': message}, authorization=message, _db=db,created_by=created_by)
     run['collaboration'] = {'mode': 'results' if observer else 'agent'}
     run['communication_group'] = group_id
     # Completion, pause, restart and event consumption belong to the existing Engine.
@@ -74,7 +76,7 @@ def attach(comm, request, key, collaboration_id, db):
             Store.log(run, 'collaboration_followup', 'Continue this collaboration with a new request')
     else:
         run = create(comm, key, request['message'][:100], request['message'],
-                     request.get('scope_group_id'), db, observer=True)
+                     request.get('scope_group_id'), db, observer=True,created_by=request.get('created_by'))
     task_id = 'collect-' + request['id']
     add_task(run, {'id': task_id, 'node': 'collect', 'inputs': {},
         'parameters': {'request_id': request['id']},
@@ -91,24 +93,28 @@ def reconcile(comm):
     from loop_anything.runtime.notifications import receive_event
     for row in comm.requests():
         link = row.get('collaboration')
-        if not link or row.get('mirror') or (row['origin'] != comm.settings()['instance_id'] and not row.get('dispatch_client')):
+        if not link or link.get('deleted') or row.get('mirror') or (row['origin'] != comm.settings()['instance_id'] and not row.get('dispatch_client')):
             continue
-        run = comm.store.get(link['run_id'])
-        if run['status'] == 'terminated':
-            if row['state'] not in END | {'cancelling'}:
-                if row.get('dispatch_client'):
-                    with comm.transaction() as db:
-                        current=comm.get(row['id'],db);current['cancel_requested']=True
-                        current['state']='cancelling' if current['state'] in ('starting','running','unknown') else 'cancelled'
-                        comm.save(db,current)
-                else:comm.control(row['id'], 'cancel',reason='Source collaboration Run was terminated')
-            continue
-        event_id = 'assistance:' + row['id']
-        if row['state'] not in END or any(e['id'] == event_id for e in run['events']):
-            continue
-        with comm.store.edit(run['id']) as current:
-            if current['status'] in ('running', 'paused'):
-                receive_event(current, event_id, EVENT, {'result': summary(row)}, row['id'], link['task_id'])
+        try:
+            run = comm.store.get(link['run_id'])
+            if run['status'] == 'terminated':
+                if row['state'] not in END | {'cancelling'}:
+                    if row.get('dispatch_client'):
+                        with comm.transaction() as db:
+                            current=comm.get(row['id'],db);current['cancel_requested']=True
+                            current['state']='cancelling' if current['state'] in ('starting','running','unknown') else 'cancelled'
+                            comm.save(db,current)
+                    else:comm.control(row['id'], 'cancel',reason='Source collaboration Run was terminated')
+                continue
+            event_id = 'assistance:' + row['id']
+            if row['state'] not in END or any(e['id'] == event_id for e in run['events']):
+                continue
+            with comm.store.edit(run['id']) as current:
+                if current['status'] in ('running', 'paused'):
+                    receive_event(current, event_id, EVENT, {'result': summary(row)}, row['id'], link['task_id'])
+        except Invalid:
+            # Deletion may commit after requests() took its read snapshot.
+            if not comm.get(row['id']).get('collaboration',{}).get('deleted'):raise
 
 
 def adopt_pending(comm):
@@ -182,7 +188,7 @@ def start(comm, arguments):
             raise Conflict('The named coordinator is busy; reuse its current collaboration or wait for capacity')
         if caller and active_native(db, caller['native_session']['provider'], caller['native_session']['id'], comm.store):
             raise Conflict('This native session is already managed by the platform')
-        run = create(comm, key, arguments.get('title') or message[:100], message, group, db)
+        run = create(comm, key, arguments.get('title') or message[:100], message, group, db,created_by=arguments.get('created_by'))
         if not caller:run['collaboration']['agent_id']=arguments['agent_id']
         run['collaboration']['coordinator_implementation']=copy.deepcopy(implementation)
         run['implementations']['coordinate'] = implementation

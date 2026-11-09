@@ -16,11 +16,13 @@ def task_stamp(run, ident):
     if task is None:return None
     from loop_anything.runtime.timeline_runtime import TimelineRuntime
     from loop_anything.runtime.implementations import selected
+    from loop_anything.runtime.flow_agent import decisions, route_receipts
     values, sources, missing = TimelineRuntime(SimpleNamespace(store=None)).resolve_inputs(run, task)
     attempt = next((e for e in run['executions'] if e['id'] == task.get('execution_id')), {})
     return digest([task['spec'], task.get('revision'), task['status'], task.get('execution_id'),
                    values, sources, missing, selected(run, task), task.get('assistance_results'),
-                   {k: attempt.get(k) for k in ('lifecycle_state', 'observation_error', 'retry')}])
+                   {k: attempt.get(k) for k in ('lifecycle_state', 'observation_error', 'retry')},
+                   decisions(run, ident), route_receipts(run, ident)])
 
 
 def collection_stamp(run, scope):

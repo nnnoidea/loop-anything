@@ -16,6 +16,7 @@ loop-anything = "loop_anything.__main__:main"
 loop_anything = ["web/*", "_vendor/*.txt", "_vendor/*/*.txt"]
 
 [tool.setuptools.data-files]
+"share/loop-anything/skills/loop-anything-local" = ["skills/loop-anything-local/SKILL.md"]
 "share/loop-anything/skills/loop-anything-platform" = ["skills/loop-anything-platform/SKILL.md", "skills/loop-anything-platform/connection.json"]
 "share/loop-anything/skills/loop-anything-platform/references" = ["skills/loop-anything-platform/references/*.md"]
 "share/loop-anything/skills/loop-anything-platform/scripts" = ["skills/loop-anything-platform/scripts/*.py"]
