@@ -1,6 +1,6 @@
 # 用户 Agent 启动与命令接入
 
-安装平台、安装 Skill 和连接检查见 [README 安装说明](../README.md#安装平台)。通过 `set_implementation` 直接绑定用户提供的 Agent 命令。团队共享部署、NAS/HTTP 客户端及轻量执行端见[团队运行说明](../skills/loop-anything-platform/references/team-runtime.md)，无需每个终端再建服务数据库。
+安装平台、安装 Skill 和连接检查见 [README 安装说明](../README.md#安装平台)。通过 `set_implementation` 直接绑定用户提供的 Agent 命令。团队共享部署、NAS/HTTP 客户端（含本机接单执行）见[团队运行说明](../skills/loop-anything-platform/references/team-runtime.md)，无需每个终端再建服务数据库。
 
 用户自己的 Agent 在讨论后创建并初始化 Run；后台在节点有 Agent 任务时按命令唤醒；用户显式启用的兜底节点可以承接未覆盖状态，使用它自己的 Agent 候选。
 入口节点仍有初始化任务，由当前用户 Agent 完成，结果在界面和执行记录中保留。

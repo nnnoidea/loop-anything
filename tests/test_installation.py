@@ -12,6 +12,35 @@ from loop_anything.runtime.store import Store
 
 
 class InstallationTests(unittest.TestCase):
+    def test_client_rejects_database_option_without_opening_a_store(self):
+        from loop_anything.__main__ import main
+        with patch('sys.argv',['loop-anything','--db','unused.sqlite3','client']), \
+             patch('loop_anything.runtime.store.Store',side_effect=AssertionError('Client must not open a Store')), \
+             patch('sys.stderr'), self.assertRaises(SystemExit) as error:
+            main()
+        self.assertEqual(error.exception.code,2)
+
+    def test_client_install_does_not_manage_service_or_start_jobs(self):
+        import install as installer
+        for role in ('client', 'local'):
+            with self.subTest(role=role), tempfile.TemporaryDirectory() as folder:
+                prefix=Path(folder)/'client';environment=prefix/'venv';(environment/'bin').mkdir(parents=True)
+                (environment/'pyvenv.cfg').write_text('version = 3.9\n')
+                wheel=Path(folder)/'local.whl';wheel.write_bytes(b'test package')
+                with patch.object(installer.sys,'argv',['install.py','--role',role,'--prefix',str(prefix),'--package',str(wheel)]), \
+                     patch.object(installer.sys,'platform','darwin'), \
+                     patch.object(installer.subprocess,'run') as run, \
+                     patch('loop_anything.runtime.service.manage',side_effect=AssertionError('Client must not manage the server')), \
+                     patch('loop_anything.runtime.service.configuration',side_effect=AssertionError('Client must not load server configuration')), \
+                     patch('builtins.print'):
+                    installer.main()
+                calls=[call.args[0] for call in run.call_args_list]
+                self.assertEqual(len(calls),2)  # Existing Python check and package installation only.
+                self.assertTrue(any('pip' in argv for argv in calls))
+                self.assertFalse(any('service' in argv or 'start' in argv for argv in calls))
+                self.assertIn('client --help',(prefix/'Loop Anything.command').read_text())
+                self.assertFalse(list(prefix.rglob('*.sqlite3')))
+
     def test_local_skill_export_needs_no_platform_connection(self):
         with tempfile.TemporaryDirectory() as folder:
             result=install_skills(bundle('unused',only='local'),folder)

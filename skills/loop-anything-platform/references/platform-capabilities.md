@@ -13,14 +13,14 @@ During design discussion, proactively select features relevant to the user goal 
 | Long training, queues, or external results | Agents appear only when judgment is needed | Separate planning, automatic execution/waiting, and analysis. The platform runs short periodic query scripts or receives completion events, then advances to the next decision. | [Lifecycle/observation](#lifecycle), [durable waits](#waits) |
 | Experiment counts, branches, or next rounds depend on results | Results can generate later Tasks | Define reusable templates. Agents submit round parameters; the platform expands work and aggregates results. Explicit conditions determine another round or completion. | [Event routes](#event_routes), [plans](#plans), [termination](#termination) |
 | Work spans days, sessions, or entry points | Business state persists independently of chat | Divide long work into stages and persist goals/progress/results in Timeline; later agents read current facts to continue. | [Storage](#timeline_storage), [recovery](#execution_recovery) |
-| Different tools, compute, or machine environments | Mix execution methods in one Loop | Divide by responsibility/resource: prepare data on the platform host, train externally, use lightweight executors for other environments, and dispatch specialists through the named directory when needed. | [Candidates](#implementation_selection), [executors](#headless_execution), [communication](#agent_communication) |
-| A team shares NAS and machines change often | Separate service, clients, and executors | One service keeps state machines/runtime facts; members edit/run through NAS/HTTP tools, while receiving machines start lightweight executors. | [Team service](#team_service), [execution](#headless_execution) |
+| Different tools, compute, or machine environments | Mix execution methods in one Loop | Divide by responsibility/resource: prepare data on the platform host, train externally, use receiving clients for other environments, and dispatch specialists through the named directory when needed. | [Candidates](#implementation_selection), [executors](#headless_execution), [communication](#agent_communication) |
+| A team shares NAS and machines change often | Use one server and unified clients | The server keeps state machines/runtime facts; clients edit/run through NAS/HTTP tools and can explicitly start local receiving or personal jobs. | [Team service](#team_service), [execution](#headless_execution) |
 | Local timers or conditions should awaken an agent | Independent local scheduling | Register a timer/condition without building a Loop. Keep definitions; start only on explicit request. A different machine can inspect them without restarting them. | [Local scheduling](#local_scheduling) |
 | Multiple specialties, stage-specific methods, or a long handbook | Separate Loop and node Skills/instructions | Keep shared objectives/rules at Loop level and node methods/tools/contracts at their relevant nodes, read on demand. For example, share experiment goals while separating training operations from evaluation methods. | [Author Skills](#author_skills) |
 | Analysis occasionally needs papers or specialist advice | Temporary named helpers | Keep required steps in the main workflow. Request optional help during execution, suspend if needed, and resume the original session with results. | [Assistance](#agent_communication), [session resume](#assistance_session_resume) |
 | Research/debugging reveals new information or direction | Revise future work during a Run | Preserve existing facts/results and adjust future Tasks, parameters, or dependencies. The first plan need not enumerate every path. | [Task edits](#task_edits), [Run control](#run_control) |
 
-Respect actual integration prerequisites: external systems need submit/query scripts or event callbacks; dynamic work needs templates/routes/completion conditions; lightweight executors must be explicitly started and bound; named dispatch needs directory members (local help needs no team); exact resumption needs native session IDs and commands. Timeline business state does not restore arbitrary chat context. The platform waits between short queries, without resident agent/script polling loops. Combining event and polling fallback requires an explicit design; it is not the default.
+Respect actual integration prerequisites: external systems need submit/query scripts or event callbacks; dynamic work needs templates/routes/completion conditions; client receivers must be explicitly started and bound; named dispatch needs directory members (local help needs no team); exact resumption needs native session IDs and commands. Timeline business state does not restore arbitrary chat context. The platform waits between short queries, without resident agent/script polling loops. Combining event and polling fallback requires an explicit design; it is not the default.
 
 For “keep running experiments,” suggest “propose parameters → expand experiments → platform waits for training → agent analyzes → choose the next round from results.” For a one-off summary of existing results, handle that task without inventing loops, helpers, or waits.
 
@@ -53,9 +53,9 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 ## team_service
 
 - Activation: configured
-- Platform handles: One service persists team Loops, Runs, and state machines. NAS request/receipt mailboxes and HTTP share the official tools; the web UI is optional.
-- Author provides: Select a NAS team directory; members save nas:/// addresses using their own mount paths. Read/edit clients do not need the runtime platform installed.
-- Configuration: `serve --team-dir`, `serve --no-web`, `call.py --url`, `call.py result`
+- Platform handles: One server persists team Loops, Runs, and state machines. Unified clients operate it over NAS/HTTP and optionally execute work locally; the server web UI is optional.
+- Author provides: Install with --role server or --role client. Clients combine service operations and local execution; save NAS addresses using local mount paths. Operations-only use still supports portable Skills without the runtime.
+- Configuration: `serve --team-dir`, `serve --no-web`, `client tool`, `call.py --url`, `call.py result`
 - Limits: Only one service opens the team database, using DELETE journaling. NAS must support locking/durable writes. Timeout does not cancel requests; a processing crash returns outcome_unknown without automatic replay. Validate real NAS behavior in deployment.
 - Tools: list_loops, list_runs, read_capabilities
 - Reference: [references/team-runtime.md](team-runtime.md)
@@ -63,9 +63,9 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 ## headless_execution
 
 - Activation: configured
-- Platform handles: A local scheduler receives assigned processes, persists deduplication/results, and forwards interactive terminals. The service retains business state machines; exact sessions resume on their original executor.
-- Author provides: Explicitly start a receiver registration. Discover IDs with list_executors and select implementation.executor on a node or named agent. Install required CLIs/environment on the executor.
-- Configuration: `local register/start`, `list_executors`, `read_executor_call`, `implementation.executor`
+- Platform handles: The unified client can receive assigned processes, persist deduplication/results, and forward interactive terminals. The service retains business state machines; exact sessions resume on their original executor.
+- Author provides: Use client local to register and explicitly start a receiver. Discover IDs with list_executors and select implementation.executor on a node or named agent. Install required CLIs/environment on the receiving client.
+- Configuration: `client local --root register/start`, `list_executors`, `read_executor_call`, `implementation.executor`
 - Limits: Disconnection does not reassign/restart work. A restarted service reconnects to the original call; a restarted receiver does not replay accepted commands with unknown outcomes. Native session history must remain accessible on the original executor. Legacy NAS/Base named communication remains supported.
 - Tools: list_executors, read_executor_call, set_implementation, confirm_executor_stopped, executor_poll, executor_report
 - Reference: [references/team-runtime.md](team-runtime.md)
@@ -74,8 +74,8 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 
 - Activation: operator
 - Platform handles: Shares a small scheduling, pure-transition, and process-management core for timers, script conditions, and local CLIs without a service, Run, or web UI.
-- Author provides: Register through loop-anything-local, optionally using NAS for persistent definitions; explicitly select IDs with local start.
-- Configuration: `local --root register/list/show/start/stop`
+- Author provides: Use the same client with loop-anything-local, optionally using NAS for persistent definitions; explicitly select IDs with client local start.
+- Configuration: `client local --root register/list/show/start/stop`
 - Limits: Definitions persist; processes stop with their machine. Loading/moving machines does not restart them. Intervals run after completion; conditions fire once by default. Failure stops with a saved error; receiver communication errors retry at the configured interval.
 - Tools: Provided by the runtime; no separate call required
 - Reference: [references/team-runtime.md](team-runtime.md)

@@ -1,12 +1,25 @@
-# Team service, clients, and local executors
+# Team server and clients
 
 | Role | Install/run | Responsibility |
 |---|---|---|
-| Team service | Install the platform; one machine runs `serve --team-dir /nas/team/loop-anything` | Shared definitions, Runs, Timeline, state machine, tools, optional web UI |
-| Operator client | Copy exported platform/dispatch Skills; Python 3.9+; no platform installation | Inspect, edit, start, pause, and query through the same tools; never open the database |
-| Local executor | `install.py --role local`, using `loop-anything-local` | Personal timed/conditional jobs or explicitly started receivers; no web UI, service DB, or business Run |
+| Server | `install.py --role server`; one machine runs `serve --team-dir /nas/team/loop-anything` | Shared definitions, Runs, Timeline, state machine, tools, optional web UI |
+| Client | `install.py --role client`; install the bundled Agent Skills | Inspect/edit/run Loops through NAS/HTTP tools, receive and execute assigned work, and run personal timed/conditional jobs; no server database or web service |
 
-A machine can serve several roles. Personal jobs need no team service. Existing independent platforms and NAS/Base named-agent communication remain supported without migration to centralized service mode.
+Both roles use the same package and can coexist on a machine. A client starts receiving only when requested; installation, registration, and history reads never start work. Personal jobs need no server. Existing independent platforms and NAS/Base named-agent communication remain supported without migration to centralized service mode.
+
+## Install and use a client
+
+```sh
+python3 install.py --role client
+# Use the actual Python path returned by the installer.
+"<CLIENT_PYTHON>" -m loop_anything skills --install-dir <AGENT_SKILL_DIRECTORY> --url nas:///local-mount/team/loop-anything
+"<CLIENT_PYTHON>" -m loop_anything client tool list_loops --url nas:///local-mount/team/loop-anything
+"<CLIENT_PYTHON>" -m loop_anything client local --root /nas/users/me/schedules list
+```
+
+The platform Skill supplies editing/running tools; dispatch supplies named-agent communication; local supplies scheduling and receiving. These are task-specific instructions for one client, not separate installation roles. `client tool` forwards to the existing `call.py` (including `--arguments`, `--request-id`, `--wait`, and `--output`); `client local` forwards to the existing local scheduler. Use the exported Skill's `call.py` to reuse its saved `connection.json`, or supply `--url` to the installed client.
+
+Clients that only submit operations or dispatch work can still use the exported Skills with Python 3.9+, without installing the runtime. Install the client runtime when local execution is needed. The previous `--role platform` / `--role local` names remain aliases for server/client, and the `local` command remains compatible. Existing registrations and executor IDs are unchanged.
 
 ## Connect to the team service
 
@@ -29,9 +42,9 @@ python3 scripts/call.py result --request-id api-my-operation
 
 Retrying an ID requires identical arguments; the service executes it once. A crash after operation submission but before saving its receipt yields `outcome_unknown`: query the target state before deciding what to do, rather than retrying under a new ID. Business report_id and version checks still apply. Records live in api/requests, api/history, api/replies, and invalid input in api/rejected. Read results through tools, not by scanning all JSON files.
 
-## Delegate nodes to executors
+## Execute nodes on clients
 
-Register and start a receiver using the [local Skill](../../loop-anything-local/SKILL.md), then read names, IDs, and online status through `list_executors`. Configure through authoring tools:
+Register and explicitly start the client's receiver using the [local Skill](../../loop-anything-local/SKILL.md), then read names, IDs, and online status through `list_executors`. The protocol calls a receiving client an executor; this is not another installation role. Configure through authoring tools:
 
 ```json
 {"draft_id":"RETURNED_DRAFT_ID","revision":1,"node_id":"analyze","kind":"agent","executor":"RETURNED_EXECUTOR_ID","command":["codex","exec","-"],"cwd":"/nas/project"}

@@ -1,20 +1,20 @@
 ---
 name: loop-anything-local
-description: Schedule local timed tasks or script-based condition checks, invoke scripts or agents when conditions match, inspect or stop registered personal schedules, or configure lightweight receivers for a team platform. No web interface, platform service, or business Loop is required. Use loop-anything-dispatch to send work to other agents and loop-anything-platform to build or edit Loops.
+description: Use the Loop Anything client to schedule timed tasks or script-based condition checks, invoke scripts or agents, inspect or stop personal schedules, and receive tasks from a team server. Personal jobs need no web interface, server, or business Loop. Use loop-anything-dispatch to send work and loop-anything-platform to operate or build Loops with the same client.
 ---
 
 # Local scheduling
 
-Use the installed executor's Python with `-m loop_anything local`. To install only the program, run `python3 install.py --role local` from source or a distribution. The installer returns the actual Python path and does not register a background platform service.
+This Skill covers local scheduling and receiving within the unified client. Install with `python3 install.py --role client` from source or a distribution; use the returned Python path with `-m loop_anything client local`. The same client operates Loops through `client tool`; install `loop-anything-platform` for Loop operation instructions when needed. Installation starts neither a server nor a receiver. The older `--role local` and `-m loop_anything local` remain compatible.
 
 Confirm the registration directory with the user; a cluster can use a personal NAS directory. Use `list` to find, reuse, or update existing registrations. Registration does not start work. `start` the specific ID only when execution is requested. Moving machines or reloading the Skill must not automatically start historical jobs.
 
 ```sh
-"<EXECUTOR_PYTHON>" -m loop_anything local --root /nas/users/me/schedules list
-"<EXECUTOR_PYTHON>" -m loop_anything local --root /nas/users/me/schedules register task.json
-"<EXECUTOR_PYTHON>" -m loop_anything local --root /nas/users/me/schedules start <RETURNED_ID>
-"<EXECUTOR_PYTHON>" -m loop_anything local --root /nas/users/me/schedules show <ID>
-"<EXECUTOR_PYTHON>" -m loop_anything local --root /nas/users/me/schedules stop <ID>
+"<CLIENT_PYTHON>" -m loop_anything client local --root /nas/users/me/schedules list
+"<CLIENT_PYTHON>" -m loop_anything client local --root /nas/users/me/schedules register task.json
+"<CLIENT_PYTHON>" -m loop_anything client local --root /nas/users/me/schedules start <RETURNED_ID>
+"<CLIENT_PYTHON>" -m loop_anything client local --root /nas/users/me/schedules show <ID>
+"<CLIENT_PYTHON>" -m loop_anything client local --root /nas/users/me/schedules stop <ID>
 ```
 
 `start` is a persistent process; it accepts multiple IDs and defaults to `--jobs 4`. Normal stopping closes the current action. Registrations survive machine shutdown. Use the user's existing terminal/process supervision for persistence, without configuring login startup by default. `stop` submits a request; verify the outcome with `show`. Killing the scheduler may leave child processes. `offline` does not prove completion, and an unconfirmed old execution blocks another start of the same registration.
@@ -42,7 +42,7 @@ Check an external condition and execute once when it holds:
 - `register task.json --id ID` changes the definition for the next explicit start. Normal check/action failures stop that job and preserve the error rather than repeating unknown side effects.
 - Retain only the latest result and bounded diagnostics. When a recoverable native session is identified, store its ID rather than copying the conversation. Commands write business artifacts to the user-agreed location.
 
-Wake an agent only for actions requiring judgment; scripts perform recurring checks. Use the existing platform Skill's `call.py` to submit team-platform operations. Do not access the service database directly.
+Wake an agent only for actions requiring judgment; scripts perform recurring checks. Use `client tool <TOOL> --url <NAS_OR_HTTP_URL>` or the existing platform Skill's `call.py` with its saved connection to submit team-platform operations. Do not access the service database directly.
 
 ## Act as a team receiver
 

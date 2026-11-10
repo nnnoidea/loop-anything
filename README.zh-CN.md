@@ -60,3 +60,12 @@ flowchart TB
 - [平台 Skill](skills/loop-anything-platform/SKILL.md)：给 Agent 的构建与运行指南。
 - [轻量派单 Skill](skills/loop-anything-dispatch/SKILL.md)：只给其他 Agent 派任务，无需运行完整平台。
 - [开发说明](docs/development.md)：参与开发、测试和构建。
+
+## 给安装 Agent
+
+Loop Anything 分为两个角色，可以在同一台机器上兼任：
+
+- **服务端**：保存 Loop 和 Run，推进流程，提供网页。
+- **客户端**：通过服务端查看、编辑和运行 Loop，也支持本机执行、接单，以及个人定时或条件触发任务。
+
+**安装前，请先询问用户：这台机器需要安装服务端、客户端，还是兼任两者？** 用户已经明确选择时直接沿用，不重复询问。随后按[安装说明](docs/installation.md)配置所选角色和 Skill。接单和本机任务需要明确启动，安装本身不会启动它们。

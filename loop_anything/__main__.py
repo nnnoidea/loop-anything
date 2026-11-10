@@ -15,13 +15,36 @@ def read(filename):
     return json.loads(Path(filename).read_text(encoding='utf-8'))
 
 
+def client_main(argv):
+    parser = argparse.ArgumentParser(prog='loop-anything client', description='Operate a team service and optionally execute work on this machine. No server or receiver starts automatically.')
+    commands = parser.add_subparsers(dest='command', required=True)
+    commands.add_parser('tool', add_help=False, help='Call service tools over NAS/HTTP; tool --help lists connection options')
+    commands.add_parser('local', add_help=False, help='Register, inspect, start or stop local jobs and receivers; local --help lists options')
+    if not argv or argv[0] in ('-h', '--help'):
+        parser.print_help()
+        return
+    # Keep one implementation of each capability, including its argument parser.
+    if argv[0] == 'local':
+        from loop_anything.runtime.local_tasks import main as local_main
+        return local_main(argv[1:])
+    if argv[0] == 'tool':
+        import subprocess
+        client = platform_skill_directory() / 'scripts/call.py'
+        raise SystemExit(subprocess.call([sys.executable, str(client), *argv[1:]]))
+    parser.parse_args(argv)
+
+
 def main():
+    if len(sys.argv)>1 and sys.argv[1]=='client':
+        return client_main(sys.argv[2:])
     if len(sys.argv)>1 and sys.argv[1]=='local':
         from loop_anything.runtime.local_tasks import main as local_main
         return local_main(sys.argv[2:])
-    parser = argparse.ArgumentParser(description='Loop Anything local engine and workspace')
+    parser = argparse.ArgumentParser(description='Loop Anything server and client')
     parser.add_argument('--db', help='Workspace database (defaults to the user data directory); use an absolute path for an existing workspace')
     commands = parser.add_subparsers(dest='command', required=True)
+    commands.add_parser('client', help='Operate a team service, run local jobs, or receive tasks')
+    commands.add_parser('local', help='Compatibility entry for client local')
     service = commands.add_parser('service', help='Manage the macOS background platform')
     service.add_argument('action', choices=['install', 'start', 'stop', 'status', 'remove'])
     service.add_argument('--port', type=int)
@@ -84,6 +107,8 @@ def main():
         cmd.add_argument('--allow-sleep', action='store_true', help='Initial sleep preference; a saved webpage choice takes precedence')
         cmd.add_argument('--open', action='store_true', help='Open the workspace in the default browser')
     args = parser.parse_args(sys.argv[1:] or ['serve', '--open'])
+    if args.command in ('client', 'local'):
+        parser.error('Client commands use NAS/HTTP or a local registration directory, not --db. Put client/local directly after loop_anything.')
     if args.command == 'service':
         from loop_anything.runtime.service import manage
         print(json.dumps(manage(args.action, args.db, args.port, args.host, args.open), ensure_ascii=False, indent=2))

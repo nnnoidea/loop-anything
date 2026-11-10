@@ -4,7 +4,7 @@
 
 ```text
 loop_anything/
-  __main__.py        平台命令入口
+  __main__.py        服务端与统一客户端命令入口
   paths.py           共用的安装与数据路径
   runtime/           状态模型、存储、调度和系统进程支持
   interfaces/        HTTP 与平台、Agent 任务工具
@@ -34,7 +34,7 @@ macOS 安装器默认使用 launchd 用户服务；测试或临时环境安装�
 
 Agent 的 Timeline 乐观提交在 `runtime/optimistic.py`：读取依据随既有 Agent 身份保存，业务修订不包含这些读取元数据。提交在 `Store.edit` 短事务中验证相关 Task／输入／最新记录／设置，失败整组回滚；明确历史记录保持固定版本，日志不影响决策版本。执行身份和 Task 子树资格仍保留，同 Task 及原生 CLI 会话的重复执行保护不依赖 Timeline 排他锁。finish 后尚未退出的恢复终端和远端执行沿原 worker_active／communication_state 保留进程保护；重启从现有终端记录恢复未知状态，确认停止后解除。批量修改和预览同样检查 affected Task 的读取依据。
 
-Skill 客户端只在 `skills/loop-anything-platform/scripts/call.py` 维护；导出直接收集 Skill 目录，不另复制一套不同命名的源码。根目录旧 `examples/simulated_tasks.py` 仅为既有本地运行保留命令路径，不纳入发布。
+`client tool` 转交现有 `skills/loop-anything-platform/scripts/call.py`，`client local` 转交 `runtime/local_tasks.py`；客户端入口不创建 Store，不注册服务或自动启动任务。旧 `local` 入口保留兼容。Skill 工具客户端只在 `skills/loop-anything-platform/scripts/call.py` 维护；导出直接收集 Skill 目录，不另复制一套不同命名的源码。根目录旧 `examples/simulated_tasks.py` 仅为既有本地运行保留命令路径，不纳入发布。
 
 ## 验证
 

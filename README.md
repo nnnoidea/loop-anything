@@ -60,3 +60,12 @@ Give your agent this README, your Skill, and your goal:
 - [Platform Skill](skills/loop-anything-platform/SKILL.md): construction and runtime guidance for your agent.
 - [Lightweight dispatch Skill](skills/loop-anything-dispatch/SKILL.md): send work to other agents without running the full platform.
 - [Developer guide](docs/development.md) (Chinese): development, tests, and distribution builds.
+
+## For the installation agent
+
+Loop Anything has two roles, which can share one machine:
+
+- **Server**: stores Loops and Runs, advances workflows, and provides the web interface.
+- **Client**: views, edits, and runs Loops through the server; also supports local task execution, receiving work, and personal scheduled or conditional jobs.
+
+**Before installing, ask the user which role this machine needs: server, client, or both.** Follow an existing explicit choice without asking again. Then use the [installation guide](docs/installation.md) to set up the chosen role and Skills. Receiving work and running local jobs require an explicit start; installation alone does not start them.

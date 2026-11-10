@@ -91,6 +91,34 @@ class TeamRuntimeTests(unittest.TestCase):
         with store.connection() as db:self.assertEqual(db.execute('PRAGMA journal_mode').fetchone()[0],'delete')
         with Store(store.filename).connection() as db:self.assertEqual(db.execute('PRAGMA journal_mode').fetchone()[0],'delete')
 
+    def test_unified_client_operates_service_and_runs_local_work_only_when_started(self):
+        store,engine,box,_=self.setup_service()
+        work=self.root/'client';work.mkdir()
+        env=dict(os.environ,PYTHONPATH=str(Path(__file__).resolve().parents[1]))
+        def client(*args):
+            reply=subprocess.run([sys.executable,'-m','loop_anything','client',*args],cwd=work,env=env,
+                                 text=True,capture_output=True,timeout=15)
+            self.assertEqual(reply.returncode,0,reply.stderr+reply.stdout)
+            return json.loads(reply.stdout)
+        pending=client('tool','create_loop','--arguments','{"name":"Unified client"}',
+                       '--url',engine.platform_url,'--request-id','api-client','--wait','0')
+        self.assertTrue(pending['pending']);box.tick()
+        result=client('tool','result','--url',engine.platform_url,'--request-id','api-client')
+        self.assertTrue(result['ok'],result);self.assertEqual(len(store.drafts()),1)
+        target=work/'ran';definition=work/'job.json';registry=work/'registrations'
+        definition.write_text(json.dumps({'name':'Personal job','every':.01,'repeat':False,
+            'command':[sys.executable,'-c','from pathlib import Path;Path('+repr(str(target))+').write_text("done")']}))
+        ident=client('local','--root',str(registry),'register',str(definition))['id']
+        self.assertEqual(client('local','--root',str(registry),'list')[0]['runtime']['status'],'registered')
+        self.assertFalse(target.exists())
+        client('local','--root',str(registry),'start',ident)
+        self.assertEqual(target.read_text(),'done')
+        self.assertEqual(client('local','--root',str(registry),'show',ident)['runtime']['status'],'completed')
+        definition.write_text(json.dumps({'name':'Receiver','every':1,'receiver':{'server':engine.platform_url,'name':'Client'}}))
+        receiver=client('local','--root',str(registry),'register',str(definition))['id']
+        self.assertEqual(client('local','--root',str(registry),'show',receiver)['runtime']['status'],'registered')
+        self.assertFalse(list(work.rglob('*.sqlite3')))
+
     def test_report_client_loaded_by_path_submits_and_observes_over_nas(self):
         base=fixture.RuntimeTests();base.setUp();self.addCleanup(base.tearDown)
         engine=base.engine;box=ToolMailbox(base.store,self.root/'team',engine)

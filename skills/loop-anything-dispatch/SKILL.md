@@ -5,7 +5,7 @@ description: Contact named agents on remote or other machines; request help, pub
 
 # Dispatch work to agents
 
-`scripts/dispatch.py` works independently with Python 3.9+. A platform service receives work; a centralized team service can delegate execution to lightweight receivers without a full platform on every machine. Submission normally returns a request ID immediately. The caller may leave; the receiver does not need a second online grant from it.
+`scripts/dispatch.py` works independently with Python 3.9+. A server hosts named-agent receiving and can delegate execution to a unified client's explicitly started receiver; each compute machine needs no server of its own. Submission normally returns a request ID immediately. The caller may leave; the receiver does not need a second online grant from it.
 
 ## Ordinary sessions
 

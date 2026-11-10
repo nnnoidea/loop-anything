@@ -1,6 +1,6 @@
 ---
 name: loop-anything-platform
-description: Turn existing Skills into Loops; build, edit, test, debug, and run workflows; orchestrate sustained multistep or iterative work; inspect progress and results; pause or resume runs; and continue after training or other external results. Also use for NAS/HTTP team services, lightweight executors, named agents, and team connections. Use loop-anything-local for independent scheduled or conditional tasks, and loop-anything-dispatch for requests, assistance, results, and follow-ups with local or remote named agents. Discover existing capabilities, Loops, and runs before building. One-off questions and local edits that need no workflow or collaboration can be handled directly.
+description: Turn existing Skills into Loops; build, edit, test, debug, and run workflows; orchestrate sustained multistep or iterative work; inspect progress and results; pause or resume runs; and continue after training or other external results. Also use for NAS/HTTP team servers and unified clients, including local execution, named agents, and team connections. Use loop-anything-local for independent scheduled or conditional tasks, and loop-anything-dispatch for requests, assistance, results, and follow-ups with local or remote named agents. Discover existing capabilities, Loops, and runs before building. One-off questions and local edits that need no workflow or collaboration can be handled directly.
 metadata:
   provider: loop-anything-platform
 ---
@@ -23,8 +23,8 @@ The web interface is for reading and runtime operations, not editing or separate
 | Find runs by person, rename, attribute, archive, or delete | Store attribution on the client and query paginated summaries; keep library metadata separate from execution configuration | [Run library](references/run.md#run-lists-attribution-and-management) |
 | Inspect progress, retrieve results, or continue previous work | Reuse Run/request IDs and supplied task tokens; do not recreate the work | [Run](references/run.md), [communication](references/communication.md) |
 | Register or update a local named agent | Discover registrations with `communication_workspace(registered_agents=true)`; clarify reuse, update, or addition when a similar local name/purpose exists; an explicitly requested same-name addition is allowed | [Registration](references/communication.md#configuration-by-the-platform-owner) |
-| Share Loops with team members who only have terminals | Connect through NAS/API to one service; run lightweight receivers on compute machines | [Team runtime](references/team-runtime.md) |
-| Local schedules, conditional polling, or receiving jobs | Use `loop-anything-local`; persistent registration never automatically restarts old jobs | [Local scheduling](../loop-anything-local/SKILL.md) |
+| Share Loops with team members who only have terminals | Use one server and unified clients for NAS/HTTP operations and optional local execution; explicitly start receiving when needed | [Team runtime](references/team-runtime.md) |
+| Local schedules, conditional polling, or receiving jobs | Use the same client with `loop-anything-local`; persistent registration never automatically restarts old jobs | [Local scheduling](../loop-anything-local/SKILL.md) |
 | Establish collaboration between machines | Connect with `communication_config(operation=team,link=...)`; ask the user for the agent's main purpose before opening it to work | [Team setup](references/communication.md#first-connection-one-team-link) |
 
 A normal chat or terminal entry need not have an `execution_id`. Do not search other Runs for an execution to register against. See [entry agents and session registration](references/communication.md#entry-agents-and-session-registration) for assistance, continuation, and existing-execution registration.
@@ -44,6 +44,8 @@ When the workflow first becomes complete, or nodes, branches, loops, or task-gen
 Configure the built-in flow agent with `set_loop(flow_agent=...)`; invoke it through explicit business-node `routes`. Do not add business nodes for it or choose a default progression mode. Show execution, progression decisions, and runtime status separately. See [flow agents](references/flow-agent.md).
 
 ## Connect and discover
+
+The installed client combines service operations (`client tool`) and optional local scheduling/receiving (`client local`). See [team runtime](references/team-runtime.md) for installation. The portable Skill client below remains usable without installing the runtime.
 
 Use tools and structured receipts. If the wake-up context contains `tool_url`, follow the [scoped entry](references/scoped-entry.md). Otherwise, run in this Skill directory, or use absolute script paths from elsewhere:
 
