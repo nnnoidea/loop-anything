@@ -14,7 +14,9 @@ from loop_anything.paths import platform_skill_directory
 
 def serve(store, engine, port, initial_run=None, protection=None, open_browser=False, host='127.0.0.1', mailbox=None, public_url=None):
     from loop_anything.interfaces.platform_tools import PlatformTools
+    from loop_anything.interfaces.schedules import ScheduleControls
     platform_tools = PlatformTools(store)
+    schedules = ScheduleControls(store.filename)
     root = Path(__file__).resolve().parents[1] / 'web'
     timeline_guide = (platform_skill_directory() / 'references/run.md').read_text(encoding='utf-8')
 
@@ -56,6 +58,9 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
         def get(self):
             parts = urlsplit(self.path).path.strip('/').split('/')
             query = {k:v[-1] for k,v in parse_qs(urlsplit(self.path).query,keep_blank_values=True).items()}
+            if parts == ['api', 'schedules']:
+                self.send(schedules.list())
+                return
             if len(parts)==5 and parts[0]=='communication' and parts[3:]==['api','tools']:
                 self.send(engine.communication.scoped_definitions(parts[1],parts[2]));return
             if len(parts)==5 and parts[0]=='communication' and parts[3:]==['api','platform']:
@@ -189,7 +194,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.send({'snapshot': run, 'execution_id': execution['id'], 'token': execution.get('token'),
                            'settings_revision': execution['settings_revision'], 'output_contract': node_for(run, execution['node'])['outputs']})
             else:
-                filename = {name: name for name in ('communication.js', 'communication.css', 'terminal.js', 'terminal.css', 'xterm.js', 'xterm-fit.js', 'xterm.css', 'app.js', 'notifications.js', 'lifecycle.js', 'loop_graph.js', 'flow_bridge.js', 'settings.js', 'forms.js', 'workspace.js', 'authoring.js', 'workspace.css', 'launch.js', 'task_history.js', 'style.css', 'graph.css', 'editor.js', 'editor.css', 'packages.js', 'library.js', 'library.css', 'navigation.js', 'run_library.js')}.get('/'.join(parts))
+                filename = {name: name for name in ('schedules.js', 'communication.js', 'communication.css', 'terminal.js', 'terminal.css', 'xterm.js', 'xterm-fit.js', 'xterm.css', 'app.js', 'notifications.js', 'lifecycle.js', 'loop_graph.js', 'flow_bridge.js', 'settings.js', 'forms.js', 'workspace.js', 'authoring.js', 'workspace.css', 'launch.js', 'task_history.js', 'style.css', 'graph.css', 'editor.js', 'editor.css', 'packages.js', 'library.js', 'library.css', 'navigation.js', 'run_library.js')}.get('/'.join(parts))
                 if parts == ['']:
                     filename = 'index.html'
                 if not filename:
@@ -236,6 +241,9 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.send({'error': 'Internal error; inspect engine console'}, 500)
 
         def post(self, parts, body):
+            if len(parts) == 4 and parts[:2] == ['api', 'schedules']:
+                self.send(schedules.control(parts[2], parts[3], body))
+                return
             if len(parts)==5 and parts[0]=='communication' and parts[3:]==['api','tools']:
                 result=engine.communication.scoped_tool(parts[1],parts[2],body['tool'],body.get('arguments',{}))
                 self.send(dict(result,ok=not bool(result.get('pending'))));return
@@ -381,4 +389,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
         server.serve_forever()
     finally:
         server.server_close()
-        runtime.close()
+        try:
+            schedules.close()
+        finally:
+            runtime.close()

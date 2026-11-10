@@ -11,3 +11,14 @@
 .topbar{gap:12px;height:auto;min-height:64px;flex-wrap:wrap}
 
 .platform-power{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.power-switch{display:flex;align-items:center;gap:7px;margin:0;white-space:nowrap}.power-switch input{width:16px;height:16px;margin:0;accent-color:var(--blue)}
+
+#schedules-nav{text-decoration:none;border-radius:8px}
+.schedules-content{padding:0 clamp(18px,3vw,34px) 24px}
+.schedule-registration{padding:14px 18px;margin-bottom:18px}
+.schedule-registration summary,#schedules-list summary{cursor:pointer}
+#schedules-list{display:grid;gap:14px}
+#schedules-list article{background:white;border:1px solid var(--line);border-radius:11px}
+#schedules-list .library-card-top{width:100%;align-items:flex-start;gap:12px;margin-bottom:0}
+#schedules-list .card-title{overflow-wrap:anywhere}
+#schedules-list details{width:100%;margin-top:14px}
+#schedules-list pre{max-height:320px;overflow:auto}

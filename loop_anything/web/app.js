@@ -36,6 +36,8 @@ async function api(url, data) {
 function toast(message) { $('toast').textContent = message; $('toast').style.display = 'block'; clearTimeout(toast.timer); toast.timer = setTimeout(() => $('toast').style.display = 'none', 5500); }
 async function safely(fn) { try { await fn(); } catch (error) { toast(error.message); } }
 function showPage() {
+  $('schedules-page').hidden=page!=='schedules';
+  $('schedules-nav').classList.toggle('active',page==='schedules');
   if($('communication-page'))$('communication-page').hidden=page!=='communication';
   if($('launch-page'))$('launch-page').hidden=page!=='launch';
   $('workspace').hidden = page !== 'runs' || !run;
@@ -48,6 +50,7 @@ function showPage() {
 
 }
 async function refresh() {
+  if(page==='schedules')refreshSchedules();
   if (loading) return;
   loading = true;
   try {

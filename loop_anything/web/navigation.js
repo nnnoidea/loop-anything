@@ -4,6 +4,7 @@ let activeRoute={type:'home'}, navigationSerial=0;
 const editorSessions=new Map(),runReturns=new Map();
 function routeHash(route){
   if(route.type==='communication')return '#communication';
+  if(route.type==='schedules')return '#schedules';
   if(route.type==='catalog')return '#loop_definitions';
   if(route.type==='loop')return '#loop/'+encodeURIComponent(route.key)+'/'+(route.tab || 'overview');
   if(route.type==='editor')return '#edit/'+encodeURIComponent(route.id)+(route.node?'/node/'+encodeURIComponent(route.node)+(route.implementation?'/implementation/'+encodeURIComponent(route.implementation):''):'');
@@ -14,6 +15,7 @@ function routeHash(route){
 function parseRoute(hash){
   const parts=hash.replace(/^#/,'').split('/');
   if(parts[0]==='communication')return {type:'communication'};
+  if(parts[0]==='schedules')return {type:'schedules'};
   if(!parts[0])return {type:'home'};
   if(parts[0]==='loop_definitions')return {type:'catalog'};
   if(parts[0]==='loop')return {type:'loop',key:decodeURIComponent(parts[1] || ''),tab:['overview','flow','prepare'].includes(parts[2])?parts[2]:'overview'};
@@ -60,6 +62,7 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
     if(!external)history[replace?'replaceState':'pushState'](null,'',routeHash(route));
     activeRoute=structuredClone(route);
     if(route.type==='communication'){page='communication';await renderCommunication();}
+    else if(route.type==='schedules'){page='schedules';refreshSchedules();}
     else if(route.type==='catalog'){page='catalog';await loadCatalog();}
     else if(route.type==='loop'){await openLoop(route.key);}
     else if(route.type==='prepare'){page='catalog';await loadCatalog();toast('请重新从 Loop 页面启动；旧准备记录保留。');}
@@ -84,6 +87,7 @@ function updateNavigationUI(){
   $('run-list').querySelectorAll('[data-run]').forEach(b=>b.classList.toggle('chosen',page==='runs'&&b.dataset.run===selected));
   const crumbs=[navLink({type:'catalog'},'Loop 库')];
   if(page==='communication'){crumbs.push('Agent 通信');}
+  else if(page==='schedules'){crumbs.push('定时任务');}
   else if(page==='editor' && editor){
     if(editor.installedKey&&$('reader-runs')){renderRelatedRuns(editor.installedKey);safely(()=>refreshRelatedRuns(editor.installedKey));}
     if(editor.returnTo?.type==='loop')crumbs.push(navLink(editor.returnTo,'来源 Loop'));

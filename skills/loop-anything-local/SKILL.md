@@ -9,6 +9,8 @@ This Skill covers local scheduling and receiving within the unified client. Inst
 
 Confirm the registration directory with the user; a cluster can use a personal NAS directory. Use `list` to find, reuse, or update existing registrations. Registration does not start work. `start` the specific ID only when execution is requested. Moving machines or reloading the Skill must not automatically start historical jobs.
 
+For a job the user wants to manage from the workspace's Scheduled Tasks page, register it on the server using the directory shown under “如何登记任务” as `--root`. The page lists those registrations and offers explicit start and stop. Personal client schedules in other directories remain accessible via their own CLI registry.
+
 ```sh
 "<CLIENT_PYTHON>" -m loop_anything client local --root /nas/users/me/schedules list
 "<CLIENT_PYTHON>" -m loop_anything client local --root /nas/users/me/schedules register task.json

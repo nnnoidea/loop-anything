@@ -11,6 +11,7 @@ import time
 import uuid
 
 from loop_anything.runtime.host_runtime import lock_database, run_command, CommandNotStopped
+from loop_anything.runtime.model import Conflict
 from loop_anything.runtime.scheduling import Scheduler
 from loop_anything.runtime.transitions import select_transition
 from loop_anything.runtime.team_transport import core
@@ -24,6 +25,11 @@ RULES=[{'from':a,'event':e,'to':b} for a,e,b in (
 def read(path, default=None):
     try:return json.loads(path.read_text(encoding='utf-8'))
     except FileNotFoundError:return default
+
+
+def schedule_summary(definition):
+    summary = {key: definition[key] for key in ('name', 'description', 'at', 'every', 'repeat') if key in definition}
+    return dict(summary, conditional=bool(definition.get('check')), receiver=bool(definition.get('receiver')))
 
 
 class TaskRegistry:
@@ -90,8 +96,10 @@ class TaskRegistry:
     def list(self):
         return [self.show(p.parent.name) for p in sorted(self.root.glob('*/definition.json'))]
 
-    def stop(self, ident):
+    def stop(self, ident, *, expected_owner=None):
         item=self.show(ident);owner=item['runtime'].get('owner')
+        if expected_owner is not None and owner!=expected_owner:
+            raise Conflict('Schedule execution changed; refresh before stopping it')
         if owner:core.atomic_json(self.path(ident)/'stop.json',{'owner':owner})
         return {'id':ident,'stop_requested':bool(owner),'notice':'A stop request is not confirmation that the process has exited.'}
 
@@ -105,21 +113,25 @@ def parse_time(value):
 
 
 class LocalRuntime:
-    def __init__(self, registry, ids, jobs=4):
+    def __init__(self, registry, ids, jobs=4, *, expected=None):
         self.registry=registry;self.stop=threading.Event();self.items={};self.locks=[]
         self.pool=ThreadPoolExecutor(max_workers=jobs)
         self.scheduler=Scheduler(self.stop)
         self.last_control=0
         try:
             for ident in dict.fromkeys(ids):
-                item=registry.show(ident);folder=registry.path(ident)
+                registry.show(ident);folder=registry.path(ident)
                 self.locks.append(lock_database(folder/'execution'))
+                item=registry.show(ident)
+                if expected is not None and expected[ident]!=(item['revision'],item['runtime'].get('owner')):
+                    raise Conflict('Schedule definition or execution changed; refresh before starting it')
                 execution=read(folder/'execution.json')
                 if execution and execution.get('state') not in ('exited','error','stopped'):
                     raise CommandNotStopped('Previous action may still be running: '+execution['id']+'. Inspect show; confirm-stopped that exact execution only after verifying its process stopped.')
                 definition=item['definition'];now=time.time()
                 state={'id':ident,'owner':uuid.uuid4().hex,'machine':socket.gethostname(),
                     'status':'waiting','started_at':now,'heartbeat':now,'definition_revision':item['revision'],
+                    'schedule':schedule_summary(definition),
                     'next_at':parse_time(definition['at']) if 'at' in definition else now+(0 if definition.get('check') or definition.get('receiver') else definition['every'])}
                 if item['runtime'].get('last_result'):state['last_result']=item['runtime']['last_result']
                 self.items[ident]={'definition':definition,'state':state,'future':None,'stop':threading.Event()}
@@ -140,19 +152,29 @@ class LocalRuntime:
             if item['state']['status'] in ('waiting','checking','running'):
                 item['state']['heartbeat']=time.time();self.save(ident)
 
+    def stop_requested(self, ident, item):
+        event = item['stop']
+        if not event.is_set():
+            request = read(self.registry.path(ident)/'stop.json', {})
+            if request.get('owner') == item['state']['owner']:
+                event.set()
+        return event.is_set()
+
     def tick(self):
         active=False
         inspect_controls=time.monotonic()-self.last_control>=1
         if inspect_controls:self.last_control=time.monotonic()
         for ident,item in self.items.items():
-            state=item['state'];requested=read(self.registry.path(ident)/'stop.json',{}) if inspect_controls else {}
-            if requested.get('owner')==state['owner']:item['stop'].set()
-            if item['stop'].is_set() and state['status']!='stopped' and (not item['future'] or item['future'].done()):
+            state=item['state']
+            idle=not item['future'] or item['future'].done()
+            due=idle and state['status']=='waiting' and time.time()>=state['next_at']
+            if inspect_controls or due:self.stop_requested(ident,item)
+            if item['stop'].is_set() and state['status']!='stopped' and idle:
                 if item.get('receiver'):item['receiver'].close()
                 state.update(status='stopped',next_at=None);self.save(ident)
             if state['status'] not in ('waiting','checking','running'):continue
             active=True
-            if state['status']=='waiting' and time.time()>=state['next_at'] and (not item['future'] or item['future'].done()):
+            if due:
                 self.move(item,'due');self.save(ident)
                 item['future']=self.pool.submit(self.execute,ident)
         if not active:self.stop.set()
@@ -161,6 +183,7 @@ class LocalRuntime:
         item=self.items[ident];definition=item['definition'];state=item['state'];event=item['stop']
         session=None
         try:
+            if self.stop_requested(ident,item):return
             if definition.get('receiver'):
                 from loop_anything.runtime.executor_client import Receiver
                 if 'receiver' not in item:item['receiver']=Receiver(definition['receiver'],self.registry.path(ident))
@@ -175,6 +198,7 @@ class LocalRuntime:
                         self.move(item,'not_ready');return
                     if checked.returncode:raise ValueError('Condition check failed: '+checked.stderr[-2000:])
                 self.move(item,'ready');state['last_started_at']=time.time();self.save(ident)
+                if self.stop_requested(ident,item):return
                 result,session=self.run_action(ident)
                 state['last_result']={'returncode':result.returncode,'at':time.time(),
                     'native_session':session.doc.get('native_session'),
@@ -193,7 +217,9 @@ class LocalRuntime:
                 state['last_result']={'at':time.time(),'returncode':session.doc.get('returncode'),
                     'native_session':session.doc.get('native_session'),'output_tail':session.output_tail,'error':str(exc)}
         finally:
-            if event.is_set() and state['status']!='unknown':state['status']='stopped'
+            if event.is_set() and state['status']!='unknown':
+                if item.get('receiver'):item['receiver'].close()
+                state['status']='stopped'
             state['next_at']=time.time()+definition.get('every',1) if state['status']=='waiting' else None
             state['heartbeat']=time.time();self.save(ident)
 
