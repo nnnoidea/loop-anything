@@ -35,7 +35,7 @@ def document():
     bp = {'schema_version': 2, 'id': 'portable', 'version': '1', 'name': 'Portable loop', 'entry': 'initialize',
           'handbook': {'instructions': 'Initialize intent, write result, finish after result.'},
           'records': {'text': {'type': 'string'}, 'flag': {'type': 'boolean'}},
-          'nodes': {'initialize': {'instructions': 'Initialize', 'initialize_timeline': True, 'plan_nodes': ['finish'],
+          'nodes': {'initialize': {'instructions': 'Initialize', 'plan_nodes': ['finish'],
                        'inputs': {}, 'outputs': {'result': {'record_type': 'text'}}},
                     'finish': {'instructions': 'Finish',
                        'inputs': {'value': {'type': 'string'}}, 'outputs': {'done': {'record_type': 'flag'}}}},

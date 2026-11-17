@@ -1,3 +1,4 @@
+from tests.runtime_fixture import seeded_draft
 from tests.runtime_fixture import runtime_run
 import copy
 import io
@@ -22,7 +23,7 @@ def equal(path,value):return {'op':'eq','args':[{'path':path},value]}
 class AuthoringCapabilitiesTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.store=Store(Path(self.tmp.name)/'run.db');self.tools=PlatformTools(self.store)
-        self.draft=self.tools.call('create_loop',{'name':'Selective batch review'})
+        self.draft=seeded_draft(self.tools,{'name':'Selective batch review'})
         self.edit('set_loop',handbook='Submit parameters, let declared routes arrange tasks.')
         self.edit('put_node',node_id='initialize',outputs=[{'name':'jobs','type':'array'},{'name':'groups','type':'array'}])
         self.edit('put_node',node_id='work',instructions='Execute chosen parameters',inputs=[],outputs=[{'name':'result','type':'number'}])
@@ -38,6 +39,15 @@ class AuthoringCapabilitiesTests(unittest.TestCase):
         self.routes=[{'id':'work','event':'completed','plan':'work','values':{'jobs':{'$':'outputs.jobs'}}},
                      {'id':'review','event':'completed','plan':'review','each':'outputs.groups','values':{'$':'item'}}]
         self.edit('put_node',node_id='initialize',routes=self.routes)
+
+    def test_scenario_starts_from_steward_without_an_initializer(self):
+        from loop_anything.packaging.scenarios import run_scenarios
+        bp={'schema_version':2,'id':'method','version':'1','handbook':{'instructions':'Read progress and act'},'records':{},'nodes':{}}
+        result=run_scenarios({'loop_definition':bp,'implementations':{}},[{'name':'goal-only',
+            'steps':[{'node':'$flow_agent','report':{'event':'completed','envelope':{
+                'outputs':{'decision':'No work requested yet'},'state':[{'type':'progress','id':'current','value':'Goal recorded; no experiments arranged'}]}}}],
+            'assertions':[{'message':'No artificial business tasks','test':equal('task_count',0)}]}])
+        self.assertTrue(result['passed'],result)
 
     def tearDown(self):self.tmp.cleanup()
     def edit(self,name,**args):

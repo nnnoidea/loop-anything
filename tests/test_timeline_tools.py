@@ -20,7 +20,7 @@ class ToolTests(unittest.TestCase):
             'handbook': {'instructions': 'Write intent and results with tools. Handle tasks then finish.'},
             'records': {'text': text}, 'nodes': {
                 'init': {'instructions': 'Initialize', 'inputs': {}, 'outputs': {'result': {'record_type': 'text'}},
-                         'initialize_timeline': True, 'plan_nodes': ['finish']},
+                         'plan_nodes': ['finish']},
                 'finish': {'instructions': 'Finish', 'inputs': {'value': text}, 'outputs': {'result': {'record_type': 'text'}}}},
             'seed': {'id': 'initial', 'node': 'init', 'inputs': {}, 'outputs': {'result': {'id': 'initial-result'}}}, 'rules': []}
         self.implementations = {k: {'options': {'default': {'kind': 'agent'}}, 'default': 'default'} for k in self.bp['nodes']}
@@ -49,7 +49,7 @@ class ToolTests(unittest.TestCase):
         self.assertTrue(self.complete(settings={'objective': 'Task'}, outputs={'result': 'source'})['ok'])
         run = self.store.get(self.run_id)
         self.assertEqual('source', run['records']['initial-result'][-1]['value'])
-        self.assertTrue(run['initialized'])
+        self.assertTrue(run['records'] or run['tasks'][run['loop_definition']['seed']['id']]['status']=='completed')
         self.assertEqual(self.e['token'], run['agent_sessions'][0]['token'])
         self.assertFalse(self.complete(outputs={'result': 'duplicate'})['ok'])
         self.assertEqual(run, self.store.get(self.run_id))

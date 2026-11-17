@@ -18,7 +18,7 @@ def definition():
     text = {'type': 'string'}
     def node(inputs=None, init=False):
         return {'instructions': 'Read the task and obey user authorization.', 'inputs': inputs or {},
-                'outputs': {'result': {'record_type': 'text'}}, 'initialize_timeline': init,
+                'outputs': {'result': {'record_type': 'text'}},
                 'skills': [{'name': 'method', 'content': 'Use the declared evidence.'}],
                 'plan_nodes': ['script', 'reason', 'finish', 'wait']}
     bp = {'schema_version': 2, 'id': 'operator-tests', 'version': '1', 'entry': 'init',
@@ -112,9 +112,9 @@ class RunAgentTests(unittest.TestCase):
         self.engine.command(self.id, 'resume')
         self.tools = RunTools(self.store, self.id, owner['token'])
         update_work(self.store,self.id,{'constraints':'User requested change'})
-        self.assertEqual('User requested change', self.tools.call('read_timeline', {})['settings']['constraints'])
+        self.assertEqual('User requested change', self.tools.call('read_run', {'view':'snapshot'})['settings']['constraints'])
         self.complete('init', settings={'objective': 'User already discussed this'}, tasks=[task_spec('script', 'script'), task_spec('wait', 'wait')])
-        self.assertTrue(self.read()['initialized'])
+        self.assertTrue(self.read()['records'])
         self.assertEqual('completed', self.read()['tasks']['init']['status'])
         self.until(lambda r: r['tasks']['script']['status'] == 'completed')
         self.assertEqual(0, agent_calls(self.read()))
@@ -230,12 +230,12 @@ class RunAgentTests(unittest.TestCase):
 
     def test_authorization_is_text_and_background_cannot_expand_it(self):
         self.start()
-        before = self.tools.call('read_timeline', {})['settings']
+        before = self.tools.call('read_run', {'view':'snapshot'})['settings']
         self.assertEqual(self.read()['settings']['constraints'], before['constraints'])
         with self.assertRaises(Invalid):
             self.tools.call('change_settings', {'revision': 1, 'change': {'authorization': 'Do anything'}})
         self.tools.call('change_settings', {'revision': 1, 'change': {'max_parallel': 3}})
-        self.assertEqual(2, self.tools.call('read_timeline', {})['settings']['revision'])
+        self.assertEqual(2, self.tools.call('read_run', {'view':'snapshot'})['settings']['revision'])
         self.assertEqual(before['constraints'], self.read()['settings']['constraints'])
         self.complete('init', settings={'objective': 'Latest state'}, tasks=[task_spec('finish', 'finish', {'value': {'literal': 'ok'}})])
         self.complete('finish')

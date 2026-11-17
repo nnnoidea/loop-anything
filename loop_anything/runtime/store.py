@@ -212,7 +212,7 @@ class Store:
                 run['communication_group']=None
         if acquire:
             from loop_anything.interfaces.agent_tasks import acquire_in_run
-            acquire_in_run(run, 'interactive', task_id=run['loop_definition']['seed']['id'])
+            acquire_in_run(run, 'interactive', task_id=run['loop_definition'].get('seed',{}).get('id'))
         self.log(run, 'created', 'Run created; entry Task is recorded before scheduling')
         def attach(db):
             from loop_anything.runtime import timelines
@@ -296,7 +296,7 @@ class Store:
                 run[field] = {v['id']: v for v in rows}
             else:
                 run[field] = rows
-        entry=next((t for t in run['tasks'].values() if t['origin'].get('entry') and t['spec']['node']==run['loop_definition']['entry']),None)
+        entry=next((t for t in run['tasks'].values() if t['origin'].get('entry') and t['spec']['node']==run['loop_definition'].get('entry')),None)
         if entry:run['loop_definition']['seed']['id']=entry['id']
         if run.get('timeline_id'):
             from loop_anything.runtime import timelines

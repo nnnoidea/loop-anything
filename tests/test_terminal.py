@@ -1,3 +1,4 @@
+from tests.runtime_fixture import seeded_draft
 """Real subprocess/PTY and Engine checks; no model credentials required."""
 import json
 import os
@@ -139,7 +140,7 @@ class TerminalTests(unittest.TestCase):
         with self.assertRaises(Conflict):self.sessions.control('run','attempt','interrupted',data='x')
 
     def test_public_configuration_roundtrip_and_requirements(self):
-        tools=PlatformTools(self.store);draft=tools.call('create_loop',{'name':'Terminal'})
+        tools=PlatformTools(self.store);draft=seeded_draft(tools,{'name':'Terminal'})
         args={k:draft[k] for k in ('draft_id','revision')}
         result=tools.call('set_implementation',dict(args,node_id='initialize',kind='agent',terminal=True,command=['codex','{{prompt}}']))
         doc=tools.call('read_loop',{'draft_id':draft['draft_id']})['loop']

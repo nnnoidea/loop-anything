@@ -145,7 +145,7 @@ def run_scenarios(document, scenarios=None):
                     if len(tasks)!=1:raise Invalid('Report selector must identify exactly one Task; use ref or task_id')
                     task=tasks[0]
                     attempts=[e for e in snapshot['executions'] if e['task_id']==task['id'] and ('attempt' not in step or e['attempt']==step['attempt'])]
-                    entry = not attempts and task['id']==snapshot['loop_definition']['seed']['id'] and not snapshot['initialized']
+                    entry = not attempts and task['id']==snapshot['loop_definition'].get('seed',{}).get('id')
                     if entry:attempts=[e for e in snapshot['executions'] if e['task_id']==startup]
                     if not attempts:raise Invalid('Selected task is not dispatched; inspect dependencies and implementation')
                     execution=attempts[-1];report=copy.deepcopy(step['report']);report.setdefault('report_id','scenario-'+str(step_index))
@@ -178,12 +178,12 @@ def run_scenarios(document, scenarios=None):
                     if not entry and execution['implementation']['kind']=='agent' and receipt.get('completed'):
                         RunTools(store,run_id,execution['token']).call('finish',{})
                     saved=store.get(run_id)
-                    if saved['initialized'] and saved['tasks'][startup]['status']!='completed':
+                    if saved['tasks'].get(saved['loop_definition'].get('seed',{}).get('id'),{}).get('status')=='completed' and saved['tasks'][startup]['status']!='completed':
                         tick();saved=store.get(run_id)
                         attempt=next(e for e in saved['executions'] if e['task_id']==startup)
                         manager=RunTools(store,run_id,attempt['token'])
                         info=manager.call('read_task',{'task_id':startup})
-                        manager.call('report_task',{'task_id':startup,'event':'completed','report_id':'scenario-started','envelope':{'outputs':{'decision':'Simulated initialization and declared routes'}}})
+                        manager.call('report_task',{'task_id':startup,'event':'completed','report_id':'scenario-started','envelope':{'outputs':{'decision':'Simulated entry work and declared routes'}}})
                         manager.call('finish',{})
                 tick()
                 state=scenario_state(store.get(run_id))

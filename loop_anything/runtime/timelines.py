@@ -118,25 +118,9 @@ def read(store, ident, after=0, limit=100):
         from loop_anything.runtime import business_state
         state=business_state.load(db,value)
         current=db.execute("SELECT l.document FROM runs r JOIN loop_definitions l ON l.key=json_extract(r.document,'$.loop_key') WHERE r.id=?",(value.get('active_run_id'),)).fetchone()
-        definition=json.loads(current[0]).get('state') if current else None
-        activity=[]
-        for row in db.execute("SELECT id,document FROM runs WHERE json_extract(document,'$.timeline_id')=?",(ident,)):
-            header=json.loads(row[1])
-            for task in db.execute("SELECT document FROM timeline_parts WHERE run_id=? AND section='tasks'",(row[0],)):
-                task=json.loads(task[0])
-                if header.get('superseded_by') and task['status'] not in ('executing','waiting','approval'):continue
-                activity.append(dict(run_id=row[0],task_id=task['id'],status=task['status'],
-                                     outputs=task['spec']['outputs'],wait_reasons=task.get('wait_reasons',[])))
-        from loop_anything.runtime import work
-        waits=[{k:w.get(k) for k in ('id','state','sources','message','error')} for w in work.rows(db,'wait')
-               if w['timeline_id']==ident and w['state'] in ('waiting','ready')]
-        from loop_anything.runtime.monitoring import data_state
-        run_ids={r['id'] for r in runs}
-        monitors=[dict(id=m['id'],status=m['status'],sample=m.get('sample'),data_state=data_state(m,time.time()))
-                  for m in work.rows(db,'monitor') if m.get('run_id') in run_ids]
+        definition=(json.loads(current[0]).get('state') if current else None) or value.get('state_definition')
         result_rows=db.execute('SELECT document FROM work_results WHERE timeline_id=? ORDER BY rowid DESC LIMIT 51',(ident,)).fetchall()
         return dict(timeline=value,entries=entries,runs=runs,business_state=business_state.overview(state,definition),
-                    activity={'tasks':activity[:50],'total':len(activity),'complete':len(activity)<=50},work=[{'key':k,'run_id':v['run_id'],'steps':v['result']['steps']} for k,v in business_state.arrangements(db,ident).items()],waits=waits,monitors=monitors,
                     results={'records':[{k:r.get(k) for k in ('id','type','revision','source_run_id','at')} for r in (json.loads(r[0]) for r in result_rows[:50])],
                              'complete':len(result_rows)<=50},
                     cursor=entries[-1]['sequence'] if entries else after,has_more=len(rows)>limit)
@@ -150,7 +134,7 @@ def attach(db, run, ident=None):
     run['records']=business_state.results(db,value['id'])
     run['business_state']=business_state.load(db,value)
     run['arrangements']=business_state.arrangements(db,value['id'])
-    for destination in run['tasks'][run['loop_definition']['seed']['id']]['spec']['outputs'].values():
+    for destination in run['tasks'].get(run['loop_definition'].get('seed',{}).get('id'),{}).get('spec',{}).get('outputs',{}).values():
         if destination['id'] in run['records']:destination['expected_revision']=run['records'][destination['id']][-1]['revision']
     save(db,value)
     project(run,value)
@@ -186,12 +170,11 @@ def continue_from(store, db, run, source_id):
     if source.get('superseded_by'):raise Conflict('Run already continued by '+source['superseded_by'])
     if source.get('identity_read_only'):raise Conflict('Copied workspace cannot take over a Run')
     for task in source['tasks'].values():
-        if not (management_task(task) or source['loop_definition']['nodes'][task['spec']['node']].get('initialize_timeline')):continue
+        if not (management_task(task) or task['origin'].get('entry')):continue
         if any(e['implementation']['kind']=='agent' and process_active(e) and (e.get('worker_active') or owner_for(source,e.get('token')) or task['status'] not in ('completed','cancelled','skipped','stale')) for e in source['executions'] if e['task_id']==task['id']):
             raise Conflict('Original Agent is active or its stop is unconfirmed')
     run['continued_from']=source_id
     refreshed=source['loop_key']!=run['loop_key']
-    run['initialized']=False if refreshed else source['initialized']
     if not refreshed:
         run['settings']=copy.deepcopy(source['settings'])
         run['inputs']=copy.deepcopy(source['inputs'])
@@ -200,9 +183,8 @@ def continue_from(store, db, run, source_id):
     seed=copy.deepcopy(run['tasks'])
     run['tasks']=seed if refreshed else {}
     run['retained_nodes']={}
-    excluded={t['id'] for t in source['tasks'].values() if management_task(t) or (refreshed and
-        source['loop_definition']['nodes'][t['spec']['node']].get('initialize_timeline'))}
-    seed_id=run['loop_definition']['seed']['id']
+    excluded={t['id'] for t in source['tasks'].values() if management_task(t)}
+    seed_id=run['loop_definition'].get('seed',{}).get('id')
     if refreshed and seed_id in source['tasks'] and seed_id not in excluded:
         entry=run['tasks'].pop(seed_id)
         from loop_anything.runtime.store import uid
@@ -212,25 +194,8 @@ def continue_from(store, db, run, source_id):
         if task['id'] in excluded:continue
         item=copy.deepcopy(task)
         if refreshed:
-            from loop_anything.runtime.implementations import selected
-            original=task['spec']['node']
-            prior=source.get('retained_nodes',{}).get(original)
-            name=original if prior else '$retained:'+source_id+':'+ident
-            if prior:
-                run['retained_nodes'][name]=copy.deepcopy(prior)
-            else:
-                node=copy.deepcopy(source['loop_definition']['nodes'][original])
-                output_types={p:v['record_type'] for p,v in node['outputs'].items()}
-                schemas={}
-                for port,destination in node['outputs'].items():
-                    old_type=destination['record_type'];new_type=name+':'+port
-                    schemas[new_type]=source['loop_definition']['records'][old_type]
-                    destination['record_type']=new_type
-                _,implementation=selected(source,task)
-                run['retained_nodes'][name]={'node':node,'schemas':schemas,'implementation':implementation,
-                    'loop_key':source['loop_key'],'node_id':original,'output_types':output_types,
-                    'handbook':copy.deepcopy(source['loop_definition'].get('handbook',{}))}
-            item['spec']['node']=name;item['spec'].pop('implementation',None)
+            item['spec']['node']=retain_node(run,source,task['spec'],task.get('execution_id'))
+            item['spec'].pop('implementation',None)
 
         if not refreshed and item['spec']['node'] in source.get('retained_nodes',{}):
             run['retained_nodes'][item['spec']['node']]=copy.deepcopy(source['retained_nodes'][item['spec']['node']])
@@ -265,8 +230,8 @@ def continue_from(store, db, run, source_id):
         for dependency in item['spec'].get('after',[]):
             if dependency not in excluded:dependencies.append(dependency)
             elif source['tasks'][dependency]['status'] not in ('completed','skipped'):
-                if source['tasks'][dependency]['spec']['node']==source['loop_definition']['entry']:
-                    dependencies.append(run['loop_definition']['seed']['id'])
+                if source['tasks'][dependency]['origin'].get('entry'):
+                    if seed_id:dependencies.append(seed_id)
                 else:raise Conflict('An unfinished management dependency cannot be discarded')
         item['spec']['after']=dependencies
         if item.get('parent_id') and item['parent_id'] in excluded:item['parent_id']=None
@@ -319,16 +284,35 @@ def advance_continuations(store, run, runtime):
                                   'error':attempt.get('observation_error') or attempt.get('error')}]
 
 
+def retain_node(run, source, spec, execution_id=None):
+    """Keep an arranged task's execution contract and method source together."""
+    from loop_anything.runtime.implementations import selected
+    original=spec['node']
+    prior=source.get('retained_nodes',{}).get(original)
+    if prior:
+        run.setdefault('retained_nodes',{})[original]=copy.deepcopy(prior)
+        materialize_retained(run)
+        return original
+    _,implementation=selected(source,{'spec':spec,'execution_id':execution_id})
+    name='$retained:'+digest([source['id'],original,implementation])[:24]
+    node=copy.deepcopy(source['loop_definition']['nodes'][original])
+    output_types={p:v['record_type'] for p,v in node['outputs'].items()}
+    schemas={}
+    for port,destination in node['outputs'].items():
+        old_type=destination['record_type'];new_type=name+':'+port
+        schemas[new_type]=source['loop_definition']['records'][old_type]
+        destination['record_type']=new_type
+    run.setdefault('retained_nodes',{})[name]={'node':node,'schemas':schemas,'implementation':implementation,
+        'loop_key':source['loop_key'],'source_run_id':source['id'],'node_id':original,'output_types':output_types,
+        'handbook':copy.deepcopy(source['loop_definition'].get('handbook',{}))}
+    materialize_retained(run)
+    return name
+
+
 def materialize_retained(run):
-    """Pinned task definitions continue already arranged work, independently of new Loop nodes."""
+    """Existing work keeps its original contract, rules and resources."""
     for name,entry in run.get('retained_nodes',{}).items():
-        node=copy.deepcopy(entry['node'])
-        # Keep the original execution contract; progression belongs to the selected Loop.
-        current=run['loop_definition']['nodes'].get(entry['node_id'],{})
-        for field in ('routes','progression'):
-            node.pop(field,None)
-            if field in current:node[field]=copy.deepcopy(current[field])
-        run['loop_definition']['nodes'][name]=node
+        run['loop_definition']['nodes'][name]=copy.deepcopy(entry['node'])
         run['loop_definition']['records'].update(copy.deepcopy(entry['schemas']))
         run['implementations'][name]={'options':{'retained':copy.deepcopy(entry['implementation'])},'default':'retained'} if entry['implementation'] else {'options':{}}
 

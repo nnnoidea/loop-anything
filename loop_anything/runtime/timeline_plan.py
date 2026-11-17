@@ -90,8 +90,6 @@ def validate_plans(bp):
                     raise Invalid(str(exc), path=[name, 'steps', key, 'when']) from None
             if 'implementation' in step and step['implementation'] is not None and not isinstance(step['implementation'], str):
                 raise Invalid('Step implementation must be an ID or null', path=[name, 'steps', key, 'implementation'])
-            if bp['nodes'][step['node']].get('initialize_timeline'):
-                raise Invalid('A batch cannot recreate the initializer', path=[name, 'steps', key, 'node'])
             if not isinstance(step.get('inputs', {}), dict):
                 raise Invalid('Step inputs must be an object', path=[name, 'steps', key, 'inputs'])
             declared = bp['nodes'][step['node']]['inputs']

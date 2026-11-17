@@ -1,3 +1,4 @@
+from tests.runtime_fixture import seeded_draft
 """Shared kernel, NAS tool access, and headless execution without a second platform."""
 import json
 import os
@@ -399,6 +400,7 @@ print(json.dumps({'event':'completed','envelope':{'settings':{'objective':'Trans
         from loop_anything.capabilities import required_capabilities
         store,engine,box,client=self.setup_service();tools=PlatformTools(store)
         created=tools.respond('create_loop',{'name':'Shared'})
+        created=tools.respond('put_node',{k:created[k] for k in ('draft_id','revision')}|{'node_id':'initialize','instructions':'Execute explicit work'})
         result=tools.respond('set_implementation',{k:created[k] for k in ('draft_id','revision')}|
             {'node_id':'initialize','kind':'agent','executor':'executor-test','command':['my-cli']})
         self.assertTrue(result['ok'],result)
@@ -468,7 +470,7 @@ print(json.dumps({'event':'completed','envelope':{'settings':{'objective':'Trans
         from loop_anything.interfaces.platform_tools import PlatformTools
         from loop_anything.packaging.packages import load_installed
         store,engine,box,client=self.setup_service(database_on_nas=True)
-        tools=PlatformTools(store);draft=tools.call('create_loop',{'name':'Portable'})
+        tools=PlatformTools(store);draft=seeded_draft(tools,{'name':'Portable'})
         draft=tools.call('set_loop',{k:draft[k] for k in ('draft_id','revision')}|{'handbook':'Portable team workflow.'})
         saved=tools.call('set_implementation',{k:draft[k] for k in ('draft_id','revision')}|
             {'node_id':'initialize','kind':'agent','command':['unused']})

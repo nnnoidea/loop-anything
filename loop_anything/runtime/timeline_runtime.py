@@ -32,13 +32,14 @@ END = {'completed', 'cancelled', 'stale', 'skipped'}
 
 def initialize_run(run, bindings=None):
     run.update(schema_version=2, operator_protocol=1, agent_sessions=[], task_dispositions={}, user_requests=[], settings=settings_defaults(run['title']), records={}, tasks={},
-               notifications=[], hook_firings=[], diagnostics=[], initialized=False, agent_failures=0)
+               notifications=[], hook_firings=[], diagnostics=[], agent_failures=0)
     run['settings']['fallback_node'] = run['loop_definition'].get('fallback_node')
     run['settings']['global_agent_node'] = run['loop_definition'].get('global_agent_node')
     validate_bindings(run['loop_definition'], run['implementations'], {} if bindings is None else bindings)
     run['settings']['bindings'] = copy.deepcopy({} if bindings is None else bindings)
     # Run creation is a Timeline write, not a scheduler responsibility.
-    add_task(run, run['loop_definition']['seed'], {'entry': True})
+    if run['loop_definition'].get('seed'):
+        add_task(run, run['loop_definition']['seed'], {'entry': True})
 
 
 def latest(run, record_id):
@@ -244,8 +245,6 @@ class TimelineRuntime:
         _, rule_error = end_condition(run)
         if rule_error:
             diagnostics.append({'kind': 'invalid_completion_rule', 'detail': rule_error})
-        if not run['initialized'] and not active:
-            diagnostics.append({'kind': 'initialization_incomplete', 'detail': 'No active initializer and no committed initial Timeline'})
         if diagnostics != run['diagnostics']:
             run['diagnostics'] = diagnostics
             if diagnostics:
@@ -311,7 +310,7 @@ class TimelineRuntime:
                     if tasks['status'] not in PENDING:
                         continue
                     if run['status'] != 'running' and not management_task(tasks):continue
-                    if run.get('steward') and not run['initialized'] and tasks['id'] == run['loop_definition']['seed']['id'] and (selected(run,tasks)[1] or {}).get('kind') == 'agent':continue
+                    if run.get('steward') and tasks['id']==run['loop_definition'].get('seed',{}).get('id') and (selected(run,tasks)[1] or {}).get('kind') == 'agent':continue
                     values, sources, missing = self.resolve_inputs(run, tasks)
                     tasks['wait_reasons'] = missing
                     if missing:
@@ -510,24 +509,20 @@ class TimelineRuntime:
         if set(envelope) - {'outputs', 'tasks', 'settings', 'state', 'operations'}:
             raise Invalid('Unknown completion envelope field')
         if envelope.get('settings') is not None:
-            if not node.get('initialize_timeline') or run['initialized']:
-                raise Invalid('Only initial semantic parsing may initialize settings')
+            if not tasks['origin'].get('entry') and (e['implementation']['kind'] != 'agent' or require_owner(run,e['token']).get('scope_task') is not None):
+                raise Invalid('Timeline settings require global scope')
             if set(envelope['settings']) - SEMANTIC_FIELDS - ENDING_FIELDS:
-                raise Invalid('Initializer cannot change Engine runtime fields')
+                raise Invalid('Report settings cannot change Engine runtime fields')
             for field in SEMANTIC_FIELDS:
                 if run.get('timeline',{}).get(field) and field in envelope['settings'] and envelope['settings'][field]!=run['timeline'][field]:
-                    raise Invalid('Existing Timeline '+field+' cannot be overwritten during initialization; use update_timeline')
+                    raise Invalid('Existing Timeline '+field+' cannot be overwritten by a work report; use update_timeline')
             candidate = dict(run['settings'], **envelope['settings'])
             validate_settings(candidate)
             if node.get('agent_settings_schema'):
                 contract(envelope['settings'], node['agent_settings_schema'], 'settings')
-            if not candidate['objective']:
-                raise Invalid('Initializer must provide objective')
-        elif node.get('initialize_timeline') and not run['initialized']:
-            raise Invalid('Initializer must submit structured user semantics')
         for planned in envelope.get('tasks', []):
             allowed = list(run['loop_definition']['nodes']) if e['implementation']['kind'] == 'agent' else node.get('plan_nodes', [])
-            if planned.get('node') not in allowed or run['loop_definition']['nodes'].get(planned.get('node'), {}).get('initialize_timeline'):
+            if planned.get('node') not in allowed:
                 raise Invalid('This node cannot propose tasks for ' + str(planned.get('node')))
             check_task(run['loop_definition'], planned)
         # Validate every destination before applying any shared-state write.
@@ -544,8 +539,7 @@ class TimelineRuntime:
                 raise Invalid('Cannot replace a record with a different type')
         if envelope.get('settings') is not None:
             run['settings'].update(copy.deepcopy(envelope['settings']))
-            run['initialized'] = True
-            Store.log(run, 'initialized', 'User meaning parsed into Programmable Timeline', e['id'], {'settings': run['settings']})
+            Store.log(run, 'settings_updated', 'Timeline settings saved with work', e['id'], {'settings': run['settings']})
         from loop_anything.runtime.business_state import apply as apply_state
         apply_state(run,e,envelope.get('state',[]))
         actor = require_owner(run, e['token']) if e['implementation']['kind'] == 'agent' else None
@@ -649,14 +643,14 @@ class TimelineRuntime:
                     for notice in notices:validate_notice(notice)
                 except (Invalid, KeyError, IndexError, TypeError, ValueError) as exc:
                     issue = 'Invalid notification parameters: ' + str(exc)
-        routed_tasks, route_firings = [], []
+        routed_tasks, route_firings, routed_nodes = [], [], None
         if rule and issue is None:
             from loop_anything.runtime.routing import prepare_routes
             route_context = dict(context, transition={'from': state, 'event': event, 'to': rule['to']})
             if event == 'completed':
                 route_context['settings'] = dict(run['settings'], **report.get('envelope', {}).get('settings', {}))
             try:
-                routed_tasks, route_firings = prepare_routes(run, e, report, route_context)
+                routed_tasks, route_firings, routed_nodes = prepare_routes(self.store, run, e, report, route_context)
             except Invalid as exc:
                 if source != 'engine':
                     raise
@@ -674,6 +668,10 @@ class TimelineRuntime:
         e.update(effects['execution'])
         task.update(effects['task'])
         if matched:
+            if routed_nodes is not None:
+                from loop_anything.runtime.timelines import materialize_retained
+                run['retained_nodes']=routed_nodes
+                materialize_retained(run)
             for spec, origin in routed_tasks:
                 add_task(run, spec, origin)
                 if run.get('steward'):

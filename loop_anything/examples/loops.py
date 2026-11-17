@@ -53,7 +53,7 @@ def research():
         'metric': obj(experiment=TEXT, score=NUMBER), 'completion': obj(summary=TEXT)}
     nodes = {
         'initialize': node('理解研究目标', {'request': TEXT}, {'plan': 'plan'},
-            '按手册将用户要求写入 Timeline objective/constraints，并提交首批实验与对比组。', initialize_timeline=True),
+            '按手册将用户要求写入 Timeline objective/constraints，并提交首批实验与对比组。'),
         'data': node('准备数据', {'experiment': OBJECT}, {'dataset': 'dataset'}, '为本实验准备数据；提交 dataset URI。'),
         'train': node('异步训练', {'dataset': records['dataset'], 'experiment': OBJECT}, {'model': 'model'},
             '启动外部训练，返回任务 ID；观察到成功后提交 model，等待期间无需 Agent。'),
@@ -97,7 +97,7 @@ def trip():
                    watch=obj(booking_record=TEXT, sequence=NUMBER), completion=obj(summary=TEXT))
     nodes = {
         'initialize': node('理解差旅要求', {'request': TEXT}, {'proposal': 'proposal'},
-            '将用户语义写入通用控制字段，再提交有唯一身份的方案。未经确认不得预订。', initialize_timeline=True),
+            '将用户语义写入通用控制字段，再提交有唯一身份的方案。未经确认不得预订。'),
         'replan': node('重新规划', {'request': TEXT, 'settings': OBJECT, 'reason': TEXT}, {'proposal': 'proposal'},
             '读取最新用户要求及共享历史，提交新的方案身份，不复用旧确认。'),
         'approve': node('确认当前方案', {'proposal': proposal}, {'decision': 'decision'},

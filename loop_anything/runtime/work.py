@@ -184,7 +184,7 @@ def start_run(store, a):
         claim=claim_in_run(store,run,session)
         store._save(db,run)
         result=dict(claim,request_id=a['request_id'],status='accepted',
-                    next='Read Timeline and entry contract; continue the Timeline task. Finish the management task after arranging work.')
+                    next='Read Timeline progress and the current Loop handbook; arrange the next work. Finish the management task after arranging work.')
         db.execute('INSERT INTO run_requests VALUES (?,?,?,?)',(a['request_id'],run['id'],fingerprint,json.dumps(result)))
         return result
 

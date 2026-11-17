@@ -1,3 +1,4 @@
+from tests.runtime_fixture import seeded_draft
 """Selection drives actual dispatch; attempts retain their own implementation."""
 import copy
 import json
@@ -211,7 +212,7 @@ class SelectionTests(unittest.TestCase):
 
     def test_author_candidates_roundtrip_package_and_task_retry_selects_alternative(self):
         tools=PlatformTools(self.store)
-        draft=tools.call('create_loop',{'id':'variants','name':'Variants'})
+        draft=seeded_draft(tools,{'id':'variants','name':'Variants'})
         draft=tools.call('set_loop',{'draft_id':draft['draft_id'],'revision':draft['revision'],'handbook':'Initialize from the agreed request.'})
         draft=tools.call('set_implementation',dict(draft_id=draft['draft_id'],revision=draft['revision'],node_id='initialize',unbind=True))
         for ident,default in [('one',True),('two',False)]:

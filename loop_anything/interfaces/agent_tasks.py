@@ -61,7 +61,7 @@ def acquire_in_run(run, kind, token=None, execution_id=None, task_id=None):
         raise Invalid('Unknown scope task')
     from loop_anything.runtime.flow_agent import NODE as FLOW_AGENT
     scope = scope_for(run, run['tasks'][task_id]) if task_id and (kind == 'background' or
-        run['tasks'][task_id]['spec']['node'] == FLOW_AGENT or node_for(run, run['tasks'][task_id]['spec']['node']).get('initialize_timeline')) else task_id
+        run['tasks'][task_id]['spec']['node'] == FLOW_AGENT or run['tasks'][task_id]['origin'].get('entry')) else task_id
     if not scope_available(run, task_id, token):
         raise Conflict('Another Agent is executing this Task')
     owner = dict(token=token or uid('operator'), kind=kind, execution_id=execution_id,
@@ -133,6 +133,37 @@ def gated(run, tasks):
             continue
         return True
     return False
+
+
+def run_snapshot(store, run, owner):
+    """Execution overview derived from the Run; task details stay in read_task."""
+    from collections import Counter
+    from loop_anything.packaging.packages import resolve_skill
+    from loop_anything.runtime.steward import receipt, management_task
+    from loop_anything.runtime.timelines import public_status
+    executions={e['id']:e for e in run['executions']}
+    tasks=[]
+    for task in run['tasks'].values():
+        attempt=executions.get(task.get('execution_id'),{})
+        node=node_for(run,task['spec']['node'])
+        tasks.append({'task_id':task['id'],'node':run.get('retained_nodes',{}).get(task['spec']['node'],{}).get('node_id',task['spec']['node']),
+                      'label':node.get('label',task['spec']['node']),'status':task['status'],
+                      'kind':'management' if management_task(task) else 'business',
+                      'execution_id':task.get('execution_id'),'lifecycle_state':attempt.get('lifecycle_state'),
+                      'wait_reasons':copy.deepcopy(task.get('wait_reasons',[])),
+                      'error':attempt.get('error') or task.get('budget_error'),
+                      'observation_error':attempt.get('observation_error'),
+                      'continuation_source':copy.deepcopy(task.get('continuation_source'))})
+    return {'run_id':run['id'],'timeline_id':run['timeline_id'],'revision':run['revision'],
+            'status':public_status(run),'continued_from':run.get('continued_from'),
+            'tasks':tasks,'counts':dict(Counter(t['status'] for t in tasks)),
+            'settings':copy.deepcopy(run['settings']),
+            'handbook':resolve_skill(store.filename,run['loop_key'],run['loop_definition'].get('handbook',{})),
+            'implementations':{n:{'default':default_id(entry),'options':list(options(entry))} for n,entry in run['implementations'].items()},
+            'work':[{'key':k,'run_id':v['run_id'],'steps':v['result']['steps']} for k,v in run.get('arrangements',{}).items()],
+            'steward':{k:run.get('steward',{}).get(k) for k in ('agent_id','name','generation')},
+            'requests':[{k:v for k,v in receipt(run,r).items() if k in ('request_id','operation','status','task_id','task_status','error')} for r in run.get('steward_requests',{}).values()],
+            'read_only':owner is None,'scope_task':owner.get('scope_task') if owner else None}
 
 
 def task_list(run, runtime, owner=None):
@@ -312,8 +343,8 @@ def apply_task_edit(run, tool, arguments, origin, owner=None):
                            known_tasks=[t['spec'] for t in run['tasks'].values()])
     elif tool == 'add_task':
         node = run['loop_definition']['nodes'].get(arguments['node_id'])
-        if not node or node.get('initialize_timeline'):
-            raise Invalid('Choose a declared non-entry node')
+        if not node:
+            raise Invalid('Choose a declared node')
         if not arguments['key'].strip():
             raise Invalid('Task key must be nonempty')
         ident = 'task-' + digest([run['id'], owner.get('scope_task') if owner else None, arguments['key']])[:16]
@@ -406,8 +437,8 @@ class RunTools:
             ('read_capabilities', 'Read actual service version/build, capability-to-tool map and supported contract keywords. Optional capability selects one guide; read-only and requires no operation scope.', {'capability':text}, [], True),
             ('register_agent_session', 'Record the native CLI session ID for your own current execution, so the user can resume this exact conversation. Obtain the actual ID from your CLI, never guess or use the most recent session. This is not the platform execution ID.', {'execution_id':text,'provider':{'type':'string','enum':['codex','claude','custom']},'session_id':text,'cwd':text}, ['execution_id','provider','session_id'], False),
             ('next_tasks', 'Read current work and waiting reasons without acquiring rights. With a token, restrict the work view to that operation scope. Other active Agents are waiting, not tasks to take over.', {}, [], True),
-            ('read_timeline', 'Read the latest shared Timeline without acquiring rights. read_only=true grants no write permission; scope_task=null means global rights only when read_only=false. Reads do not change runtime state.', {}, [], True),
-            ('read_run', 'Read the complete Run and history. Prefer read_task for one task. Internal credentials are omitted.', {}, [], True),
+            ('read_timeline', 'Read shared business progress, intent, results and entries; execution state belongs to read_run(view=snapshot). Reading does not acquire rights. read_only=true grants no write permission; scope_task=null means global rights only when read_only=false. Reads do not change runtime state.', {}, [], True),
+            ('read_run', 'Read this Run execution state. view=snapshot returns a compact overview of every task, including running, completed and failed work, plus Run settings and handbook. Omit view or use full for the complete Run and history. Use read_task for task detail; read_timeline for business progress. Internal credentials are omitted.', {'view':{'enum':['full','snapshot']}}, [], True),
             ('read_record', 'Read a committed record on demand.', {'id': text, 'revision': {'type': 'integer'}}, ['id'], True),
             ('read_task', 'Read this Task input sources and values (the dispatched snapshot once executing), output contract, node Skill and declared event routes before completing it. Routes generate plan Tasks automatically from accepted reports; submit the mapped output parameters and inspect receipt.routes instead of arranging the same work twice.', {'task_id': text}, ['task_id'], True),
             ('read_plans', 'Read batch templates, parameter contracts, ref/after_refs and input mappings.', {}, [], True),
@@ -418,7 +449,7 @@ class RunTools:
             ('notify', 'Queue one notification or question. Stable key deduplicates. Uses the Run default outlet unless route is supplied. Scripts need current execution_id/token and task_id; Agents need scope; runtime callers use their supplied execution identity; other thinking Agents do not block it. reply needs event/key/schema, and does not pause the Run.', {'key':text,'message':text,'route':text,'reply':obj,'task_id':text,'execution_id':text}, ['key','message'], False),
             ('send_event', 'Submit an external event or reply, independently of the notification channel. Stable event_id deduplicates; name/key identify the wait. Optional notification_id validates the question schema. Agents must own the target wait Task or global scope; user input without token is allowed.', {'event_id':text,'name':text,'payload':obj,'key':text,'notification_id':text,'task_id':text}, ['event_id','name','payload'], False),
             ('report_task', 'Report an explicit lifecycle event. Scripts/monitors use their execution_id and token; Agents use their current execution identity. Use a stable report_id for retries. completed requires envelope with all outputs. Inspect accepted=true; stale=true is a recorded late monitor report, not a new failure. Uncovered transitions are recorded as issues. finish separately releases Agent scope.', {'task_id': text, 'execution_id': text, 'report_id': text, 'event': text, 'envelope': obj, 'detail': obj, 'external_id': text, 'poll_after': {'type': 'number'}}, ['task_id', 'report_id', 'event'], False),
-            ('change_settings', 'Use read_timeline.settings.revision (not the top-level Run revision). Write authorized Timeline changes, including bindings (node ID to candidate ID or null, replaces the Run selection map), completion_rule (deterministic expression) or termination_signal (reason text). Engine applies terminal transitions; finish only releases Agent ownership. Changing requirements does not invalidate tasks or results. fallback_node selects a declared fallback node; empty/null disables it. notification_command sets this Run sender argv (empty inherits the Loop sender); only a global operator may change it. Already attempted notifications keep their original sender on retry. A steward may change authorization only to the exact text supplied in its user request.', {'revision': {'type': 'integer'}, 'change': obj}, ['revision', 'change'], False),
+            ('change_settings', 'Use read_run(view=snapshot).settings.revision (not the top-level Run revision). Write authorized Run settings, including bindings (node ID to candidate ID or null, replaces the Run selection map), completion_rule (deterministic expression) or termination_signal (reason text). Engine applies terminal transitions; finish only releases Agent ownership. Changing requirements does not invalidate tasks or results. fallback_node selects a declared fallback node; empty/null disables it. notification_command sets this Run sender argv (empty inherits the Loop sender); only a global operator may change it. Already attempted notifications keep their original sender on retry. A steward may change authorization only to the exact text supplied in its user request.', {'revision': {'type': 'integer'}, 'change': obj}, ['revision', 'change'], False),
             ('command', 'Use existing Run controls only within user authorization. Pausing does not cancel external side effects.', {'action': {'type': 'string', 'enum': ['pause', 'resume', 'terminate', 'release_gate', 'retry_notification']}, 'hook_firing': text, 'notification_id': text}, ['action'], False),
             ('change_task', 'Choose a candidate with implementation (empty string inherits the Run default). Correct unstarted Task inputs/parameters, cancel tasks, or retry a failed Task only after checking side effects. Cannot alter an executing script.', {'task_id': text, 'operation': {'type': 'string', 'enum': ['update', 'cancel', 'retry']}, 'inputs': obj, 'parameters': obj, 'implementation': text, 'after': {'type': 'array', 'items': text}, 'reason': text}, ['task_id', 'operation', 'reason'], False),
             ('defer_task', 'Record why an item must wait for user authorization/input. This is not successful execution and must not hide tasks you can do.', {'task_id': text, 'reason': text}, ['task_id', 'reason'], False),
@@ -599,6 +630,7 @@ class RunTools:
     def _read(self, run, name, arguments, owner):
         from loop_anything.packaging.packages import resolve_skill
         if name == 'read_run':
+            if arguments.get('view')=='snapshot':return run_snapshot(self.store,run,owner)
             result = copy.deepcopy(run)
             from loop_anything.runtime.timelines import public_status
             result['status']=public_status(run)
@@ -610,13 +642,15 @@ class RunTools:
         if name == 'next_tasks':
             return task_list(run, self.runtime, owner)
         if name == 'read_timeline':
-            from loop_anything.runtime.steward import receipt
             from loop_anything.runtime.business_state import overview
-            from loop_anything.runtime.timelines import public_status
-            return {'business_state':overview(run['business_state'],run['loop_definition'].get('state')), 'timeline_id':run.get('timeline_id'), 'timeline':run.get('timeline'), 'continued_from':run.get('continued_from'), 'settings': run['settings'], 'handbook': resolve_skill(self.store.filename, run['loop_key'], run['loop_definition'].get('handbook', {})),
-                    'steward': {k: run.get('steward', {}).get(k) for k in ('agent_id', 'name', 'generation')},
-                    'requests': [{k: v for k, v in receipt(run, request).items() if k in ('request_id','operation','status','task_id','task_status','error')} for request in run.get('steward_requests', {}).values()],
-                    'records': [{'id': rid, 'type': rows[-1]['type'], 'revision': rows[-1]['revision']} for rid, rows in run['records'].items() if rows], 'implementations': {n: {'default': default_id(entry), 'options': list(options(entry))} for n, entry in run['implementations'].items()}, 'work':[{ 'key':k,'run_id':v['run_id'],'steps':v['result']['steps']} for k,v in run.get('arrangements',{}).items()], 'status': public_status(run), 'tasks': task_list(run, self.runtime, owner), 'run_id': run['id'], 'revision': run['revision'], 'read_only': owner is None, 'scope_task': owner.get('scope_task') if owner else None}
+            with self.store.connection() as db:
+                rows=db.execute('SELECT document FROM work_entries WHERE timeline_id=? ORDER BY sequence DESC LIMIT 51',(run['timeline_id'],)).fetchall()
+            entries=[json.loads(row[0]) for row in reversed(rows[:50])]
+            return {'entries':entries,'entries_complete':len(rows)<=50,
+                    'business_state':overview(run['business_state'],run['loop_definition'].get('state') or run.get('timeline',{}).get('state_definition')),
+                    'timeline_id':run['timeline_id'],'timeline':run['timeline'],
+                    'records':[{'id':rid,'type':versions[-1]['type'],'revision':versions[-1]['revision']} for rid,versions in run['records'].items() if versions],
+                    'run_id':run['id'],'read_only':owner is None,'scope_task':owner.get('scope_task') if owner else None}
         if name == 'resolve_refs':
             from loop_anything.runtime.task_refs import describe_references
             return {'references': describe_references([t['spec'] for t in run['tasks'].values()], arguments.get('refs'))}
@@ -653,8 +687,7 @@ class RunTools:
                     'node_id':run['retained_nodes'][tasks['spec']['node']]['node_id'] if tasks['spec']['node'] in run.get('retained_nodes',{}) else tasks['spec']['node'],
                     'instructions': node['instructions'], 'routes': node.get('routes', []),
                     'skills': [resolve_skill(self.store.filename, resource_key, skill) for skill in node.get('skills', [])],
-                    'initialize_timeline': bool(node.get('initialize_timeline')),
-                    'settings_schema': node.get('agent_settings_schema') if node.get('initialize_timeline') else None,
+                    'settings_schema': node.get('agent_settings_schema'),
                     'assertions': node.get('assertions', []),
                     'outputs': {p: run['loop_definition']['records'][s['record_type']] for p, s in node['outputs'].items()},
                     'constraints': run['settings'].get('constraints', '')}

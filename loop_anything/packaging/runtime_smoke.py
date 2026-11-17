@@ -18,13 +18,12 @@ from loop_anything.runtime.timeline_runtime import initialize_run
 def probe_transition(engine, config, case):
     """Exercise the real report/retry writer, without running submit/observe commands."""
     node = {'instructions': 'Lifecycle probe', 'inputs': {}, 'outputs': {}}
-    bp = {'schema_version': 2, 'nodes': {'init': dict(node, initialize_timeline=True), 'probe': node},
+    bp = {'schema_version': 2, 'nodes': {'init': dict(node), 'probe': node},
           'records': {}, 'entry': 'init', 'seed': {'id': 'init', 'node': 'init', 'inputs': {}, 'outputs': {}}}
     run = {'id': 'smoke', 'title': 'Isolated lifecycle probe', 'status': 'running', 'inputs': {},
            'loop_definition': bp, 'implementations': {'init': {'options': {'default': {'kind': 'agent'}}, 'default': 'default'}, 'probe': {'options': {'default': config}, 'default': 'default'}},
            'executions': [], 'history': [], 'events': []}
     initialize_run(run)
-    run['initialized'] = True
     run['tasks']['init']['status'] = 'completed'
     run['settings'].update(case.get('settings', {}))
     run['settings'].update(notification_route='workspace', hooks=[], fallback_node=None)

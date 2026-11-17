@@ -1,3 +1,4 @@
+from tests.runtime_fixture import seeded_draft
 import importlib.util
 import io
 import json
@@ -19,7 +20,7 @@ class RunLibraryTests(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.env=patch.dict(os.environ,LOOP_ANYTHING_IDENTITY_DIR=self.tmp.name+'/identity');self.env.start();self.addCleanup(self.env.stop)
         self.store=Store(Path(self.tmp.name)/'runs.db');self.tools=PlatformTools(self.store)
-        self.draft=self.tools.call('create_loop',{'name':'Research'})
+        self.draft=seeded_draft(self.tools,{'name':'Research'})
         self.draft=self.tools.call('set_loop',{'draft_id':self.draft['draft_id'],'revision':self.draft['revision'],'handbook':'Run the agreed task.'})
         self.key=self.tools.call('publish_loop',{'draft_id':self.draft['draft_id'],'revision':self.draft['revision']})['key']
 
@@ -144,7 +145,7 @@ class RunLibraryTests(unittest.TestCase):
         self.assertEqual(install(self.store,raw)['key'],self.key)
 
     def test_loop_deletion_checks_actual_calls_not_parameter_examples(self):
-        draft=self.tools.call('create_loop',{'name':'Caller'})
+        draft=seeded_draft(self.tools,{'name':'Caller'})
         draft=self.tools.call('set_implementation',{'draft_id':draft['draft_id'],'revision':draft['revision'],
             'node_id':'initialize','kind':'command','command':['unused'],'clear':['lifecycle'],
             'parameter_schema':{'type':'object','properties':{'example':{'type':'object',

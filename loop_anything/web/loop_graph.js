@@ -123,7 +123,7 @@ function nodeExecutorText(config){
 }
 function nodeAxesHTML(item,id,config,status=undefined){
   const node=item.loop_definition.nodes[id],routes=node.routes||[],agent=routes.some(r=>r.flow_agent===true);
-  const steward=!node.builtin&&!node.initialize_timeline&&(node.progression==='steward'||((!item.tasks||item.steward)&&node.progression!=='rules'&&!routes.some(r=>r.event==='completed')));
+  const steward=!node.builtin&&id!==item.loop_definition.entry&&(node.progression==='steward'||((!item.tasks||item.steward)&&node.progression!=='rules'&&!routes.some(r=>r.event==='completed')));
   const rules=routes.some(r=>r.plan)||loop_definitionEdges(item.loop_definition).some(e=>e.from===id);
   const mode=steward?'agent':agent?(rules?'mixed':'agent'):(rules?'rules':node.plan_nodes?.length?'task':'none');
   const kind=config?.kind||'unknown',symbol=({agent:'✦',command:'⌘',external:'↗',event:'◇',timer:'◷',approval:'?',loop:'↳'})[kind]||'?';

@@ -47,7 +47,7 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 - Author provides: Define Loop-owned state and optional Loop.state display metadata. Use read_timeline/read_business_state; completed report envelopes can atomically commit state and task operations. Use stable work_key for experiments. Register the actual session, retain startup request IDs, and follow edit notices.
 - Configuration: `create_timeline`, `start_run.timeline_id/continue_run_id`, `update_timeline`
 - Limits: No automatic task freeze or rearrangement. Routine multi-Run sharing is outside the current scope.
-- Tools: read_business_state, create_timeline, list_timelines, resolve_continuation, take_over_run, read_work_timeline, update_timeline, append_timeline, register_work_session, start_run, claim_run
+- Tools: export_timeline, import_timeline, read_work_result, read_business_state, create_timeline, list_timelines, resolve_continuation, take_over_run, read_work_timeline, update_timeline, append_timeline, register_work_session, start_run, claim_run
 - Reference: [references/work.md](work.md)
 
 ## work_waits
@@ -477,7 +477,7 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 - Author provides: Declare decidable conditions or persist a confirmed completion judgment in settings.
 - Configuration: `settings.completion_rule`, `settings.termination_signal`
 - Limits: Business output satisfied/status, an empty Task list, or finish does not end a Run by itself.
-- Tools: change_settings, read_timeline
+- Tools: change_settings, read_run
 - Reference: [references/run.md](run.md)
 
 ## scenarios
@@ -507,7 +507,7 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 - Author provides: Write domain methods, required evidence, inputs/outputs, and completion criteria.
 - Configuration: `Loop.handbook`, `nodes.*.skills`, `put_asset`
 - Limits: Attaching a script asset does not register an implementation; the platform does not invent business methods.
-- Tools: read_loop, read_timeline, read_task, put_asset
+- Tools: read_loop, read_run, read_task, put_asset
 - Reference: [references/build-reference.md](build-reference.md)
 
 ## runtime_smoke

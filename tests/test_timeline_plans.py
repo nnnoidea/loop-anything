@@ -20,7 +20,7 @@ def definition():
                     outputs={p: {'record_type': 'text'} for p in outputs}, **extra)
     bp = dict(schema_version=2, id='batch-test', version='1', entry='init',
         handbook={'instructions': 'Build a round, reuse data if present.'}, records={'text': text},
-        nodes={'init': node({}, ['data'], initialize_timeline=True, plan_nodes=['prepare', 'train', 'judge']),
+        nodes={'init': node({}, ['data'], plan_nodes=['prepare', 'train', 'judge']),
                'prepare': node({}, ['data']), 'train': node({'data': text, 'experiment': text}, ['result']),
                'judge': node({'results': {'type': 'array', 'items': text}}, ['summary'])},
         seed={'id': 'init', 'node': 'init', 'inputs': {}, 'outputs': {'data': {'id': 'cached'}}},

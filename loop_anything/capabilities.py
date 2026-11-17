@@ -2,11 +2,11 @@
 import hashlib
 from pathlib import Path
 
-VERSION = '0.6.16'
-API_REVISION = 7
+VERSION = '0.6.19'
+API_REVISION = 10
 CAPABILITIES = {
     'timeline_business_state': ('Loop-defined versioned state and immutable results belong to Timeline. Atomic state/output/task commits, stable work keys, and pinned in-flight executions support transparent Run/Loop changes without schema conversion.', ['read_business_state','read_work_timeline','report_task','build_plan'], 'references/work.md'),
-    'persistent_work': ('Independent Timelines with two editable semantic fields, Loop-defined versioned business state and shared results. Run/Loop changes preserve state and execution identities without an Agent handoff workflow. Goal/constraint changes return an inspect-and-report notice without freezing or changing tasks.', ['read_business_state','create_timeline','list_timelines','resolve_continuation','take_over_run','read_work_timeline','update_timeline','append_timeline','register_work_session','start_run','claim_run'], 'references/work.md'),
+    'persistent_work': ('Independent Timelines with two editable semantic fields, Loop-defined versioned business state and shared results. Run/Loop changes preserve state and execution identities without an Agent handoff workflow. Goal/constraint changes return an inspect-and-report notice without freezing or changing tasks.', ['export_timeline','import_timeline','read_work_result','read_business_state','create_timeline','list_timelines','resolve_continuation','take_over_run','read_work_timeline','update_timeline','append_timeline','register_work_session','start_run','claim_run'], 'references/work.md'),
     'work_waits': ('Persistent Run/Task/monitor conditions resume the exact server session, with evidence, deduplication and explicit cancellation. No business Loop required.', ['wait_for','read_wait','cancel_wait','acknowledge_wait','read_work_session','resume_work_session'], 'references/work.md'),
     'shared_monitoring': ('Optional reusable monitor scripts, independent instances, standing and Run-associated monitoring. Inline Loop scripts remain supported. Timestamped JSON samples distinguish errors/staleness from unmet conditions.', ['read_monitor_dashboard','read_monitor_history','register_monitor','list_monitor_scripts','start_monitor','read_monitor','list_monitors','stop_monitor','restart_monitor'], 'references/work.md'),
     'run_steward': ('The actual server Agent calling start_run owns the Run in its current session. Default completion returns to that session; explicit rules remain deterministic.', ['register_work_session','start_run','claim_run','submit_run_request','read_run_request','reply_run_request','answer_run_request'], 'references/steward.md'),
@@ -49,10 +49,10 @@ CAPABILITIES = {
     'notifications': ('Named local outlets, questions/replies, delivery receipts and visible waiting configuration.', ['notify','read_notification_channels','set_notification_channels','send_event','submit_run_request'], 'references/notifications.md'),
     'scopes': ('Task ancestry permissions without long-lived planning exclusion, same-Task execution claims, acquire/finish identity lifecycle, immutable past results.', ['read_timeline','finish','read_task'], 'references/run.md'),
     'run_control': ('Find and start Runs, inspect task/result state, pause/resume with command, and resolve explicit user requests or defer tasks. Hooks in change_settings can pause/notify before, after or at a lifecycle transition.', ['list_runs','start_run','read_run','next_tasks','read_record','command','defer_task','resolve_request','change_settings'], 'references/run.md'),
-    'termination': ('Run ends only when explicit completion_rule or termination_signal applies. Task completion alone does not end a Run.', ['change_settings','read_timeline'], 'references/run.md'),
+    'termination': ('Run ends only when explicit completion_rule or termination_signal applies. Task completion alone does not end a Run.', ['change_settings','read_run'], 'references/run.md'),
     'scenarios': ('Isolated author tests use real Engine scheduling and report transitions with supplied mock events and assertions; never execute commands, Agent models or notification transports.', ['test_loop','preview_plan'], 'references/testing.md'),
     'packages': ('Share definition, implementations and author Skills in one package; enforce required capabilities before installation.', ['export_loop','read_capabilities'], 'references/build-reference.md'),
-    'author_skills': ('Read bound author handbook and node Skills from read_loop/read_timeline/read_task; package assets retain relative references.', ['read_loop','read_timeline','read_task','put_asset'], 'references/build-reference.md'),
+    'author_skills': ('Read bound author handbook and node Skills from read_loop/read_run/read_task; package assets retain relative references.', ['read_loop','read_run','read_task','put_asset'], 'references/build-reference.md'),
     'runtime_smoke': ('Explicit Agent startup and isolated lifecycle checks; distinct from static validation and simulated workflow tests.', ['smoke_runtime'], 'references/build.md'),
 }
 

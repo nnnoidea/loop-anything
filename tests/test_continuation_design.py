@@ -75,7 +75,7 @@ class ContinuationDesignTests(unittest.TestCase):
         c.engine.event(old['id'],'finished','signal',{'text':'ready'});c.engine.tick(old['id']);c.engine.tick(current['id'])
         dispatched={e['task_id']:e['implementation']['prompt'] for e in c.store.get(current['id'])['executions'] if e['task_id'] in ('a','b')}
         self.assertEqual(dispatched,{'a':'A {{context}}','b':'B {{context}}'})
-        self.assertEqual(len(current['retained_nodes']),3)
+        self.assertEqual(len(current['retained_nodes']),4)  # The ordinary completed entry also retains its provenance.
 
     def test_business_state_reads_do_not_block_later_execution_reports(self):
         for broad_read in (False,True):

@@ -11,6 +11,10 @@ For persistent work, use [Timeline, current-session startup, waits and monitorin
 
 The web interface is for reading and runtime operations, not editing or separate agent conversations. An external building agent edits Loop definitions; source files can also be edited and repackaged. Recipient runtime configuration can be edited in the file returned by `read_loop_config`. Node sessions handle their current Run tasks, not Loop authoring.
 
+A Timeline is complete task progress, independent of any method. Readable goals, constraints, current progress and essential results let an Agent use this Loop to advance the work. Other Loops' contributions remain available; update only changed records. Detailed logs/scripts can be referenced without being required to understand saved progress. The Agent prepares this method's task inputs; scripts need no common cross-Loop schema. There is no mandatory initialization node or restart-specific business protocol.
+
+Keep business progress and execution inspection separate. The Loop submits meaningful progress to Timeline; `read_timeline` does not reconstruct execution state. Use `read_run` with `view:"snapshot"` for running, completed or failed tasks, Run settings, arrangements and the handbook; use `read_task` for details. The default `read_run` returns the full Run and history. Timeline downloads do not carry execution snapshots or temporary arrangements.
+
 ## Choose an entry point
 
 | Need | Start with | Read as needed |

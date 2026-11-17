@@ -38,7 +38,7 @@ class ContinueProgressTests(unittest.TestCase):
                 current=c.store.get(c.id)
                 for _ in range(2):
                     new=c.store.create(current['loop_key'],'continue',timeline_id=current['timeline_id'],continue_run_id=current['id'])
-                    self.assertTrue(new['initialized'])
+                    self.assertNotIn('initialized',new)
                     self.assertEqual(new['settings'],current['settings'])
                     self.assertEqual(new['inputs'],current['inputs'])
                     self.assertEqual(new['business_state'],old['business_state'])
@@ -88,7 +88,7 @@ class ContinueProgressTests(unittest.TestCase):
         self.assertEqual(new['settings']['notification_route'],'workspace')
         self.assertEqual(new['inputs'],{'saved':'kept','override':'after'})
 
-    def test_changed_loop_uses_selected_progression_with_original_execution_result(self):
+    def test_changed_loop_keeps_arranged_rules_and_original_result(self):
         c=self.case();old=c.store.get(c.id);bp=copy.deepcopy(c.bp);bp['version']='optimized'
         bp['plans']['new-follow']=bp['plans'].pop('follow')
         bp['plans']['new-follow']['steps']['measure']['inputs']['source']={'literal':'optimized'}
@@ -101,13 +101,24 @@ class ContinueProgressTests(unittest.TestCase):
         c.engine.event(old['id'],'done','signal',{'text':'original execution'})
         c.engine.tick(old['id']);c.engine.tick(c.id);c.engine.tick(c.id)
         done=c.store.get(c.id)
-        follow=next(e for e in done['executions'] if e['node']=='produce')
-        self.assertEqual(follow['inputs']['source'],'optimized')
+        follow=next(e for e in done['executions'] if done.get('retained_nodes',{}).get(e['node'],{}).get('node_id')=='produce')
+        self.assertEqual(follow['inputs']['source'],'original')
         self.assertEqual(done['records']['result'][0]['source_run_id'],old['id'])
         task=done['tasks']['external']
         view=RunTools(c.store,c.id).call('read_task',{'task_id':task['id']})
-        self.assertEqual(view['routes'][0]['plan'],'new-follow')
+        self.assertEqual(view['routes'][0]['plan'],'follow')
         self.assertNotIn('return-to-steward',[r['route_id'] for r in view['route_receipts']])
+
+    def test_changed_method_keeps_inflight_optional_entry(self):
+        c=fixture.RuntimeTests();c.setUp();self.addCleanup(c.tearDown)
+        c.bp['entry']='wait';c.bp['seed']=task_spec('external-entry','wait',outputs={'text':'observed'})
+        key=c.store.publish(c.bp,c.implementations)['key'];old=c.store.create(key,'Existing experiment');c.engine.tick(old['id'])
+        bp=copy.deepcopy(c.bp);bp['version']='new-method';bp.pop('entry');bp.pop('seed')
+        key=c.store.publish(bp,c.implementations)['key'];new=c.store.create(key,'Continue',timeline_id=old['timeline_id'],continue_run_id=old['id'])
+        self.assertEqual(new['tasks']['external-entry']['continuation_source'],{'run_id':old['id'],'task_id':'external-entry'})
+        c.engine.event(old['id'],'done','signal',{'text':'original result'});c.engine.tick(old['id']);c.engine.tick(new['id'])
+        done=c.store.get(new['id']);self.assertEqual(done['tasks']['external-entry']['status'],'completed')
+        self.assertEqual(done['records']['observed'][0]['source_run_id'],old['id'])
 
     def test_boolean_and_number_changes_are_saved_and_retries_do_not_duplicate(self):
         for first,second in [(1,True),(False,0),({'enabled':1},{'enabled':True}),([False],[0])]:

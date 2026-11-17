@@ -1,3 +1,4 @@
+from tests.runtime_fixture import seeded_draft
 """Installed Loops compose through real Runs, without wrapper scripts or waiting workers."""
 import copy
 import json
@@ -21,7 +22,7 @@ class LoopCallTests(unittest.TestCase):
         self.effect=Path(self.base.tmp.name)/'effects'
         self.child_bp={'schema_version':2,'id':'child','version':'1','entry':'init',
             'handbook':{'instructions':'Return the given request and finish.'},'records':{'text':{'type':'string'}},
-            'nodes':{'init':fixture.node({'request':{'type':'string'}},{'answer':'text'},initialize_timeline=True)},
+            'nodes':{'init':fixture.node({'request':{'type':'string'}},{'answer':'text'})},
             'seed':fixture.task_spec('init','init',{'request':{'run':'request'}},{'answer':'answer'}),'rules':[]}
         code='import json,sys;from pathlib import Path;c=json.load(sys.stdin);p=Path('+repr(str(self.effect))+');p.write_text(p.read_text()+"x" if p.exists() else "x");print(json.dumps({"event":"completed","envelope":{"settings":{"objective":"Child work","termination_signal":"Child finished"},"outputs":{"answer":c["inputs"]["request"]+"!"}}}))'
         self.child_impl={'init':{'options': {'default': {'kind':'command','command':[sys.executable,'-c',code]}}, 'default': 'default'}}
@@ -158,7 +159,7 @@ class LoopCallTests(unittest.TestCase):
 
     def test_tool_discovery_schema_validation_and_no_wrapper_configuration(self):
         tools=PlatformTools(self.store)
-        draft=tools.call('create_loop',{'name':'Calls'})
+        draft=seeded_draft(tools,{'name':'Calls'})
         tools.call('set_implementation',{'draft_id':draft['draft_id'],'revision':draft['revision'],
             'node_id':'initialize','clear':['lifecycle'],**self.config()})
         config=tools.call('read_loop',{'draft_id':draft['draft_id']})['loop']['implementations']['initialize']

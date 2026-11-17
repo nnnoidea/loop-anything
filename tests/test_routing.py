@@ -1,3 +1,4 @@
+from tests.runtime_fixture import seeded_draft
 from tests.runtime_fixture import runtime_run
 """Results trigger author-defined plans atomically; no author-side task writer."""
 import sys
@@ -19,7 +20,7 @@ class RoutingTests(unittest.TestCase):
         self.store = Store(Path(self.tmp.name) / 'run.db')
         self.engine = Engine(self.store)
         self.platform = PlatformTools(self.store)
-        self.draft = self.platform.call('create_loop', {'name': 'Event-driven work'})
+        self.draft = seeded_draft(self.platform,{'name': 'Event-driven work'})
         self.edit('set_loop', handbook='Submit experiment parameters; the platform arranges execution and analysis.')
         self.edit('put_node', node_id='initialize', outputs=[{'name':'requests','type':'array'}])
         self.edit('put_node', node_id='evaluate', instructions='Run agreed parameters', inputs=[],

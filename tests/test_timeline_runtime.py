@@ -29,7 +29,7 @@ class RuntimeTests(unittest.TestCase):
         self.bp = {'schema_version': 2, 'id': 'neutral', 'version': '1', 'entry': 'init',
                    'handbook': {'instructions': 'Initialize objective, plan tasks, commit typed records.'},
                    'records': {'text': {'type': 'string'}, 'flag': {'type': 'boolean'}},
-                   'nodes': {'init': node(outputs={'a': 'text', 'b': 'text'}, initialize_timeline=True,
+                   'nodes': {'init': node(outputs={'a': 'text', 'b': 'text'},
                                           plan_nodes=['join', 'produce', 'wait']),
                              'join': node({'a': {'type': 'string'}, 'b': {'type': 'string'}}, {'ok': 'flag'}),
                              'produce': node({'source': {'type': 'string'}}, {'text': 'text'}),
@@ -91,7 +91,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(1, len(self.read()['tasks']))
         with self.assertRaises(Invalid):
             self.submit(e, {'settings': {'objective': 'x'}, 'outputs': {'b': 3}})
-        self.assertFalse(self.read()['initialized'])
+        self.assertEqual(self.read()['tasks']['init']['status'],'decision')
         self.submit(e, {'settings': {'objective': 'x'}, 'outputs': {'a': 'A', 'b': 'B'}, 'tasks': [self.join()]})
         self.engine.tick(self.id)
         join = self.task('join')
@@ -194,8 +194,8 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaises(Conflict):
             self.submit(e, envelope)
         self.assertEqual({}, self.read()['records'])
-        self.assertFalse(self.read()['initialized'])
-        envelope['tasks'] = [task_spec('bad', 'init', outputs={'a': 'x', 'b': 'y'})]
+        self.assertEqual(self.read()['tasks']['init']['status'],'decision')
+        envelope['tasks'] = [task_spec('bad', 'undeclared', outputs={'a': 'x', 'b': 'y'})]
         with self.assertRaises(Invalid):
             self.submit(e, envelope)
 
@@ -258,7 +258,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(old['id'], current['id'])
         self.assertEqual('decision', current['status'])
         self.assertEqual(1, len(self.read()['tasks']))
-        self.assertFalse(self.read()['initialized'])
+        self.assertEqual(self.read()['tasks']['init']['status'],'decision')
 
 
 if __name__ == '__main__':

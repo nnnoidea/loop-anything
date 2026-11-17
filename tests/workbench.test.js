@@ -45,3 +45,36 @@ test('Timeline detail links to the existing Run and exposes continuation only wh
   assert.match(field('timeline-content').innerHTML,/My &lt;progress>/);
   assert.match(field('work-entries').innerHTML,/data-after="100"/);
 });
+test('Timeline file preview escapes content and import retries keep the same request',async()=>{
+  const calls=[],routes=[],document={format:'loop-anything-timeline',timeline:{title:'<Imported>',objective:'Continue research'},state:[],results:[],entries:[]};
+  const {ctx,field}=context({randomKey:()=> 'same-request',file:{size:100,text:async()=>JSON.stringify(document)},
+    navigateTo:async r=>routes.push(r),toast:()=>{},platformCall:async(name,args)=>{calls.push({name,args});if(calls.length===1)throw new Error('temporary failure');return {timeline:{id:'local-copy'}};}});
+  field('timeline-import-dialog').close=()=>{};
+  await vm.runInContext('selectTimelineFile(file)',ctx);
+  assert.match(field('timeline-import-preview').innerHTML,/&lt;Imported>/);
+  assert.equal(field('timeline-import-confirm').disabled,false);
+  await vm.runInContext('importSelectedTimeline()',ctx);
+  assert.equal(field('timeline-import-error').hidden,false);
+  await vm.runInContext('importSelectedTimeline()',ctx);
+  assert.equal(calls[0].args.request_id,calls[1].args.request_id);
+  assert.equal(routes[0].id,'local-copy');
+});
+test('invalid files do not enable import; delayed file reads cannot overwrite a newer choice',async()=>{
+  let resolve;const {ctx,field}=context({randomKey:()=> 'key',oldFile:{size:10,text:()=>new Promise(r=>resolve=r)},badFile:{size:10,text:async()=>'{broken'}});
+  const pending=vm.runInContext('selectTimelineFile(oldFile)',ctx);
+  await vm.runInContext('selectTimelineFile(badFile)',ctx);
+  resolve(JSON.stringify({format:'loop-anything-timeline',timeline:{},state:[],results:[],entries:[]}));await pending;
+  assert.equal(field('timeline-import-confirm').disabled,true);
+  assert.equal(field('timeline-import-preview').hidden,true);
+});
+test('import source stays a progress notice without execution snapshots',()=>{
+  const {ctx}=context();
+  const html=vm.runInContext("importSourceHTML({timeline:{import_source:{exported_at:1}}})",ctx);
+  assert.match(html,/Timeline/);assert.doesNotMatch(html,/#run\//);
+  assert.doesNotMatch(html,/timeline-carried/);
+});
+test('imported saved results are readable through the Timeline without a source Run link',()=>{
+  const {ctx}=context();
+  const html=vm.runInContext("savedResultsHTML({timeline:{import_source:{}},results:{records:[{id:'a<1',type:'score',revision:2}],complete:true}},'local')",ctx);
+  assert.match(html,/已保存结果/);assert.match(html,/data-result-timeline="local"/);assert.match(html,/data-work-result="a&lt;1"/);assert.doesNotMatch(html,/#run\//);
+});

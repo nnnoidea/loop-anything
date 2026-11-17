@@ -115,7 +115,7 @@ class StewardRegressionTests(unittest.TestCase):
         self.assertEqual(effective['status'],'failed')
         viewed=expose_requests(t.store.get(t.run_id))['steward_requests']['startup']
         self.assertEqual(viewed['status'],effective['status']);self.assertEqual(viewed['error'],effective['error'])
-        self.assertEqual(t.tools.call('read_timeline',{'run_id':t.run_id})['requests'][0]['status'],'failed')
+        self.assertEqual(t.tools.call('read_run', {'run_id':t.run_id,'view':'snapshot'})['requests'][0]['status'],'failed')
 
     def test_library_writes_have_durable_delete_receipts_and_no_read_snapshots(self):
         t=self.t;request,manager=t.initialized_start();t.finish_start(request,manager)

@@ -51,14 +51,14 @@ def validate_v2(bp, implementations):
             raise Invalid('LoopDefinition and implementations must be objects')
         location = ['guide']
         validate_guide(bp)
-        for key in ('id', 'version', 'entry'):
+        for key in ('id', 'version'):
             location = [key]
             if not isinstance(bp.get(key), str) or not bp[key]:
                 raise Invalid('Missing ' + key)
         location = ['nodes']
         nodes = bp['nodes']
-        if not isinstance(nodes, dict) or bp['entry'] not in nodes:
-            raise Invalid('Entry must reference a declared node')
+        if not isinstance(nodes, dict):raise Invalid('nodes must be an object')
+        if 'entry' in bp and bp['entry'] not in nodes:raise Invalid('Entry must reference a declared node')
         location = ['fallback_node']
         validate_fallback(bp, implementations, bp.get('fallback_node'))
         location = ['global_agent_node']
@@ -82,8 +82,6 @@ def validate_v2(bp, implementations):
                 raise Invalid('Runtime limits must be positive integers')
         if set(limits.get('attempts_by_node', {})) - set(nodes):
             raise Invalid('Attempt budget references unknown node')
-        if not isinstance(nodes, dict) or bp['entry'] not in nodes:
-            raise Invalid('Entry must reference a declared node')
         location = ['handbook']
         if not isinstance(bp.get('handbook'), dict) or not (bp['handbook'].get('instructions') or bp['handbook'].get('path')):
             raise Invalid('A Loop operation handbook with instructions or a Skill path is required')
@@ -154,13 +152,8 @@ def validate_v2(bp, implementations):
                             if notice.get('route','default') not in ('default','workspace'):
                                 raise Invalid('Loop notifications use default or workspace; choose personal outlets on the Run')
             location = ['nodes', name]
-            if node.get('initialize_timeline') and name != bp['entry']:
-                raise Invalid('Only entry may initialize user semantics')
             if any(target not in nodes for target in node.get('plan_nodes', [])):
                 raise Invalid('plan_nodes must name declared capabilities')
-        location = ['entry']
-        if not nodes[bp['entry']].get('initialize_timeline'):
-            raise Invalid('Entry must initialize structured Programmable Timeline')
         location = ['rules']
         if bp.get('rules'):
             raise Invalid('LoopDefinition rules are retired; use plans for tasks construction and Timeline completion_rule for terminal transitions')
@@ -174,9 +167,10 @@ def validate_v2(bp, implementations):
         location = []
         validate_routes(bp)
         location = ['seed']
-        check_task(bp, bp['seed'])
-        if bp['seed']['node'] != bp['entry']:
-            raise Invalid('Seed must use entry node')
+        if ('seed' in bp) != ('entry' in bp):raise Invalid('An optional entry requires its seed Task')
+        if 'seed' in bp:
+            check_task(bp, bp['seed'])
+            if bp['seed']['node'] != bp['entry']:raise Invalid('Seed must use entry node')
         warnings.append('Domain judgments and external side effects require handler acceptance; schema validation does not prove semantic correctness.')
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         errors.append(str(exc))
@@ -189,7 +183,7 @@ def validate_v2(bp, implementations):
 def validate_fallback(bp, implementations, node_id):
     if node_id is None or node_id == '':
         return
-    if not isinstance(node_id, str) or node_id not in bp['nodes'] or node_id == bp['entry']:
+    if not isinstance(node_id, str) or node_id not in bp['nodes'] or node_id == bp.get('entry'):
         raise Invalid('fallback_node must name a declared non-entry node, or be empty to disable')
     node = bp['nodes'][node_id]
     if node.get('inputs'):

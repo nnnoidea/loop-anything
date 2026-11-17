@@ -72,7 +72,7 @@ def main():
     parser.add_argument('--request-id', help='Reuse a NAS operation ID, or read it with the result command')
     parser.add_argument('--wait', type=float, default=30, help='Seconds to wait for a NAS tool receipt; timeout never cancels the operation')
     parser.add_argument('--notification-command', help='Sender argv as JSON or @UTF8_JSON_FILE (start_run/change_settings only)')
-    parser.add_argument('--output', help='Write an exported Loop ZIP to this new file')
+    parser.add_argument('--output', help='Write an exported Loop ZIP or Timeline JSON to this new file')
     args = parser.parse_args()
     if args.notification_command is not None and args.tool not in ('start_run', 'change_settings'):
         parser.error('--notification-command is only for start_run or change_settings')
@@ -170,6 +170,10 @@ def main():
         with Path(args.output).open('xb') as output:
             output.write(base64.b64decode(result.pop('base64')))
         result['file'] = str(Path(args.output).resolve())
+    if args.output and result.get('ok') and args.tool=='export_timeline':
+        with Path(args.output).open('x',encoding='utf-8') as output:
+            json.dump(result.pop('document'),output,ensure_ascii=False,separators=(',',':'))
+        result['file']=str(Path(args.output).resolve())
     print(json.dumps(result, ensure_ascii=False, indent=2))
     raise SystemExit(0 if result.get('ok', args.tool == 'list') and result.get('accepted', True) else 2)
 

@@ -59,3 +59,13 @@ def client_work(url, refs=()):
             with ledger.db:ledger.remember(work,refs)
         finally:ledger.close()
         with patch.dict(os.environ,LOOP_ANYTHING_WORK=work):yield work
+
+
+def seeded_draft(tools, arguments):
+    """Explicit ordinary entry for tests of ports, routing and standalone execution."""
+    result=tools.call('create_loop',arguments)
+    draft=tools._draft(result['draft_id'])
+    bp=draft['loop_definition'];bp.update(entry='initialize',seed={'id':'initialize','node':'initialize','inputs':{},'outputs':{}})
+    bp['nodes']['initialize']={'instructions':'Read current progress and arrange the specified work.','inputs':{},'outputs':{}}
+    impl={'initialize':{'options':{'default':{'kind':'agent'}},'default':'default'}}
+    return tools._summary(tools.store.save_draft(bp,impl,draft['id'],draft['revision']),authoring=True)

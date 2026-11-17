@@ -141,7 +141,7 @@ if __name__ == '__main__':
                 info = call('read_task', {'task_id': task['task_id']})
                 scoped = copy.deepcopy(request)
                 scoped.update(task_id=task['task_id'], inputs=info['inputs'], input_sources=info['sources'], parameters=info['task']['spec'].get('parameters', {}))
-                scoped['timeline']['settings'] = call('read_timeline', {})['settings']
+                scoped['timeline']['settings'] = call('read_run', {'view':'snapshot'})['settings']
                 scoped['timeline']['tasks'][task['task_id']] = info['task']
                 envelope = respond(sys.argv[1], info['task']['spec']['node'], scoped)
                 call('report_task', {'event':'completed','report_id':'result:'+task['task_id'],'task_id': task['task_id'], 'envelope': envelope})

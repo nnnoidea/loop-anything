@@ -1,3 +1,4 @@
+from tests.runtime_fixture import seeded_draft
 """Recipient configuration affects execution, never the shared package or previous Runs."""
 import copy
 import json
@@ -101,7 +102,7 @@ class LoopConfigurationTests(unittest.TestCase):
         tools = PlatformTools(self.store)
         names = {d['name'] for d in tools.definitions()}
         self.assertTrue({'read_loop_config', 'set_loop_config'} <= names)
-        draft = tools.call('create_loop', {'name': 'Config template'})
+        draft = seeded_draft(tools,{'name': 'Config template'})
         result = tools.call('read_loop_config', {'draft_id': draft['draft_id']})
         self.assertEqual(result['path'], TEMPLATE)
         self.assertFalse(result['exists'])

@@ -1,3 +1,4 @@
+from tests.runtime_fixture import seeded_draft
 from tests.runtime_fixture import runtime_run
 """A discovered flow recipe decides, hands off a durable wait, and returns on evidence."""
 import os
@@ -20,7 +21,7 @@ class FlowAgentTests(unittest.TestCase):
         self.store = Store(Path(self.tmp.name) / 'run.db')
         self.platform = PlatformTools(self.store)
         self.engine = Engine(self.store)
-        self.draft = self.platform.call('create_loop', {'name': 'Skill to Loop'})
+        self.draft = seeded_draft(self.platform,{'name': 'Skill to Loop'})
         # Legacy ordinary-node definitions remain executable after builtin support.
         recipe = {
             'node': {'node_id': 'flow_agent', 'instructions': 'Read the handbook and decide.',
@@ -78,7 +79,7 @@ class FlowAgentTests(unittest.TestCase):
         info = agent.call('read_task', {'task_id': task})
         self.assertEqual(info['inputs']['result'], {'stage': 'initial'})
         self.assertEqual(info['inputs']['trigger']['transition']['to'], 'completed')
-        timeline = agent.call('read_timeline', {})
+        timeline = agent.call('read_run', {'view':'snapshot'})
         self.assertIsNone(timeline['scope_task'])
         self.assertEqual(timeline['handbook']['instructions'], self.store.get(self.run_id)['loop_definition']['handbook']['instructions'])
         self.assertFalse(info['skills'])
@@ -101,7 +102,7 @@ class FlowAgentTests(unittest.TestCase):
         self.assertEqual(info2['inputs']['result'], {'score': 42})
         self.assertEqual(info2['inputs']['trigger']['task_id'], wait_id)
         self.complete(agent2, task2, {'decision': {'action': 'stop', 'reason': 'Goal satisfied'}})
-        agent2.call('change_settings', {'revision': agent2.call('read_timeline', {})['settings']['revision'], 'change': {'termination_signal': 'Goal satisfied'}})
+        agent2.call('change_settings', {'revision': agent2.call('read_run', {'view':'snapshot'})['settings']['revision'], 'change': {'termination_signal': 'Goal satisfied'}})
         agent2.call('finish', {}); self.engine.tick(self.run_id)
         run = self.store.get(self.run_id)
         self.assertEqual(run['status'], 'completed')
@@ -142,7 +143,7 @@ class FlowAgentTests(unittest.TestCase):
         run = self.store.get(self.run_id)
         execution = next(e for e in run['executions'] if e['task_id'] == task_id)
         context = task_context(self.store, run, execution, 'http://127.0.0.1:8767', None)
-        handbook = agent.call('read_timeline', {})['handbook']
+        handbook = agent.call('read_run', {'view':'snapshot'})['handbook']
         self.assertEqual(context['handbook'], handbook)
         self.assertEqual(Path(handbook['resolved_path']).read_text(), content)
         self.assertFalse(context['skills'])

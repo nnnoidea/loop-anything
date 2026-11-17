@@ -44,10 +44,6 @@ class WorkContextTests(unittest.TestCase):
     def initialize(self,receipt):
         runtime=RunTools(self.store,receipt['run_id'],receipt['token'])
         run=self.store.get(receipt['run_id'])
-        seed=run['loop_definition']['seed']['id']
-        info=runtime.call('read_task',{'task_id':seed})
-        runtime.call('report_task',{'task_id':seed,'event':'completed','report_id':'init',
-                     'envelope':{'settings':{'objective':run['settings']['objective']},'outputs':{}}})
         runtime.call('add_task',{'key':'work','node_id':'work','inputs':{}})
         info=runtime.call('read_task',{'task_id':receipt['task_id']})
         runtime.call('report_task',{'task_id':receipt['task_id'],'event':'completed','report_id':'managed',
@@ -59,6 +55,9 @@ class WorkContextTests(unittest.TestCase):
         t=self.tools.call('create_timeline',{'objective':'old','constraints':'limit'})['timeline']
         self.tools.call('append_timeline',{'timeline_id':t['id'],'key':'progress-1','text':'recorded progress','kind':'progress'})
         r=self.start(timeline_id=t['id'])
+        current=self.tools.call('read_timeline',{'run_id':r['run_id']})
+        self.assertTrue(any(e['text']=='recorded progress' for e in current['entries']))
+        self.assertNotIn('seed',self.store.get(r['run_id'])['loop_definition'])
         before=self.store.get(r['run_id'])
         result=self.tools.call('update_timeline',{'timeline_id':t['id'],'revision':t['revision'],'change':{'objective':'new'}})
         self.assertIn('告诉用户',result['notice'])
@@ -191,7 +190,7 @@ for request in context['run_requests']:
     rt=RunTools(store,claim['run_id'],claim['token'])
     info=rt.call('read_task',{'task_id':claim['task_id']})
     rt.call('report_task',{'task_id':claim['task_id'],'report_id':'resumed-decision','event':'completed','envelope':{'outputs':{'decision':'All work is done'}}})
-    state=rt.call('read_timeline',{})
+    state=rt.call('read_run',{'view':'snapshot'})
     rt.call('change_settings',{'revision':state['settings']['revision'],'change':{'termination_signal':'Timeline task completed'}})
     rt.call('finish',{})
 """)

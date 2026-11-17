@@ -125,6 +125,17 @@ def results(db,timeline_id):
     return result
 
 
+def read_result(store,timeline_id,id,revision=None):
+    from loop_anything.runtime import timelines
+    with store.connection() as db:
+        timelines.get(db,timeline_id)
+        row=db.execute('SELECT document FROM work_results WHERE timeline_id=? AND id=?'+
+                       (' AND revision=?' if revision is not None else '')+' ORDER BY revision DESC LIMIT 1',
+                       (timeline_id,id,revision) if revision is not None else (timeline_id,id)).fetchone()
+        if row is None:raise Invalid('Result not found')
+        return {'timeline_id':timeline_id,'record':json.loads(row[0])}
+
+
 def save_results(db,run):
     for versions in run['records'].values():
         for record in versions:

@@ -1,3 +1,4 @@
+from tests.runtime_fixture import seeded_draft
 from tests.runtime_fixture import runtime_acquire, runtime_run
 """One author-to-user workflow through the public tools, not handwritten loop_definitions."""
 import io
@@ -24,7 +25,7 @@ class PlatformToolTests(unittest.TestCase):
         self.store = Store(Path(self.tmp.name) / 'runs.db')
         self.tools = PlatformTools(self.store)
         self.engine = Engine(self.store)
-        self.draft = self.tools.call('create_loop', {'name': 'Tool-built Loop'})
+        self.draft = seeded_draft(self.tools,{'name': 'Tool-built Loop'})
 
     def tearDown(self):
         self.engine.close()
@@ -46,7 +47,7 @@ class PlatformToolTests(unittest.TestCase):
         self.tools.call('report_task',dict(args,event='completed',report_id='complete',task_id=started['entry_task_id'],envelope={'settings':{'objective':'Goal from conversation'},'outputs':{}}))
         self.tools.call('finish',args)
         run=self.store.get(started['run_id'])
-        self.assertTrue(run['initialized']);self.assertEqual(run['settings']['objective'],'Goal from conversation')
+        self.assertTrue(run['records'] or run['tasks'][run['loop_definition']['seed']['id']]['status']=='completed');self.assertEqual(run['settings']['objective'],'Goal from conversation')
         self.assertEqual(run['records'],{});self.assertFalse(run['agent_sessions'])
 
     def test_user_description_does_not_replace_agent_instructions_or_skills(self):
@@ -394,7 +395,7 @@ class PlatformToolTests(unittest.TestCase):
         # Reading must not enter Store.edit, even while another entry owns the Run.
         with patch.object(self.store,'edit',side_effect=AssertionError('read entered a write transaction')):
             self.assertEqual([rid],[x['id'] for x in self.tools.call('list_runs',{'query':'SHARED','status':'running'})['runs']])
-            snapshot = self.tools.call('read_timeline',{'run_id':rid})
+            snapshot = self.tools.call('read_run',{'run_id':rid,'view':'snapshot'})
             self.assertTrue(snapshot['read_only'])
             self.assertEqual(rid,snapshot['run_id'])
             self.tools.call('next_tasks',{'run_id':rid})
@@ -424,9 +425,10 @@ class PlatformToolTests(unittest.TestCase):
         write(feishu,'change_task',task_id=convert['id'],operation='update',inputs={'value':{'literal':'new input'}},reason='User changed the input')
         write(feishu,'finish')
         weixin = self.tools.call('read_timeline',{'run_id':rid})
-        self.assertEqual('Revised in Feishu',weixin['settings']['objective'])
+        self.assertEqual('Revised in Feishu',weixin['timeline']['objective'])
         self.assertEqual({'value':'new input'},self.tools.call('read_task',{'run_id':rid,'task_id':convert['id']})['inputs'])
-        self.assertEqual(before['settings']['notification_command'],weixin['settings']['notification_command'])
+        execution=self.tools.call('read_run',{'run_id':rid,'view':'snapshot'})
+        self.assertEqual(before['settings']['notification_command'],execution['settings']['notification_command'])
         self.assertEqual(1,len(self.store.list()))
         self.assertEqual([],self.store.get(rid)['agent_sessions'])
         weixin_owner = runtime_acquire(self.tools.store, {'run_id':rid})
@@ -434,7 +436,7 @@ class PlatformToolTests(unittest.TestCase):
             update_work(self.tools.store,rid,{'constraints':'stale overwrite'},revision=timeline['timeline']['revision'])
         update_work(self.tools.store,rid,{'constraints':'Confirmed in Weixin'})
         write(weixin_owner,'finish')
-        self.assertEqual('Confirmed in Weixin',self.tools.call('read_timeline',{'run_id':rid})['settings']['constraints'])
+        self.assertEqual('Confirmed in Weixin',self.tools.call('read_run', {'run_id':rid,'view':'snapshot'})['settings']['constraints'])
         self.assertEqual([],self.tools.call('list_runs',{'status':'completed'})['runs'])
 
     def test_readonly_inspection_of_active_agents_and_completed_run(self):
@@ -451,7 +453,7 @@ class PlatformToolTests(unittest.TestCase):
         for name in ('revision','tasks','settings','records','history'):self.assertEqual(before[name],after[name])
         self.assertFalse(self.tools.respond('read_timeline',{'run_id':rid,'token':'invalid'})['ok'])
         self.engine.command(rid,'terminate',operator_token=token)
-        snapshot = self.tools.call('read_timeline',{'run_id':rid})
+        snapshot = self.tools.call('read_run',{'run_id':rid,'view':'snapshot'})
         self.assertEqual('terminated',snapshot['status']); self.assertTrue(snapshot['read_only'])
         self.assertEqual([rid],[x['id'] for x in self.tools.call('list_runs',{'status':'terminated'})['runs']])
 
@@ -486,7 +488,7 @@ class PlatformToolTests(unittest.TestCase):
         self.assertEqual('Node business method', (node_entry.parent / 'references/method.md').read_text())
         output = subprocess.check_output([sys.executable, str(node_entry.parent / 'scripts/check.py')], text=True)
         self.assertEqual('node script', output.strip())
-        self.assertEqual(str(loop_entry), tools.call('read_timeline', arguments)['handbook']['resolved_path'])
+        self.assertEqual(str(loop_entry), tools.call('read_run', dict(arguments,view='snapshot'))['handbook']['resolved_path'])
         document, _ = load_installed(target.filename, key)
         self.assertEqual({'instructions': '', 'path': 'skills/loop/SKILL.md'}, document['loop_definition']['handbook'])
         copied = tools.call('copy_loop', {'key': key})

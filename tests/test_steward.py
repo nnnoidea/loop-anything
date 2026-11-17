@@ -1,3 +1,4 @@
+from tests.runtime_fixture import seeded_draft
 """Steward delegation survives client exit and transfers pending work safely."""
 import json
 import os
@@ -32,7 +33,7 @@ class StewardTests(unittest.TestCase):
                 'name': ident, 'description': 'Manage isolated test Runs', 'local': True,
                 'implementation': {'kind': 'agent', 'cwd': str(Path(__file__).resolve().parents[1]),
                                    'command': [sys.executable, '-c', 'print("managed")']}}})
-        self.draft = self.tools.call('create_loop', {'name': 'Steward test'})
+        self.draft = seeded_draft(self.tools,{'name': 'Steward test'})
         self.edit('set_loop', handbook='Initialize, wait for evidence, then decide with full records.')
         self.edit('put_node', node_id='work', instructions='Wait for evidence', outputs=[{'name': 'result', 'type': 'object'}])
         self.edit('set_implementation', node_id='work', kind='event', event='ready', wait={'key': 'evidence'})
@@ -218,7 +219,7 @@ class StewardTests(unittest.TestCase):
                   command=[sys.executable, '-c', 'print("business")'])
         self.republish()
         request, worker = self.initialized_start()
-        settings = worker.call('read_timeline', {})['settings']
+        settings = worker.call('read_run', {'view':'snapshot'})['settings']
         worker.call('change_settings', {'revision': settings['revision'], 'change': {'max_parallel': 1}})
         work = worker.call('add_task', {'key': 'long', 'node_id': 'work', 'inputs': {}})['tasks'][0]['id']
         self.finish_start(request, worker)
@@ -259,14 +260,14 @@ class StewardTests(unittest.TestCase):
 
     def test_steward_can_apply_only_the_authorization_explicitly_supplied_by_user(self):
         request, worker = self.initialized_start()
-        settings = worker.call('read_timeline', {})['settings']
+        settings = worker.call('read_run', {'view':'snapshot'})['settings']
         with self.assertRaises(Invalid):
             worker.call('change_settings', {'revision': settings['revision'], 'change': {'authorization': 'Invented permission'}})
         self.finish_start(request, worker)
         update = self.tools.call('submit_run_request', {'request_id': 'permission', 'operation': 'modify',
             'run_id': self.run_id, 'message': 'Allow the next experiment'})
         manager = self.worker(update['task_id'])
-        settings = manager.call('read_timeline', {})['settings']
+        settings = manager.call('read_run', {'view':'snapshot'})['settings']
         from tests.runtime_fixture import update_work
         result=update_work(self.store,self.run_id,{'constraints':'Run experiment B'})
         self.assertIn('告诉用户',result['notice'])
@@ -303,8 +304,6 @@ class StewardTests(unittest.TestCase):
         with self.assertRaises(Conflict):
             self.tools.call('start_run', dict(self.start_args, title='different'))
         worker = self.worker(request['task_id'])
-        with self.assertRaises(Invalid):
-            self.complete(worker, request['task_id'], {'decision': 'Too early'})
         self.initialize(worker)
         worker.call('read_timeline', {})
         work = worker.call('add_task', {'key': 'first-experiment', 'node_id': 'work', 'inputs': {}})['tasks'][0]['id']
@@ -338,7 +337,7 @@ class StewardTests(unittest.TestCase):
         new_request = self.tools.call('read_run_request', {'request_id': 'startup'})
         self.assertNotEqual(new_request['task_id'], request['task_id'])
         new = self.worker(new_request['task_id'])
-        self.assertTrue(self.store.get(self.run_id)['initialized'])
+        self.assertEqual(self.store.get(self.run_id)['settings']['objective'],'Test durable startup')
         self.complete(new, new_request['task_id'], {'decision': 'Recovered startup from persisted initialization'})
         new.call('finish', {})
         self.assertEqual(self.tools.call('read_run_request', {'request_id': 'startup'})['steward']['agent_id'], 'second')

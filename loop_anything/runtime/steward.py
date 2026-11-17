@@ -12,8 +12,8 @@ ACTIVE = {'planned', 'ready', 'blocked', 'held', 'executing', 'decision', 'waiti
 READ_ONLY = {'read_timeline', 'read_task', 'read_record', 'read_run', 'next_tasks', 'read_plans'}
 DIRECT = {'command', 'update_run'}
 PROMPT = """You are the current Run steward. Own the user's request through completion or an explicit question.
-Read the complete Loop handbook and relevant node Skills, current Timeline and request record. Business rules belong in the handbook. Reuse existing tasks and exact result versions. Persist decisions, evidence and unresolved work in this Run.
-For a start request, complete the existing entry Task using its actual contract and agreed objective and constraints. Arrange the initial work required by the handbook, or inspect automatic route receipts. Confirm initialization and actual arrangements before reporting startup complete. The Run ID is already durably bound to this request; reuse it on recovery.
+Read the complete Loop handbook and relevant node Skills, current Timeline and request record. Use read_run(view=snapshot) for running, completed and failed tasks and read_task for details; execution snapshots are separate from Timeline business progress. Business rules belong in the handbook. Reuse existing tasks and exact result versions. Persist meaningful progress, parameters, results and unresolved work in the Timeline. Read contributions from every method; process logs and scripts are optional references.
+For a start request, read the Timeline and use the current Loop handbook to advance its work. Existing goals and progress need no initialization. Arrange this method's tasks with explicit inputs; fill missing method-specific context yourself rather than requiring the previous method to supply it. Keep completed results and in-flight experiments. Inspect pending work and explicitly adjust it when the current method calls for a different next step. A declared entry Task is optional; operate it only when appropriate. Commit progress and arrangements in your completed report. Confirm actual arrangements before reporting startup complete. The Run ID is already durably bound to this request; reuse it on recovery.
 For objective/constraint changes use update_timeline and follow its notice: inspect the full Timeline, especially running tasks, report to the user, and wait for the user's decision before extra task changes. Other explicitly requested operations use existing scoped tools. For an explanation, read relevant evidence and return the full answer. Use answer_run_request with status=waiting_user and a question when information is missing; then finish. Further user replies create another managed turn with the same request history.
 When done, complete your own decision Task with outputs.decision containing the full result, reasoning and evidence, then finish. Review or adjust dependent work before completing a progression decision: completing it releases those successors. The platform delivers request results to the saved request origin, falling back to the Run outlet only when no origin was supplied. Normal task completion returns here unless its node selects rule progression. Explicit plan routes own their events. Long waits and monitoring belong to scripts/events, and assistance uses the existing wait/resume protocol.
 You can operate this Run only through the provided execution identity. A steward replacement revokes old management turns. New stewards read saved requests and Timeline before continuing partial operations. Each request has a stable ID; use stable task keys to avoid duplicated work.
@@ -88,9 +88,9 @@ def add_turn(run, request, trigger=None):
     spec = {'id': task_id, 'node': NODE, 'inputs': {'trigger': {'literal': trigger}},
             'outputs': {'decision': {'id': task_id + '.decision'}}}
     from loop_anything.runtime.implementations import selected
-    seed = run['tasks'][run['loop_definition']['seed']['id']]
-    if request['operation'] == 'start' and not run['initialized'] and (selected(run, seed)[1] or {}).get('kind') != 'agent':
-        spec['after'] = [seed['id']]
+    seed=run['tasks'].get(run['loop_definition'].get('seed',{}).get('id'))
+    if request['operation']=='start' and seed and (selected(run,seed)[1] or {}).get('kind')!='agent':
+        spec['after']=[seed['id']]
     add_task(run, spec, {'flow_agent': trigger, 'steward': generation, 'request_id': request['id']})
     request.update(task_id=task_id, status='pending')
 
@@ -103,11 +103,12 @@ def receipt(run, request):
         state = 'cancelled'
     elif state == 'pending' and task.get('status') in ('fault', 'stale'):
         state = 'failed'
-    elif state == 'pending' and request['operation'] == 'start' and not run['initialized']:
-        seed = run['tasks'][run['loop_definition']['seed']['id']]
-        if seed['status'] in ('fault', 'stale', 'cancelled'):
-            state = 'failed'
-            attempt = next((e for e in run['executions'] if e['id'] == seed.get('execution_id')), {})
+    if state == 'pending':
+        failed=next((run['tasks'][ident] for ident in task.get('spec',{}).get('after',[])
+                     if run['tasks'][ident]['status'] in ('fault','stale','cancelled')),None)
+        if failed:
+            state='failed'
+            attempt=next((e for e in run['executions'] if e['id']==failed.get('execution_id')), {})
     if state == 'pending' and task.get('status') in ('executing', 'decision', 'waiting'):
         state = 'processing'
     return {'request_id': request['id'], 'run_id': run['id'], 'status': state,
@@ -142,6 +143,9 @@ def request_context(store, arguments):
 def progression_waits(run, task, predecessors):
     if management_task(task):
         return []
+    if not task.get('origin',{}).get('entry'):
+        starting=[r for r in run.get('steward_requests',{}).values() if r['operation']=='start' and r['status']!='completed']
+        if starting:return [{'reason':'steward_decision','action':r.get('task_id'),'request_id':r['id'],'status':r['status']} for r in starting]
     predecessors = set(predecessors)
     review = task.get('origin', {}).get('steward_review')
     if review:
@@ -152,7 +156,7 @@ def progression_waits(run, task, predecessors):
              'request_id': request['id'], 'source': request['arguments']['task_id'], 'status': request['status']}
             for request in decisions
             if request['status'] != 'completed']
-    if review == run['loop_definition']['seed']['id']:
+    if review == run['loop_definition'].get('seed',{}).get('id'):
         for request in run.get('steward_requests', {}).values():
             if request['operation']=='start' and request['status']!='completed':
                 waits.append({'reason':'steward_decision','source':review,'action':request.get('task_id'),
@@ -328,8 +332,6 @@ def completed(store, run, task, outputs):
     request = run['steward_requests'][ident]
     if request.get('task_id') != task['id'] or request['status'] in ('cancelled', 'completed'):
         return
-    if request['operation'] == 'start' and not run['initialized']:
-        raise Invalid('Complete the entry initialization before reporting startup complete')
     result = copy.deepcopy(outputs['decision'])
     request.update(status='completed', result=result)
     from loop_anything.runtime.notifications import enqueue
@@ -372,7 +374,7 @@ def follow_up(store, request_id, reply_id, message, cancel=False):
                 request['replies'].append(reply)
                 if cancel:
                     request['status'] = 'cancelled'
-                    if request['operation'] == 'start' and not run['initialized']:
+                    if request['operation'] == 'start':
                         direct(store, run, 'command', {'action': 'terminate'})
                 else:
                     add_turn(run, request)

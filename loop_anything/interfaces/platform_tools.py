@@ -73,7 +73,7 @@ class PlatformTools:
             ('delete_loop', 'Delete a draft or unused installed Loop version. Existing Run or Loop-call references prevent deletion; archive instead to retain history. Does not delete Runs or external artifacts; modified package directories or incidental runtime files are retained. Drafts require their revision.', {'key':TEXT,'draft_id':TEXT,'revision':{'type':'integer'}}, [], False),
             ('smoke_runtime', 'Explicit runtime check of an installed Loop. Starts configured Agent commands (may call models), including fallback candidates, with a minimal startup prompt and bounded timeout. Simulates external lifecycle reports in a temporary Timeline; never calls business submit/observe commands. Optional node_id/implementation_id select candidates. cases supplies node, implementation, state, event and optional attempt/inputs/parameters/settings/detail/expected for conditional transitions. Does not start or change a business Run.', {'key': TEXT, 'node_id': TEXT, 'implementation_id': TEXT, 'timeout': {'type': 'number'}, 'cases': {'type': 'array', 'items': OBJ}}, ['key'], False),
             ('read_loop', 'Read a draft_id or installed key. Optional node_id (+ implementation_id), plan (+ step), or asset_path selects one part and its explicit references. Without selectors returns the complete Loop. Targeted reads include draft revision; asset text is decoded UTF-8.', {'draft_id': TEXT, 'key': TEXT, 'node_id': TEXT, 'implementation_id': TEXT, 'plan': TEXT, 'step': TEXT, 'asset_path': TEXT}, [], True),
-            ('create_loop', 'Create an editable Loop with a no-input Agent entry. The current starter initializes from the independent Timeline and saved request; add business ports only when needed. Add the author business handbook, tasks and implementations before validation.', {'name': TEXT, 'id': TEXT}, ['name'], False),
+            ('create_loop', 'Create an editable Loop with no mandatory entry. The current starter reads the Timeline and handbook and arranges tasks using the current method. Add business nodes and implementations as needed.', {'name': TEXT, 'id': TEXT}, ['name'], False),
             ('copy_loop', 'Copy an installed Loop and its resources to an editable draft. Existing Runs stay on their original version.', {'key': TEXT, 'name': TEXT, 'new_version': BOOL}, ['key'], False),
             ('set_loop', 'Update draft metadata and the AUTHOR business handbook; handbook_path binds a package-relative Skill entry (empty clears). Preserve unspecified fields. remove_records explicitly deletes unused record types; referenced types are protected. Defaults and limits are explicit author choices. requires lists required capability IDs; scenarios stores author acceptance cases for test_loop. Parameter contracts support the documented conditional/composition subset; read_capabilities returns supported keywords. fallback_node identifies a declared non-entry recovery helper with global Task scope; the Run steward owns automatic exception handling and can explicitly schedule that helper. The actual startup session supplies built-in decision execution; configure explicit node progression or routes for fixed paths.', dict(draft, name=TEXT, version=TEXT, description=TEXT, handbook=TEXT, handbook_path=TEXT, defaults=OBJ, limits=OBJ, state=OBJ, guide=OBJ, checks=OBJ, requires=STRINGS, scenarios=SCENARIOS, fallback_node=TEXT, global_agent_node=TEXT, remove_records=STRINGS), ['draft_id', 'revision'], False),
             ('put_node', 'Add or edit one node. description is a short user-facing purpose for the webpage; instructions and skills retain full execution guidance for Agents. Omit description when unknown; it never replaces instructions. Port lists use name plus type or schema; output record types are generated. Entry ports update initial locations. skills bind author methods. routes optionally declare event -> plan task generation, atomically with each accepted lifecycle report. A plan route has id/event/plan/values and optional each/when/steps/round. A built-in decision route has id/event/flow_agent=true and optional when; the selected Run steward supplies its executor. It needs no extra business node or plan. All explicitly matching routes execute; no implicit priority or default advancement. Map values and step overrides with $ references to outputs/inputs/parameters/settings/detail/task/transition/attempt/task_revision; each reads a context array and adds item/index. when is evaluated per item. Generated tasks belong to the source Task; duplicate reports never regenerate. Supplying routes replaces the list; [] clears it. plan_nodes remains the permission for scripts to arrange tasks explicitly; a route is itself an author declaration.', dict(draft, node_id=TEXT, instructions=TEXT, description={"type":"string","description":"Optional brief purpose for users: what this node does and delivers, without API fields or duplicated contracts. Empty clears the visible introduction."}, label=TEXT, inputs=PORTS, outputs=PORTS, skills={'type': 'array', 'items': object_schema({'name': TEXT, 'content': TEXT, 'path': TEXT}, ['name'])}, plan_nodes=STRINGS, routes=ROUTES, parameter_schema=OBJ, agent_settings_schema=OBJ, assertions={'type': 'array', 'items': OBJ}), ['draft_id', 'revision', 'node_id'], False),
@@ -383,12 +383,8 @@ class PlatformTools:
             return list_runs(self.store, **a)
         if name == 'create_loop':
             bp = {'schema_version': 2, 'id': a.get('id') or uid('loop'), 'name': a['name'], 'version': '1',
-                  'entry': 'initialize', 'handbook': {'instructions': ''}, 'defaults': {},
-                  'records': {}, 'nodes': {
-                      'initialize': {'label': '初始状态', 'instructions': '根据已确认的对话将目标、要求和约束写入 Timeline settings；按需安排后续任务，提交本节点后释放操作权。',
-                          'initialize_timeline': True, 'inputs': {}, 'outputs': {}}},
-                  'seed': {'id': 'initialize', 'node': 'initialize', 'inputs': {}, 'outputs': {}}, 'plans': {}}
-            return self._summary(self.store.save_draft(bp, {'initialize': {'options': {'default': {'kind': 'agent'}}, 'default': 'default'}}), authoring=True)
+                  'handbook': {'instructions': ''}, 'defaults': {}, 'records': {}, 'nodes': {}, 'plans': {}}
+            return self._summary(self.store.save_draft(bp, {}), authoring=True)
         if name == 'copy_loop':
             source = self._installed(a['key'])
             assets, checks = [], {}
@@ -477,12 +473,12 @@ class PlatformTools:
                         bp['records'][type_id] = schema
                         ports[port['name']] = {'record_type': type_id}
                 node[direction] = ports
-            if id == bp['entry']:
+            if id == bp.get('entry'):
                 bp['seed']['inputs'] = {p: bp['seed']['inputs'].get(p, {'run': p}) for p in node['inputs']}
                 bp['seed']['outputs'] = {p: bp['seed']['outputs'].get(p, {'id': 'initial.' + p}) for p in node['outputs']}
         elif name == 'remove_node':
             id = a['node_id']
-            if id == bp['entry']:
+            if id == bp.get('entry'):
                 raise Invalid('Cannot remove the initialization node')
             if id in (bp.get('fallback_node'), bp.get('global_agent_node')):
                 raise Invalid('Disable or change the fallback/global Agent selection before removing this node')
@@ -543,7 +539,7 @@ class PlatformTools:
                     {'path': path, 'base64': base64.b64encode(a['content'].encode('utf-8')).decode(),
                      'executable': a.get('executable', (old or {}).get('executable', False))}]
         elif name == 'put_step':
-            if a['node_id'] not in bp['nodes'] or a['node_id'] == bp['entry']:
+            if a['node_id'] not in bp['nodes'] or a['node_id'] == bp.get('entry'):
                 raise Invalid('A batch step must reference a declared non-entry node')
             plan = bp['plans'].setdefault(a['plan'], {'parameters': {'type': 'object'}, 'steps': {}})
             if 'plan_parameters' in a:

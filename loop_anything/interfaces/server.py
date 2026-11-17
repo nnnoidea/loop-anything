@@ -242,12 +242,14 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                     raise Invalid('X-Loop-Anything header required')
                 length = int(self.headers.get('Content-Length', '0'))
                 package_route = urlsplit(self.path).path.startswith('/api/packages/') or urlsplit(self.path).path == '/api/drafts'
-                limit = 30_000_000 if package_route else 2_000_000
+                limit = 30_000_000 if package_route or urlsplit(self.path).path=='/api/tools' else 2_000_000
                 if not 0 < length <= limit:
                     raise Invalid('JSON body exceeds request limit')
                 body = json.loads(self.rfile.read(length))
                 if not isinstance(body, dict):
                     raise Invalid('JSON object required')
+                if not package_route and length>2_000_000 and body.get('tool')!='import_timeline':
+                    raise Invalid('JSON body exceeds request limit')
                 parts = urlsplit(self.path).path.strip('/').split('/')
                 if not self.may_post(parts, body):
                     self.send({'error': 'Invalid execution identity', 'code': 'invalid_execution'}, 403)

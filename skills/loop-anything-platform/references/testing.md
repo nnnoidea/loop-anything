@@ -23,7 +23,7 @@ Check both tool `ok` and result `passed`. ok=true means the call completed; pass
 
 ## Scenario structure
 
-Each scenario has name, steps, assertions, and optional initial inputs and bindings. Entry semantics still come from its initialization completion report; the initialization contract is not bypassed.
+Each scenario has name, steps, assertions, and optional initial inputs and bindings. Optional entry reports use the ordinary task contract. A Loop without an entry can start with a simulated $flow_agent report that arranges its work.
 
 Steps execute in order with one real Engine tick before each:
 
@@ -103,4 +103,4 @@ Use deterministic path/op/args expressions with eq/le/ge/add/len/and/or. Array p
 
 Assertions must state the author's expected behavior precisely. The platform does not infer a correct answer from prose. Parameter errors, missing references, unexpected transitions, and waiting tasks remain in results; a lack of exceptions does not establish Run completion.
 
-Scenarios use a simulated Run steward. The first entry report is applied through that steward; startup is completed automatically after valid initialization. Later decision results must be supplied by the scenario when needed. Fixed test paths should declare progression="rules", just like real Runs. task_count/tasks/by_id/counts describe business Tasks; internal_tasks exposes the simulated management executions separately. No real Agent command is invoked.
+Scenarios use a simulated Run steward. The first entry report is applied through that steward; startup is completed automatically after the optional entry completes; Loops without an entry report the startup $flow_agent task directly. Later decision results must be supplied by the scenario when needed. Fixed test paths should declare progression="rules", just like real Runs. task_count/tasks/by_id/counts describe business Tasks; internal_tasks exposes the simulated management executions separately. No real Agent command is invoked.

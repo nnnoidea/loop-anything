@@ -14,7 +14,7 @@ def definition():
     return {'schema_version': 2, 'id': 'package-handoff', 'version': '1', 'name': 'Loop 包交付验收',
         'entry': 'initialize', 'handbook': {'instructions': '模拟初始化写目标和结果，确定性脚本消费结果并结束。'},
         'records': {'text': TEXT, 'flag': BOOL},
-        'nodes': {'initialize': node('模拟初始化', {}, {'result': 'text'}, '提交初始化结果', initialize_timeline=True, plan_nodes=['finish']),
+        'nodes': {'initialize': node('模拟初始化', {}, {'result': 'text'}, '提交初始化结果', plan_nodes=['finish']),
                   'finish': node('确定性结束', {'value': TEXT}, {'done': 'flag'}, '检查结果并结束')},
         'seed': tasks('first', 'initialize', {}, {'result': 'result'}),
         'plans': {}}

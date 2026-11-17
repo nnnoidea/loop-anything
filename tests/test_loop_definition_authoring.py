@@ -9,7 +9,7 @@ from loop_anything.runtime.engine import Engine
 def definition():
     return {'schema_version': 2, 'id': 'authored-loop', 'name': 'Authored in workspace', 'version': '1', 'entry': 'input',
             'handbook': {'instructions': 'Build Tasks and submit results.'}, 'records': {'text': {'type': 'string'}},
-            'nodes': {'input': {'instructions': 'Initialize', 'initialize_timeline': True, 'plan_nodes': ['finish'], 'inputs': {}, 'outputs': {'result': {'record_type': 'text'}}},
+            'nodes': {'input': {'instructions': 'Initialize', 'plan_nodes': ['finish'], 'inputs': {}, 'outputs': {'result': {'record_type': 'text'}}},
                       'finish': {'instructions': 'Finish', 'inputs': {'message': {'type': 'string'}}, 'outputs': {'result': {'record_type': 'text'}}}},
             'seed': {'id': 'input', 'node': 'input', 'inputs': {}, 'outputs': {'result': {'id': 'source'}}}, 'plans': {},
             'layout': {'input': {'x': 30, 'y': 50}, 'finish': {'x': 290, 'y': 50}}}

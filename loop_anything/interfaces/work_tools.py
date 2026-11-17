@@ -19,10 +19,16 @@ def definitions():
          {'monitor_id':T,'limit':{'type':'integer','minimum':1,'maximum':240}},['monitor_id'],True),
         ('create_timeline','Create work context without a Loop/Run. Only objective and constraints are fixed user semantic fields.',
          {'objective':TEXT,'constraints':TEXT,'title':TEXT},[],False),
+        ('export_timeline','Download complete Timeline progress, business record history, saved results and progress entries. Never exports sessions, implementations or executable authority; external files remain references.',
+         {'timeline_id':T},['timeline_id'],True),
+        ('import_timeline','Import a Timeline progress document into this platform as independent work. Keep request_id stable for retries. Creates no Run or executable task. The receiving Agent reads the progress and arranges its own method.',
+         {'document':O,'request_id':T},['document','request_id'],False),
         ('list_timelines','List a page of Timelines with Loop groups and counts. Groups use Loop identity across versions; unbound=true selects temporary work without an associated Run. Follow next_offset for further pages.',
          {'loop_id':T,'unbound':{'type':'boolean'},'limit':{'type':'integer','minimum':1,'maximum':100},'offset':N},[],True),
-        ('read_work_timeline','Read current intent, Loop-defined business state, executions, waits, and paged history. No handoff or original chat transcript is required.',
+        ('read_work_timeline','Read current intent, Loop-defined business state, saved results, related Run links and paged history. Execution state is available through read_run(view=snapshot). No handoff or original chat transcript is required.',
          {'timeline_id':T,'after':N,'limit':{'type':'integer','minimum':1,'maximum':200}},['timeline_id'],True),
+        ('read_work_result','Read an exact saved result through its Timeline, including imported results; no original Run or Loop is required. Omit revision for the latest saved version.',
+         {'timeline_id':T,'id':T,'revision':{'type':'integer','minimum':1}},['timeline_id','id'],True),
         ('read_business_state','Read Loop-defined current or historical business records through a Timeline; omitted type/id lists current records with explicit pagination.',
          {'timeline_id':T,'type':T,'id':T,'revision':N,'offset':N,'limit':{'type':'integer','minimum':1,'maximum':200}},['timeline_id'],True),
         ('update_timeline','Edit objective/constraints at the read revision. Follow the returned notice: inspect the whole Timeline, especially running tasks, and report to the user. Does NOT pause, cancel, invalidate, or reschedule any work.',
@@ -67,7 +73,13 @@ def call(store,name,a):
     if name in ('read_monitor_dashboard','read_monitor_history'):
         from loop_anything.runtime import monitoring
         return monitoring.overview(store,**a) if name=='read_monitor_dashboard' else monitoring.history(store,**a)
+    if name in ('export_timeline','import_timeline'):
+        from loop_anything.runtime import timeline_transfer
+        return getattr(timeline_transfer,name)(store,**a)
     if name=='list_timelines':return timelines.list_timelines(store,**a)
+    if name=='read_work_result':
+        from loop_anything.runtime.business_state import read_result
+        return read_result(store,**a)
     if name=='read_business_state':
         from loop_anything.runtime.business_state import read
         return read(store,**a)

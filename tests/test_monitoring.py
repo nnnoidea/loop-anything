@@ -88,7 +88,8 @@ class MonitoringTests(unittest.TestCase):
     def test_loop_owned_external_observer_links_existing_run(self):
         run=self.store.create(self.t.key,'Existing external work')
         with self.store.edit(run['id']) as current:
-            task=current['tasks'][current['loop_definition']['seed']['id']]
+            from loop_anything.runtime.timeline_plan import add_task
+            task=add_task(current,{'id':'observed','node':'work','inputs':{},'outputs':{'value':{'id':'observed.value'}}},{'test':True})
             task['execution_id']='external-current'
             current['executions'].append({'id':'external-current','task_id':task['id'],'node':task['spec']['node'],
                 'implementation':{'kind':'external','command':['private-submit'],'observe':['private-check']},

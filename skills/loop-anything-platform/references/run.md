@@ -10,7 +10,7 @@ When receiving a Loop or adapting paths, agents, and services, use [separate run
 
 ## Task progression versus execution phases
 
-read_timeline/next_tasks show whether work is scheduled, why it is waiting, and what needs attention. read_task.execution_state and last_transition show the current execution phase, reports, and actual transitions. Task status and execution lifecycle_state describe different layers and are not interchangeable.
+read_run(view=snapshot) lists every Task with status, counts, wait reasons, errors, observer errors and original-execution references, including completed work. It derives this view from the Run without saving a second snapshot. next_tasks lists actionable work and waiting reasons. read_timeline reads business progress only. read_task.execution_state and last_transition show the current execution phase, reports, and actual transitions. Task status and execution lifecycle_state describe different layers and are not interchangeable.
 
 Use read_task for dependencies, waiting reasons, and the current execution; read_run retrieves previous parameters, implementations, lifecycles, and transition history by execution ID. A retry keeps the same Task; scheduling another round creates new Tasks. After a completion report commits results, the platform reevaluates downstream Tasks. A steward decision holds its dependent successors until the decision completes; explicit rule progression proceeds mechanically. finish only releases the agent's operation identity.
 
@@ -48,7 +48,7 @@ Discover these operations through read_capabilities(capability="run_library"). O
 Agents using different entries connect to the same platform instance and Timeline. A Run does not belong to a chat session; changing entry neither creates a Run nor requires old chat history.
 
 1. Read a known Run ID directly. Otherwise use list_runs by initiator, keyword, Loop, status, or dates; it defaults to recent activity. Follow next_offset; see [Run management](#run-lists-attribution-and-management). Ask the user to distinguish ambiguous candidates instead of assuming the latest is correct.
-2. Without a token, read_timeline retrieves current objectives, requirements, guidance, authorization, record index, Tasks, and issues. Use next_tasks, read_task, read_record, and read_plans for details; read_run for full facts/history. Reading does not acquire operation rights or stop other agents.
+2. Without a token, read_timeline retrieves business objectives, constraints, state, progress entries and the saved result index. read_run(view=snapshot) retrieves execution status, Run settings and the Loop handbook. Use next_tasks, read_task, read_record, and read_plans for details; read_run for full facts/history. Reading does not acquire operation rights or stop other agents.
 3. Submit the complete intent with submit_run_request(request_id, run_id, operation, message, arguments). The server steward reads current state, checks affected versions, and performs authorized changes. Read the durable receipt or reply to its question.
 4. Platform-awakened nodes keep their prompt identity and cannot widen scope through another entry. Existing results remain; changing the objective does not automatically invalidate old Tasks.
 
@@ -89,7 +89,7 @@ Replace the tool name and supply its parameters via --arguments. read_task retur
 
 ### Completing one invocation
 
-1. With the operation token, read_task for output-port contracts, inputs, and author Skills. Respect scope_task: null means global scope; otherwise only that Task and descendants. Read read_timeline/next_tasks when global guidance, record indexes, or work lists are needed; focused work need not read the whole Timeline first.
+1. With the operation token, read_task for output-port contracts, inputs, and author Skills. Respect scope_task: null means global scope; otherwise only that Task and descendants. Read read_timeline for business progress and record indexes, read_run(view=snapshot) for the handbook and execution overview, and next_tasks for actionable work; focused work need not read the whole Timeline first.
 2. Do the author's work. Read read_task.routes first: declared rules may only need results/parameters, after which the platform creates Tasks when accepting the event. Inspect receipt.routes; do not schedule those Tasks again. Use add_task/build_plan for ad hoc work; scheduling alone does not submit the current result.
 3. report_task(event=completed) with a stable report_id, all envelope.outputs in one submission. With routes, results and generated Tasks validate and commit together. Only ok:true and accepted:true confirm success. Correct failed submissions without duplicating downstream work.
 4. next_tasks checks work/issues in your scope. After completing this Task, resolving issues, or explicitly waiting via defer_task, leave scheduled downstream work to Engine. You need not empty the list; ready children can dispatch before their parent agent calls finish.
@@ -109,17 +109,17 @@ python3 scripts/call.py finish --arguments '{"run_id":"RUN_ID","token":"TOKEN"}'
 
 Check JSON ok for every call; script failure exits with code 2. A text claim of completion cannot replace a successful receipt. If a timeout leaves the outcome unknown, read current state before choosing the next action; do not blindly resubmit or change keys to recreate Tasks. Current tools do not require seal.
 
-When an author Skill includes resolved_path, read SKILL.md there and resolve its references relative to that directory. read_loop/read_timeline provide the Loop Skill; read_task provides node Skills. Use the agent's own tools for ordinary file reads and script execution.
+When an author Skill includes resolved_path, read SKILL.md there and resolve its references relative to that directory. read_loop/read_run(view=snapshot) provide the Loop Skill; read_task provides node Skills. Use the agent's own tools for ordinary file reads and script execution.
 
 ## Starting from the user's Agent
 
 Read the chosen Loop and current Timeline. Call start_run with the current session_id/session_token, stable request_id, key and title. Use timeline_id for saved work or continue_run_id after an interruption. See [persistent work](work.md).
 
-The actual starter completes an Agent entry and arranges work in the same session. Script entries still execute through Engine. Do not overwrite an existing Timeline during initialization. New Runs after interruption explicitly retain the Timeline and observe old in-flight jobs rather than resubmitting them.
+The actual starter reads the Timeline and current method, then arranges work in the same session. An optional entry is an ordinary Task; script entries execute through Engine. Existing Timeline goals need no initialization. New Runs after interruption explicitly retain the Timeline and observe old in-flight jobs rather than resubmitting them.
 
 ## Branch ownership and operation scope
 
-- With a valid operation token, scope_task=Task ID grants that subtree; null grants global scope. Ordinary node agents own their branch; initialization, fallback, and an explicitly configured global_agent_node have global scope.
+- With a valid operation token, scope_task=Task ID grants that subtree; null grants global scope. Ordinary node agents own their branch; declared entry Tasks, fallback, and an explicitly configured global_agent_node have global scope.
 - parent_id represents Task ownership, independent of input sources and after. Tasks sharing a Node template may be separate branches. Reading a sibling's result does not grant write access.
 - add_task/build_plan attach new work to scope_task by default; global agents default to the awakening Task. Specify an in-scope parent_id to choose a parent; global agents may pass an empty string for a top-level Task. Parentage is immutable. A shared aggregation belongs to an upper-level creator, not every branch whose outputs it consumes.
 - Ordinary agents can change inputs, parameters, implementation, and dependencies of undispatched Tasks in their branch. Global settings, Run pause/end, and user-request handling need global scope. Dispatched Tasks remain protected.
@@ -130,7 +130,7 @@ These are platform-tool checks, not OS isolation. External files/services use us
 
 ## Common runtime operations
 
-- next_tasks/read_timeline show current work, issues, authorization, and the Loop handbook. read_timeline.records lists IDs, types, and latest revisions; read_record fetches bodies. Healthy running/waiting scripts do not need agent takeover.
+- read_run(view=snapshot) shows current execution, settings and the Loop handbook; next_tasks lists actionable work and issues. read_timeline.records lists IDs, types, and latest revisions; read_record fetches bodies. Healthy running/waiting scripts do not need agent takeover.
 - For each actionable Task, read_task first, then report_task(event=completed) with full results under current contracts. Results take effect immediately. Do not submit script, event, or approval results on their behalf.
 - read_plans lists templates; build_plan takes name, stable key, and values. It schedules unconditional/true-when steps; steps.<step>.skip=true explicitly omits one. Omission creates no Task, skipped placeholder, or fake output. Receipt.omitted and scheduling records explain why. Consumers must explicitly supply reusable input sources for omitted producers. Reusing a key requires identical parameters/scheduling; it cannot silently withdraw prior Tasks. Explicitly cancel unnecessary existing Tasks while preserving facts.
 - edit_tasks groups changes in one transaction. changes is an ordered list of {"tool":"add_task","arguments":{...}}, using add_task, build_plan, or change_task. preview:true returns before/after Tasks, actual generated IDs, and omission reasons without persistence/dispatch. Commit with preview:false; any failure rolls back the group. The commit receipt returns only run_id, revision, and applied; read the Timeline for details. Preview respects scope. To add a successor to a freshly expanded batch, obtain IDs from preview.changes[].after, add them to add_task.after, and preview again; do not duplicate the ID-generation algorithm. This transaction excludes report_task, change_settings, and finish; a helper's multiple calls are not one transaction.
@@ -202,7 +202,7 @@ Branch failure counts remain separate. Global fallback inherits the longest unre
 
 ## Unified event and result reporting
 
-report_task takes task_id, event, and stable report_id. Agents first read_task for the actual lifecycle, phase, and last_transition. Scripts/observers use execution_id from their context. Awakened nodes supply run_id and their prompt token; scoped tool_url supplies identity automatically. Clients submit changes through the steward. completed includes all envelope.outputs, plus settings for initialization. progress and similar events use detail without prematurely publishing results or scheduling work.
+report_task takes task_id, event, and stable report_id. Agents first read_task for the actual lifecycle, phase, and last_transition. Scripts/observers use execution_id from their context. Awakened nodes supply run_id and their prompt token; scoped tool_url supplies identity automatically. Clients submit changes through the steward. completed includes all envelope.outputs, plus state and operations for atomic progress and arrangements. Global reports may fill missing semantic settings; changing existing goals uses update_timeline. progress and similar events use detail without prematurely publishing results or scheduling work.
 
 ```json
 {"task_id":"TASK_ID","report_id":"STABLE_DELIVERY_ID","event":"completed","envelope":{"outputs":{"result":"Actual result"}}}

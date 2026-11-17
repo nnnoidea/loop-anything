@@ -188,7 +188,7 @@ class TimelineAuditTests(unittest.TestCase):
         c.engine.tick(new['id'])
         self.assertEqual(work.poll_wait(c.store,'wait')['state'],'ready')
         self.assertEqual(RunTools(c.store,old['id']).call('read_run',{})['run']['status'],'continued')
-        self.assertEqual(RunTools(c.store,old['id']).call('read_timeline',{})['status'],'continued')
+        self.assertEqual(RunTools(c.store,old['id']).call('read_run', {'view':'snapshot'})['status'],'continued')
         self.assertEqual(list_runs(c.store,status='continued')['runs'][0]['id'],old['id'])
         self.assertNotIn(old['id'],[r['id'] for r in list_runs(c.store,status='running')['runs']])
         self.assertEqual(next(r['status'] for r in timelines.read(c.store,old['timeline_id'])['runs'] if r['id']==old['id']),'continued')

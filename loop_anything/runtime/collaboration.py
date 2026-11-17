@@ -25,7 +25,7 @@ def ensure_loop(store):
             '首次完成 coordinate 时同时提交 settings.objective。'},
         'records': {'result': {'type': 'object'}},
         'nodes': {
-            'coordinate': {'label': '推进协作', 'initialize_timeline': True,
+            'coordinate': {'label': '推进协作',
                 'instructions': '完成 inputs.message；必要时临时求援并挂起，恢复原 session 后继续。',
                 'inputs': {'message': {'type': 'string'}}, 'outputs': {'result': {'record_type': 'result'}}},
             'collect': {'label': '等待外援结果', 'instructions': '由平台把外援终态写入关联事件，复用事件等待。',

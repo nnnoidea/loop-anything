@@ -1,3 +1,4 @@
+from tests.runtime_fixture import seeded_draft
 from tests.runtime_fixture import runtime_run
 import json
 import os
@@ -112,7 +113,7 @@ class MachineIdentityTests(unittest.TestCase):
     def test_copies_keep_original_execution_history_read_only_after_explicit_fork(self):
         a = self.comm('a')
         tools = PlatformTools(a.store)
-        draft = tools.call('create_loop', {'name': 'Original'})
+        draft = seeded_draft(tools,{'name': 'Original'})
         draft = tools.call('set_loop', {'draft_id':draft['draft_id'], 'revision':draft['revision'], 'handbook':'Initialize the requested work.'})
         key = tools.call('publish_loop', {'draft_id': draft['draft_id'], 'revision': draft['revision']})['key']
         started = runtime_run(tools.store, {'key': key, 'title': 'Original work', 'authorization':'Initialize only'})

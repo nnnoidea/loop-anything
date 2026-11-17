@@ -218,7 +218,7 @@ t.call('finish',{})
                                  'cwd': str(Path(__file__).resolve().parents[1])}}, 'default': 'default'}
         enable_fallback(self.bp, self.implementations, self.implementations['init'])
         self.create(owned=False)
-        run = self.until(lambda r: r['initialized'] and r['agent_sessions'] == [] and r['agent_failures'] == 0)
+        run = self.until(lambda r: r['records'] and r['agent_sessions'] == [] and r['agent_failures'] == 0)
         self.assertEqual(3, agent_calls(run))
         self.assertEqual('recovered', run['records']['init.result'][0]['value'])
         self.assertEqual('running', run['status'])  # No rule or signal inferred from success.

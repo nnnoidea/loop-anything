@@ -18,8 +18,8 @@ For existing work, first read its Run/Timeline/Loop using its known resource ID.
 3. start_run requires request_id, session_id/session_token, key and title.
    It binds the caller, not a separately selected named Agent. Supply objective
    and constraints for new work, or timeline_id for existing work.
-   Read the returned runtime identity and continue initialization in the same
-   session using read_task/report_task. Default progression returns to this
+   Read the returned runtime identity, handbook and Timeline; arrange work in the same
+   session using read_task/report_task. No initialization report is required. Default progression returns to this
    session; explicit rule progression still runs in Engine.
 4. Starting with an existing timeline_id uses its current work automatically.
    The platform retains committed results and observes in-flight executions using
@@ -34,6 +34,8 @@ For existing work, first read its Run/Timeline/Loop using its known resource ID.
 5. claim_run returns the bound current session's identity for the next management
    task. Finish management turns with their actual output contract and finish.
    Run normally continues until the Timeline task is complete.
+
+Run-scoped read_timeline includes the latest 50 progress entries from every contributor alongside business state and the saved result index. If entries_complete=false, use read_work_timeline pagination for earlier entries. Read relevant detail on demand; a new method does not require complete process logs. Execution arrangements belong to read_run(view=snapshot).
 
 Record useful work progress and decisions, not raw chat transcripts.
 update_timeline uses the Timeline revision and returns an instruction to inspect
@@ -151,17 +153,19 @@ to the corresponding Run rather than duplicating its execution interface.
 
 Pause/resume preserves the same Run and its progress; pausing stops new business dispatch without freezing already-started external jobs. A new Run continuation uses the same normal scheduler and report routing. Existing executions return their results through continuation receipts.
 
-Continuing the same Loop version preserves completed initialization, runtime settings, inputs and hook firings; explicit startup overrides still apply. State display metadata never selects a different continuation path. When the user selects another Loop version, its entry initializes from the Timeline. Existing tasks retain original execution contracts and resources; their subsequent routes/progression come from the selected Loop's matching node. If that node was removed, ordinary undeclared-progression behavior applies. Continuation does not force steward mode.
+Continuing the same Loop preserves saved work, runtime settings, inputs and hook firings; explicit startup overrides still apply. State display metadata never selects a continuation path. Selecting another method does not initialize the Timeline again. Existing tasks retain their complete original execution contracts, resources and declared routes; new rules are never grafted onto old task inputs. The current Agent reads all contributions and uses current Loop nodes for new work. It may explicitly replace pending planning Tasks using existing task operations, retaining in-flight experiments and established dependencies. New dispatch waits for the startup management turn; in-flight observation continues. No automatic cancellation, schema converter, or permanent Loop ownership of business state is introduced.
 
 
-A wait source `kind: run` observes the continuing work: it follows that Run's Timeline to the current Run, including later continuations. `kind: task` observes the specified task and only its exact committed output revisions. A superseded Run is exposed as `continued`; its original observers may still collect in-flight results, but it cannot arrange new work. Called Loops follow the same Timeline completion rule without resubmitting the child.
+## Download and import progress
 
-Retained tasks keep their original installed Loop package for Skills, handbook and executable assets. No resource mirror is created. Dispatched tasks retain the input versions actually read by their execution. Each remaining existing input and pending producer version is pinned; continuation receipts reuse the original execution's exact output references. A retained execution may finish its authorized state/result report while the current Run still awaits it; it cannot plan new work.
+The Timeline page downloads a `.timeline.json` file; the Timeline library imports it with a short preview. `export_timeline(timeline_id)` returns `filename` and `document`. The portable CLI supports `export_timeline --arguments '{"timeline_id":"..."}' --output progress.timeline.json`.
 
-Read the goal, constraints and relevant state before working. Auto Research uses
-`complete_research_decision.py` to submit its state, results and arrangements
-atomically; no saved read snapshot or special handoff procedure is required.
-Ordinary task prompts do not implicitly fetch all business evidence: use
-`read_timeline`, paged `read_business_state`, and exact `read_record` revisions
-as needed. Retained implementation snapshots belong to individual Tasks and are
-reused on later continuation, without another layer of generated node names.
+On the receiving platform, call `import_timeline` with `{document: <file contents>, request_id: <stable ID>}`. Import is independent new work: select the receiving space for this operation, then use the returned Timeline identity and normal origin binding. Reuse request_id on retries; an intentional separate copy uses a new request_id. Import never starts a Run or task, and never merges into another existing Timeline.
+
+Files contain goals, constraints, all progress entries, business-state history, immutable saved results. They do not contain platform session tokens, Agent configuration, executable implementations or observers. External artifacts, scripts and logs remain references and are not automatically read or uploaded. Maximum file size is 20 MiB.
+
+Read `read_work_timeline`, `read_business_state`, and `read_work_result(timeline_id,id,revision)` before arranging work. Saved results can be read without the original Run or Loop. Use saved results as inputs for the current method. If continuing the business requires an external experiment reference, the Loop must submit it as meaningful progress; exporting does not search old executions to infer it. A recipient uses its own available capabilities rather than assuming the original execution moved.
+
+Use `start_run(timeline_id=...)` with a relevant locally available Loop to continue. Its Agent reads the imported progress, preserves other contributions, and supplies its own method-specific task inputs. A missing local file reference is not proof that the prior experiment failed; retain known results and obtain the materials actually needed for the next step.
+
+Timeline reads and exports contain business progress, not a reconstruction of Run tasks, input values, monitoring or temporary waits. The Loop submits the meaningful progress; the platform does not infer missing business facts. For the execution scene use `read_run` with `view:"snapshot"`, then `read_task` for individual details. Temporary arrangements are not transferred.
