@@ -46,14 +46,6 @@ def prepare_delivery(session, expected=None):
     return {'session':session,'conversation':context}
 
 
-def capture_arguments():
-    from notify_cc_connect import sender_command
-    project,session=os.environ['CC_PROJECT'],os.environ['CC_SESSION_KEY']
-    return {'operation':'conversation',
-            'conversation':{'platform':session.split(':',1)[0],'chat_type':'unknown','session_key':session,'entry_project':project},
-            'notification_command':sender_command()}
-
-
 def toml_python():
     candidates = [sys.executable] + [shutil.which(n) for n in ('python3','python3.14','python3.13','python3.12','python3.11')]
     for exe in dict.fromkeys(x for x in candidates if x):
@@ -78,7 +70,7 @@ if __name__ == '__main__':
             except ValueError as exc:
                 if 'Python 3.11+' not in str(exc):raise
                 value=helper(['--catalog',sys.argv[2]])
-        else:value=capture_arguments()
+        else:raise ValueError('Use --catalog CONFIG to inspect the configured bridge')
         print(json.dumps(value, ensure_ascii=False))
     except Exception as exc:
         print(json.dumps({'error':str(exc)}, ensure_ascii=False))

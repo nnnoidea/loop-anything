@@ -32,8 +32,8 @@ def ensure_loop(store):
                 'inputs': {}, 'outputs': {'result': {'record_type': 'result'}}}},
         'seed': {'id': 'coordinate', 'node': 'coordinate', 'inputs': {'message': {'run': 'message'}},
                  'outputs': {'result': {'id': 'collaboration.result'}}}, 'plans': {}}
-    key = store.publish(definition, {'coordinate': {'kind': 'agent'},
-        'collect': {'kind': 'event', 'event': EVENT, 'wait': {'key': '{parameters.request_id}'}}})['key']
+    key = store.publish(definition, {'coordinate': {'options': {'default': {'kind': 'agent'}}, 'default': 'default'},
+        'collect': {'options': {'default': {'kind': 'event', 'event': EVENT, 'wait': {'key': '{parameters.request_id}'}}}, 'default': 'default'}})['key']
     store._collaboration_loop_key = key
     return key
 
@@ -117,21 +117,6 @@ def reconcile(comm):
             if not comm.get(row['id']).get('collaboration',{}).get('deleted'):raise
 
 
-def adopt_pending(comm):
-    """Upgrade active legacy standalone work without restarting its executor."""
-    from loop_anything.runtime.communication import END
-    instance = comm.settings()['instance_id']
-    for row in comm.requests():
-        if row['origin'] != instance or row.get('mirror') or row.get('collaboration') or row.get('parent_request') or row.get('source', {}).get('run_id') or row['state'] in END:
-            continue
-        key = ensure_loop(comm.store)
-        with comm.transaction() as db:
-            current = comm.get(row['id'], db)
-            if current.get('collaboration'):continue
-            attach(comm, current, key, None, db)
-            comm.save(db, current)
-
-
 def caller_active(execution):
     pid = execution.get('collaboration_caller_pid')
     if not pid:return False
@@ -191,7 +176,7 @@ def start(comm, arguments):
         run = create(comm, key, arguments.get('title') or message[:100], message, group, db,created_by=arguments.get('created_by'))
         if not caller:run['collaboration']['agent_id']=arguments['agent_id']
         run['collaboration']['coordinator_implementation']=copy.deepcopy(implementation)
-        run['implementations']['coordinate'] = implementation
+        run['implementations']['coordinate'] = {'options': {'default': implementation}, 'default': 'default'}
         if conversation_id and notification_route is None:
             run['notification_conversation_id'] = conversation_id
             run['settings']['notification_route'] = 'user'

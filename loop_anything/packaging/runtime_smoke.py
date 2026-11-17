@@ -21,7 +21,7 @@ def probe_transition(engine, config, case):
     bp = {'schema_version': 2, 'nodes': {'init': dict(node, initialize_timeline=True), 'probe': node},
           'records': {}, 'entry': 'init', 'seed': {'id': 'init', 'node': 'init', 'inputs': {}, 'outputs': {}}}
     run = {'id': 'smoke', 'title': 'Isolated lifecycle probe', 'status': 'running', 'inputs': {},
-           'loop_definition': bp, 'implementations': {'init': {'kind': 'agent'}, 'probe': config},
+           'loop_definition': bp, 'implementations': {'init': {'options': {'default': {'kind': 'agent'}}, 'default': 'default'}, 'probe': {'options': {'default': config}, 'default': 'default'}},
            'executions': [], 'history': [], 'events': []}
     initialize_run(run)
     run['initialized'] = True
@@ -78,9 +78,6 @@ def runtime_smoke(document, root, *, timeout=30, node_id=None, implementation_id
     from loop_anything.packaging.configuration import apply
     execution_document = apply(document, configuration) if configuration is not None else document
     implementations = effective_implementations(execution_document, root)
-    if execution_document['loop_definition'].get('flow_agent') is not None:
-        from loop_anything.runtime.flow_agent import NODE, effective
-        implementations[NODE] = effective(execution_document['loop_definition']['flow_agent'], root)
     candidates = [(node, ident, config) for node, entry in implementations.items()
                   for ident, config in options(entry).items()
                   if (node_id is None or node == node_id) and (implementation_id is None or ident == implementation_id)]

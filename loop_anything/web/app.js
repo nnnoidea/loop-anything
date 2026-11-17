@@ -4,7 +4,7 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;',
 const pretty = value => JSON.stringify(value, null, 2);
 // getRandomValues also works on ordinary HTTP inside the team network.
 const randomKey = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('');
-const labels = {waiting_configuration:'等待配置',skipped:'已跳过',running:'运行中',ready:'待执行',executing:'执行中',waiting:'等待中',completed:'已完成',paused:'已暂停',terminated:'已终止',cancelled:'已取消',fault:'执行失败',retrying:'等待重试',blocked:'输入未就绪',decision:'等待 Agent',approval:'等待确认',unresolved:'转移待决策'};
+const labels = {continued:'已接续',waiting_configuration:'等待配置',skipped:'已跳过',running:'运行中',ready:'待执行',executing:'执行中',waiting:'等待中',completed:'已完成',paused:'已暂停',terminated:'已终止',cancelled:'已取消',fault:'执行失败',retrying:'等待重试',blocked:'输入未就绪',decision:'等待 Agent',approval:'等待确认',unresolved:'转移待决策'};
 const badge = status => `<span class="badge ${esc(status)}">${esc(labels[status] || status)}</span>`;
 let catalog = [], runs = [], run = null, selected = null, filterNode = null, activeTab = 'task-history', page = 'runs', settingsBase = null, pendingChange = null, loading = false;
 const drafts = {};
@@ -36,12 +36,20 @@ async function api(url, data) {
 function toast(message) { $('toast').textContent = message; $('toast').style.display = 'block'; clearTimeout(toast.timer); toast.timer = setTimeout(() => $('toast').style.display = 'none', 5500); }
 async function safely(fn) { try { await fn(); } catch (error) { toast(error.message); } }
 function showPage() {
+  $('monitoring-page').hidden=page!=='monitors';
   $('schedules-page').hidden=page!=='schedules';
-  $('schedules-nav').classList.toggle('active',page==='schedules');
   if($('communication-page'))$('communication-page').hidden=page!=='communication';
   if($('launch-page'))$('launch-page').hidden=page!=='launch';
   $('workspace').hidden = page !== 'runs' || !run;
-  $('empty').hidden = page !== 'runs' || !!run;
+  $('runs-page').hidden=page!=='run-list';
+  $('timelines-page').hidden=page!=='timelines';
+  $('timeline-page').hidden=page!=='timeline';
+  const inWork=['timelines','timeline','run-list','runs','monitors','schedules'].includes(page);
+  $('workbench-header').hidden=!inWork;
+  $('workbench-header').classList.toggle('workbench-detail',page==='timeline'||page==='runs');
+  $('workbench-nav').classList.toggle('active',inWork);
+  const tab=page==='timeline'?'timelines':['runs','run-list'].includes(page)?'runs':page;
+  document.querySelectorAll('[data-work-tab]').forEach(el=>{el.classList.toggle('active',el.dataset.workTab===tab);if(el.dataset.workTab===tab)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');});
   $('catalog-page').hidden = page !== 'catalog';
   if($('loop_definition-editor'))$('loop_definition-editor').hidden=page!=='editor';
   if($('loop-detail'))$('loop-detail').hidden=page!=='loop';
@@ -50,14 +58,14 @@ function showPage() {
 
 }
 async function refresh() {
+  if(page==='monitors')refreshMonitoring();
   if(page==='schedules')refreshSchedules();
   if (loading) return;
   loading = true;
   try {
-    await refreshRunLibrary();
-    $('engine-status').textContent = 'Engine connected';
-    if (!selected && runs.length) selected = runs[0].id;
-    if (selected && page==='runs') { const id=selected;try{const current=await api('runs/' + id);if(page==='runs' && selected===id){run=current;renderRun();}}catch(error){if(error.status===404&&selected===id){run=null;selected=null;}else throw error;} }
+    if(page==='run-list'||page==='communication')await refreshRunLibrary();
+    $('engine-status').textContent = '空间已连接';
+    if (selected && page==='runs') { const id=selected;try{const current=await api('runs/' + id);if(page==='runs' && selected===id){run=current;renderRun();}}catch(error){if(error.status===404&&selected===id){run=null;selected=null;await navigateTo({type:'run-list'});}else throw error;} }
     const platform=await api('platform'),power=platform.keep_awake;
     if(!$('platform-version'))document.querySelector('.topbar').insertAdjacentHTML('beforeend','<small id="platform-version" class="muted"></small>');
     document.querySelector('.brand .version').textContent=platform.service?platform.service.version:'';
@@ -72,26 +80,25 @@ async function selectRun(id) {
 }
 function renderRun() {
   updateNavigationUI();
+  renderSteward();
   $('run-title').textContent = run.title;
   renderRunOutlet();
   $('run-key').textContent = (run.loop_definition.name || run.loop_definition.id) + ' · v' + run.loop_definition.version;
-  $('run-status').innerHTML = badge(run.status)+(run.identity_read_only?' · 只读历史副本，不接管原执行':'');
+  $('run-status').innerHTML = badge(run.status)+(run.superseded_by?` · <a href="${esc(routeHash({type:'run',id:run.superseded_by}))}" data-route-link>查看接续 Run</a>`:'')+(run.identity_read_only?' · 只读历史副本，不接管原执行':'');
   $('run-id').textContent = run.id+' · '+(run.created_by||'未署名')+(run.archived_at?' · 已归档':'');
   if($('archive-run'))$('archive-run').textContent=run.archived_at?'取消归档':'归档';
   const simulation = Object.values(run.implementations).some(entry => Object.values(implementationOptions(entry)).some(b => b.kind === 'mock' || b.simulation));
   $('simulation-label').hidden = !simulation;
-  const ended = run.identity_read_only || run.schema_version!==2 || !run.operator_protocol || ['completed','terminated'].includes(run.status);
+  const ended = run.identity_read_only || ['completed','terminated','continued'].includes(run.status);
   $('pause-run').textContent = run.status === 'paused' ? '▷ 恢复' : 'Ⅱ 暂停';
   $('pause-run').disabled = $('stop-run').disabled = ended;
   const counts = {};
   run.executions.forEach(e => counts[e.status] = (counts[e.status] || 0) + 1);
   $('metrics').innerHTML = [['执行记录',run.executions.length,'total'],['已提交结果',counts.completed || 0,'committed'],['等待 / 执行中',(counts.waiting || 0) + (counts.executing || 0),'active'],['Agent 调用',run.executions.filter(e => e.implementation.kind === 'agent').length,'on demand']].map(([title,n,unit])=>`<div class="metric"><div><label>${title}</label><div><small>${unit}</small></div></div><b>${n}</b></div>`).join('');
-  const tasks = run.schema_version===2 ? (run.agent_tasks?.items || []) : [];
+  const tasks = run.agent_tasks?.items || [];
   $('attention').innerHTML = tasks.length ? `<div class="notice">当前 ${tasks.length} 项节点任务或异常，请在「任务与问题」查看。</div>` : '';
 
-  if(run.schema_version===2)renderTimelineSettings();
-  else {document.querySelectorAll('.v2-tab').forEach(b=>b.hidden=true);if(['records','task-history','hooks','tasks'].includes(activeTab))activeTab='executions';}
-  document.querySelector('[data-tab="executions"]').hidden=run.schema_version===2;
+  renderTimelineSettings();
   renderGraph();
   if (!['TEXTAREA','INPUT','SELECT'].includes(document.activeElement?.tagName) || !document.activeElement.closest('#inspect')) renderInspect();
   loadSettings();
@@ -107,24 +114,19 @@ function renderGraph() {
   $('graph-caption').textContent='循环关系来自 Loop 定义；上方运行过程保留每一项实际任务、结果与历次执行。';
 }
 function loadSettings(){
-  $('run-settings-readonly').innerHTML=`<p>目标、约束与后续安排由运行 Agent 更新；Loop 定义修改使用独立的构建 Agent 或源文件。</p>${readerJSON('目标与要求',{intent:run.settings.intent,objective:run.settings.objective,requirements:run.settings.requirements,guidance:run.settings.guidance},true)}${readerJSON('完整运行配置',run.settings)}`;
+  $('run-settings-readonly').innerHTML=`<p>目标和限制属于独立 Timeline；修改后由 Agent 检查并向用户汇报。</p>${run.timeline_id?'<button data-work-timeline="'+esc(run.timeline_id)+'">查看 Timeline 与进度</button>':''}${readerJSON('目标与限制',{目标:run.settings.objective,限制:run.settings.constraints},true)}${readerJSON('完整运行配置',run.settings)}`;
 }
 function renderInspect() {
   const signature = pretty([run.id,filterNode,activeTab,run.executions,run.history,run.settings.revision,run.tasks,run.records,run.agent_sessions,run.task_dependencies]);
   if(inspectSignature===signature)return;inspectSignature=signature;
   document.querySelectorAll('[data-tab]').forEach(el=>el.classList.toggle('selected',el.dataset.tab===activeTab));
   let content='';
-  if(run.schema_version===2 && ['records','task-history','hooks','tasks'].includes(activeTab)) {
+  if(['records','task-history','hooks','tasks'].includes(activeTab)) {
     content=renderV2Inspect(activeTab);
-  } else if(activeTab==='executions') {
-    const executions = run.executions.filter(e=>!filterNode || e.node===filterNode).slice().reverse();
-    if(filterNode) content += `<div class="filter-note">${esc(nodeLabel(filterNode))} · ${executions.length} 次执行 <button id="clear-filter">显示全部</button> <button id="node-contract">节点契约</button></div>`;
-    content += `<table><thead><tr><th>节点 / 实例</th><th>状态</th><th>尝试</th><th>派发时间</th></tr></thead><tbody>${executions.map(e=>`<tr class="clickable" tabindex="0" data-exec="${esc(e.id)}"><td>${esc(nodeLabel(e.node))}<br><span class="mono">${esc(e.id)}</span></td><td>${badge(e.status)}</td><td class="mono">${e.attempt}</td><td class="mono">${time(e.created_at)}</td></tr>`).join('')}</tbody></table>`;
-    if(!executions.length) content += '<div class="empty-inline">等待下一次 Engine tick 创建执行。</div>';
   } else if(activeTab==='history') {
     content = run.history.slice().reverse().map(h=>`<div class="timeline-row"><time>${time(h.at)}</time><div><span class="event-type">${esc(h.kind)}</span>${esc(h.message)}${h.detail?`<details><summary>查看记录</summary><pre>${esc(pretty(h.detail))}</pre></details>`:''}</div></div>`).join('');
   } else if(activeTab==='decisions') {
-    content = run.executions.filter(e=>['approval','decision','unresolved'].includes(e.status) && !(run.schema_version===2 && e.implementation.kind==='agent')).map(e=>task(e)).join('');
+    content = run.executions.filter(e=>['approval','decision','unresolved'].includes(e.status) && e.implementation.kind!=='agent').map(e=>task(e)).join('');
     const waiting = run.executions.filter(e=>e.status==='waiting' && e.implementation.kind==='event');
     content += waiting.map(e=>`<div class="task-card"><h2>等待 ${esc(e.implementation.event)}</h2>${waitDetails(e)}</div>`).join('');
     if(!content) content = '<div class="empty-inline">当前无需决策。Engine 会在到达决策节点时创建任务。</div>';
@@ -148,9 +150,9 @@ document.addEventListener('click',event=>safely(async()=>{
   if(button.classList.contains('close-dialog')){button.closest('dialog').close();return;}
   const d=button.dataset;
   if(d.run){await selectRun(d.run);return;}
-  if(d.node){filterNode=d.node;activeTab=run.schema_version===2?'task-history':'executions';inspectSignature='';renderGraph();renderInspect();return;}
+  if(d.node){filterNode=d.node;activeTab='task-history';inspectSignature='';renderGraph();renderInspect();return;}
   if(d.tab){activeTab=d.tab;renderInspect();return;}
-  if(d.exec){if(run.schema_version===2){selectedTask=run.executions.find(e=>e.id===d.exec)?.task_id;selectedAttempt=d.exec;activeTab='task-history';inspectSignature='';renderInspect();}else details(d.exec);return;}
+  if(d.exec){selectedTask=run.executions.find(e=>e.id===d.exec)?.task_id;selectedAttempt=d.exec;activeTab='task-history';inspectSignature='';renderInspect();return;}
   if(d.create){await openCreate(d.create);return;}
   if(d.validate){const c=catalog.find(x=>x.key===d.validate);const r=await api('validate',c);toast(r.valid?'验证通过 · '+r.warnings.join('；'):r.errors.join('；'));return;}
   const runId=run?.id;

@@ -20,17 +20,17 @@ class LibraryGuideTests(unittest.TestCase):
         self.assertEqual(unpacked['loop_definition']['guide'], doc['loop_definition']['guide'])
         self.assertEqual(unpacked['loop_definition']['seed'], before)
 
-    def test_old_loop_definitions_need_no_guide(self):
+    def test_guide_is_optional(self):
         doc = document()
         self.assertTrue(validate_v2(doc['loop_definition'], doc['implementations'])['valid'])
         bp = definition()
-        self.assertTrue(validate(bp, {n: {'kind': 'agent'} for n in bp['nodes']})['valid'])
+        self.assertTrue(validate(bp, {n: {'options': {'default': {'kind': 'agent'}}, 'default': 'default'} for n in bp['nodes']})['valid'])
 
-    def test_malformed_guides_rejected_in_both_versions(self):
+    def test_malformed_guides_rejected_by_both_validators(self):
         for guide in [None, [], {'purpose': {}}, {'parameters': []},
                       {'parameters': {'x': {'type': 'string'}}}, {'execute': 'command'}]:
             with self.subTest(guide=guide):
                 doc = document(); doc['loop_definition']['guide'] = guide
                 self.assertFalse(validate_v2(doc['loop_definition'], doc['implementations'])['valid'])
                 bp = definition(); bp['guide'] = guide
-                self.assertFalse(validate(bp, {n: {'kind': 'agent'} for n in bp['nodes']})['valid'])
+                self.assertFalse(validate(bp, {n: {'options': {'default': {'kind': 'agent'}}, 'default': 'default'} for n in bp['nodes']})['valid'])

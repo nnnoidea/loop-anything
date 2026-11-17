@@ -6,6 +6,7 @@ const {spawn,execFileSync}=require('node:child_process');const {chromium}=requir
  const seed=`import sys,json
 from pathlib import Path
 from loop_anything.runtime.store import Store
+from tests.runtime_fixture import runtime_run
 from loop_anything.runtime.engine import Engine
 from loop_anything.interfaces.platform_tools import PlatformTools
 from loop_anything.packaging.packages import make_archive,install
@@ -16,11 +17,11 @@ for ident,title,result in [('research','研究流程 · 模拟验收',{'方案':
  b['plans']['next']['parameters']['required'].append('enabled')
  b['plans']['next']['steps']['review']['when']={'path':'values.enabled'}
  command=['python3','-c','import json; print(json.dumps({"outputs":{"result":"Checked"}}))']
- key=install(s,make_archive({'loop_definition':b,'implementations':{'initial':{'kind':'agent'},'review':{'kind':'command','command':command}}},{'report.md':(('# '+title+'\\nReady').encode(),False)}))['key']
- a=p.call('start_run',{'key':key,'title':title,'authorization':'Simulated browser acceptance'})
+ key=install(s,make_archive({'loop_definition':b,'implementations':{'initial':{'options':{'default':{'kind':'agent'}},'default':'default'},'review':{'options':{'default':{'kind':'command','command':command}},'default':'default'}}},{'report.md':(('# '+title+'\\nReady').encode(),False)}))['key']
+ a=runtime_run(s,{'key':key,'title':title,'authorization':'Simulated browser acceptance'})
  def tool(name,args):return p.call(name,dict(args,run_id=a['run_id'],token=a['token']))
  info=tool('read_task',{'task_id':'initial'})
- tool('complete_task',{'task_id':'initial','task_version':info['task_version'],'envelope':{'settings':{'objective':title},'outputs':{'result':result,'report':'report.md','outside':'../../not-authorized'}}})
+ tool('report_task',{'event':'completed','report_id':'complete','task_id':'initial','envelope':{'settings':{'objective':title},'outputs':{'result':result,'report':'report.md','outside':'../../not-authorized'}}})
  tool('finish',{})
  engine.command(a['run_id'],'pause')
  runs.append(a['run_id'])

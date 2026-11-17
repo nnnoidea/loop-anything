@@ -22,7 +22,7 @@ class AuditRegressions(unittest.TestCase):
                            {'id':'shared','revision':2,'value':99,'producer':'e-new','tasks':'new'}],
                  'other-record':[{'id':'other-record','revision':2,'value':20,'producer':'e-other','tasks':'other'}]}
         bp=self.base.tools.call('read_loop',self.base.target())['loop']['loop_definition']
-        run={'loop_definition':bp,'implementations':{'review':{'kind':'agent'}},'settings':{'bindings':{}},
+        run={'loop_definition':bp,'implementations':{'review':{'options': {'default': {'kind':'agent'}}, 'default': 'default'}},'settings':{'bindings':{}},
              'records':records,'tasks':{s['id']:{'id':s['id'],'spec':s,'status':'completed'} for s in specs},'executions':[]}
         task={'id':'review','spec':consumer,'status':'planned'};run['tasks']['review']=task
         values,sources,missing=TimelineRuntime(SimpleNamespace(store=self.base.store)).resolve_inputs(run,task)
@@ -47,11 +47,13 @@ class AuditRegressions(unittest.TestCase):
         restored={k:loop[k] for k in ('loop_definition','implementations')}
         self.assertIn('notifications',read_archive(make_archive(restored))[0]['requires'])
 
-    def test_unknown_package_format_is_not_silently_downgraded_by_export(self):
-        from loop_anything.runtime.model import Invalid
+    def test_usable_package_does_not_depend_on_format_marker(self):
         document=self.base.tools.call('read_loop',self.base.target())['loop']
         package={k:document[k] for k in ('loop_definition','implementations')};package['format']='loop-anything-package/999'
-        with self.assertRaisesRegex(Invalid,'Unsupported Loop package format'):make_archive(package)
+        before=copy.deepcopy(package)
+        result,_,_,_=read_archive(make_archive(package))
+        self.assertEqual(package,before)
+        self.assertEqual(result['loop_definition'],package['loop_definition'])
 
     def test_record_revision_array_is_checked_and_gated_for_older_services(self):
         from loop_anything.runtime.model import Invalid, record_refs

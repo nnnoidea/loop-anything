@@ -6,14 +6,16 @@ from loop_anything.runtime.model import Invalid, contract, check_schema
 
 
 def options(entry):
-    # The existing single implementation is the compact form of one default option.
-    if not entry:
-        return {}
-    return {'default': entry} if 'kind' in entry else entry.get('options', {})
+    if entry is None:return {}
+    if not isinstance(entry,dict) or set(entry)-{'options','default'} or not isinstance(entry.get('options'),dict):
+        raise Invalid('Node implementations require options and optional default; bare implementations are unsupported')
+    return entry['options']
 
 
 def default_id(entry):
-    return 'default' if entry and 'kind' in entry else (entry or {}).get('default')
+    if entry is None:return None
+    options(entry)
+    return entry.get('default')
 
 
 def validate_implementation(implementation):
@@ -88,20 +90,17 @@ def validate_implementation(implementation):
 
 
 def validate_candidates(entry):
-    if not isinstance(entry, dict):
-        raise Invalid('Node implementations must be an object')
-    if 'kind' not in entry:
-        if set(entry) - {'default', 'options'} or not isinstance(entry.get('options', {}), dict):
-            raise Invalid('Node implementations accept options and optional default only')
-        if entry.get('default') is not None and entry['default'] not in entry.get('options', {}):
-            raise Invalid('Default must name an existing implementation')
+    if entry is None:raise Invalid('Node implementations require an options object')
+    candidates=options(entry)
+    if entry.get('default') is not None and entry['default'] not in candidates:
+        raise Invalid('Default must name an existing implementation')
     for ident, implementation in options(entry).items():
         if not isinstance(ident, str) or not re.fullmatch(r'[a-zA-Z0-9_-]+', ident):
             raise Invalid('Implementation IDs use letters, digits, underscores and hyphens')
         try:
             validate_implementation(implementation)
         except Invalid as exc:
-            raise Invalid(str(exc), path=([] if 'kind' in entry else ['options', ident]) + (exc.path or [])) from None
+            raise Invalid(str(exc), path=['options', ident] + (exc.path or [])) from None
 
 
 def validate_bindings(bp, catalog, bindings):

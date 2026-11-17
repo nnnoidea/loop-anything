@@ -5,52 +5,10 @@ from loop_anything.runtime.model import Invalid, Conflict, digest
 from loop_anything.runtime.store import uid
 
 
-def register(comm, args):
-    if comm.identity_conflict:raise Conflict('Resolve this machine identity before registering a conversation')
-    from loop_anything.runtime.implementations import validate_implementation
-    context=copy.deepcopy(args['conversation'])
-    allowed={'platform','chat_id','chat_type','session_key','thread_root','thread_id','entry_project'}
-    if not isinstance(context,dict) or set(context)-allowed or context.get('platform') not in ('feishu','lark'):
-        raise Invalid('Expected a captured Feishu/Lark conversation')
-    if context.get('chat_type') not in ('p2p','group','unknown') or not all(isinstance(context.get(k),str) and context[k] for k in ('session_key','entry_project')):
-        raise Invalid('Conversation requires full session key and entry project')
-    context.setdefault('chat_id','')
-    parts=context['session_key'].split(':',3)
-    root=parts[3] if len(parts)==4 and parts[2]=='root' else None
-    thread=parts[3] if len(parts)==4 and parts[2]=='thread' else None
-    # Scope labels are display metadata, never a validity test for the opaque key.
-    if root or thread:
-        context['thread_root']=root or context.get('thread_root')
-        if thread and context['thread_root']==thread:context['thread_root']=None
-        if thread:context.setdefault('thread_id',thread)
-    if not args.get('notification_command'):raise Invalid('Conversation requires a local notification sender command')
-    sender={'timeout':60,'command':args['notification_command'],'identity':context['entry_project'],'destination':context['session_key'],'channel':'cc-connect'}
-    validate_implementation(dict(sender,kind='command'))
-    binding={'id':uid('conversation'),'group_id':None,'enabled':True,'sender_instance':comm.settings()['instance_id'],
-             'level':'key','conversation':context}
-    with comm.transaction() as db:
-        db.execute('INSERT INTO communication_notification_bindings VALUES (?,?)',(binding['id'],json.dumps(dict(binding,sender=sender))))
-    return {'conversation_id':binding['id'],'conversation':context}
-
-
 def entry_sender(comm,context):
-    """Resolve local adapter configuration independently of the chat destination."""
-    from loop_anything.runtime.cc_connect import configuration, sender as bridge_sender
-    if configuration()['connection']:
-        sender=bridge_sender({'project':context['entry_project'],'platform':context['platform']},context['session_key'])
-        sender.update(identity=context['entry_project'],destination=context['session_key'],channel='cc-connect',timeout=60)
-        return sender
-    candidates=[s for s in comm.store.notification_channels()['channels'].values()
-                if s.get('channel')=='cc-connect' and s.get('identity')==context['entry_project'] and s.get('command')]
-    transports={digest({k:s[k] for k in ('command','cwd') if k in s}):s for s in candidates}
-    if len(transports)==1:
-        sender=copy.deepcopy(next(iter(transports.values())))
-        sender['timeout']=max(s.get('timeout',30) for s in candidates)
-    elif transports:sender={'configuration_error':'Multiple adapters are configured for the entry Bot; choose an explicit notification route'}
-    else:
-        sender=bridge_sender({'project':context['entry_project'],'platform':context['platform']},context['session_key'])
-    sender.update(identity=context['entry_project'],destination=context['session_key'],channel='cc-connect',timeout=max(60,sender.get('timeout',30)))
-    return sender
+    """Resolve the configured bridge independently of the chat destination."""
+    from loop_anything.runtime.cc_connect import sender as bridge_sender
+    return bridge_sender({'project':context['entry_project'],'platform':context['platform']},context['session_key'])
 
 
 def from_source(comm,source):
@@ -93,9 +51,6 @@ def remember_context(comm,db,entry,receipt):
         checked['chat_type']=current['chat_type']
     for key in ('thread_root','thread_id'):
         saved=current.get(key)
-        # Legacy thread records stored the topic ID in the root field.
-        parts=current['session_key'].split(':',3)
-        if key=='thread_root' and len(parts)==4 and parts[2]=='thread' and saved==parts[3]:saved=None
         if saved and checked.get(key) and saved!=checked[key]:return
         if saved and not checked.get(key):checked[key]=saved
     if row:
@@ -123,19 +78,13 @@ def resolve(comm, ident, include_sender=False, refresh_sender=False):
 
 def bot_binding(comm,agent,group_id=None,freeze=False):
     bot=agent.get('notification_bot')
-    route=agent.get('notification_route')
-    if bot:
-        from loop_anything.runtime.cc_connect import sender as bridge_sender
-        sender=bridge_sender(bot)
-    elif route:
-        from loop_anything.runtime.notifications import resolve_outlet
-        config=comm.store.notification_channels()['channels'].get(route)
-        sender=resolve_outlet(config) if config else None
-    else:return None
+    if not bot:return None
+    from loop_anything.runtime.cc_connect import sender as bridge_sender
+    sender=bridge_sender(bot)
     if not sender or not sender.get('command'):return None
     sender=dict(sender,timeout=max(60,sender.get('timeout',30)))
     binding={'group_id':group_id,'enabled':True,'sender_instance':comm.settings()['instance_id'],
-             'agent_id':agent['id'],'level':'key','route':route,
+             'agent_id':agent['id'],'level':'key',
              **{k:sender.get(k,'') for k in ('channel','identity','label')}}
     binding['id']='bot-'+digest([binding,sender])[:40]
     if freeze:

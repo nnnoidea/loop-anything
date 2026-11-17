@@ -1,4 +1,4 @@
-from communication_helpers import legacy_offer
+from tests.runtime_fixture import runtime_run
 import json
 import os
 from pathlib import Path
@@ -90,7 +90,7 @@ class MachineIdentityTests(unittest.TestCase):
         second = PlatformTools(b.store).call('communication_status', {})
         self.assertEqual(first['self']['machine_id'], second['self']['machine_id'])
         self.assertNotEqual(first['self']['workspace_id'], second['self']['workspace_id'])
-        self.assertEqual(first['instance_id'], first['self']['workspace_id'])
+        self.assertNotIn('instance_id',first)
         self.assertEqual(author_context(a.store, None, {})['self'], first['self'])
         self.assertEqual(a.store.list(), [])
 
@@ -108,23 +108,6 @@ class MachineIdentityTests(unittest.TestCase):
         self.assertEqual(moved_comm.self_info()['machine_id'], original['machine_id'])
         self.assertEqual(moved_comm.self_info()['workspace_id'], original['workspace_id'])
 
-    def test_legacy_upgrade_preserves_routing_identity_and_name_changes_do_not_rebind(self):
-        a = self.comm('legacy')
-        with a.transaction() as db:
-            config = a.settings(db)
-            config['instance_id'] = 'machine-123456abcdef'
-            config.pop('machine_id')
-            config['identity_location'] = {'host': socket.gethostname(), 'database': a.store.filename}
-            db.execute('UPDATE communication_settings SET document=? WHERE id=1', (json.dumps(config),))
-        upgraded = Communication(Store(a.store.filename))
-        self.assertFalse(upgraded.identity_conflict)
-        self.assertEqual(upgraded.self_info()['workspace_id'], 'machine-123456abcdef')
-        self.assertNotIn('identity_location', upgraded.settings())
-        before = upgraded.self_info()
-        with patch('socket.gethostname', return_value='renamed-host'):
-            again = Communication(Store(a.store.filename))
-        self.assertEqual(again.self_info(), before)
-        self.assertFalse(again.identity_conflict)
 
     def test_copies_keep_original_execution_history_read_only_after_explicit_fork(self):
         a = self.comm('a')
@@ -132,7 +115,7 @@ class MachineIdentityTests(unittest.TestCase):
         draft = tools.call('create_loop', {'name': 'Original'})
         draft = tools.call('set_loop', {'draft_id':draft['draft_id'], 'revision':draft['revision'], 'handbook':'Initialize the requested work.'})
         key = tools.call('publish_loop', {'draft_id': draft['draft_id'], 'revision': draft['revision']})['key']
-        started = tools.call('start_run', {'key': key, 'title': 'Original work', 'authorization':'Initialize only'})
+        started = runtime_run(tools.store, {'key': key, 'title': 'Original work', 'authorization':'Initialize only'})
         original = a.store.get(started['run_id'])
         path = self.root / 'copy.db'
         self.copy_database(a.store.filename, path)
@@ -158,7 +141,7 @@ class MachineIdentityTests(unittest.TestCase):
             with self.assertRaises(Conflict):
                 b.request({'location':'local', 'message':'Do not continue old work', 'token':started['token'],
                            'source':{'run_id':original['id'],'task_id':started['entry_task_id']}})
-            new = PlatformTools(engine.store).call('start_run', {'key': key, 'title': 'New work', 'authorization':'Initialize only'})
+            new = runtime_run(PlatformTools(engine.store).store, {'key': key, 'title': 'New work', 'authorization':'Initialize only'})
             self.assertNotEqual(new['run_id'], original['id'])
             self.assertNotIn('identity_read_only', engine.store.get(new['run_id']))
             self.assertEqual(a.store.get(original['id']), original)
@@ -166,12 +149,17 @@ class MachineIdentityTests(unittest.TestCase):
 
     def test_same_machine_copy_conflicts_but_does_not_change_machine_id(self):
         a = self.comm('a')
-        group = a.config('group', path=str(self.root / 'nas'), create=True)['configuration']
+        group = a.config('team',link=str(self.root / 'nas'), create=True)['configuration']
         gid = next(iter(group['groups']))
-        request = legacy_offer(a,location='group',group_id=gid,agent_id='missing',message='Pending work')
-        a.scan()
-        publication = next((self.root / 'nas' / 'messages' / 'broadcast').glob('*.json'))
-        a.control(request['request']['id'], 'cancel')  # Archive is journaled but not yet applied.
+        from loop_anything.runtime.team_transport import connect
+        connect(a.settings()['groups'][gid]).put('members/receiver.json',{'instance_id':'receiver','revision':1,'updated_at':0,'agents':[{'id':'missing','instance_id':'receiver','name':'Receiver','enabled':True,'description':'Test receiver'}]})
+        a.last_scan=0;a.scan()
+        request = a.request(dict(location='group',group_id=gid,agent_id='missing',instance_id='receiver',message='Pending work'))
+        a.last_scan=0;a.scan()
+        publication = next((self.root / 'nas' / 'agents' / 'messages' / 'receiver').glob('*.json'))
+        a.control(request['request']['id'], 'cancel')
+        from loop_anything.runtime.communication_archive import enqueue
+        with a.transaction() as db:enqueue(db,json.loads(publication.read_text()))
         path = self.root / 'copy.db'
         self.copy_database(a.store.filename, path)
         b = Communication(Store(path))
@@ -191,23 +179,23 @@ class MachineIdentityTests(unittest.TestCase):
         self.assertFalse(b.read(request['request']['id'])['request']['can_retry_notification'])
         b.scan()
         self.assertTrue(publication.exists(), 'A copy must not apply the source archive journal')
-        self.assertFalse(b.authorized({'request_id':request['request']['id'],'token':request['request_token']}))
+        self.assertFalse(b.authorized({'request_id':request['request']['id'],'token':'not-a-worker-credential'}))
         a.last_scan = 0;a.scan()
         self.assertFalse(publication.exists())
 
     def test_public_members_include_machine_and_workspace_without_identity_path(self):
         a, b = self.comm('a'), self.comm('b')
-        config = a.config('group', path=str(self.root / 'nas'), create=True)['configuration']
+        config = a.config('team',link=str(self.root / 'nas'), create=True)['configuration']
         gid = next(iter(config['groups']))
-        b.config('group', path=str(self.root / 'nas'))
+        b.config('team',link=str(self.root / 'nas'))
         b.config('agent', agent_id='helper', task_confirmed=True, agent={
             'name': 'Helper', 'description': 'Test help', 'groups': [gid],
             'implementation': {'kind': 'agent', 'command': [sys.executable, '-c', 'pass']}})
         b.scan();a.scan()
         member = next(m for m in a.directory(gid)['agents'] if m['id'] == 'helper')
         self.assertEqual(member['machine_id'], b.self_info()['machine_id'])
-        self.assertEqual(member['workspace_id'], b.self_info()['workspace_id'])
-        self.assertEqual(member['instance_id'], member['workspace_id'])
+        self.assertEqual(member['instance_id'], b.self_info()['workspace_id'])
+        self.assertNotIn('workspace_id',member)
         self.assertNotIn(str(self.root / 'identity'), json.dumps(a.directory()))
 
 

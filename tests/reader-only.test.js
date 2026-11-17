@@ -22,7 +22,7 @@ test('node introduction is authored for users while full execution guidance stay
     editSelection:{node:'init'},activeRoute:{},implementationOptions:()=>({}),loopRelationships:()=>[],nodeFlowHTML:()=>'',
     esc:value=>String(value).replaceAll('<','&lt;').replaceAll('>','&gt;'),pretty:value=>JSON.stringify(value)});
   const source=fs.readFileSync('loop_anything/web/authoring.js','utf8');
-  vm.runInContext(source.slice(0,source.indexOf('const taskContextDialog')),ctx);
+  vm.runInContext(source,ctx);
   vm.runInContext('renderAuthorProperties()',ctx);
   const html=field('editor-properties').innerHTML;
   assert.match(html,/节点用途/);assert.match(html,/准备本轮工作。/);
@@ -35,17 +35,32 @@ test('node introduction is authored for users while full execution guidance stay
   assert.match(field('editor-properties').innerHTML,/完整 &lt;执行指令&gt;/);
 });
 
-test('viewing startup is read-only; one explicit click starts a configured Run without a web conversation',async()=>{
-  const fields=new Map(),calls=[];let resolveStart;
-  const field=id=>{if(!fields.has(id))fields.set(id,{innerHTML:'',textContent:'',disabled:false,addEventListener(){},showModal(){},close(){}});return fields.get(id);};
-  const ctx=vm.createContext({catalog:[{key:'pkg-one',package_key:'pkg-one',loop_definition:{id:'one',name:'One',defaults:{n:1}}}],$:field,esc:String,readerJSON:(_,value)=>JSON.stringify(value),document:{addEventListener(){}},platformCall:async(name)=>{calls.push(name);return {path:'/config.json',config:{inputs:{n:2}}};},api:(name,payload)=>{calls.push([name,JSON.parse(JSON.stringify(payload))]);return new Promise(resolve=>resolveStart=resolve);},selectRun:async id=>calls.push(['selected',id])});
+test('browser shows startup requirements without selecting or launching another Agent',async()=>{
+  const fields=new Map(),calls=[],copies=[];
+  const field=id=>{if(!fields.has(id))fields.set(id,{value:'',innerHTML:'',textContent:'',disabled:false,addEventListener(){},showModal(){},close(){}});return fields.get(id);};
+  const ctx=vm.createContext({catalog:[{key:'pkg-one',package_key:'pkg-one',loop_definition:{id:'one',name:'One',defaults:{n:1}}}],$:field,esc:String,readerJSON:(_,value)=>JSON.stringify(value),document:{addEventListener(){}},
+    navigator:{clipboard:{writeText:async text=>copies.push(text)}},toast(){},
+    platformCall:async(name,payload)=>{calls.push(name);return {path:'/config.json',config:{inputs:{n:2}}};}});
   vm.runInContext(fs.readFileSync('loop_anything/web/launch.js','utf8'),ctx);
   await vm.runInContext('openCreate("pkg-one")',ctx);
-  assert.deepEqual(calls,['read_loop_config']);assert.match(field('launch-summary').innerHTML,/"n":2/);
-  assert.doesNotMatch(field('launch-summary').innerHTML,/<input|<textarea|<select|conversation/);
-  const first=vm.runInContext('startConfiguredRun()',ctx);await vm.runInContext('startConfiguredRun()',ctx);
-  assert.equal(calls.filter(c=>Array.isArray(c)&&c[0]==='runs').length,1);
-  assert.deepEqual(Object.keys(calls[1][1]).sort(),['key','title']);
-  resolveStart({id:'run-one'});await first;
-  assert.deepEqual(calls.at(-1),['selected','run-one']);
+  assert.deepEqual(calls,['read_loop_config']);
+  assert.match(field('launch-summary').innerHTML,/"n":2/);
+  assert.match(field('launch-summary').innerHTML,/当前服务器 Agent/);
+  field('launch-instruction').textContent='Start pkg-one in current session';
+  await vm.runInContext('startConfiguredRun()',ctx);
+  assert.deepEqual(copies,['Start pkg-one in current session']);
+  assert.deepEqual(calls,['read_loop_config']);
+});
+
+test('package dialog uses the existing definition without a schema-number gate',()=>{
+  const fields=new Map();let rendered=false,opened=false;
+  const field=id=>{if(!fields.has(id))fields.set(id,{});return fields.get(id);};
+  const editor={loop_definition:{schema_version:1,nodes:{}}};
+  const ctx=vm.createContext({editor,$:field,uploadedPackage:{},renderPackageAssets(){rendered=true;},packageDialog:{showModal(){opened=true;}}});
+  const code=fs.readFileSync('loop_anything/web/packages.js','utf8');
+  vm.runInContext(code.slice(code.indexOf('function showPackage('),code.indexOf('function renderPackageAssets(')),ctx);
+  vm.runInContext('showPackage(true)',ctx);
+  assert.equal(rendered,true);assert.equal(opened,true);
+  assert.equal(field('package-author').hidden,false);
+  assert.equal(editor.loop_definition.schema_version,1);
 });

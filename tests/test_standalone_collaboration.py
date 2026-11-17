@@ -48,7 +48,7 @@ else:
  saved['calls'].append('resume');state.write_text(json.dumps(saved))
  info=call('read_task',{'run_id':c['run_id'],'task_id':c['task_id'],'token':c['token']})
  call('report_task',{'run_id':c['run_id'],'task_id':c['task_id'],'token':c['token'],
-  'task_version':info['task_version'],'report_id':'done','event':'completed',
+  'report_id':'done','event':'completed',
   'envelope':{'settings':{'objective':'Analyse with paper evidence'},'outputs':{'result':{'memory':saved['memory'],'paper':'found'}}}})
  call('finish',{'run_id':c['run_id'],'token':c['token']})
 '''
@@ -99,7 +99,7 @@ class StandaloneCollaborationTests(unittest.TestCase):
         self.assertEqual(len(self.engine.store.get(run['id'])['events']), 2)
 
     def test_group_requires_user_confirmation_and_description_changes_invalidate_it(self):
-        gid = next(iter(self.comm.config('group', path=str(Path(self.tmp.name)/'group'), create=True)['configuration']['groups']))
+        gid = next(iter(self.comm.config('team',link=str(Path(self.tmp.name)/'group'), create=True)['configuration']['groups']))
         agent = {'name': 'Papers', 'description': 'Find papers and compare methods', 'groups': [gid],
                  'implementation': {'kind': 'agent', 'command': [sys.executable, '-c', 'pass']}}
         with self.assertRaisesRegex(Invalid, 'main task'):
@@ -126,7 +126,7 @@ class StandaloneCollaborationTests(unittest.TestCase):
             'implementation':{'kind':'agent','command':[sys.executable,'-c','pass']}})
         created=start(self.comm,{'message':'Research','agent_id':'coordinator'})
         self.assertEqual(created['mode'],'managed')
-        self.assertEqual(self.engine.store.get(created['run_id'])['implementations']['coordinate']['command'],[sys.executable,'-c','pass'])
+        self.assertEqual(self.engine.store.get(created['run_id'])['implementations']['coordinate']['options']['default']['command'],[sys.executable,'-c','pass'])
         self.assertTrue(self.comm.directory()['agents'][0]['busy'])
         with self.assertRaises(Conflict):start(self.comm,{'message':'Second','agent_id':'coordinator'})
         from loop_anything.interfaces.agent_tasks import acquire, RunTools
@@ -167,8 +167,7 @@ class StandaloneCollaborationTests(unittest.TestCase):
             c=json.loads(prompt)
             tools=RunTools(self.engine.store,c['run_id'],c['token'])
             info=tools.call('read_task',{'task_id':c['task_id']})
-            tools.call('report_task',{'task_id':c['task_id'],'task_version':info['task_version'],
-                'event':'completed','report_id':'managed-result','envelope':{
+            tools.call('report_task',{'task_id':c['task_id'],'event':'completed','report_id':'managed-result','envelope':{
                     'settings':{'objective':'Finish standalone work'},'outputs':{'result':{'done':True}}}})
             tools.call('finish',{})
             return subprocess.CompletedProcess(command,0,'','')
@@ -180,18 +179,6 @@ class StandaloneCollaborationTests(unittest.TestCase):
         self.assertEqual(run['status'],'completed')
         self.assertEqual(run['records']['collaboration.result'][0]['value'],{'done':True})
 
-    def test_active_legacy_request_is_adopted_without_restarting_or_rewriting_it(self):
-        request=self.comm.request({'location':'local','agent_id':'missing','message':'legacy'})['request']
-        with self.comm.transaction() as db:
-            old=self.comm.get(request['id'],db);old.pop('collaboration');old['state']='unknown'
-            self.comm.save(db,old)
-        from loop_anything.runtime.collaboration import adopt_pending
-        adopt_pending(self.comm)
-        current=self.comm.get(request['id'])
-        self.assertEqual(current['state'],'unknown')
-        self.assertIn('collaboration',current)
-        before=len(self.engine.store.list());adopt_pending(self.comm)
-        self.assertEqual(len(self.engine.store.list()),before)
 
     def test_adopted_caller_cannot_resume_until_original_process_exits(self):
         process = subprocess.Popen([sys.executable, '-c', 'import time;time.sleep(30)'])

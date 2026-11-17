@@ -77,15 +77,6 @@ class CommunicationViewTests(unittest.TestCase):
             lengths.append(len(json.dumps(context)));ident=row['id']
         self.assertLess(max(lengths)-min(lengths),200)
 
-    def test_legacy_followup_archive_is_flattened_without_losing_original_business_data(self):
-        first={'id':'request-old','kind':'assistance','context':{'task':'Business task'},'logs':['old-noise']}
-        second={'id':'request-next','kind':'assistance','context':{'previous_request':first},'logs':['next-noise'],'session':{'mode':'resume','request_id':first['id']}}
-        current={'id':'request-current','kind':'assistance','message':'Continue','context':{'previous_request':second},'session':{'mode':'resume','request_id':second['id']}}
-        context=continuation_context(current)
-        self.assertEqual(context['original_context'],{'task':'Business task'})
-        self.assertNotIn('noise',json.dumps(context))
-        business={'previous_request':first}
-        self.assertEqual(continuation_context({'context':business})['original_context'],business)
 
     def test_scoped_child_reads_forward_log_options(self):
         parent=self.request()

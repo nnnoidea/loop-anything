@@ -1,5 +1,5 @@
 from loop_anything.runtime.implementations import selected, choose, options, default_id, check_selection
-"""Scoped Agent identities, optimistic Timeline edits and deterministic inspection."""
+"""Scoped Agent identities, atomic Timeline edits and deterministic inspection."""
 import argparse
 import copy
 import json
@@ -30,11 +30,17 @@ def require_owner(run, token):
     owner = owner_for(run, token)
     if not owner:
         raise Conflict('This Agent does not hold an operation right')
+    if owner.get('execution_id') and not owner.get('resume_session'):
+        task=run['tasks'].get(owner.get('task_id'),{})
+        attempt=next((e for e in run['executions'] if e['id']==owner['execution_id']),{})
+        if task.get('execution_id')!=owner['execution_id'] or attempt.get('token')!=token:
+            raise Conflict('This execution identity was superseded')
     return owner
 
 
 def guard_write(run, token=None, task_id=None):
     """Protect the affected subtree; global settings require a global scope."""
+    if run.get("superseded_by"):raise Conflict("This Run no longer owns work planning")
     if token:
         owner = require_owner(run, token)
         require_scope(run, owner, task_id)
@@ -42,34 +48,24 @@ def guard_write(run, token=None, task_id=None):
 
 def acquire_in_run(run, kind, token=None, execution_id=None, task_id=None):
     if not run.get('operator_protocol'):
-        raise Invalid('Historical Run has no operator protocol; start a new Run')
-    if run['status'] in ('completed', 'terminated'):
-        raise Conflict('Run ended')
+        raise Invalid('Run has no execution identity protocol')
     if execution_id:
         task_id = execution(run, execution_id)['task_id']
+    from loop_anything.runtime.steward import management_task
+    if run['status'] in ('completed', 'terminated') and not (kind == 'background' and management_task(run['tasks'].get(task_id, {}))):
+        raise Conflict('Run ended')
+    if run.get('steward') and kind == 'interactive':
+        if not execution_id or management_task(run['tasks'].get(task_id, {})):
+            raise Conflict('Submit a Run request to its steward')
     if task_id is not None and task_id not in run['tasks']:
         raise Invalid('Unknown scope task')
-    # A decision without a CLI stays unclaimed until an interactive Agent
-    # explicitly acquires it. Bind that claim to the existing execution.
     from loop_anything.runtime.flow_agent import NODE as FLOW_AGENT
-    manual = None
-    if (kind == 'interactive' and execution_id is None and task_id
-            and run['tasks'][task_id]['spec']['node'] == FLOW_AGENT):
-        current_id = run['tasks'][task_id].get('execution_id')
-        current = execution(run, current_id) if current_id else None
-        if (current and current['status'] == 'decision' and not current['implementation'].get('command')
-                and not current['implementation'].get('dispatch') and not owner_for(run, current.get('token'))):
-            manual, execution_id = current, current_id
     scope = scope_for(run, run['tasks'][task_id]) if task_id and (kind == 'background' or
         run['tasks'][task_id]['spec']['node'] == FLOW_AGENT or node_for(run, run['tasks'][task_id]['spec']['node']).get('initialize_timeline')) else task_id
     if not scope_available(run, task_id, token):
         raise Conflict('Another Agent is executing this Task')
     owner = dict(token=token or uid('operator'), kind=kind, execution_id=execution_id,
                  task_id=task_id, scope_task=scope, acquired_at=time.time())
-    if manual is not None:
-        manual['token'] = owner['token']
-    from loop_anything.runtime.optimistic import basis
-    owner['observed'] = basis(run)
     run.setdefault('agent_sessions', []).append(owner)
     if scope is None and kind == 'background':
         run.pop('attention_error', None)
@@ -116,7 +112,8 @@ def user_request(store, run_id, text, task_id=None, operator_token=None):
 
 
 def release_in_run(run, token):
-    owner = require_owner(run, token)
+    owner = owner_for(run, token)
+    if owner is None:raise Conflict('This Agent does not hold an operation right')
     Store.log(run, 'agent_released', 'Run operation right released', owner.get('execution_id'))
     run['agent_sessions'].remove(owner)
 
@@ -141,9 +138,9 @@ def gated(run, tasks):
 def task_list(run, runtime, owner=None):
     """Read-only derivation used by CLI, tools and Engine's default transition."""
     if run['status'] in ('completed', 'terminated'):
-        return {'run_id': run['id'], 'revision': run['revision'], 'authorization': run['settings'].get('authorization', ''),
+        return {'run_id': run['id'], 'revision': run['revision'], 'constraints': run['settings'].get('constraints', ''),
                 'items': [], 'waiting': [], 'has_tasks': False, 'state': run['status'],
-                'owners': [{k: v for k, v in o.items() if k not in ('token', 'observed')} for o in run.get('agent_sessions', [])]}
+                'owners': [{k: v for k, v in o.items() if k != 'token'} for o in run.get('agent_sessions', [])]}
     view = copy.deepcopy(run)
     for tasks in view['tasks'].values():
         if tasks['status'] in PENDING:
@@ -207,10 +204,10 @@ def task_list(run, runtime, owner=None):
         if notification['status'] == 'fault':
             add({'id': 'notification:' + notification['id'] + ':' + str(notification['attempt']),
                  'kind': 'unexpected', 'notification_id': notification['id'], 'reason': notification.get('error', 'Notification delivery failed')})
-    return {'run_id': run['id'], 'revision': run['revision'], 'authorization': run['settings'].get('authorization', ''),
+    return {'run_id': run['id'], 'revision': run['revision'], 'constraints': run['settings'].get('constraints', ''),
             'items': items, 'waiting': [i for i in waiting if not owner or contains(run, owner.get('scope_task'), i.get('task_id'))], 'has_tasks': bool(items),
             'state': 'unexpected' if any(i['kind'] == 'unexpected' for i in items) else 'normal',
-            'owners': [{k: v for k, v in o.items() if k not in ('token', 'observed')} for o in run.get('agent_sessions', [])]}
+            'owners': [{k: v for k, v in o.items() if k != 'token'} for o in run.get('agent_sessions', [])]}
 
 
 def execution(run, execution_id):
@@ -300,9 +297,17 @@ def apply_task_edit(run, tool, arguments, origin, owner=None):
         guard_write(run, owner['token'] if owner else None, arguments['task_id'])
         change_task_in_run(run, arguments, owner)
         return {'updated': True, 'task_id': arguments['task_id'], 'task_revision': run['tasks'][arguments['task_id']].get('revision')}
+    work_key=arguments.get('work_key') if tool=='build_plan' else None
+    if work_key is not None:
+        if not isinstance(work_key,str) or not work_key:raise Invalid('work_key must be nonempty')
+        work_fingerprint=digest({k:v for k,v in arguments.items() if k not in ('key','work_key','parent_id','round')})
+        previous_work=run.get('arrangements',{}).get(work_key)
+        if previous_work:
+            if previous_work['fingerprint']!=work_fingerprint:raise Conflict('Work key already belongs to a different experiment')
+            return copy.deepcopy(previous_work['result'])
     summary = {}
     if tool == 'build_plan':
-        specs = build_plan(run['loop_definition'], arguments['name'], 'operator:' + ((owner['scope_task'] + ':') if owner and owner.get('scope_task') else '') + arguments['key'],
+        specs = build_plan(run['loop_definition'], arguments['name'], ('work:'+work_key) if work_key else 'operator:' + run['id'] + ':' + ((owner['scope_task'] + ':') if owner and owner.get('scope_task') else '') + arguments['key'],
                            arguments['values'], arguments.get('steps'), arguments.get('round'), summary,
                            known_tasks=[t['spec'] for t in run['tasks'].values()])
     elif tool == 'add_task':
@@ -311,8 +316,17 @@ def apply_task_edit(run, tool, arguments, origin, owner=None):
             raise Invalid('Choose a declared non-entry node')
         if not arguments['key'].strip():
             raise Invalid('Task key must be nonempty')
-        ident = 'task-' + digest([owner['scope_task'], arguments['key']] if owner and owner.get('scope_task') else arguments['key'])[:16]
+        ident = 'task-' + digest([run['id'], owner.get('scope_task') if owner else None, arguments['key']])[:16]
         spec = {k: copy.deepcopy(arguments[k]) for k in ('inputs', 'parameters', 'after', 'implementation', 'round', 'ref', 'after_refs') if k in arguments}
+        if arguments.get('after_work'):
+            after=list(spec.get('after',[]))
+            for ref in arguments['after_work']:
+                arranged=run.get('arrangements',{}).get(ref['key'])
+                ids=(arranged or {}).get('result',{}).get('steps',{}).get(ref['step'])
+                if not ids:raise Invalid('Work dependency is missing or its step was omitted')
+                if any(i not in run['tasks'] for i in ids):raise Conflict('Work dependency is not attached to this Run')
+                after.extend(ids)
+            spec['after']=list(dict.fromkeys(after))
         if not spec.get('implementation'):
             spec.pop('implementation', None)
         spec.update(id=ident, node=arguments['node_id'], outputs={p: {'id': ident + '.' + p} for p in node['outputs']})
@@ -338,25 +352,24 @@ def apply_task_edit(run, tool, arguments, origin, owner=None):
         guard_write(run, owner['token'] if owner else None, parent)
         if previous is None:
             Store.log(run, 'plan_built', '按模板安排：' + arguments['name'] + ' · 未安排 ' + str(len(summary['omitted'])) + ' 个步骤', detail=dict(summary, name=arguments['name'], fingerprint=fingerprint, tasks=[s['id'] for s in specs]))
-        return {'tasks': specs, 'omitted': summary['omitted'], 'references': summary['references']}
+        result={'tasks': specs, 'omitted': summary['omitted'], 'references': summary['references'], 'steps':summary['steps']}
+        if work_key:
+            run.setdefault('arrangements',{})[work_key]={'fingerprint':work_fingerprint,'run_id':run['id'],'result':copy.deepcopy(result)}
+        return result
     return {'tasks': specs}
 
 
-def edit_tasks(store, run_id, changes, revision=None, token=None, preview=False, basis=None):
+def edit_tasks(store, run_id, changes, token=None, preview=False):
     """UI edits/preview use the same contracts as Agent task tools."""
     definitions = {d['name']: d['inputSchema'] for d in RunTools(store, run_id, token).definitions()}
     if not isinstance(changes, list) or not changes:
         raise Invalid('Supply task changes')
     if type(preview) is not bool:
         raise Invalid('preview must be boolean')
-    if token is None and basis is None and revision is None:
-        raise Invalid('Supply a read basis or Timeline revision')
 
     def apply(run):
         omitted = []
         owner = require_owner(run, token) if token else None
-        if basis is None and revision is not None and (type(revision) is not int or revision != run['revision']):
-            raise Conflict('Run changed; reload the plan before applying edits')
         for change in changes:
             tool = change.get('tool')
             if tool not in ('add_task', 'change_task', 'build_plan'):
@@ -371,14 +384,11 @@ def edit_tasks(store, run_id, changes, revision=None, token=None, preview=False,
         from loop_anything.runtime.timeline_plan import validate_task_dependencies
         run = store.get(run_id)
         before = copy.deepcopy(run['tasks'])
-        from loop_anything.runtime.optimistic import writing
-        with writing(run, token, 'edit_tasks', {'basis': basis, 'revision': revision, 'changes': changes}):
-            omitted = apply(run)
+        omitted = apply(run)
         validate_task_dependencies(run)
         return {'omitted': omitted, 'changes': [{'task_id': k, 'before': before.get(k), 'after': v}
                             for k, v in run['tasks'].items() if v != before.get(k)]}
-    from loop_anything.runtime.optimistic import writing
-    with store.edit(run_id) as run, writing(run, token, 'edit_tasks', {'basis': basis, 'revision': revision, 'changes': changes}):
+    with store.edit(run_id) as run:
         apply(run)
     return store.get(run_id)
 
@@ -396,28 +406,24 @@ class RunTools:
             ('read_capabilities', 'Read actual service version/build, capability-to-tool map and supported contract keywords. Optional capability selects one guide; read-only and requires no operation scope.', {'capability':text}, [], True),
             ('register_agent_session', 'Record the native CLI session ID for your own current execution, so the user can resume this exact conversation. Obtain the actual ID from your CLI, never guess or use the most recent session. This is not the platform execution ID.', {'execution_id':text,'provider':{'type':'string','enum':['codex','claude','custom']},'session_id':text,'cwd':text}, ['execution_id','provider','session_id'], False),
             ('next_tasks', 'Read current work and waiting reasons without acquiring rights. With a token, restrict the work view to that operation scope. Other active Agents are waiting, not tasks to take over.', {}, [], True),
-            ('read_timeline', 'Read the latest shared Timeline without acquiring rights. read_only=true grants no write permission; scope_task=null means global rights only when read_only=false. Reads return basis; managed reads record observed versions automatically. Read before deciding; on conflict reconsider the changed state.', {}, [], True),
-            ('read_run', 'Read the complete Run and history with a broad decision basis. Prefer read_task for a targeted decision. Internal credentials and read-observation metadata are omitted.', {}, [], True),
+            ('read_timeline', 'Read the latest shared Timeline without acquiring rights. read_only=true grants no write permission; scope_task=null means global rights only when read_only=false. Reads do not change runtime state.', {}, [], True),
+            ('read_run', 'Read the complete Run and history. Prefer read_task for one task. Internal credentials are omitted.', {}, [], True),
             ('read_record', 'Read a committed record on demand.', {'id': text, 'revision': {'type': 'integer'}}, ['id'], True),
-            ('read_task', 'Read this Task input sources, live values, output contract, node Skill and declared event routes before completing it. Routes generate plan Tasks automatically from accepted reports; submit the mapped output parameters and inspect receipt.routes instead of arranging the same work twice.', {'task_id': text}, ['task_id'], True),
+            ('read_task', 'Read this Task input sources and values (the dispatched snapshot once executing), output contract, node Skill and declared event routes before completing it. Routes generate plan Tasks automatically from accepted reports; submit the mapped output parameters and inspect receipt.routes instead of arranging the same work twice.', {'task_id': text}, ['task_id'], True),
             ('read_plans', 'Read batch templates, parameter contracts, ref/after_refs and input mappings.', {}, [], True),
             ('resolve_refs', 'Resolve Run-unique authored Task refs to Task IDs and output record references. Read-only. Missing refs fail; omitted refs lists all authored references. Use task_ref/task_refs input sources and after_refs in plans to resolve automatically.', {'refs': {'type':'array','items':text}}, [], True),
-            ('build_plan', 'Write a batch directly to Timeline. Templates support each list expansion, per-item inputs/parameters and collect aggregation. Omit steps with steps.<key>.skip=true or a false template when condition over values. No Task or output placeholder is created. Return omitted reasons; explicitly bind reused inputs. Reusing a key cannot change the arrangement. Stable key deduplicates. Optional basis is returned by read tools; required for stateless callers. Optional round is a display label only; it never serializes execution. Use edit_tasks preview to inspect generated IDs and parameters before committing.', {'name': text, 'key': text, 'values': obj, 'steps': {'type': 'object', 'description': 'Map template step IDs to overrides. parameters merge at the top level; implementation selects a registered candidate; empty string inherits the Run default.', 'additionalProperties': object_schema({'skip': {'type':'boolean'}, 'inputs': obj, 'parameters': obj, 'implementation': text}, [])}, 'round': text, 'parent_id': text}, ['name', 'key', 'values'], False),
-            ('edit_tasks', 'Preview or atomically apply an ordered group of existing add_task/build_plan/change_task operations. Supply basis from the decision read; managed identities may use automatically observed reads. Legacy revision checks the whole Run. preview=true returns generated task IDs, before/after task specs and omitted steps without persisting or dispatching. Commit the reviewed changes with preview=false; any failure rolls back the entire group. Uses the same scope, dependency and parameter checks as individual tools and the UI. Results/settings/completion reports are outside this transaction. An Agent needs a valid scoped identity, which does not exclude other Agents.', {'revision': {'type':'integer'}, 'changes': {'type':'array', 'minItems':1, 'items':object_schema({'tool': {'type':'string','enum':['add_task','build_plan','change_task']}, 'arguments': obj})}, 'preview': {'type':'boolean'}}, ['changes'], False),
-            ('add_task', 'Add one task from a declared non-entry node. Stable key deduplicates; outputs get record identities automatically. ref/after_refs and task_ref/task_refs bind authored identities; task output refs pin producer revisions. records inputs may use a parallel revisions array for mixed versions. after names predecessor tasks. No execution starts inside this tool.', {'key': text, 'node_id': text, 'inputs': obj, 'parameters': obj, 'after': {'type': 'array', 'items': text}, 'after_refs': {'type':'array','items':text}, 'ref':text, 'implementation': text, 'round': text, 'parent_id': text}, ['key', 'node_id', 'inputs'], False),
-            ('notify', 'Queue one notification or question. Stable key deduplicates. Uses the Run default outlet unless route is supplied. Scripts need current execution_id/token and task_id; Agents need scope; user UI may submit with no token; other thinking Agents do not block it. reply needs event/key/schema, and does not pause the Run.', {'key':text,'message':text,'route':text,'reply':obj,'task_id':text,'execution_id':text}, ['key','message'], False),
+            ('build_plan', 'Write a batch directly to Timeline. Templates support each list expansion, per-item inputs/parameters and collect aggregation. Omit steps with steps.<key>.skip=true or a false template when condition over values. No Task or output placeholder is created. Return omitted reasons; explicitly bind reused inputs. Reusing a key cannot change the arrangement. Stable key deduplicates. Optional round is a display label only; it never serializes execution. Use edit_tasks preview to inspect generated IDs and parameters before committing.', {'name': text, 'key': text, 'work_key':text, 'values': obj, 'steps': {'type': 'object', 'description': 'Map template step IDs to overrides. parameters merge at the top level; implementation selects a registered candidate; empty string inherits the Run default.', 'additionalProperties': object_schema({'skip': {'type':'boolean'}, 'inputs': obj, 'parameters': obj, 'implementation': text}, [])}, 'round': text, 'parent_id': text}, ['name', 'key', 'values'], False),
+            ('edit_tasks', 'Preview or atomically apply an ordered group of existing add_task/build_plan/change_task operations. preview=true returns generated task IDs, before/after task specs and omitted steps without persisting or dispatching. Commit the reviewed changes with preview=false; any failure rolls back the entire group. Uses the same scope, dependency and parameter checks as individual tools and the UI. Results/settings/completion reports are outside this transaction. An Agent needs a valid scoped identity, which does not exclude other Agents.', {'changes': {'type':'array', 'minItems':1, 'items':object_schema({'tool': {'type':'string','enum':['add_task','build_plan','change_task']}, 'arguments': obj})}, 'preview': {'type':'boolean'}}, ['changes'], False),
+            ('add_task', 'Add one task from a declared non-entry node. Stable key deduplicates; outputs get record identities automatically. ref/after_refs and task_ref/task_refs bind authored identities; task output refs pin producer revisions. records inputs may use a parallel revisions array for mixed versions. after names predecessor tasks. No execution starts inside this tool.', {'key': text, 'node_id': text, 'inputs': obj, 'parameters': obj, 'after': {'type': 'array', 'items': text}, 'after_refs': {'type':'array','items':text}, 'after_work':{'type':'array','items':object_schema({'key':text,'step':text},['key','step'])}, 'ref':text, 'implementation': text, 'round': text, 'parent_id': text}, ['key', 'node_id', 'inputs'], False),
+            ('notify', 'Queue one notification or question. Stable key deduplicates. Uses the Run default outlet unless route is supplied. Scripts need current execution_id/token and task_id; Agents need scope; runtime callers use their supplied execution identity; other thinking Agents do not block it. reply needs event/key/schema, and does not pause the Run.', {'key':text,'message':text,'route':text,'reply':obj,'task_id':text,'execution_id':text}, ['key','message'], False),
             ('send_event', 'Submit an external event or reply, independently of the notification channel. Stable event_id deduplicates; name/key identify the wait. Optional notification_id validates the question schema. Agents must own the target wait Task or global scope; user input without token is allowed.', {'event_id':text,'name':text,'payload':obj,'key':text,'notification_id':text,'task_id':text}, ['event_id','name','payload'], False),
-            ('report_task', 'Report an explicit lifecycle event. Scripts/monitors use their execution_id and token; Agents use task_version from the decision read_task; managed read versions are checked atomically. Use a stable report_id for retries. completed requires envelope with all outputs. Inspect accepted=true; stale=true is a recorded late monitor report, not a new failure. Uncovered transitions are recorded as issues. finish separately releases Agent scope.', {'task_id': text, 'execution_id': text, 'task_version': text, 'report_id': text, 'event': text, 'envelope': obj, 'detail': obj, 'external_id': text, 'poll_after': {'type': 'number'}}, ['task_id', 'report_id', 'event'], False),
-            ('complete_task', 'Compatibility shorthand for report_task event=completed. Submit every declared output for an Agent Task using task_version from read_task. Supply settings only for initialization. Success commits immediately; failure commits nothing. Creating future tasks is not a substitute for this result. Call next_tasks again afterward.', {'task_id': text, 'task_version': text, 'envelope': obj}, ['task_id', 'task_version', 'envelope'], False),
-            ('change_settings', 'Use read_timeline.settings.revision (not the top-level Run revision). Write authorized Timeline changes, including bindings (node ID to candidate ID or null, replaces the Run selection map), completion_rule (deterministic expression) or termination_signal (reason text). Engine applies terminal transitions; finish only releases Agent ownership. Changing requirements does not invalidate tasks or results. fallback_node selects a declared fallback node; empty/null disables it. notification_command sets this Run sender argv (empty inherits the Loop sender); only a global operator may change it. Already attempted notifications keep their original sender on retry. Only the interactive user Agent may change authorization.', {'revision': {'type': 'integer'}, 'change': obj}, ['revision', 'change'], False),
+            ('report_task', 'Report an explicit lifecycle event. Scripts/monitors use their execution_id and token; Agents use their current execution identity. Use a stable report_id for retries. completed requires envelope with all outputs. Inspect accepted=true; stale=true is a recorded late monitor report, not a new failure. Uncovered transitions are recorded as issues. finish separately releases Agent scope.', {'task_id': text, 'execution_id': text, 'report_id': text, 'event': text, 'envelope': obj, 'detail': obj, 'external_id': text, 'poll_after': {'type': 'number'}}, ['task_id', 'report_id', 'event'], False),
+            ('change_settings', 'Use read_timeline.settings.revision (not the top-level Run revision). Write authorized Timeline changes, including bindings (node ID to candidate ID or null, replaces the Run selection map), completion_rule (deterministic expression) or termination_signal (reason text). Engine applies terminal transitions; finish only releases Agent ownership. Changing requirements does not invalidate tasks or results. fallback_node selects a declared fallback node; empty/null disables it. notification_command sets this Run sender argv (empty inherits the Loop sender); only a global operator may change it. Already attempted notifications keep their original sender on retry. A steward may change authorization only to the exact text supplied in its user request.', {'revision': {'type': 'integer'}, 'change': obj}, ['revision', 'change'], False),
             ('command', 'Use existing Run controls only within user authorization. Pausing does not cancel external side effects.', {'action': {'type': 'string', 'enum': ['pause', 'resume', 'terminate', 'release_gate', 'retry_notification']}, 'hook_firing': text, 'notification_id': text}, ['action'], False),
             ('change_task', 'Choose a candidate with implementation (empty string inherits the Run default). Correct unstarted Task inputs/parameters, cancel tasks, or retry a failed Task only after checking side effects. Cannot alter an executing script.', {'task_id': text, 'operation': {'type': 'string', 'enum': ['update', 'cancel', 'retry']}, 'inputs': obj, 'parameters': obj, 'implementation': text, 'after': {'type': 'array', 'items': text}, 'reason': text}, ['task_id', 'operation', 'reason'], False),
             ('defer_task', 'Record why an item must wait for user authorization/input. This is not successful execution and must not hide tasks you can do.', {'task_id': text, 'reason': text}, ['task_id', 'reason'], False),
             ('resolve_request', 'Mark a user request fulfilled only after its changes are applied.', {'task_id': text}, ['task_id'], False),
             ('finish', 'Finish after your wake-up task is completed/deferred and in-scope issues are handled. Ready descendant tasks may remain for Engine dispatch. Releases only this token and scope.', {}, [], False)]
-        from loop_anything.runtime.optimistic import EDIT_TOOLS
-        for name, _, properties, _, _ in defs:
-            if name in EDIT_TOOLS or name == 'complete_task':properties['basis'] = obj
         return [{'name': n, 'description': d, 'inputSchema': object_schema(p, required),
                  'annotations': {'readOnlyHint': readonly}} for n, d, p, required, readonly in defs]
 
@@ -425,7 +431,7 @@ class RunTools:
         try:
             return dict(ok=True, **self.call(name, arguments))
         except (ValueError, KeyError, TypeError, StopIteration) as exc:
-            return {'ok': False, 'error': {'code': 'conflict' if isinstance(exc, Conflict) else 'invalid_request', 'message': str(exc), **({'conflicts': exc.conflicts} if hasattr(exc, 'conflicts') else {})}}
+            return {'ok': False, 'error': {'code': 'conflict' if isinstance(exc, Conflict) else 'invalid_request', 'message': str(exc)}}
 
     def call(self, name, arguments):
         definitions = {d['name']: d for d in self.definitions()}
@@ -437,34 +443,19 @@ class RunTools:
             return discover(arguments.get('capability'))
         if name == 'edit_tasks':
             if not self.token:
-                raise Conflict('Acquire an Agent operation scope before editing or previewing tasks')
-            result = edit_tasks(self.store, self.run_id, arguments['changes'], arguments.get('revision'), self.token, arguments.get('preview', False), arguments.get('basis'))
+                raise Conflict('Use the execution identity supplied by the platform to edit or preview tasks')
+            result = edit_tasks(self.store, self.run_id, arguments['changes'], self.token, arguments.get('preview', False))
             if arguments.get('preview', False):
                 return dict(result, run_id=self.run_id, revision=self.store.get(self.run_id)['revision'], preview=True)
             # The internal UI writer returns a full Run, which includes operation credentials.
             return {'run_id': self.run_id, 'revision': result['revision'], 'applied': True}
         if definitions[name]['annotations']['readOnlyHint']:
-            from loop_anything.runtime.optimistic import read_basis, merge
-            if self.token is None:
-                run = self.store.get(self.run_id)
-                result = self._read(run, name, arguments, None)
-                return dict(result, basis=read_basis(run, name, arguments, None))
-            with self.store.edit(self.run_id) as run:
-                owner = require_owner(run, self.token)
-                result = self._read(run, name, arguments, owner)
-                observed = read_basis(run, name, arguments, owner)
-                owner['observed'] = merge(run, owner.get('observed'), observed)
-                result['basis'] = observed
-            if 'revision' in result:result['revision'] = run['revision']
-            if name == 'read_timeline':result['tasks']['revision'] = run['revision']
-            return result
-        if name == 'complete_task':
-            arguments = dict(arguments, event='completed', report_id='complete:' + digest(arguments))
-            name = 'report_task'
-        from loop_anything.runtime.optimistic import writing
+            run = self.store.get(self.run_id)
+            owner = require_owner(run, self.token) if self.token else None
+            return self._read(run, name, arguments, owner)
         arguments = copy.deepcopy(arguments)
-        with self.store.edit(self.run_id) as run, writing(run, self.token, name, arguments):
-            owner = owner_for(run, self.token) if self.token else None
+        with self.store.edit(self.run_id) as run:
+            owner = require_owner(run, self.token) if owner_for(run,self.token) else None
             if name in ('notify','send_event'):
                 from loop_anything.runtime.notifications import enqueue,receive_event
                 task_id=arguments.get('task_id')
@@ -501,7 +492,7 @@ class RunTools:
                     raise Invalid('Unknown business Task')
                 current = execution(run, tasks['execution_id']) if tasks.get('execution_id') else None
                 reported_execution = next((e for e in run['executions'] if e['id'] == arguments.get('execution_id') and e['task_id'] == tasks['id']), None)
-                report = {k: v for k, v in arguments.items() if k not in ('task_id', 'task_version', 'execution_id')}
+                report = {k: v for k, v in arguments.items() if k not in ('task_id', 'execution_id')}
                 if reported_execution and monitor_token_matches(reported_execution, self.token):
                     return self.runtime.report_in_run(run, reported_execution, report, 'monitor', stale=reported_execution.get('token') != self.token)
                 if current and current.get('token') == self.token and self.token:
@@ -528,7 +519,9 @@ class RunTools:
                 tasks = run['tasks'].get(arguments['task_id'])
                 if not tasks:
                     raise Invalid('Unknown business Task')
-            if run['status'] in ('terminated', 'completed') and name != 'finish':
+            from loop_anything.runtime.steward import management_task
+            own_management = management_task(run['tasks'].get(owner.get('task_id'), {}))
+            if run['status'] in ('terminated', 'completed') and name != 'finish' and not (own_management and name == 'report_task' and arguments['task_id'] == owner['task_id']):
                 raise Conflict('Run ended')
             if name in ('build_plan', 'add_task', 'change_task'):
                 return apply_task_edit(run, name, arguments, {'agent': owner.get('execution_id') or 'interactive'}, owner)
@@ -543,16 +536,14 @@ class RunTools:
                     raise Invalid('Agent cannot fabricate script/event/approval results')
                 if tasks['status'] in ENDED or tasks['status'] == 'fault':
                     raise Conflict('Task must be pending or owned; inspect/retry failures first')
-                values, sources, missing = self.runtime.resolve_inputs(run, tasks)
-                if missing or gated(run, tasks):
-                    raise Conflict('Task inputs or gate are not ready')
-                if arguments.get('task_version') != digest([tasks.get('revision'), tasks['spec'], values, sources, selected(run, tasks)]):
-                    raise Conflict('Task inputs changed; read_task again and reconsider this result')
                 self.runtime.apply_hooks(run, tasks, 'before')
                 if tasks.get('execution_id'):
                     e = execution(run, tasks['execution_id'])
-                    e.update(inputs=values, sources=sources, token=self.token)
+                    if owner['kind']=='interactive' and not owner.get('execution_id'):e['token']=self.token
+                    self.runtime.check_owner(run,e,self.token)
                 else:
+                    values, sources, missing = self.runtime.resolve_inputs(run, tasks)
+                    if missing or gated(run,tasks):raise Conflict('Task inputs or gate are not ready')
                     if run['status'] != 'running':
                         raise Conflict('Run is paused; edit its plan without starting another Task')
                     self.runtime.check_budget(run, tasks)
@@ -597,6 +588,8 @@ class RunTools:
                 handed_off = attempt.get('lifecycle_state') == 'agent'
                 unresolved = [i for i in tasks['items'] if (i['kind'] != 'task' or i.get('task_id') == owner.get('task_id'))
                               and not (handed_off and i.get('task_id') == owner.get('task_id'))]
+                if own_management:
+                    unresolved = [i for i in unresolved if i.get('task_id') == owner['task_id']]
                 if unresolved and not run['settings'].get('termination_signal', '').strip():
                     raise Conflict('Run still has actionable tasks: ' + ', '.join(t['id'] for t in tasks['items']))
                 release_in_run(run, self.token)
@@ -607,14 +600,23 @@ class RunTools:
         from loop_anything.packaging.packages import resolve_skill
         if name == 'read_run':
             result = copy.deepcopy(run)
+            from loop_anything.runtime.timelines import public_status
+            result['status']=public_status(run)
+            from loop_anything.runtime.steward import expose_requests
+            expose_requests(result)
             for item in result.get('agent_sessions', []) + result.get('executions', []) + result.get('notifications', []):
-                item.pop('token', None);item.pop('observed', None)
+                item.pop('token', None)
             return {'run': result}
         if name == 'next_tasks':
             return task_list(run, self.runtime, owner)
         if name == 'read_timeline':
-            return {'settings': run['settings'], 'handbook': resolve_skill(self.store.filename, run['loop_key'], run['loop_definition'].get('handbook', {})),
-                    'records': [{'id': rid, 'type': rows[-1]['type'], 'revision': rows[-1]['revision']} for rid, rows in run['records'].items() if rows], 'implementations': {n: {'default': default_id(entry), 'options': list(options(entry))} for n, entry in run['implementations'].items()}, 'status': run['status'], 'tasks': task_list(run, self.runtime, owner), 'run_id': run['id'], 'revision': run['revision'], 'read_only': owner is None, 'scope_task': owner.get('scope_task') if owner else None}
+            from loop_anything.runtime.steward import receipt
+            from loop_anything.runtime.business_state import overview
+            from loop_anything.runtime.timelines import public_status
+            return {'business_state':overview(run['business_state'],run['loop_definition'].get('state')), 'timeline_id':run.get('timeline_id'), 'timeline':run.get('timeline'), 'continued_from':run.get('continued_from'), 'settings': run['settings'], 'handbook': resolve_skill(self.store.filename, run['loop_key'], run['loop_definition'].get('handbook', {})),
+                    'steward': {k: run.get('steward', {}).get(k) for k in ('agent_id', 'name', 'generation')},
+                    'requests': [{k: v for k, v in receipt(run, request).items() if k in ('request_id','operation','status','task_id','task_status','error')} for request in run.get('steward_requests', {}).values()],
+                    'records': [{'id': rid, 'type': rows[-1]['type'], 'revision': rows[-1]['revision']} for rid, rows in run['records'].items() if rows], 'implementations': {n: {'default': default_id(entry), 'options': list(options(entry))} for n, entry in run['implementations'].items()}, 'work':[{ 'key':k,'run_id':v['run_id'],'steps':v['result']['steps']} for k,v in run.get('arrangements',{}).items()], 'status': public_status(run), 'tasks': task_list(run, self.runtime, owner), 'run_id': run['id'], 'revision': run['revision'], 'read_only': owner is None, 'scope_task': owner.get('scope_task') if owner else None}
         if name == 'resolve_refs':
             from loop_anything.runtime.task_refs import describe_references
             return {'references': describe_references([t['spec'] for t in run['tasks'].values()], arguments.get('refs'))}
@@ -632,43 +634,43 @@ class RunTools:
             if not tasks:
                 raise Invalid('Unknown business Task')
             node = node_for(run, tasks['spec']['node'])
+            from loop_anything.runtime.timelines import task_resources
+            resource_key,_=task_resources(run,tasks['spec']['node'])
             values, sources, missing = self.runtime.resolve_inputs(run, tasks)
             from loop_anything.runtime.lifecycle import definition
             config = selected(run, tasks)[1]
             lifecycle = definition(config) if config else None
             attempt = execution(run, tasks['execution_id']) if tasks.get('execution_id') else {}
+            if attempt:values,sources,missing=copy.deepcopy(attempt['inputs']),copy.deepcopy(attempt['sources']),[]
             execution_state = {k: attempt[k] for k in ('id', 'task_revision', 'task_spec', 'lifecycle_state', 'external_id', 'child_run_id', 'child_status', 'child_revision', 'wake_at', 'observation_error', 'retry', 'wait', 'native_session', 'worker_active', 'communication_id', 'communication_state') if k in attempt}
             last_transition = next((h for h in reversed(run['history']) if h['kind'] == 'transition' and h['execution'] == attempt.get('id')), None)
             return {'flow_decisions': decisions(run, tasks['id']), 'flow_trigger': tasks.get('origin', {}).get('flow_agent'),
                     'route_receipts': route_receipts(run, tasks['id']),
                     'lifecycle': lifecycle, 'execution_state': execution_state, 'last_transition': last_transition, 'task': tasks, 'task_revision': tasks.get('revision'), 'inputs': values, 'sources': sources, 'missing': missing,
-                    'task_version': digest([tasks.get('revision'), tasks['spec'], values, sources, selected(run, tasks)]),
                     'parameter_schema': node.get('parameter_schema'),
                     'implementation_id': selected(run, tasks)[0], 'implementation': selected(run, tasks)[1],
                     'implementation_options': options(run['implementations'].get(tasks['spec']['node'])),
+                    'node_id':run['retained_nodes'][tasks['spec']['node']]['node_id'] if tasks['spec']['node'] in run.get('retained_nodes',{}) else tasks['spec']['node'],
                     'instructions': node['instructions'], 'routes': node.get('routes', []),
-                    'skills': [resolve_skill(self.store.filename, run['loop_key'], skill) for skill in node.get('skills', [])],
+                    'skills': [resolve_skill(self.store.filename, resource_key, skill) for skill in node.get('skills', [])],
                     'initialize_timeline': bool(node.get('initialize_timeline')),
                     'settings_schema': node.get('agent_settings_schema') if node.get('initialize_timeline') else None,
                     'assertions': node.get('assertions', []),
                     'outputs': {p: run['loop_definition']['records'][s['record_type']] for p, s in node['outputs'].items()},
-                    'authorization': run['settings'].get('authorization', '')}
+                    'constraints': run['settings'].get('constraints', '')}
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Inspect Run tasks or use explicit Agent operation rights')
+    parser = argparse.ArgumentParser(description='Inspect Run tasks or use a platform-supplied execution identity')
     parser.add_argument('--db', required=True)
     parser.add_argument('run_id')
-    parser.add_argument('--acquire', action='store_true')
     parser.add_argument('--token')
     parser.add_argument('--release-stopped', action='store_true', help='Recovery only: confirm the previous Agent process has stopped')
     parser.add_argument('--tool', default='next_tasks')
     parser.add_argument('--arguments', default='{}')
     args = parser.parse_args()
     store = Store(args.db)
-    if args.acquire:
-        result = acquire(store, args.run_id)
-    elif args.release_stopped:
+    if args.release_stopped:
         recover_owner(store, args.run_id, args.token, confirmed_stopped=True)
         result = {'released': True}
     else:
@@ -678,7 +680,10 @@ def main():
                 require_owner(store.get(args.run_id), args.token)
             result = tools.definitions()
         else:
-            result = tools.respond(args.tool, json.loads(args.arguments))
+            from loop_anything.interfaces.platform_tools import PlatformTools
+            arguments = dict(json.loads(args.arguments), run_id=args.run_id)
+            if args.token is not None:arguments['token'] = args.token
+            result = PlatformTools(store).respond(args.tool, arguments)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

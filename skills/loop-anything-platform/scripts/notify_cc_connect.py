@@ -18,7 +18,7 @@ def definitely_not_sent(error):
                 re.fullmatch(r'Error: (?:feishu|lark): (?:reply|send) failed code=230002 msg=[^\n]*', error))
 
 
-def sender_command(executable=None, data_dir=None, config_path=None):
+def sender_command(executable=None, data_dir=None):
     project, session = (os.environ.get(key, '').strip() for key in ('CC_PROJECT', 'CC_SESSION_KEY'))
     if not project or not session:
         raise ValueError('CC_PROJECT and CC_SESSION_KEY are required; configure notifications from the intended cc-connect chat')
@@ -29,8 +29,6 @@ def sender_command(executable=None, data_dir=None, config_path=None):
     command = [sys.executable, str(Path(__file__).resolve()), '--project', project, '--session', session,
                '--executable', str(Path(executable).absolute())]
     if directory:command += ['--data-dir', str(Path(directory).expanduser().resolve())]
-    config_path=config_path or os.environ.get('CC_CONFIG_PATH')
-    if config_path:command.extend(['--config',str(Path(config_path).expanduser().resolve())])
     return command
 
 
@@ -39,14 +37,11 @@ def main():
     parser.add_argument('--print-command', action='store_true', help='Print sender argv for the current cc-connect chat without sending a message')
     for name in ('project', 'session', 'data-dir'):
         parser.add_argument('--' + name)
-    parser.add_argument('--platform', help='Legacy metadata; session routing is handled by cc-connect')
-    parser.add_argument('--config', help='Legacy setup option; delivery does not read bridge configuration')
-    parser.add_argument('--conversation', action='store_true', help='Legacy flag; conversation metadata is always preserved')
     parser.add_argument('--executable', default='cc-connect')
     args = parser.parse_args()
     if args.print_command:
         try:
-            print(json.dumps(sender_command(args.executable,args.data_dir,args.config), ensure_ascii=False))
+            print(json.dumps(sender_command(args.executable,args.data_dir), ensure_ascii=False))
         except ValueError as exc:
             parser.error(str(exc))
         return

@@ -238,19 +238,6 @@ class GroupNotificationTests(unittest.TestCase):
         self.assertEqual(notice['routing']['reason'],'request_origin')
         self.assertFalse(self.b.get(child).get('notifications'))
 
-    def test_legacy_single_binding_is_imported_as_one_machine_outlet(self):
-        binding=self.configure(self.c)
-        root=self.root/'nas'
-        (root/'notifications.json').write_text(json.dumps(binding))
-        (root/'notification-bindings'/(self.c.settings()['instance_id']+'.json')).unlink()
-        with self.a.transaction() as db:
-            config=self.a.settings(db);config['groups'][self.gid].pop('notification_bindings',None)
-            db.execute('UPDATE communication_settings SET document=? WHERE id=1',(json.dumps(config),))
-        self.a.last_scan=0;self.a.scan()
-        self.assertEqual(self.a.settings()['groups'][self.gid]['notification_bindings'][self.c.settings()['instance_id']]['id'],binding['id'])
-        request=self.a.request(dict(location='group',group_id=self.gid,agent_id='papers',instance_id='notification-fixture',message='No hub fallback'))['request']['id']
-        self.a.deliver_notifications()
-        self.assertEqual(self.a.get(request)['notifications'][0]['status'],'skipped')
 
     def test_new_identity_cannot_send_copied_queue_or_publish_old_receipts(self):
         self.configure();ident=self.completed_request()

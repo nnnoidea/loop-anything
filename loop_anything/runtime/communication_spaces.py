@@ -64,10 +64,10 @@ def configure(comm, args):
         if old and old['path']!=str(root):
             for group in config['groups'].values():
                 if group.get('space_id')==info['id']:
-                    target=groups_root(root)/group['relative_path']
-                    if target.is_symlink() or manifest(target/'group.json')['id']!=group['id']:
+                    target=groups_root(root)/group['relative_path']/'agents'
+                    if target.parent.is_symlink() or target.is_symlink() or manifest(target/'group.json')['id']!=group['id']:
                         raise Conflict('Joined group identity changed at the new mount')
-                    group['path']=str(target)
+                    group.update(path=str(target),link=target.parent.as_uri())
         config['spaces'][info['id']]=dict(info,path=str(root))
         config['revision']+=1
         db.execute('UPDATE communication_settings SET document=? WHERE id=1',(json.dumps(config),))
@@ -84,7 +84,7 @@ def group_path(config, args):
         relative=identifier(args.get('relative_path'))
         identifier(args.get('group_id'))  # Join the identity that the user selected, not a replacement.
     path=root/relative
-    if path.is_symlink():raise Invalid('Group discovery does not follow symlinks')
+    if path.is_symlink() or (path/'agents').is_symlink():raise Invalid('Group discovery does not follow symlinks')
     return path,relative
 
 
@@ -96,11 +96,11 @@ def discover(comm):
             folder=groups_root(space_root(config,space['id']))
             if folder.exists():
                 for path in sorted(folder.iterdir()):
-                    if path.is_symlink() or not path.is_dir():continue
+                    if path.is_symlink() or (path/'agents').is_symlink() or not path.is_dir():continue
                     try:
                         from loop_anything.runtime.communication import identifier
                         identifier(path.name)
-                        group=manifest(path/'group.json')
+                        group=manifest(path/'agents'/'group.json')
                         joined=config['groups'].get(group['id'],{})
                         row['groups'].append(dict(group,relative_path=path.name,joined=bool(joined.get('enabled'))))
                     except (OSError,ValueError,Invalid,TypeError,KeyError) as exc:
@@ -113,18 +113,7 @@ def discover(comm):
 def join_instructions(comm, group_id):
     config=comm.settings();group=config['groups'].get(group_id)
     if not group:raise Invalid('Unknown group')
-    if group.get('link'):
-        return {'group_id':group_id,'team_link':group['link'],'instructions':
-            '派单：安装 loop-anything-dispatch Skill，join 保存这个团队链接。接单：安装并运行平台，'
-            'communication_config(operation=team,link=...) 接入；由用户确认主要任务后配置具名 Agent。'
-            '内部表结构自动管理，无需记表 ID。NAS 使用接收机器上的实际挂载路径。'}
-    space=config.get('spaces',{}).get(group.get('space_id'))
-    where=(f"配置共享空间「{space['name']}」（ID：{space['id']}），在发现列表中选择此群组。\n群组相对目录：groups/{group['relative_path']}"
-           if space else '在“直接加入已有群组目录”中填写这个群组在目标机器上的实际挂载路径。')
-    return {'group_id':group_id,'instructions':f"加入 Loop Anything 群组「{group['name']}」\n群组 ID：{group_id}\n"
-        '1. 向共享空间提供者取得 NAS 地址和访问权限，先在目标机器挂载。\n'
-        f'2. 打开“Agent 通信”。{where}\n'
-        '3. 核对群组 ID 后点击加入。各机器本地挂载路径可以不同。\n'
-        '4. 如需提供服务，先向用户询问并确认 Agent 主要任务及开放群组，再填写说明、配置本机 CLI/工作目录/恢复命令并确认公开；Agent 不可自拟说明代替用户确认。也可只调用别人。\n'
-        '5. 在成员列表检查对方 Agent，给 Loop / Run 绑定群组或给普通对话设置默认群组。\n'
-        '群组 ID 仅用于核对身份，NAS 权限负责访问控制。此说明不包含命令或凭据。'}
+    return {'group_id':group_id,'team_link':group['link'],'instructions':
+        '派单：安装 loop-anything-dispatch Skill，join 保存这个团队链接。接单：安装并运行平台，'
+        'communication_config(operation=team,link=...) 接入；由用户确认主要任务后配置具名 Agent。'
+        '内部表结构自动管理，无需记表 ID。NAS 使用接收机器上的实际挂载路径。'}

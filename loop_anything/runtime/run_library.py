@@ -25,25 +25,6 @@ def meaningful_event(kind, detail=None):
 
 def initialize(db):
     db.execute('CREATE TABLE IF NOT EXISTS loop_library (key TEXT PRIMARY KEY, archived_at REAL)')
-    # Headers contain all searchable metadata; never load Task/record bodies for a list.
-    db.execute("""UPDATE runs SET document=json_set(document,'$.last_activity_at',
-        coalesce((SELECT max(json_extract(p.document,'$.at')) FROM timeline_parts p
-                  WHERE p.run_id=runs.id AND p.section='history'
-                  AND json_extract(p.document,'$.kind') NOT IN
-                    ('observation','monitor_skipped','stale_monitor_report','agent_acquired','agent_released')
-                  AND NOT (json_extract(p.document,'$.kind')='transition'
-                    AND json_extract(p.document,'$.detail.event') IN ('progress','check_error')
-                    AND json_extract(p.document,'$.detail.from')=json_extract(p.document,'$.detail.to'))),
-                 (SELECT max(json_extract(h.value,'$.at')) FROM json_each(runs.document,'$.history') h
-                  WHERE json_extract(h.value,'$.kind') NOT IN
-                    ('observation','monitor_skipped','stale_monitor_report','agent_acquired','agent_released')
-                  AND NOT (json_extract(h.value,'$.kind')='transition'
-                    AND json_extract(h.value,'$.detail.event') IN ('progress','check_error')
-                    AND json_extract(h.value,'$.detail.from')=json_extract(h.value,'$.detail.to'))),
-                 json_extract(document,'$.created_at'),0))
-        WHERE json_type(document,'$.last_activity_at') IS NULL
-          OR (json_extract(document,'$._storage') IS NOT 2
-              AND json_extract(document,'$.last_activity_at')=json_extract(document,'$.created_at'))""")
     for name, fields in {
         'runs_activity': "json_extract(document,'$.last_activity_at') DESC, id",
         'runs_created': "json_extract(document,'$.created_at') DESC, id",
@@ -67,10 +48,11 @@ def list_runs(store, query='', status='', created_by=None, loop_key='', loop_id=
     if type(root_only) is not bool or kind not in ('', 'workflow', 'collaboration'):
         raise Invalid('Invalid root_only or kind')
     j = lambda key: "json_extract(r.document,'$."+key+"')"
+    status_sql="CASE WHEN "+j('superseded_by')+" IS NOT NULL THEN 'continued' ELSE "+j('status')+" END"
     author = "coalesce("+j('created_by')+",'')"
     filters, args = [], []
     for key, value in [('status', status), ('loop_key', loop_key), ('parent_call.run_id', parent_run_id)]:
-        if value is not None and value != '': filters.append(j(key)+'=?'); args.append(value)
+        if value is not None and value != '': filters.append((status_sql if key=='status' else j(key))+'=?'); args.append(value)
     if loop_id: filters.append("json_extract(l.document,'$.id')=?"); args.append(loop_id)
     if created_by is not None: filters.append(author+'=?'); args.append(user_name(created_by))
     if root_only: filters.append(j('parent_call.run_id')+' IS NULL')
@@ -81,19 +63,20 @@ def list_runs(store, query='', status='', created_by=None, loop_key='', loop_id=
         if value is not None:
             if type(value) not in (int,float) or not math.isfinite(value):raise Invalid('Date bounds must be finite Unix timestamps')
             filters.append(j(field)+op+'?'); args.append(value)
+    objective="coalesce(json_extract(w.document,'$.objective'),'')"
     if query:
         if not isinstance(query,str):raise Invalid('query must be text')
         filters.append("instr(lower(r.id||' '||coalesce("+j('title')+",'')||' '||"+author+
-                       "||' '||coalesce(json_extract(l.document,'$.name'),'')||' '||coalesce("+j('settings.objective')+",'')),lower(?))>0")
+                       "||' '||coalesce(json_extract(l.document,'$.name'),'')||' '||"+objective+"),lower(?))>0")
         args.append(query)
-    base=' FROM runs r LEFT JOIN loop_definitions l ON l.key='+j('loop_key')
+    base=' FROM runs r LEFT JOIN loop_definitions l ON l.key='+j('loop_key')+' LEFT JOIN work_timelines w ON w.id='+j('timeline_id')
     where=' WHERE '+' AND '.join(filters) if filters else ''
-    fields=['r.id AS id']+[j(k)+' AS '+k for k in ('title','status','loop_key','created_at','last_activity_at','archived_at','revision')]
+    fields=['r.id AS id']+[(status_sql if k=='status' else j(k))+' AS '+k for k in ('title','status','loop_key','created_at','last_activity_at','archived_at','revision')]
     fields += [author+' AS created_by', "coalesce("+j('metadata_revision')+",0) AS metadata_revision",
                "json_extract(l.document,'$.name') AS loop_name", "json_extract(l.document,'$.id') AS loop_id",
-               j('parent_call.run_id')+' AS parent_run_id', j('settings.objective')+' AS objective',
+               j('parent_call.run_id')+' AS parent_run_id', objective+' AS objective', j('timeline_id')+' AS timeline_id',
                "CASE WHEN "+j('collaboration')+" IS NULL THEN 'workflow' ELSE 'collaboration' END AS kind",
-               "CASE WHEN "+j('_storage')+"=2 THEN (SELECT count(*) FROM timeline_parts p WHERE p.run_id=r.id AND p.section='attempts') ELSE coalesce(json_array_length(r.document,'$.executions'),0) END AS execution_count"]
+               "(SELECT count(*) FROM timeline_parts p WHERE p.run_id=r.id AND p.section='attempts') AS execution_count"]
     with store.connection() as db:
         db.execute('BEGIN')
         total=db.execute('SELECT count(*)'+base+where,args).fetchone()[0]
@@ -107,28 +90,32 @@ def list_runs(store, query='', status='', created_by=None, loop_key='', loop_id=
 
 
 def update_run(store, run_id, metadata_revision, title=None, created_by=None, archived=None):
+    with store.edit(run_id) as run:
+        return update_run_in_run(store, run, metadata_revision, title, created_by, archived)
+
+
+def update_run_in_run(store, run, metadata_revision, title=None, created_by=None, archived=None):
     if title is not None and (not isinstance(title,str) or not title.strip() or len(title)>500):
         raise Invalid('title must be nonempty text of at most 500 characters')
     if created_by is not None:created_by=user_name(created_by)
     if archived is not None and type(archived) is not bool:raise Invalid('archived must be boolean')
-    with store.edit(run_id) as run:
-        if type(metadata_revision) is not int or metadata_revision!=run.get('metadata_revision',0):
-            raise Conflict('Run metadata changed; reload its summary')
-        before=(run['title'],run.get('created_by',''),run.get('archived_at'))
-        if title is not None:run['title']=title.strip()
-        if created_by is not None:run['created_by']=created_by
-        if archived is not None:run['archived_at']=(run.get('archived_at') or time.time()) if archived else None
-        if before!=(run['title'],run.get('created_by',''),run.get('archived_at')):
-            run['metadata_revision']=run.get('metadata_revision',0)+1
-            store.log(run,'run_metadata','Run library information updated')
-        result={k:run.get(k) for k in ('id','title','created_by','archived_at','last_activity_at','metadata_revision')}
+    if type(metadata_revision) is not int or metadata_revision!=run.get('metadata_revision',0):
+        raise Conflict('Run metadata changed; reload its summary')
+    before=(run['title'],run.get('created_by',''),run.get('archived_at'))
+    if title is not None:run['title']=title.strip()
+    if created_by is not None:run['created_by']=created_by
+    if archived is not None:run['archived_at']=(run.get('archived_at') or time.time()) if archived else None
+    if before!=(run['title'],run.get('created_by',''),run.get('archived_at')):
+        run['metadata_revision']=run.get('metadata_revision',0)+1
+        store.log(run,'run_metadata','Run library information updated')
+    result={k:run.get(k) for k in ('id','title','created_by','archived_at','last_activity_at','metadata_revision')}
     return result
 
-
-def delete_run(store, run_id, metadata_revision):
+def delete_run(store, run_id, metadata_revision, _db=None):
     from loop_anything.runtime.task_scope import process_active
-    with store.connection() as db:
-        db.execute('BEGIN IMMEDIATE')
+    from contextlib import nullcontext
+    with (nullcontext(_db) if _db is not None else store.connection()) as db:
+        if not db.in_transaction:db.execute('BEGIN IMMEDIATE')
         run=store._load(db,run_id)
         if type(metadata_revision) is not int or metadata_revision!=run.get('metadata_revision',0):
             raise Conflict('Run metadata changed; reload before deleting')
@@ -141,6 +128,10 @@ def delete_run(store, run_id, metadata_revision):
             row=db.execute('SELECT document FROM runs WHERE id=?',(parent,)).fetchone()
             if row and json.loads(row[0])['status'] not in ('completed','terminated'):
                 raise Conflict('The parent Run still needs this child result')
+        if db.execute("SELECT 1 FROM runs WHERE json_extract(document,'$.continued_from')=? LIMIT 1",(run_id,)).fetchone():
+            raise Conflict('Continuation Run still references this execution history; archive instead')
+        if db.execute("SELECT 1 FROM work_state WHERE json_extract(document,'$.run_id')=? LIMIT 1",(run_id,)).fetchone() or db.execute("SELECT 1 FROM work_arrangements WHERE json_extract(document,'$.run_id')=? LIMIT 1",(run_id,)).fetchone():
+            raise Conflict('Timeline business state or work still references this Run; archive instead')
         tables={row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if 'execution_sessions' in tables and db.execute("SELECT 1 FROM execution_sessions WHERE run_id=? AND json_extract(document,'$.state') IN ('starting','running','interrupted') LIMIT 1",(run_id,)).fetchone():
             raise Conflict('Run still has an active or unconfirmed execution session')
@@ -160,9 +151,16 @@ def delete_run(store, run_id, metadata_revision):
             for job in db.execute("SELECT json_extract(document,'$.metadata.run_id') AS run_id,json_extract(document,'$.metadata.request_id') AS request_id FROM executor_calls WHERE json_extract(document,'$.applied') IS NOT 1"):
                 if job['run_id']==run_id or job['request_id'] in linked_ids:
                     raise Conflict('Wait for the remote execution receipt to be applied before deleting this Run')
+        if run.get('timeline_id'):
+            from loop_anything.runtime import timelines
+            timeline=timelines.get(db,run['timeline_id'])
+            if timeline.get('active_run_id')==run_id:
+                timeline['active_run_id']=None;timelines.save(db,timeline)
+            timelines.append(db,timeline['id'],'deleted:'+run_id,'用户删除了此 Run 的执行记录；Timeline 保留。','action',
+                             [{'run_id':run_id,'deleted':True}],actor='platform')
         db.execute('DELETE FROM timeline_parts WHERE run_id=?',(run_id,))
         db.execute('DELETE FROM runs WHERE id=?',(run_id,))
-        db.commit()
+        if _db is None:db.commit()
     return {'deleted':True,'run_id':run_id}
 
 

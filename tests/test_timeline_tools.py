@@ -23,7 +23,7 @@ class ToolTests(unittest.TestCase):
                          'initialize_timeline': True, 'plan_nodes': ['finish']},
                 'finish': {'instructions': 'Finish', 'inputs': {'value': text}, 'outputs': {'result': {'record_type': 'text'}}}},
             'seed': {'id': 'initial', 'node': 'init', 'inputs': {}, 'outputs': {'result': {'id': 'initial-result'}}}, 'rules': []}
-        self.implementations = {k: {'kind': 'agent'} for k in self.bp['nodes']}
+        self.implementations = {k: {'options': {'default': {'kind': 'agent'}}, 'default': 'default'} for k in self.bp['nodes']}
 
     def tearDown(self):
         self.engine.close()
@@ -39,7 +39,7 @@ class ToolTests(unittest.TestCase):
 
     def complete(self, task_id='initial', **envelope):
         info = self.tools.call('read_task', {'task_id': task_id})
-        return self.tools.respond('complete_task', {'task_id': task_id, 'task_version': info['task_version'], 'envelope': envelope})
+        return self.tools.respond('report_task', {'event':'completed','report_id':'complete','task_id': task_id, 'envelope': envelope})
 
     def test_invalid_result_rolls_back_all_writes_then_valid_result_commits_immediately(self):
         self.start()
@@ -76,7 +76,7 @@ class ToolTests(unittest.TestCase):
             'evaluate': {'node': 'evaluate', 'each': 'experiments', 'inputs': {'experiment': {'literal': value('item')}}},
             'reason': {'node': 'reason', 'inputs': {'plan': ref(value('values.plan_record')),
                 'metrics': {'from': 'evaluate', 'port': 'metric', 'collect': True}}}}}}
-        self.implementations = {k: {'kind': 'agent'} for k in self.bp['nodes']}
+        self.implementations = {k: {'options': {'default': {'kind': 'agent'}}, 'default': 'default'} for k in self.bp['nodes']}
         self.start()
         task = self.tools.call('read_task', {'task_id': self.e['task_id']})
         candidates = [{'id': 'a', 'x': .3, 'dropout': .1}, {'id': 'b', 'x': .6, 'dropout': .1}]
@@ -84,7 +84,7 @@ class ToolTests(unittest.TestCase):
             'experiments': candidates, 'plan_record': task['task']['spec']['outputs']['plan']['id']}})['tasks']
         self.assertEqual(4, len(self.store.get(self.run_id)['tasks']))
         metric_ids = [w['outputs']['metric']['id'] for w in batch if w['node'] == 'evaluate']
-        self.tools.call('complete_task', {'task_id': self.e['task_id'], 'task_version': task['task_version'], 'envelope': {
+        self.tools.call('report_task', {'event':'completed','report_id':'complete','task_id': self.e['task_id'], 'envelope': {
             'settings': {'objective': 'Compare candidates'},
             'outputs': {'plan': {'experiments': candidates, 'metric_ids': metric_ids}}}})
         run = self.store.get(self.run_id)
@@ -110,13 +110,15 @@ class ToolTests(unittest.TestCase):
 
 
 
-    def test_partitioned_storage_roundtrip_rollback_and_legacy_migration(self):
+    def test_partitioned_storage_roundtrip_rollback_ignores_redundant_header_data(self):
         self.start()
         self.assertTrue(self.complete(settings={'objective': 'Store'}, outputs={'result': 'source'})['ok'])
         run = self.store.get(self.run_id)
         with self.store.connection() as db:
             header = json.loads(db.execute('SELECT document FROM runs').fetchone()[0])
-            self.assertEqual(2, header['_storage'])
+            self.assertNotIn('_storage', header)
+            self.assertGreater(db.execute('SELECT count(*) FROM work_results').fetchone()[0],0)
+            self.assertEqual(db.execute("SELECT count(*) FROM timeline_parts WHERE section='records'").fetchone()[0],0)
             for key in ('tasks', 'executions', 'records', 'history', 'loop_definition'):
                 self.assertNotIn(key, header)
             self.assertGreater(db.execute("SELECT count(*) FROM timeline_parts WHERE section='tasks'").fetchone()[0], 0)
@@ -126,17 +128,30 @@ class ToolTests(unittest.TestCase):
                 edited['settings']['objective'] = 'partial'
                 raise RuntimeError('rollback')
         self.assertEqual(run, self.store.get(self.run_id))
-        # Simulate an old unpartitioned row. A normal edit migrates it losslessly.
         with self.store.connection() as db:
-            db.execute('UPDATE runs SET document=? WHERE id=?', (json.dumps(run), self.run_id))
-            db.commit()
-        with self.store.edit(self.run_id) as edited:
-            edited['title'] = 'Migrated'
-        after = self.store.get(self.run_id)
-        self.assertEqual(run['executions'], after['executions'])
-        self.assertEqual(run['history'], after['history'])
-        self.assertEqual([self.run_id], [r['id'] for r in self.store.scheduling_list()])
+            db.execute('UPDATE runs SET document=? WHERE id=?', (json.dumps(run), self.run_id));db.commit()
+        self.assertEqual(self.store.get(self.run_id),run)
+        self.assertEqual(Store(self.store.filename).get(self.run_id),run)
+        with self.store.connection() as db:
+            self.assertEqual(json.loads(db.execute('SELECT document FROM runs').fetchone()[0]),run)
 
+
+    def test_storage_number_does_not_reject_structurally_valid_data(self):
+        self.start()
+        self.assertTrue(self.complete(settings={'objective':'Keep usable work'},outputs={'result':'kept'})['ok'])
+        expected=self.store.get(self.run_id)
+        for marker in (3,4,999,None):
+            with self.subTest(marker=marker):
+                with self.store.connection() as db:
+                    header=json.loads(db.execute('SELECT document FROM runs WHERE id=?',(self.run_id,)).fetchone()[0])
+                    if marker is None:header.pop('_storage',None)
+                    else:header['_storage']=marker
+                    db.execute('UPDATE runs SET document=? WHERE id=?',(json.dumps(header),self.run_id));db.commit()
+                reopened=Store(self.store.filename)
+                self.assertEqual(reopened.get(self.run_id),expected)
+                with reopened.edit(self.run_id) as run:run['title']='Still usable'
+                expected=reopened.get(self.run_id)
+                self.assertEqual(expected['records']['initial-result'][0]['value'],'kept')
 
     def test_visual_and_agent_task_edits_share_conflicts_cycles_and_history(self):
         from loop_anything.interfaces.agent_tasks import edit_tasks
@@ -147,32 +162,24 @@ class ToolTests(unittest.TestCase):
         before = self.store.get(self.run_id)
         change = {'tool': 'change_task', 'arguments': {'task_id': a['id'], 'operation': 'update', 'after': [b['id']], 'reason': 'cycle'}}
         with self.assertRaises(Invalid):
-            edit_tasks(self.store, self.run_id, [change], before['revision'])
-        with self.assertRaises(Conflict):
-            edit_tasks(self.store, self.run_id, [change], before['revision'] - 1, self.e['token'])
+            edit_tasks(self.store, self.run_id, [change])
         with self.assertRaises(Invalid):
-            edit_tasks(self.store, self.run_id, [change], before['revision'], self.e['token'])
+            edit_tasks(self.store, self.run_id, [change], token=self.e['token'])
         self.assertEqual(before, self.store.get(self.run_id))
         change['arguments'].update(after=[], parameters={'threshold': 0.5})
-        preview = edit_tasks(self.store, self.run_id, [change], before['revision'], self.e['token'], preview=True)
+        preview = edit_tasks(self.store, self.run_id, [change], token=self.e['token'],  preview=True)
         self.assertEqual(before, self.store.get(self.run_id))
         self.assertEqual(0.5, preview['changes'][0]['after']['spec']['parameters']['threshold'])
-        updated = edit_tasks(self.store, self.run_id, [change], before['revision'], self.e['token'])
+        updated = edit_tasks(self.store, self.run_id, [change], token=self.e['token'])
         self.assertEqual(before['executions'], updated['executions'])
         self.assertEqual(before['records'], updated['records'])
         self.assertEqual(0.5, updated['history'][-1]['detail']['after']['parameters']['threshold'])
         self.assertTrue(self.complete(task_id=a['id'], outputs={'result': 'A'})['ok'])
         finished = self.store.get(self.run_id)
         with self.assertRaises(Conflict):
-            edit_tasks(self.store, self.run_id, [change], finished['revision'], self.e['token'])
+            edit_tasks(self.store, self.run_id, [change], token=self.e['token'])
         self.assertEqual(finished, self.store.get(self.run_id))
-        with self.store.edit(self.run_id) as historical:
-            historical.pop('operator_protocol', None)
-            historical['agent_sessions'] = []
-        historical = self.store.get(self.run_id)
-        with self.assertRaises(Conflict):
-            edit_tasks(self.store, self.run_id, [change], historical['revision'])
-        self.assertEqual(historical, self.store.get(self.run_id))
+
 
 
 if __name__ == '__main__':

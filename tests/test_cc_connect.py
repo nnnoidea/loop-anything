@@ -69,8 +69,9 @@ class CCConnectTests(unittest.TestCase):
         # An unavailable notification Bot must not block disabling its Agent.
         self.tools.call('communication_config',{'operation':'agent','agent_id':'papers','agent':{'enabled':False,'notification_bot':bot}})
         self.assertFalse(comm.settings()['agents']['papers']['enabled'])
-        self.tools.call('communication_config',{'operation':'agent','agent_id':'papers','agent':{'notification_route':'legacy'}})
-        self.assertIsNone(comm.settings()['agents']['papers']['notification_bot'])
+        with self.assertRaises(Invalid):
+            self.tools.call('communication_config',{'operation':'agent','agent_id':'papers','agent':{'notification_route':'retired'}})
+        self.assertEqual(comm.settings()['agents']['papers']['notification_bot'],bot)
 
     def test_no_guessed_path_and_missing_connection_does_not_block_business(self):
         with self.assertRaises(Invalid):self.tools.call('configure_cc_connect',{'revision':0,'connection':{'executable':str(self.cli)}})

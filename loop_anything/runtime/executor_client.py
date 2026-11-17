@@ -41,7 +41,8 @@ class Receiver:
 
     def read_receipt(self, path):
         value=json.loads(path.read_text(encoding='utf-8'))
-        return core.read_message(path) if value.get('transport') in ('snapshot-v1','parts-v1') else value
+        if not isinstance(value,dict) or 'transport' in value:raise ValueError('Unsupported local execution receipt')
+        return value
 
     def result_file(self, ident):return self.root/'results'/(core.address(ident)+'.json')
 
@@ -160,13 +161,19 @@ class Receiver:
         try:
             spec=copy.deepcopy(job['packet']['payload'])
             team=spec.pop('team_root',None)
+            resource_root=None
+            if spec.get('resources'):
+                from loop_anything.runtime.executor_resources import materialize
+                with self.lock:resource_root=materialize(spec.pop('resources'),self.root/'resources')
+                spec['cwd']=module('platform_transport').mount_path(spec.get('cwd'),job['packet']['payload']['resources']['roots'],str(resource_root))
             if team and self.nas:
                 spec['cwd']=module('platform_transport').mount_path(spec.get('cwd'),[team],str(self.nas))
             if team:
                 spec['command']=[arg.replace('{{team_root}}',str(self.nas or team)) for arg in spec['command']]
+            context=None
             if 'prompt_context' in spec:
                 from loop_anything.runtime.agent_prompt import receiver_context
-                context=receiver_context(spec['prompt_context'],team,str(self.nas) if self.nas else None)
+                context=receiver_context(spec['prompt_context'],team,str(self.nas) if self.nas else None,resource_root)
                 encoded=json.dumps(context,ensure_ascii=False,indent=spec.get('prompt_indent'))
                 template=spec.get('prompt_template')
                 spec['prompt']=encoded if template is None else template.replace('{{context}}',encoded)
@@ -191,7 +198,7 @@ class Receiver:
                 job['update'].update(state='completed',execution_state='not_started',result={'returncode':0,'stdout':'','stderr':''})
                 return
             with self.lock:job['update']['state']='running'
-            result=run_command(spec['command'],spec['prompt'],spec.get('timeout'),spec.get('cwd'),job['stop'],session)
+            result=run_command(spec['command'],spec['prompt'],spec.get('timeout'),spec.get('cwd'),job['stop'],session,context=context)
             with self.lock:
                 job['unsaved_result']={'returncode':result.returncode,'stdout':result.stdout,'stderr':result.stderr}
                 self.save_result(job,job['unsaved_result'])

@@ -83,8 +83,7 @@ def main():
             info = operator('read_task', {'task_id': replan_id})
             operator('build_plan', {'name': 'confirm', 'key': 'confirm-user-change',
                 'values': {'proposal_record': info['task']['spec']['outputs']['proposal']['id']}})
-            operator('complete_task', {'task_id': replan_id, 'task_version': info['task_version'],
-                'envelope': {'outputs': {'proposal': {'id': 'user-' + replan_id, 'destination': '北京', 'amount': 2200,
+            operator('report_task', {'event':'completed','report_id':'complete','task_id': replan_id, 'envelope': {'outputs': {'proposal': {'id': 'user-' + replan_id, 'destination': '北京', 'amount': 2200,
                     'reason': 'Simulated user Agent implementing the explicit changed requirements'}}}})
             operator('finish')
             until(id, lambda r: any(e['node'] == 'approve' and e['id'] != old['id'] and e['status'] == 'approval' for e in r['executions']))

@@ -27,8 +27,6 @@ def validate_routes(bp):
             allowed = required | ({'when'} if flow else {'each', 'when', 'steps', 'round'})
             if not isinstance(route, dict) or not required <= set(route) or set(route) - allowed:
                 raise Invalid('Route needs id/event and either flow_agent=true (+when) or plan/values (+each/when/steps/round)', path=here)
-            if flow and bp.get('flow_agent') is None:
-                raise Invalid('Configure Loop flow_agent before using a flow_agent route', path=here)
             for field in ('id', 'event'):
                 if not isinstance(route[field], str) or not re.fullmatch(r'[a-zA-Z0-9_-]+', route[field]):
                     raise Invalid('Route ' + field + ' must be a nonempty identifier', path=here + [field])
@@ -77,8 +75,13 @@ def prepare_routes(run, execution, report, context):
 
     This also protects timer/event callers which catch errors within Store.edit.
     """
+    if run.get('superseded_by'):return [], []
     node = run['loop_definition']['nodes'][execution['node']]
     routes = [r for r in node.get('routes', []) if r['event'] == report['event']]
+    if run.get('steward') and not node.get('builtin') and not node.get('initialize_timeline') and report['event'] == 'completed':
+        progression = node.get('progression')
+        if progression == 'steward' or (progression is None and not routes):
+            routes = [{'id': 'return-to-steward', 'event': 'completed', 'flow_agent': True}]
     if not routes:
         return [], []
     shadow = copy.deepcopy(run)

@@ -126,7 +126,7 @@ class SessionAuditTests(unittest.TestCase):
         run=self.store.create(key,'User operated',acquire=True)
         token=run['agent_sessions'][0]['token'];tools=RunTools(self.store,run['id'],token)
         task=tools.call('read_task',{'task_id':'init'})
-        tools.call('complete_task',{'task_id':'init','task_version':task['task_version'],'envelope':{'settings':{'objective':'Inspect'},'outputs':{'result':'manual'}}})
+        tools.call('report_task', {'event':'completed','report_id':'complete','task_id':'init','envelope':{'settings':{'objective':'Inspect'},'outputs':{'result':'manual'}}})
         execution_id=self.store.get(run['id'])['executions'][0]['id']
         value=tools.call('register_agent_session',{'execution_id':execution_id,'provider':'codex','session_id':'native-exact-123','cwd':self.case.tmp.name})
         self.assertEqual('native-exact-123',value['native_session']['id'])

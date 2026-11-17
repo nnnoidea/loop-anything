@@ -8,7 +8,7 @@ from urllib.request import Request, urlopen
 
 def call(context, tool, arguments):
     def invoke(name, values):
-        body = {'tool': 'communication_execute', 'arguments': {'request_id': context['request_id'], 'token': context['token'], 'tool': name, 'arguments': values}}
+        body = {'expected_workspace':context.get('workspace_id') or context.get('self',{}).get('workspace_id'), 'tool': 'communication_execute', 'arguments': {'request_id': context['request_id'], 'token': context['token'], 'tool': name, 'arguments': values}}
         from call import fetch
         result=fetch((context.get('execution_url') or context['platform_url']).rstrip('/')+'/api/tools',json.dumps(body).encode())
         if result.get('pending'):

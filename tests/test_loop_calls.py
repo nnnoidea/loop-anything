@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 import test_timeline_runtime as fixture
-from loop_anything.interfaces.agent_tasks import RunTools
+from loop_anything.interfaces.agent_tasks import RunTools, acquire
 from loop_anything.interfaces.platform_tools import PlatformTools
 from loop_anything.runtime.engine import Engine
 from loop_anything.runtime.model import Invalid,digest
@@ -23,8 +23,8 @@ class LoopCallTests(unittest.TestCase):
             'handbook':{'instructions':'Return the given request and finish.'},'records':{'text':{'type':'string'}},
             'nodes':{'init':fixture.node({'request':{'type':'string'}},{'answer':'text'},initialize_timeline=True)},
             'seed':fixture.task_spec('init','init',{'request':{'run':'request'}},{'answer':'answer'}),'rules':[]}
-        code='import json,sys;from pathlib import Path;c=json.load(sys.stdin);p=Path('+repr(str(self.effect))+');p.write_text(p.read_text()+"x" if p.exists() else "x");print(json.dumps({"settings":{"objective":"Child work","termination_signal":"Child finished"},"outputs":{"answer":c["inputs"]["request"]+"!"}}))'
-        self.child_impl={'init':{'kind':'command','command':[sys.executable,'-c',code]}}
+        code='import json,sys;from pathlib import Path;c=json.load(sys.stdin);p=Path('+repr(str(self.effect))+');p.write_text(p.read_text()+"x" if p.exists() else "x");print(json.dumps({"event":"completed","envelope":{"settings":{"objective":"Child work","termination_signal":"Child finished"},"outputs":{"answer":c["inputs"]["request"]+"!"}}}))'
+        self.child_impl={'init':{'options': {'default': {'kind':'command','command':[sys.executable,'-c',code]}}, 'default': 'default'}}
         self.key=self.store.publish(self.child_bp,self.child_impl)['key']
 
     def tearDown(self):self.base.tearDown()
@@ -33,8 +33,8 @@ class LoopCallTests(unittest.TestCase):
         return {'kind':'loop','loop':{'key':self.key,'inputs':{'request':{'$':'inputs.source'}},
             'result':{'outputs':{'text':{'$':'records.answer'}}}}}
 
-    def start(self, config=None, two=False):
-        self.base.implementations['produce']=config or self.config()
+    def start(self, config=None, two=False, candidates=None):
+        self.base.implementations['produce']=candidates if candidates is not None else {'options': {'default': config or self.config()}, 'default': 'default'}
         tasks=[fixture.task_spec('call','produce',{'source':{'record':'a'}},{'text':'result'})]
         if two:tasks.append(fixture.task_spec('second','produce',{'source':{'record':'b'}},{'text':'other'}))
         self.base.initialize(tasks)
@@ -54,6 +54,17 @@ class LoopCallTests(unittest.TestCase):
     def child(self, task='call'):
         return self.store.get(self.base.read()['tasks'][task]['child_call']['run_id'])
 
+    def test_called_work_follows_continuation_without_second_submission(self):
+        self.start();self.engine.tick(self.base.id)
+        original=self.child()
+        replacement=self.store.create(original['loop_key'],'continued child',timeline_id=original['timeline_id'],continue_run_id=original['id'])
+        self.until(lambda:self.base.read()['tasks']['call']['status']=='completed')
+        self.assertEqual(self.base.read()['tasks']['call']['child_call']['run_id'],original['id'])
+        self.assertEqual(self.base.read()['records']['result'][-1]['value'],'A!')
+        self.assertEqual(self.store.get(replacement['id'])['status'],'completed')
+        self.assertEqual(self.effect.read_text(),'x')
+        self.assertEqual(len(self.store.list()),3)
+
     def test_input_output_mapping_and_one_child_per_task(self):
         self.start(two=True)
         with self.store.edit(self.base.id) as parent:parent['created_by']='tdh'
@@ -63,7 +74,7 @@ class LoopCallTests(unittest.TestCase):
         self.assertNotEqual(self.child()['id'],self.child('second')['id'])
         self.assertEqual(self.child()['parent_call']['run_id'],self.base.id)
         self.assertEqual(self.child()['created_by'],'tdh')
-        self.assertEqual(self.child()['settings']['authorization'],run['settings']['authorization'])
+        self.assertEqual(self.child()['settings']['constraints'],run['settings']['constraints'])
         for _ in range(4):self.tick()
         self.assertEqual(self.effect.read_text(),'xx');self.assertEqual(len(self.store.list()),3)
         task=RunTools(self.store,self.base.id).call('read_task',{'task_id':'call'})
@@ -92,16 +103,16 @@ class LoopCallTests(unittest.TestCase):
 
     def test_mapping_error_and_retry_reuse_child_without_repeating_work(self):
         config=self.config();config['loop']['result']={'outputs':{'text':{'$':'records.absent'}}}
-        self.start({'default':'bad','options':{'bad':config,'corrected':self.config()}})
+        self.start(candidates={'default':'bad','options':{'bad':config,'corrected':self.config()}})
         self.until(lambda:self.base.read()['tasks']['call']['status']=='fault')
         ident=self.child()['id'];attempt=self.base.read()['tasks']['call']['execution_id']
         self.engine.command(self.base.id,'retry',attempt)
         self.until(lambda:self.base.read()['tasks']['call']['status']=='fault')
         self.assertEqual(self.child()['id'],ident);self.assertEqual(self.effect.read_text(),'x')
         self.assertEqual(len(self.store.list()),2)
-        tools=PlatformTools(self.store);basis=tools.call('read_task',{'run_id':self.base.id,'task_id':'call'})['basis']
-        tools.call('change_task',{'run_id':self.base.id,'task_id':'call','operation':'retry','implementation':'corrected',
-            'reason':'Use corrected result mapping','basis':basis})
+        tools=PlatformTools(self.store)
+        tools.call('change_task',{'run_id':self.base.id,'token':acquire(self.store,self.base.id)['token'],'task_id':'call','operation':'retry','implementation':'corrected',
+            'reason':'Use corrected result mapping'})
         self.until(lambda:self.base.read()['tasks']['call']['status']=='completed')
         self.assertEqual(self.base.read()['records']['result'][-1]['value'],'A!')
         self.assertEqual(self.child()['id'],ident);self.assertEqual(self.effect.read_text(),'x')
@@ -156,21 +167,21 @@ class LoopCallTests(unittest.TestCase):
         capability=tools.call('read_capabilities',{'capability':'loop_calls'})
         self.assertIn('set_implementation',capability['guide']['loop_calls']['tools'])
         from loop_anything.capabilities import required_capabilities
-        self.assertIn('loop_calls',required_capabilities(self.base.bp,{'produce':self.config()}))
+        self.assertIn('loop_calls',required_capabilities(self.base.bp,{'produce':{'options':{'default':self.config()},'default':'default'}}))
         for bad in ({'kind':'loop'},{'kind':'loop','loop':{'key':self.key,'unknown':1}},dict(self.config(),command=['unused'])):
             with self.assertRaises(Invalid):validate_implementation(bad)
 
     def test_child_agent_entry_uses_its_own_registered_implementation(self):
-        self.child_impl['init']={'kind':'agent','command':[sys.executable,'-c',r'''import json,sys
+        self.child_impl['init']={'options': {'default': {'kind':'agent','command':[sys.executable,'-c',r'''import json,sys
 from pathlib import Path
 c=json.loads(sys.stdin.read().rsplit('Run context:\n',1)[1]);sys.path.insert(0,str(Path(c['platform_client']).parent))
 from call import fetch
 def call(name,args):
  args.update(run_id=c['run_id'],token=c['token']);r=fetch(c['platform_url']+'/api/tools',json.dumps({'tool':name,'arguments':args}).encode());assert r.get('ok'),r;return r
 i=call('read_task',{'task_id':c['task_id']})
-call('report_task',{'task_id':c['task_id'],'task_version':i['task_version'],'event':'completed','report_id':'child','envelope':{'settings':{'objective':'Child','termination_signal':'done'},'outputs':{'answer':i['inputs']['request']+'!'}}})
+call('report_task',{'task_id':c['task_id'],'event':'completed','report_id':'child','envelope':{'settings':{'objective':'Child','termination_signal':'done'},'outputs':{'answer':i['inputs']['request']+'!'}}})
 call('finish',{})
-''']}
+''']}}, 'default': 'default'}
         self.key=self.store.publish(self.child_bp,self.child_impl)['key']
         from loop_anything.runtime.tool_mailbox import ToolMailbox
         box=ToolMailbox(self.store,Path(self.base.tmp.name)/'team',self.engine);self.engine.platform_url='nas://'+str(box.root)
@@ -182,7 +193,7 @@ call('finish',{})
 
     def test_recursive_call_fails_without_creating_another_run(self):
         bp=copy.deepcopy(self.child_bp)
-        implementation={'init':{'kind':'loop','loop':{'key':'recursive'}}}
+        implementation={'init':{'options':{'default':{'kind':'loop','loop':{'key':'recursive'}}},'default':'default'}}
         with self.store.connection() as db:
             db.execute('INSERT INTO loop_definitions VALUES (?,?,?,?)',('recursive',digest(bp),json.dumps(bp),json.dumps(implementation)));db.commit()
         run=self.store.create('recursive','Recursive',{'request':'test'})
@@ -194,7 +205,7 @@ call('finish',{})
         bp=copy.deepcopy(self.child_bp);bp['id']='parent'
         config={'kind':'loop','loop':{'key':self.key,'result':{'settings':{'objective':'Parent','termination_signal':'Finished'},
             'outputs':{'answer':{'$':'records.answer'}}}}}
-        key=self.store.publish(bp,{'init':config})['key']
+        key=self.store.publish(bp,{'init':{'options':{'default':config},'default':'default'}})['key']
         run=self.store.create(key,'Parent',{'request':'Input'})
         end=time.monotonic()+5
         while time.monotonic()<end and self.store.get(run['id'])['status']!='completed':self.tick();time.sleep(.02)
@@ -202,7 +213,7 @@ call('finish',{})
         self.assertEqual(parent['status'],'completed');self.assertEqual(parent['records']['answer'][-1]['value'],'Input!')
         from loop_anything.packaging.scenarios import run_scenarios
         before=self.store.list()
-        result=run_scenarios({'loop_definition':bp,'implementations':{'init':config}},[{
+        result=run_scenarios({'loop_definition':bp,'implementations':{'init':{'options':{'default':config},'default':'default'}}},[{
             'name':'Called result','inputs':{'request':'Input'},'steps':[{'task_id':'init','report':{'event':'completed',
                 'envelope':{'settings':{'objective':'Scenario','termination_signal':'Done'},'outputs':{'answer':'Sample'}}}}],
             'assertions':[{'message':'Parent finished with simulated child result','test':{'op':'eq','args':[{'path':'status'},'completed']}}]}])
@@ -216,8 +227,8 @@ call('finish',{})
             for job in jobs:job.result(timeout=5)
         self.assertEqual(len(self.store.list()),2)
         self.start()
-        tools=PlatformTools(self.store);basis=tools.call('read_task',{'run_id':self.base.id,'task_id':'call'})['basis']
-        tools.call('change_task',{'run_id':self.base.id,'task_id':'call','operation':'cancel','reason':'Cancel before dispatch','basis':basis})
+        tools=PlatformTools(self.store)
+        tools.call('change_task',{'run_id':self.base.id,'token':acquire(self.store,self.base.id)['token'],'task_id':'call','operation':'cancel','reason':'Cancel before dispatch'})
         self.engine.tick(self.base.id)
         self.assertNotIn('child_call',self.base.read()['tasks']['call'])
         self.assertEqual(len(self.store.list()),3)

@@ -1,3 +1,5 @@
+> 历史记录：其中有关兼容、升级旧格式的描述已被 2026-11-16 的项目级“不做兼容设计”约束取代，不作为当前接口或设计依据。当前约束见 [SEMANTICS.md](../SEMANTICS.md)。
+
 # Agent 通信群组与远程执行修改计划
 
 本文保存原实施方案与历史验收；当前派单/接单分离、团队链接及 NAS / 飞书 Base 用法见 [通信手册](../skills/loop-anything-platform/references/communication.md) 和 [独立派单 Skill](../skills/loop-anything-dispatch/SKILL.md)。
@@ -136,7 +138,7 @@ Merlin 核查依据：`loops/auto-research-loop-r624-with-feedback/auto-research
 1. 来源 Engine 发现自己拥有的 Run 的节点就绪，所选实现明确为群组 Agent。
 2. 在原 Task 执行记录中关联请求，保存任务修订/实现快照；不在远端创建业务 Run。
 3. 承接确认后，远端平台用本机配置启动 Agent。保留 Agent 类型、节点上下文和输出契约。
-4. 远端通过本机工具入口请求读取/修改；通信桥接把请求送回来源，由原 RunTools 执行权限和版本检查。
+4. 远端通过本机工具入口请求读取/修改；通信桥接把请求送回来源，由原 RunTools 执行身份、作用范围和正式输出检查。
 5. 正式结果沿用 report_task 及节点校验，来源提交成功后回传接受回执。失败、过期报告和重试继续遵守既有契约。
 6. finish 仍只释放本次操作权，不能代替结果完成；来源未确认释放时不能假定已经结束。
 

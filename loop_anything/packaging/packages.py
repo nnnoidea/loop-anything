@@ -19,11 +19,10 @@ import tempfile
 import zipfile
 
 from loop_anything.runtime.timeline_model import validate_v2
-from loop_anything.runtime.model import Invalid, Conflict, current_definition
+from loop_anything.runtime.model import Invalid, Conflict
 from loop_anything.runtime.implementations import options, default_id
 
-FORMAT = 'loop-anything-package/1'
-CAPABILITY_FORMAT = 'loop-anything-package/2'
+FORMAT = 'loop-anything-package/2'
 MANIFEST = 'loop.json'
 MAX_BYTES = 20 * 1024 * 1024
 MAX_FILES = 256
@@ -74,22 +73,17 @@ def resolve_skill(database, key, skill):
 
 
 def validate_document(document):
-    if not isinstance(document, dict) or set(document) - {'format', 'loop_definition', 'implementations', 'checks', 'files', 'requires', 'edit_protection'}:
+    if not isinstance(document, dict) or set(document) - {'format', 'loop_definition', 'implementations', 'checks', 'files', 'requires'}:
         raise Invalid('Package document accepts loop_definition, optional implementations/checks and package metadata only')
-    if document.get('format', FORMAT) not in (FORMAT, CAPABILITY_FORMAT):
-        raise Invalid('Unsupported Loop package format')
-    # Legacy edit_protection metadata is inert; old packages remain importable.
     bp, implementations = document.get('loop_definition'), document.get('implementations', {})
-    report = validate_v2(current_definition(bp) if isinstance(bp, dict) else bp, implementations)
+    report = validate_v2(copy.deepcopy(bp) if isinstance(bp, dict) else bp, implementations)
     if not report['valid']:
         raise Invalid('; '.join(report['errors']))
     from loop_anything.capabilities import required_capabilities, require_supported
     require_supported(document.get('requires', []))
     needed = required_capabilities(bp, implementations)
     require_supported(needed)
-    if document.get('format') == FORMAT and needed:
-        raise Invalid('This Loop requires package/2 for capabilities: ' + ', '.join(needed) + '; rebuild with the current platform')
-    if document.get('format') == CAPABILITY_FORMAT and set(needed) - set(document.get('requires', [])):
+    if 'format' in document and set(needed) - set(document.get('requires', [])):
         raise Invalid('Package manifest omits required capabilities: ' + ', '.join(sorted(set(needed) - set(document.get('requires', [])))))
     validate_skill_files(bp)
     checks = document.get('checks', {})
@@ -106,9 +100,9 @@ def validate_document(document):
 
 
 def effective_definition(document):
-    """Keep package-level compatibility requirements when editing or running its definition."""
+    """Keep package capability requirements when editing or running its definition."""
     document = export_document(document)
-    result = current_definition(document['loop_definition'])
+    result = copy.deepcopy(document['loop_definition'])
     required = sorted(set(result.get('requires', [])) | set(document.get('requires', [])))
     if required:result['requires'] = required
     return result
@@ -117,13 +111,13 @@ def effective_definition(document):
 def make_archive(document, assets=None):
     """assets maps explicit relative names to (bytes, executable). No filesystem scan."""
     from loop_anything.capabilities import required_capabilities
-    if not isinstance(document, dict) or document.get('format', FORMAT) not in (FORMAT, CAPABILITY_FORMAT):
-        raise Invalid('Unsupported Loop package format')
+    if not isinstance(document, dict):
+        raise Invalid('Package document must be an object')
     from loop_anything.capabilities import require_supported
     require_supported(document.get('requires', []))
     document = export_document(document)
     needed = sorted(set(document.get('requires', [])) | set(required_capabilities(document['loop_definition'], document.get('implementations', {}))))
-    document['format'] = CAPABILITY_FORMAT if needed else FORMAT
+    document['format'] = FORMAT
     if needed:document['requires'] = needed
     validate_document(document)
     assets = dict(assets or {})
@@ -190,7 +184,7 @@ def read_archive(data):
             raise Invalid('Package is missing loop.json')
         document = json.loads(contents.pop(MANIFEST))
         validate_document(document)
-        if document.get('format') not in (FORMAT, CAPABILITY_FORMAT) or set(contents) != set(document.get('files', {})):
+        if set(contents) != set(document.get('files', {})):
             raise Invalid('Manifest must declare the exact package file list')
         assets = {}
         for name, metadata in document['files'].items():
@@ -252,7 +246,7 @@ def smoke(document, root, configuration=None):
     from loop_anything.packaging.configuration import apply
     execution_document = apply(document, configuration) if configuration is not None else document
     if configuration is not None:
-        report = validate_v2(current_definition(execution_document['loop_definition']), execution_document.get('implementations', {}))
+        report = validate_v2(copy.deepcopy(execution_document['loop_definition']), execution_document.get('implementations', {}))
     root = Path(root)
     checks = []
     def add(kind, target, passed, detail, node=None, implementation=None):
@@ -282,9 +276,6 @@ def smoke(document, root, configuration=None):
         valid = safe and same_file(file, metadata['sha256'])
         add('asset', name, valid, 'Installed asset matches manifest.' if valid else 'Asset missing, changed or symlinked.')
     candidates = [(node, ident, config) for node, entry in effective_implementations(execution_document, root).items() for ident, config in options(entry).items()]
-    if execution_document['loop_definition'].get('flow_agent') is not None:
-        from loop_anything.runtime.flow_agent import effective, NODE
-        candidates.append((NODE, 'default', effective(execution_document['loop_definition']['flow_agent'], root)))
     for name, ident, implementation in candidates:
         directory = Path(implementation.get('cwd', str(root)))
         if 'command' in implementation or 'observe' in implementation:
@@ -333,7 +324,7 @@ def load_installed(database, key):
     if row is None:
         raise Invalid('Unknown installed package')
     root=Path(database).resolve().parent/'packages'/row[2]
-    return json.loads(row[0]), root if root.is_dir() else Path(row[1])
+    return json.loads(row[0]), root
 
 
 def install(store, data):
@@ -407,18 +398,11 @@ def installed_assets(document, root):
 
 
 def export_document(document):
-    """Discard retired edit metadata on new exports, without rewriting installed history."""
-    result = copy.deepcopy(document)
-    result.pop('edit_protection', None)
-    for part in (result, result.get('loop_definition')):
-        if isinstance(part, dict) and isinstance(part.get('requires'), list):
-            part['requires'] = [v for v in part['requires'] if v != 'loop_edit_protection']
-            if not part['requires']:part.pop('requires')
-    return result
+    return copy.deepcopy(document)
 
 
 def import_draft(store, data):
-    """Load a validated package as an editable draft, ignoring retired edit metadata."""
+    """Load a validated package as an editable draft."""
     document, assets, _, _ = read_archive(data)
     return store.save_draft(effective_definition(document), document.get('implementations', {}),
         assets=[{'path': name, 'base64': base64.b64encode(value[0]).decode(), 'executable': value[1]}

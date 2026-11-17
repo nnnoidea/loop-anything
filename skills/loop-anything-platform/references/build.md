@@ -4,7 +4,7 @@ Compose platform mechanisms for the user's workflow and reuse existing implement
 
 ## Start from an existing Skill or incomplete rules
 
-For an existing operating Skill or decisions requiring judgment, suggest [flow agents combined with deterministic rules](flow-agent.md). Separate long execution/waits, declare known transitions, and use an on-demand flow agent for the remaining decisions. A first version need not enumerate every state transition. The flow agent reads the complete Loop handbook and records its decisions/rationale through normal results. Deterministic workflows need no extra agent; this is a suggestion, not a mandatory construction process.
+For an existing operating Skill, suggest a [steward-managed Run](steward.md). The steward reads the full Loop handbook and decides subsequent work from saved results. Business nodes return to it on completion by default. Mark fixed transitions with node progression=rules and declare their routes/dependencies. Separate long execution/waits into script, external, event or timer nodes. A first version can keep situational progression in the handbook; stable decisions can later become deterministic rules. Loop construction remains with the user's Agent and package files.
 
 ## Three instruction layers and on-demand reading
 
@@ -22,7 +22,7 @@ Use [author Skill file bindings](build-reference.md#author-skill-files-and-refer
 
 Read by role: building agents use platform construction guidance, handbook, and affected node references; flow agents read the complete handbook plus relevant references; node agents use shared business rules and their current node reference, consulting platform operations when needed. Script nodes need an execution contract, not an extra agent to read it. Neither preload every reference nor prohibit further reading when relevant.
 
-Skills hold reusable methods/rules. Read current goals, constraints, state, and results from Run settings, Tasks, and records, without another document copy of runtime state. Natural-language progression still requires explicit flow_agent routes; prose alone does not enable an agent.
+Skills hold reusable methods/rules. Read current goals, constraints, state and results from Run settings, Tasks and records. Steward-managed Runs use the assigned server Agent for default progression. Explicit event routes may request a steward decision for selected events.
 
 Propose separation based on the goal. Do not force splitting, extra nodes, or a fixed directory template when material is already clear. Evaluate usefulness by whether an agent can find required references and complete representative work. Needing a reference beyond the main file is not itself a defect.
 
@@ -103,7 +103,7 @@ Node references point directly to actual candidates, shared contracts, and busin
 
 Use package-relative paths internally and real target-machine configuration externally. Helpers obtain platform/client locations from wake-up context. Ordinary run_id/token interfaces and identity-bound tool_url are different entries; state which a wrapper supports. See [integration contracts](build-reference.md#simple-entry-points-for-runtime-agents) for wrappers, prompts, and recovery.
 
-For grouped task changes, preview with edit_tasks(preview=true), inspect IDs/parameters/dependencies/omissions, and submit against the same revision. A later task can use preview-returned IDs and be previewed again. Reread/reassess conflicts. edit_tasks covers task editing only. Use routes to commit results and generated successors together; separate calls remain separate transactions.
+For grouped task changes, preview with edit_tasks(preview=true), inspect IDs/parameters/dependencies/omissions, and submit the reviewed changes with preview=false. A later task can use preview-returned IDs and be previewed again. edit_tasks covers task editing only. Use routes to commit results and generated successors together; separate calls remain separate transactions.
 
 ## Verify that intent becomes action
 

@@ -46,7 +46,7 @@ class LoopConfigurationTests(unittest.TestCase):
         self.save(config)
         run = self.store.create(self.key, 'configured', inputs={'dataset': '/one-run/override'})
         self.assertEqual(run['inputs'], {'dataset': '/one-run/override', 'service_url': 'https://receiver.example', 'untouched': 4})
-        self.assertEqual(run['implementations']['initialize']['cwd'], str(self.root))
+        self.assertEqual(run['implementations']['initialize']['options']['default']['cwd'], str(self.root))
         self.assertEqual(run['configuration']['config'], config)
         self.assertEqual(self.doc, original)
         self.save({'inputs': {'dataset': '/next'}})
@@ -76,10 +76,10 @@ class LoopConfigurationTests(unittest.TestCase):
         self.assertEqual(self.store.create(key, 'explicit bindings', bindings={})['settings']['bindings'], {})
 
     def test_existing_candidate_can_clear_execution_location_but_not_change_workflow_rules(self):
-        doc = document(); doc['implementations']['initialize'] = {'kind': 'agent', 'dispatch': {'location': 'group', 'agent_id': 'remote'}}
+        doc = document(); doc['implementations']['initialize'] = {'options': {'default': {'kind': 'agent', 'dispatch': {'location': 'group', 'agent_id': 'remote'}}}, 'default': 'default'}
         configured = apply(doc, {'implementations': {'initialize': {'default': {'clear': ['dispatch'], 'command': ['codex', 'exec', '-']}}}})
         self.assertNotIn('dispatch', configured['implementations']['initialize'])
-        self.assertIn('dispatch', doc['implementations']['initialize'])
+        self.assertIn('dispatch', doc['implementations']['initialize']['options']['default'])
         for config in ({'nodes': {}}, {'implementations': {'missing': {}}}, {'bindings': {'finish': 'unknown'}},
                        {'implementations': {'initialize': {'default': {'lifecycle': {}}}}},
                        {'implementations': {'initialize': {'default': {'kind': 'command'}}}}):
@@ -93,7 +93,7 @@ class LoopConfigurationTests(unittest.TestCase):
         self.save(config)
         started = self.store.create(self.key, 'configured start')
         self.assertEqual(started['inputs']['service_url'], 'receiver')
-        self.assertEqual(started['implementations']['initialize']['cwd'], str(self.root))
+        self.assertEqual(started['implementations']['initialize']['options']['default']['cwd'], str(self.root))
         doc, root = load_installed(self.store.filename, self.key)
         report = smoke(doc, root, configuration=config)
         self.assertTrue(next(c for c in report['checks'] if c['kind'] == 'manifest')['status'] == 'pass')
@@ -134,7 +134,7 @@ class LoopConfigurationTests(unittest.TestCase):
         Path(saved['path']).write_text('{broken JSON')
         damaged = read(self.store, key)
         self.assertIn('error', damaged)
-        command = [sys.executable, '-c', 'import sys,json; x=json.load(sys.stdin); print(json.dumps({"settings":{"objective":"config input"},"outputs":{"result":x["inputs"]["service"]}}))']
+        command = [sys.executable, '-c', 'import sys,json; x=json.load(sys.stdin); print(json.dumps({\'event\':\'completed\',\'envelope\':{"settings":{"objective":"config input"},"outputs":{"result":x["inputs"]["service"]}}}))']
         config = {'inputs': {'service_url': 'receiver'}, 'implementations': {'initialize': {'default': {'command': command}}}}
         write(self.store, key, config, damaged['revision'])
         run = self.store.create(key, 'real script')
@@ -150,14 +150,12 @@ class LoopConfigurationTests(unittest.TestCase):
         self.assertEqual(loaded['records']['result'][-1]['value'], 'receiver')
         self.assertEqual(loaded['executions'][0]['implementation']['command'], command)
 
-    def test_builtin_flow_agent_configuration_survives_loading_without_changing_the_package(self):
+    def test_flow_executor_is_not_a_loop_or_recipient_setting(self):
         doc = document()
         doc['loop_definition']['flow_agent'] = {'kind': 'agent', 'command': ['author-cli']}
-        key = install(self.store, make_archive(doc, assets()))['key']
+        with self.assertRaises(Invalid):
+            install(self.store, make_archive(doc))
+        key = install(self.store, make_archive(document()))['key']
         saved = read(self.store, key)
-        write(self.store, key, {'flow_agent': {'command': ['recipient-cli'], 'cwd': str(self.root)}}, saved['revision'])
-        run = self.store.create(key, 'flow config')
-        loaded = self.store.get(run['id'])
-        self.assertEqual(loaded['implementations']['$flow_agent']['command'], ['recipient-cli'])
-        self.assertEqual(loaded['implementations']['$flow_agent']['cwd'], str(self.root))
-        self.assertEqual(load_installed(self.store.filename, key)[0]['loop_definition']['flow_agent']['command'], ['author-cli'])
+        with self.assertRaises(Invalid):
+            write(self.store, key, {'flow_agent': {'command': ['recipient-cli']}}, saved['revision'])

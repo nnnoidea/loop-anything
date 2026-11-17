@@ -21,16 +21,16 @@ from loop_anything.runtime.store import uid
 from loop_anything.runtime.communication_views import summary as request_summary, continuation_context, log_page
 from loop_anything.runtime.communication_archive import enqueue as archive_message, retire as retire_messages, acknowledge, received, matches as message_matches
 
-END = {'completed', 'failed', 'cancelled', 'unavailable', 'not_selected'}
+END = {'completed', 'failed', 'cancelled', 'unavailable'}
 PRIVATE = {'access_token', 'worker_token', 'source_token', 'launch', 'pending_result', 'sender', 'rpc', 'dispatch_envelope', 'dispatch_digest', 'log_reads'}
 CHILD_FIELDS=('id','origin','parent_request','kind','source','source_summary','state','message','result','error',
               'native_session','output_source','created_at','revision','agent_id','agent_label','executor','executor_name','location',
               'group_id','scope_group_id','progress','history','deadline','cancellation','selection_decision','notification_origin','notification_route','notification_level','notification_binding','notification_policy','notification_level_explicit','notification_conversation')
 RPC_TOOLS = {'read_loop', 'read_task', 'read_timeline', 'read_record', 'read_plans', 'read_capabilities',
-             'next_tasks', 'report_task', 'complete_task', 'finish', 'build_plan', 'change_task',
+             'next_tasks', 'report_task', 'finish', 'build_plan', 'change_task',
              'edit_tasks', 'notify', 'defer_task', 'change_settings', 'register_agent_session',
              'communication_status', 'request_assistance', 'read_assistance', 'wait_assistance', 'read_asset', 'read_context'}
-RPC_TOOLS.update({'read_run','resolve_refs','add_task','send_event','command','resolve_request'})
+RPC_TOOLS.update({'read_business_state','read_run','resolve_refs','add_task','send_event','command','resolve_request'})
 
 
 def clean(value):
@@ -69,7 +69,6 @@ class Communication:
         self.live = {}
         self.last_scan = 0
         self.scan_lock = threading.Lock()
-        self.archive_scanned_groups = set()
         with store.connection() as db:
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS communication_settings (id INTEGER PRIMARY KEY, document TEXT NOT NULL);
@@ -85,22 +84,23 @@ class Communication:
                   WHERE sent=0 OR json_extract(document,'$.kind')!='ack';
             ''')
             db.execute('INSERT OR IGNORE INTO communication_settings VALUES (1,?)', (json.dumps({
-                'instance_id': workspace_id(), 'name': socket.gethostname(), 'revision': 1, 'agents': {},
+                'instance_id': workspace_id(), 'machine_id': self.machine_identity.read()['machine_id'], 'name': socket.gethostname(), 'revision': 1, 'agents': {},
                 'groups': {}, 'contexts': {}, 'loop_groups': {}, 'heartbeat_seconds': 5, 'offline_seconds': 30}),))
             db.commit()
         with self.transaction() as db:
             config=self.settings(db)
+            if not config.get('machine_id'):raise Invalid('Unsupported workspace identity format')
+            if any(g.get('transport') not in ('nas','feishu_base') or g.get('transport')=='nas' and g.get('namespace')!='agents' for g in config['groups'].values()):
+                raise Invalid('Unsupported team configuration; flat NAS groups are not accepted')
             if getattr(store,'hosting_team',False):
                 # The NAS service lock was acquired before Store construction. Its
                 # logical workspace survives a deliberate restart on another host.
                 config['machine_id']=self.machine_identity.read()['machine_id']
-                config.pop('identity_location',None)
             self.identity_error = self.machine_identity.claim(config['instance_id'], store.filename,
-                config.get('machine_id'), config.get('identity_location'))
+                config.get('machine_id'))
             self.identity_conflict = bool(self.identity_error)
             if not self.identity_conflict:
                 config['machine_id'] = self.machine_identity.read()['machine_id']
-                config.pop('identity_location', None)
                 db.execute('UPDATE communication_settings SET document=? WHERE id=1',(json.dumps(config),))
 
     def self_info(self):
@@ -150,17 +150,33 @@ class Communication:
     def event(self, request, kind, detail=None):
         request.setdefault('history', []).append({'at': time.time(), 'kind': kind, 'detail': clean(detail or {})})
 
+    def attach_nas_root(self, root):
+        """Expose the server's shared root to named dispatch without publishing any agents."""
+        team=dispatch_core.join('nas://'+str(Path(root).resolve()),create=True)
+        with self.transaction() as db:
+            config=self.settings(db);before=copy.deepcopy(config)
+            old=config['groups'].get(team['id'],{})
+            config['groups'][team['id']]=dict(old,**team)
+            config['groups'][team['id']]['enabled']=old.get('enabled',True)
+            preferred=config.get('default_team')
+            if config['groups'].get(preferred,{}).get('transport')!='feishu_base':preferred=team['id']
+            config['default_team']=dispatch_core.default_team(config['groups'],preferred)
+            if config!=before:
+                config['revision']+=1
+                db.execute('UPDATE communication_settings SET document=? WHERE id=1',(json.dumps(config),))
+        self.last_scan=0
+        return config['groups'][team['id']]
+
     def config(self, operation, **a):
-        if operation=='conversation':
-            from loop_anything.runtime.communication_conversations import register
-            return register(self,a)
         if operation=='team':
             from loop_anything.runtime.team_transport import join
             team=join(a['link'], a.get('create',False), a.get('name'), a.get('lark_cli','lark-cli'), a.get('identity','user'))
             with self.transaction() as db:
                 config=self.settings(db)
                 config['groups'][team['id']]=dict(config['groups'].get(team['id'],{}),**team)
-                config['default_team']=dispatch_core.default_team(config['groups'],config.get('default_team'));config['revision']+=1
+                preferred=config.get('default_team')
+                if team.get('namespace')=='agents' and config['groups'].get(preferred,{}).get('transport')!='feishu_base':preferred=team['id']
+                config['default_team']=dispatch_core.default_team(config['groups'],preferred);config['revision']+=1
                 db.execute('UPDATE communication_settings SET document=? WHERE id=1',(json.dumps(config),))
             self.last_scan=0
             return {'configuration':config,'team':team}
@@ -199,7 +215,6 @@ class Communication:
                     db.execute("UPDATE communication_deliveries SET document=json_set(document,'$.identity_read_only',1)")
                     config['instance_id']=workspace_id()
                     config['machine_id']=self.machine_identity.read()['machine_id']
-                    config.pop('identity_location', None)
                     self.machine_identity.claim(config['instance_id'], self.store.filename, config['machine_id'])
                 self.machine_identity.rename(a['name'])
             elif operation == 'agent':
@@ -209,9 +224,7 @@ class Communication:
                 if 'task_confirmation' in a['agent']:
                     raise Invalid('Confirm the main task with the user through task_confirmed, not stored metadata')
                 agent = dict(old, **a['agent'], id=ident)
-                if a['agent'].get('notification_bot') and 'notification_route' not in a['agent']:agent['notification_route']=''
-                if a['agent'].get('notification_route') and 'notification_bot' not in a['agent']:agent['notification_bot']=None
-                if set(agent) - {'id', 'name', 'description', 'capabilities', 'local', 'enabled', 'groups', 'capacity', 'implementation', 'notification_route', 'notification_bot', 'task_confirmation'}:
+                if set(agent) - {'id', 'name', 'description', 'capabilities', 'local', 'enabled', 'groups', 'capacity', 'implementation', 'notification_bot', 'task_confirmation'}:
                     raise Invalid('Unsupported named Agent setting')
                 if not isinstance(agent.get('name'),str) or not agent['name'].strip() or not isinstance(agent.get('description', ''), str):
                     raise Invalid('Named Agent needs name and description text')
@@ -241,9 +254,7 @@ class Communication:
                 for key in ('enabled', 'local'):
                     if type(agent.get(key, True)) is not bool:
                         raise Invalid(key + ' must be boolean')
-                if not isinstance(agent.get('notification_route',''),str):raise Invalid('Agent notification_route must be a local outlet ID')
                 if agent.get('notification_bot'):
-                    if agent.get('notification_route'):raise Invalid('Select notification_bot or legacy notification_route, not both')
                     if agent['notification_bot'] != old.get('notification_bot'):
                         from loop_anything.runtime.cc_connect import validate_bot
                         validate_bot(agent['notification_bot'])
@@ -251,11 +262,10 @@ class Communication:
                 config['agents'][ident] = agent
                 if a['agent'].get('enabled') is True:config.get('agent_errors',{}).pop(ident,None)
             elif operation == 'group':
-                relative=None
-                if a.get('space_id'):
-                    from loop_anything.runtime.communication_spaces import group_path
-                    root,relative=group_path(config,a)
-                else:root = Path(a['path']).expanduser().resolve()
+                if not a.get('space_id'):raise Invalid('Use operation=team with one NAS root link; group requires space_id')
+                from loop_anything.runtime.communication_spaces import group_path
+                team_root,relative=group_path(config,a)
+                root=dispatch_core.nas_group_path(team_root)
                 if a.get('create'):root.mkdir(parents=True, exist_ok=True)
                 manifest = root / 'group.json'
                 if manifest.exists():
@@ -275,7 +285,7 @@ class Communication:
                 else:
                     raise Invalid('Group does not exist; explicitly create it first')
                 config['groups'][group['id']] = dict(config['groups'].get(group['id'],{}), **group, path=str(root), enabled=True)
-                if relative:config['groups'][group['id']].update(space_id=a['space_id'],relative_path=relative)
+                config['groups'][group['id']].update(space_id=a['space_id'],relative_path=relative,transport='nas',namespace='agents',link=team_root.as_uri())
             elif operation == 'leave':
                 group = config['groups'].get(a['group_id'])
                 if group is None:
@@ -334,17 +344,17 @@ class Communication:
                 rows.append(dict(agent, group_id=peer['group_id'], location='group',
                                  online=time.time() - peer['seen_at'] < max(config['offline_seconds'],180 if group.get('transport')=='feishu_base' else 0)))
         loops=[dict(ref,group_id=peer['group_id']) for peer in peers if (not group_id or peer['group_id']==group_id) and config['groups'].get(peer['group_id'],{}).get('enabled') for ref in peer.get('loops',[])]
-        return {'self': self.self_info(), 'instance_id': config['instance_id'],
+        return {'self': self.self_info(),
                 'identity_conflict':self.identity_conflict, 'identity_error':self.identity_error, 'agents': rows, 'loops':loops,
-                'default_team':config.get('default_team'), 'groups': [{k: v for k, v in g.items() if k not in ('path','lark_cli')} for g in config['groups'].values()]}
+                'default_team':config.get('default_team'), 'groups': [{k: v for k, v in g.items() if k not in ('link','path','lark_cli')} for g in config['groups'].values()]}
 
     def public_agent(self, agent, config, location, group_id=None, freeze=False):
         running = self.agent_load(agent['id'])
         identity = self.self_info()
         from loop_anything.runtime.communication_conversations import bot_binding
         return {k: agent.get(k, '' if k in ('name', 'description') else []) for k in ('name', 'description', 'capabilities')} | {
-            'id': agent['id'], 'instance_id': config['instance_id'], **identity,
-            'machine': identity['machine_name'], 'location': location,
+            'id': agent['id'], 'instance_id': config['instance_id'], 'machine_id':identity['machine_id'],
+            'machine_name':identity['machine_name'], 'location': location,
             'notification_binding':bot_binding(self,agent,group_id,freeze),
             'online': True, 'enabled': agent.get('enabled', True) and (location=='local' or self.task_confirmed(agent,group_id)),
             'task_confirmed': self.task_confirmed(agent,group_id), 'busy': running >= agent.get('capacity', 1),
@@ -472,7 +482,7 @@ class Communication:
                    'message': a['message'], 'context': context, 'result_schema': schema, 'session': session,
                    'source_summary':source_summary,'origin_name':config['name'],
                    'state': 'pending', 'created_at': time.time(), 'deadline': time.time() + deadline,
-                   'access_token': secrets.token_urlsafe(32), 'notification_origin':config['instance_id'],
+                   'notification_origin':config['instance_id'],
                    'notification_route': a.get('notification_route', 'default' if source.get('run_id') else 'workspace'),
                    'notification_level': a.get('notification_level', 'key'), 'history': [], 'rpc': {}, 'logs': []}
         request['notification_policy']='actor_first' if scope_group_id and 'notification_route' not in a else 'explicit'
@@ -526,7 +536,7 @@ class Communication:
                 old = self.get(ident, db)
                 if any(old.get(k)!=request.get(k) for k in ('source','kind','message','context','location','group_id','agent_id','session','result_schema')) or (request.get('target_instance') and old.get('target_instance')!=request['target_instance']):
                     raise Conflict('Request ID already exists with different work')
-                return {'request': request_summary(old), 'request_token': old['access_token']}
+                return {'request': request_summary(old)}
             if standalone:
                 from loop_anything.runtime.collaboration import attach
                 attach(self,request,collaboration_key,a.get('collaboration_id'),db)
@@ -559,7 +569,7 @@ class Communication:
                     prepare_dispatch(request,a['instance_id'],a['agent_id'])
                     self.emit(db,request,request['executor'],'dispatch',clean(request))
             self.save(db, request)
-        return {'request': request_summary(request), 'request_token': request['access_token']}
+        return {'request': request_summary(request)}
 
     @staticmethod
     def task_confirmed(agent,group_id):
@@ -643,13 +653,12 @@ class Communication:
                                        after,offset,max_chars))
         return {'request': result}
 
-    def authorized(self, a, worker=False):
+    def authorized(self, a):
         if self.identity_conflict:return False
         try:
             row = self.get(a.get('request_id'))
             if row.get('identity_read_only'):return False
-            key = 'worker_token' if worker else 'access_token'
-            return bool(a.get('token') and secrets.compare_digest(a['token'], row.get(key, '')))
+            return bool(a.get('token') and secrets.compare_digest(a['token'], row.get('worker_token', '')))
         except (Invalid, TypeError):
             return False
 
@@ -694,7 +703,6 @@ class Communication:
                         self.emit(db, row, row['executor'], 'cancel', {})
                 else:
                     row['state'] = 'cancelled'
-                    retire_messages(db, "json_extract(document,'$.request_id')=? AND json_extract(document,'$.kind')='offer'", (row['id'],))
                 self.event(row, 'cancel_requested', row['cancellation'])
             elif action == 'confirm_stopped':
                 if ident in self.live or row['state'] != 'unknown' or not a.get('confirmed_stopped'):
@@ -760,8 +768,6 @@ class Communication:
         if not self.engine or self.engine.stopping.is_set() or self.identity_conflict:
             return
         if not getattr(self,'background_transport',False):self.scan()
-        from loop_anything.runtime.collaboration import adopt_pending
-        adopt_pending(self)
         self.resume_dispatches()
         config = self.settings()
         for row in self.requests():
@@ -784,9 +790,8 @@ class Communication:
                 with self.transaction() as db:
                     current = self.get(row['id'], db)
                     if current['state'] == 'pending':
-                        current['state'] = 'unknown' if current.get('protocol')=='direct-v1' else 'unavailable'
-                        if current.get('protocol')=='direct-v1':current['error']='Acceptance not yet observed; inspect receiver status before retrying'
-                        retire_messages(db, "json_extract(document,'$.request_id')=? AND json_extract(document,'$.kind')='offer'", (row['id'],))
+                        current['state'] = 'unknown'
+                        current['error']='Acceptance not yet observed; inspect receiver status before retrying'
                         self.event(current, 'unavailable', {'message': 'No Agent accepted before the deadline'})
                         self.save(db, current)
             if row.get('executor') == config['instance_id'] and row['state'] == 'assigned':
@@ -831,13 +836,15 @@ class Communication:
         tools = RunTools(self.store, run_id, execution['token'])
         info = tools.call('read_task', {'task_id': execution['task_id']})
         node = snapshot['loop_definition']['nodes'][execution['node']]
-        context = {'task': clean(info), 'handbook': snapshot['loop_definition'].get('handbook', {}),
+        from loop_anything.runtime.timelines import task_resources
+        resource_key,handbook=task_resources(snapshot,execution['node'])
+        context = {'task': clean(info), 'handbook': handbook,
                    'inputs': execution['inputs'], 'output_contract': {k: snapshot['loop_definition']['records'][v['record_type']] for k,v in node['outputs'].items()}}
         context['scope_task']=next((o.get('scope_task') for o in snapshot['agent_sessions'] if o['token']==execution['token']),None)
         from loop_anything.packaging.packages import load_installed, resolve_skill
-        document, root = load_installed(self.store.filename,snapshot['loop_key'])
+        document, root = load_installed(self.store.filename,resource_key)
         context['asset_manifest'] = list(document.get('files', {}))
-        context['handbook']=resolve_skill(self.store.filename,snapshot['loop_key'],context['handbook'])
+        context['handbook']=resolve_skill(self.store.filename,resource_key,context['handbook'])
         context.update(loop_key=snapshot['loop_key'],node_id=execution['node'],parameters=execution['parameters'])
         if info.get('flow_trigger') is not None:context['flow_trigger']=info['flow_trigger']
         dispatch = dict(execution['implementation']['dispatch'])
@@ -986,9 +993,8 @@ class Communication:
                 root = Path(group['path']) if group.get('transport')!='feishu_base' else None
                 if root is not None and (not root.is_dir() or media.get('group.json').get('id') != gid):
                     raise Invalid('Group mount missing or identity changed')
-                from loop_anything.runtime.communication_archive import reconcile_legacy, drain, drain_media
+                from loop_anything.runtime.communication_archive import drain, drain_media
                 if root is not None:
-                    reconcile_legacy(self, root, gid, config['instance_id'])
                     drain(self, root, gid)
                 else:drain_media(self,media,gid)
                 from loop_anything.runtime.communication_notifications import refresh
@@ -1079,7 +1085,7 @@ class Communication:
                 if not message_matches(previous,msg):
                     raise Conflict('Message ID reused with different content')
                 if msg['kind'] == 'ack':archive_message(db, msg)
-                if msg['kind'] in ('cancel','input','result_read') and self.get(msg['request_id'],db).get('dispatch_client'):
+                if msg['kind'] in ('cancel','input') and self.get(msg['request_id'],db).get('dispatch_client'):
                     archive_message(db,msg);return
                 if msg['kind'] != 'ack' and msg['target'] != 'broadcast':
                     # A lost receipt must be reproducible without repeating its business effect.
@@ -1094,125 +1100,63 @@ class Communication:
                 from loop_anything.runtime.communication_notifications import accept, receive_receipt
                 if gid not in config['groups'] or msg['target']!=config['instance_id']:raise Invalid('Wrong notification group/target')
                 (accept if kind=='notification_deliver' else receive_receipt)(self,db,msg)
-            elif kind == 'offer':
-                continuation=self.continuing_wait(payload,db)
-                if not config['groups'][gid]['enabled'] and not continuation or payload['origin'] != msg['sender'] or payload['group_id'] != gid or payload['id'] != msg['request_id']:
-                    raise Invalid('Invalid offer scope')
-                if not db.execute('SELECT 1 FROM communication_requests WHERE id=?', (payload['id'],)).fetchone():
-                    candidates = [a for a in config['agents'].values() if self.eligible(a, payload, config)]
-                    if continuation and continuation['executor']==config['instance_id']:
-                        candidates=[{'id':continuation['agent_id'],'name':continuation.get('agent_label',continuation['agent_id'])}]
-                    if not candidates:
-                        return
-                    row = dict(payload, state='offered', proposed_agent=candidates[0]['id'], rpc={})
-                    self.save(db, row)
-                    self.emit(db, row, row['origin'], 'claim', {'agent_id': candidates[0]['id'],'agent_label':candidates[0]['name'],'executor_name':config['name']})
             else:
                 row = self.get(msg['request_id'], db)
                 if row['group_id'] != gid:
                     raise Invalid('Wrong request group')
-                if kind == 'claim':
-                    if row.get('protocol')=='direct-v1':raise Invalid('Direct dispatch is already addressed; no claim/grant negotiation')
-                    if row['origin']==config['instance_id'] and row['state']=='pending' and row.get('agent_id') and not row.get('target_instance'):
-                        peers=[json.loads(r[0]) for r in db.execute('SELECT document FROM communication_peers')]
-                        matches={p['instance_id'] for p in peers if p['group_id']==gid and any(a['id']==row['agent_id'] for a in p['agents'])}
-                        if len(matches)>1:
-                            row.update(state='unavailable',error='Agent ID is ambiguous; select an instance_id')
-                            self.save(db,row)
-                            retire_messages(db, "json_extract(document,'$.request_id')=? AND json_extract(document,'$.kind')='offer'", (row['id'],))
-                    if row['origin'] != config['instance_id'] or row['state'] != 'pending' or row['deadline'] < time.time():
-                        if row['origin']==config['instance_id']:
-                            reason=('cancelled' if row['state'] in ('cancelled','cancelling') else
-                                    'already_assigned' if row.get('assignment_id') else
-                                    'acceptance_expired' if row['deadline']<time.time() else 'request_not_pending')
-                            decision={'reason':reason,'source_state':row['state'],'deadline':row['deadline'],
-                                      **{k:row[k] for k in ('executor','error','cancellation') if k in row}}
-                            self.event(row,'claim_not_selected',dict(decision,claimant=msg['sender']))
-                            self.save(db,row)
-                            self.emit(db,row,msg['sender'],'not_selected',decision)
-                            db.execute('INSERT INTO communication_inbox VALUES (?,?)',(msg['id'],json.dumps(received(msg))))
-                            self.emit(db,row,msg['sender'],'ack',{'message_id':msg['id']})
-                        return
-                    if row.get('target_instance') and row['target_instance'] != msg['sender']:raise Invalid('Claim from wrong instance')
-                    if row.get('agent_id') and row['agent_id'] != payload['agent_id']:
-                        raise Invalid('Claim does not match requested Agent')
-                    self.assign(row, msg['sender'], identifier(payload['agent_id']))
-                    row.pop('protocol',None)  # A legacy claim remains a legacy grant exchange.
-                    row.update(agent_label=payload.get('agent_label',row['agent_id']),executor_name=payload.get('executor_name',msg['sender']))
-                    self.emit(db, row, msg['sender'], 'grant', {'agent_id': row['agent_id']})
-                    # Stop repeatedly broadcasting an assigned offer.
-                    retire_messages(db, "json_extract(document,'$.request_id')=? AND json_extract(document,'$.kind')='offer'", (row['id'],))
-                elif kind == 'grant':
-                    if msg['sender'] != row['origin'] or row['state'] != 'offered' or payload['agent_id'] != row['proposed_agent']:
-                        raise Conflict('Grant does not match offer')
-                    row.update(state='assigned', executor=config['instance_id'], agent_id=payload['agent_id'], assignment_id=msg['assignment_id'])
-                    agent=config['agents'].get(row['agent_id'])
-                    continuation=self.continuing_wait(row,db)
-                    if continuation and continuation['executor']==config['instance_id']:
-                        row.update(accepted_at=time.time(),launch=copy.deepcopy(continuation['launch']),agent_label=continuation.get('agent_label',row['agent_id']),executor_name=config['name'])
-                    elif not agent or not self.eligible(agent,row,config):
-                        row.update(state='failed',error='Agent stopped accepting before the grant arrived')
-                    else:row.update(accepted_at=time.time(),launch=copy.deepcopy(agent['implementation']),agent_label=agent['name'],executor_name=config['name'])
-                elif kind=='not_selected' and msg['sender']==row['origin']:
-                    if row['state']=='offered':
-                        row['state']='not_selected'
-                        row['selection_decision']=copy.deepcopy(payload)
-                else:
-                    if row['state']=='offered' and msg['sender']==row['origin']:
-                        return  # The grant may be later in the same directory scan.
-                    if msg['assignment_id'] != row.get('assignment_id'):
-                        raise Conflict('Stale or different assignment')
-                    if kind=='rejected' and msg['sender'] in (row['origin'],row.get('executor')):
-                        self.event(row,'communication_rejected',payload)
-                        acknowledge(db, msg)
-                    elif kind in ('logs_request','logs_response','result_read'):
-                        from loop_anything.runtime.dispatch import receive_read
-                        receive_read(self,db,row,msg)
-                    elif kind in ('progress', 'rpc'):
-                        if msg['sender'] != row.get('executor') or row['origin'] != config['instance_id']:
-                            raise Conflict('Report is not from the assigned executor')
-                        if kind == 'rpc':
-                            self.import_children(db,row,payload.get('children',[]))
-                            if payload.get('tool')=='wait_assistance' and payload.get('resume_ready'):
-                                from loop_anything.runtime.native_sessions import validate_identity
-                                native=payload['native_session'];validate_identity(native.get('provider'),native.get('id'))
-                                if row.get('native_session') and any(row['native_session'].get(k)!=native.get(k) for k in ('provider','id')):raise Conflict('Native session changed before waiting')
-                                row.update(native_session=native,resume_ready=True)
-                            row.setdefault('rpc', {}).setdefault(payload['id'], dict(payload, state='pending'))
-                        else:
-                            # Logs are independently deduplicated: out-of-order status must not discard output.
-                            for log in payload.get('logs',[]):
-                                if type(log.get('sequence')) is not int or not isinstance(log.get('text'),str):raise Invalid('Invalid log chunk')
-                                db.execute('INSERT OR IGNORE INTO communication_logs VALUES (?,?,?)',(row['id'],log['sequence'],log['text']))
-                        if kind == 'progress' and payload['sequence'] > row.get('remote_sequence', 0):
-                            row['remote_sequence'] = payload['sequence']
-                            row['remote_state'] = payload['state']
-                            self.import_children(db,row,payload.get('children',[]))
-                            if row['state'] not in END:
-                                if payload['state'] == 'completed':
-                                    contract(payload['result'], row['result_schema'], 'Remote result')
-                                row.pop('state_before_disconnect',None)
-                                row.update({k: payload[k] for k in ('state', 'result', 'error', 'native_session','output_source') if k in payload})
-                                if row.get('cancel_requested') and row['state'] not in END | {'unknown'}:row['state']='cancelling'
-                                if payload.get('progress'):row['progress']=payload['progress']
-                                self.event(row, 'remote_' + row['state'])
-                    elif msg['sender'] == row['origin'] and row.get('executor') == config['instance_id']:
-                        if kind == 'cancel':
-                            row['cancel_requested']=True
-                            if row['state'] not in END | {'unknown'}:row['state'] = 'cancelling' if row['state'] in ('starting', 'running','cancelling') else 'cancelled'
-                        elif kind == 'input':
-                            self.input(row, payload['data'])
-                        elif kind == 'confirm_stopped':
-                            self.confirm_execution_stopped(db,row)
-                        elif kind == 'rpc_result':
-                            row.setdefault('rpc', {})[payload['id']] = payload
-                        else:
-                            raise Invalid('Unknown source command')
+                if msg['assignment_id'] != row.get('assignment_id'):
+                    raise Conflict('Stale or different assignment')
+                if kind=='rejected' and msg['sender'] in (row['origin'],row.get('executor')):
+                    self.event(row,'communication_rejected',payload)
+                    acknowledge(db, msg)
+                elif kind in ('logs_request','logs_response'):
+                    from loop_anything.runtime.dispatch import receive_read
+                    receive_read(self,db,row,msg)
+                elif kind in ('progress', 'rpc'):
+                    if msg['sender'] != row.get('executor') or row['origin'] != config['instance_id']:
+                        raise Conflict('Report is not from the assigned executor')
+                    if kind == 'rpc':
+                        self.import_children(db,row,payload.get('children',[]))
+                        if payload.get('tool')=='wait_assistance' and payload.get('resume_ready'):
+                            from loop_anything.runtime.native_sessions import validate_identity
+                            native=payload['native_session'];validate_identity(native.get('provider'),native.get('id'))
+                            if row.get('native_session') and any(row['native_session'].get(k)!=native.get(k) for k in ('provider','id')):raise Conflict('Native session changed before waiting')
+                            row.update(native_session=native,resume_ready=True)
+                        row.setdefault('rpc', {}).setdefault(payload['id'], dict(payload, state='pending'))
                     else:
-                        raise Invalid('Unknown message or sender')
+                        # Logs are independently deduplicated: out-of-order status must not discard output.
+                        for log in payload.get('logs',[]):
+                            if type(log.get('sequence')) is not int or not isinstance(log.get('text'),str):raise Invalid('Invalid log chunk')
+                            db.execute('INSERT OR IGNORE INTO communication_logs VALUES (?,?,?)',(row['id'],log['sequence'],log['text']))
+                    if kind == 'progress' and payload['sequence'] > row.get('remote_sequence', 0):
+                        row['remote_sequence'] = payload['sequence']
+                        row['remote_state'] = payload['state']
+                        self.import_children(db,row,payload.get('children',[]))
+                        if row['state'] not in END:
+                            if payload['state'] == 'completed':
+                                contract(payload['result'], row['result_schema'], 'Remote result')
+                            row.pop('state_before_disconnect',None)
+                            row.update({k: payload[k] for k in ('state', 'result', 'error', 'native_session','output_source') if k in payload})
+                            if row.get('cancel_requested') and row['state'] not in END | {'unknown'}:row['state']='cancelling'
+                            if payload.get('progress'):row['progress']=payload['progress']
+                            self.event(row, 'remote_' + row['state'])
+                elif msg['sender'] == row['origin'] and row.get('executor') == config['instance_id']:
+                    if kind == 'cancel':
+                        row['cancel_requested']=True
+                        if row['state'] not in END | {'unknown'}:row['state'] = 'cancelling' if row['state'] in ('starting', 'running','cancelling') else 'cancelled'
+                    elif kind == 'input':
+                        self.input(row, payload['data'])
+                    elif kind == 'confirm_stopped':
+                        self.confirm_execution_stopped(db,row)
+                    elif kind == 'rpc_result':
+                        row.setdefault('rpc', {})[payload['id']] = payload
+                    else:
+                        raise Invalid('Unknown source command')
+                else:
+                    raise Invalid('Unknown message or sender')
                 self.save(db, row)
             db.execute('INSERT INTO communication_inbox VALUES (?,?)', (msg['id'], json.dumps(received(msg))))
-            if kind in ('cancel','input','result_read') and row.get('dispatch_client'):
+            if kind in ('cancel','input') and row.get('dispatch_client'):
                 archive_message(db,msg)
             elif kind != 'ack' and msg['target'] != 'broadcast':
                 self.emit(db, {'id': msg['request_id'], 'group_id': gid, 'assignment_id': msg.get('assignment_id')}, msg['sender'], 'ack', {'message_id': msg['id']})
@@ -1343,7 +1287,7 @@ class Communication:
                 result=remote_run(self.engine,row['launch'],row['launch']['command'],prompt,row['launch'].get('timeout'),
                     row['launch'].get('cwd'),self.engine.stopping,session,row['terminal_id'],{'kind':'communication','request_id':ident})
             else:
-                result = run_command(row['launch']['command'], prompt, row['launch'].get('timeout'), row['launch'].get('cwd'), self.engine.stopping, session)
+                result = run_command(row['launch']['command'], prompt, row['launch'].get('timeout'), row['launch'].get('cwd'), self.engine.stopping, session,context=row['launch'].get('_prompt_context'))
             if row['session']['mode']=='resume' and session.doc.get('native_session_error'):raise Invalid(session.doc['native_session_error'])
             if result.returncode and not self.get(ident).get('worker_finished'):
                 raise Invalid('Agent command exited: ' + str(result.returncode))
@@ -1390,7 +1334,7 @@ class Communication:
                 except Invalid:pass
 
     def worker_call(self, ident, token, tool, arguments):
-        if not self.authorized({'request_id': ident, 'token': token}, worker=True):
+        if not self.authorized({'request_id': ident, 'token': token}):
             raise Conflict('Invalid execution credential')
         parent=self.get(ident)
         if tool=='read_context':
@@ -1507,7 +1451,7 @@ class Communication:
         return {'call': call}
 
     def scoped_tool(self,ident,token,tool,args):
-        if not self.authorized({'request_id':ident,'token':token},worker=True):raise Conflict('Invalid execution credential')
+        if not self.authorized({'request_id':ident,'token':token}):raise Conflict('Invalid execution credential')
         if tool=='communication_execute':
             if args.get('request_id')!=ident or args.get('token')!=token:raise Conflict('Wrong execution scope')
             return self.worker_call(ident,token,args['tool'],args['arguments'])
@@ -1537,7 +1481,7 @@ class Communication:
         return result
 
     def scoped_definitions(self,ident,token):
-        if not self.authorized({'request_id':ident,'token':token},worker=True):raise Conflict('Invalid execution credential')
+        if not self.authorized({'request_id':ident,'token':token}):raise Conflict('Invalid execution credential')
         from loop_anything.interfaces.communication_tools import definitions
         from loop_anything.interfaces.agent_tasks import RunTools
         allowed={'communication_status','request_assistance','read_assistance','control_assistance','communication_execute','read_capabilities'}
@@ -1552,6 +1496,8 @@ class Communication:
         result += [d for d in RunTools(self.store,'').definitions() if d['name']=='read_capabilities' or node and d['name'] in RPC_TOOLS]
         if node:
             from loop_anything.interfaces.agent_tasks import object_schema
+            from loop_anything.interfaces.work_tools import definitions as work_definitions
+            result += [d for d in work_definitions() if d['name']=='read_business_state']
             result += [dict(name='read_loop',description='Read this request’s source Loop definition.',inputSchema=object_schema({}),annotations={'readOnlyHint':True}),
                        dict(name='read_asset',description='Read a source Loop package asset chunk. The platform normally transfers package resources automatically.',inputSchema=object_schema({'path':{'type':'string'},'offset':{'type':'integer','minimum':0}},['path']),annotations={'readOnlyHint':True})]
         from loop_anything.capabilities import service_info
@@ -1600,10 +1546,18 @@ class Communication:
                         result={'context':{'run':{k:run[k] for k in ('id','title','status')},
                                           'settings':{k:run['settings'].get(k) for k in ('objective','intent','guidance','constraints')},
                                           'loop_definition':clean(run['loop_definition']),'task':clean(task)}}
+                    elif tool == 'read_business_state':
+                        from loop_anything.interfaces.platform_tools import PlatformTools
+                        run=self.store.get(row['source']['run_id'])
+                        if call['arguments'].get('timeline_id')!=run['timeline_id']:raise Conflict('Read only the assigned Timeline')
+                        result=PlatformTools(self.store).call(tool,call['arguments'])
                     elif tool == 'read_asset':
                         from loop_anything.packaging.packages import load_installed, member_path
                         run = self.store.get(row['source']['run_id'])
-                        document, root = load_installed(self.store.filename,run['loop_key'])
+                        from loop_anything.runtime.timelines import task_resources
+                        node_id=run['tasks'][row['source']['task_id']]['spec']['node']
+                        resource_key,_=task_resources(run,node_id)
+                        document, root = load_installed(self.store.filename,resource_key)
                         path = member_path(call['arguments']['path'])
                         file = (root/path).resolve()
                         if path not in document['files'] or root.resolve() not in file.parents:
@@ -1805,7 +1759,7 @@ class Communication:
                     result_value=row.get('result')
                     if row['kind']=='node_execution' and state=='completed':
                         result_value=next((c['arguments'].get('envelope',{}).get('outputs') for c in reversed(list(row.get('rpc',{}).values()))
-                            if c['state']=='completed' and c['tool'] in ('report_task','complete_task') and c.get('result',{}).get('accepted') and (c['tool']=='complete_task' or c['arguments'].get('event')=='completed')),result_value)
+                            if c['state']=='completed' and c['tool']=='report_task' and c.get('result',{}).get('accepted') and c['arguments'].get('event')=='completed'),result_value)
                     title=('向 '+actor+' 请求协助') if state=='pending' else actor+' · '+labels[state]
                     lines=['任务：'+scope] if scope else []
                     if not any(n['status']!='skipped' for n in current.get('notifications',[])):

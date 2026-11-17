@@ -1,6 +1,6 @@
 'use strict';
 (function(root){
-  const startTime=e=>Object.hasOwn(e,'started_at')?e.started_at:e.created_at;
+  const startTime=e=>e.started_at;
   function rows(run){
     const executions=run.executions || [],byExecution=new Map(executions.map(e=>[e.id,e])),attempts=new Map();
     for(const e of executions){if(!attempts.has(e.task_id))attempts.set(e.task_id,[]);attempts.get(e.task_id).push(e);}
@@ -25,7 +25,7 @@
         }
       }
       dependencies.delete(w.id);
-      return {tasks:w,attempts:tries,legacyTime:tries.some(e=>!Object.hasOwn(e,'started_at')),started:tries.map(startTime).filter(t=>t!=null).sort((a,b)=>a-b)[0] ?? null,completed:current?.completed_at ?? null,
+      return {tasks:w,attempts:tries,started:tries.map(startTime).filter(t=>t!=null).sort((a,b)=>a-b)[0] ?? null,completed:current?.completed_at ?? null,
         round:w.spec.round || null,dependencies:(run.task_dependencies?.[w.id] || [...dependencies]).filter(id=>tasks[id]),index};
     }).sort((a,b)=>(a.started===null)-(b.started===null) || (a.started ?? a.tasks.created_at ?? 0)-(b.started ?? b.tasks.created_at ?? 0) || a.index-b.index);
   }

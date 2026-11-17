@@ -4,11 +4,21 @@
 
 Timeline 保存当前状态、安排、结果和历史；通用状态机读取当前生命周期状态、事件及规则，计算下一状态与相关动作。它本身不保存运行状态。状态变化、正式结果、命中的 routes 和记录仍由平台在同一事务内提交，再由调度器执行已保存的安排。
 
-已有 Loop 的 lifecycle、报告工具和数据格式继续使用，无需迁移。外部等待仍包含 external_id、观察时间与观察错误；check_error 会暂停观察，恢复监控继续使用原外部任务。同 Task 重试、报告去重和依赖调度行为保持不变。规则可以用于训练、渲染、审批等不同场景，业务适配器负责外部接入。
+生命周期与报告仍使用统一机制。业务状态及正式结果由 Timeline 持有，Run 保留执行过程与来源；读取按实际运行结构校验，不按存储格式编号拒绝数据，也不增加旧格式转换分支。外部等待仍包含 external_id、观察时间与观察错误；check_error 会暂停观察，恢复监控继续使用原外部任务。同 Task 重试、报告去重和依赖调度行为保持不变。规则可以用于训练、渲染、审批等不同场景，业务适配器负责外部接入。
 
 ## Timeline 内容
 
-Timeline 是一次 Run 的完整持久化过程：既保存目标、任务和已经发生的结果，也保存后续如何推进的安排。完整文档由 `GET /api/runs/{id}` 返回；Agent 通常通过工具读取当前需要的部分。
+Timeline 独立保存目标、限制、Loop 定义的业务状态和正式结果。Run 使用某个 Loop 版本推进它，保存具体执行过程。切换 Run／Loop 后，业务 Agent 仍按目标、限制和当前状态工作，不执行额外交接流程。用户有效要求直接维护，不归档聊天原话。
+
+`read_work_timeline(timeline_id)` 返回状态汇总、运行及等待、结果索引和分页历史；`read_business_state` 读取完整业务记录及历史版本。Run 内 `read_timeline` 返回同一业务状态入口，`read_record` 可读同一 Timeline 的已有正式结果。
+
+业务状态由 Loop 定义、解释和校验。可选的 `state.types` 提供 summary 等展示信息；平台不按 schema、current/append 模式或节点类型白名单阻止状态写入，也不在接续时判定新旧 Loop 业务契约是否兼容。
+
+`report_task(event=completed)` 可同时提交 envelope.state、outputs 和 operations，在同一事务保存。state 每项包含 type、id、value 及可选精确 refs；平台自动保存逐条历史版本，内容和引用未变则复用。未出现在更新中的记录保持不变。
+
+实验用 build_plan.work_key 取得 Timeline 内稳定安排；同键同内容复用原安排，不重复提交。add_task.after_work 使用工作键和步骤名关联已有实验。外部执行由事务外的 Engine 完成。
+
+新 Run 绑定已有 Timeline 后，平台保留在途执行的原身份与已安排任务的定义和已知输入版本；原执行可完成当前 Run 仍等待的状态／结果报告，新安排由当前 Run 负责。原管理进程仍活跃或停止状态未确认时，不替换该管理任务。优化 Loop 后的业务节点不需要判断自己是否接续。具体契约见[持续工作说明](../skills/loop-anything-platform/references/work.md)。
 
 ## 组成与职责
 
@@ -30,11 +40,11 @@ Loop 的节点是能力模板；一个节点可在同一 Run 中对应多项任�
 
 常用入口是用户自己的 Agent 与用户讨论后调用 `start_run`，原子创建 Run 并取得操作权，再完成入口任务。入口保存初始状态，不在每轮重新创建。
 
-同一 Run 的 Agent 按具体 Task 的支线归属操作，各范围可以同时思考，提交时校验相关读取依据和执行状态；同 Task 只保留一个有效执行者。普通 Agent 可规划自己支线的后续工作；全局 Agent 可处理整个 Run。正常脚本和外部事件仍按自己的契约执行、写回；不同 Run 不互斥。
+同一 Run 的 Agent 按具体 Task 的支线归属操作，各范围可以同时思考，提交时校验执行身份、作用范围和任务状态；同 Task 只保留一个有效执行者。普通 Agent 可规划自己支线的后续工作；全局 Agent 可处理整个 Run。正常脚本和外部事件仍按自己的契约执行、写回；不同 Run 不互斥。
 
 - `read_timeline`：当前目标、设置、候选摘要和任务问题。
-- `read_task`：指定任务的输入、来源、当前实现、输出契约、节点 Skill 和 `task_version`。
-- `complete_task`：一次提交完整正式结果；输入或实际选择变化后旧 `task_version` 不能提交。
+- `read_task`：指定任务的输入、来源、当前实现、输出契约和节点 Skill。
+- `report_task(event=completed)`：使用实际执行身份和稳定 report_id 一次提交完整正式结果。
 - `add_task`：从已声明节点创建单项任务，自动分配输出记录身份。
 - `build_plan`：批量写入本次已确定的任务。
 - `change_task`、`change_settings`：调整授权范围内的后续安排或设置。
@@ -69,28 +79,28 @@ Loop 的节点是能力模板；一个节点可在同一 Run 中对应多项任�
 
 ## 执行接口
 
-Agent 只通过 read_task/complete_task 写入结果，旧 submit 不接受 Agent 提交，命令的最终文字仅供观察。脚本命令通过 stdin 接收本次输入、参数、执行身份、Timeline 和输出契约，通过 stdout 返回结果 JSON：
+Agent 只通过 read_task/report_task(event=completed) 写入结果，旧 submit 不接受 Agent 提交，命令的最终文字仅供观察。脚本命令通过 stdin 接收本次输入、参数、执行身份、Timeline 和输出契约，通过 stdout 返回显式事件报告 JSON：
 
 ```json
-{"outputs":{"result":"业务结果"}}
+{"event":"completed","envelope":{"outputs":{"result":"业务结果"}}}
 ```
 
-初始化结果同时提供 `settings` 中的目标等语义字段。脚本可以在 `tasks` 中提供已经明确构建的后续工作，受节点 `plan_nodes` 限制；Agent 按用户授权和当前操作范围使用已声明能力；普通 Agent 仅修改自己的 Task 子树。
+初始化报告在 `envelope.settings` 中提供目标等语义字段。脚本可以在 `envelope.tasks` 中提供已经明确构建的后续工作，受节点 `plan_nodes` 限制；Agent 按用户授权和当前操作范围使用已声明能力；普通 Agent 仅修改自己的 Task 子树。
 
-异步实现 start/observe 可返回 `{"status":"waiting","external_id":"...","poll_after":10}`，之后由 Engine 观察；正式完成时仍提交完整 outputs。外部事件按名称、关联 key 和事件 ID 匹配、去重。
+异步实现 start 返回 `{"event":"submitted","external_id":"...","poll_after":10}`，之后由 Engine 观察；observe 用 `event:"progress"` 报告进度，用 `event:"completed"` 和完整 `envelope.outputs` 报告完成。stdout 未指定 `report_id` 时，平台使用本次调用的 ID；旧 `status:"waiting"` 和裸结果对象不接受。外部事件按名称、关联 key 和事件 ID 匹配、去重。
 
 HTTP 写请求携带 `X-Loop-Anything: workspace`。持有 Agent 操作权时，相关写入口还要求当前令牌：
 
 | Run 路由 | 用途 |
 | --- | --- |
 | `/agent` | `{token, tool, arguments}`，调用同一套 Agent 工具 |
-| `/submit` | 仅接收脚本或审批执行的 token 和完整 envelope；Agent 必须用 complete_task |
+| `/submit` | 仅接收脚本或审批执行的 token 和完整 envelope；Agent 必须用 report_task(event=completed) |
 | `/event` | 写入 event_id、name、key、payload |
 | `/tasks` | 复用 add_task/change_task/build_plan；以 revision 校验，支持只读 preview |
 | `/settings` | 使用 settings revision 更新目标、Bindings、Hooks 或终态条件 |
 | `/command` | 暂停、恢复、终止、重试及放行等控制操作 |
 
-修改目标、要求、约束、授权或 guidance 不会自动使任何任务、审批或结果失效。是否取消或调整工作，由用户决定，或由用户授权的 Agent 明确调用 change_task 落实。取消待确认的审批会撤销其提交令牌；已发生的执行和结果保留。Agent 提交仍检查最新 task_version，脚本和审批提交仍验证执行令牌及输出契约。旧 policy/intent_revision 不再参与运行。已有外部副作用不会被自动撤回。外部实现应使用稳定的 Run/任务身份处理业务幂等，不能把执行 token 当作永久业务身份。
+修改目标、要求、约束、授权或 guidance 不会自动使任何任务、审批或结果失效。是否取消或调整工作，由用户决定，或由用户授权的 Agent 明确调用 change_task 落实。取消待确认的审批会撤销其提交令牌；已发生的执行和结果保留。提交仍验证执行身份、作用范围及正式输出契约。旧 policy/intent_revision 不再参与运行。已有外部副作用不会被自动撤回。外部实现应使用稳定的 Run/任务身份处理业务幂等，不能把执行 token 当作永久业务身份。
 
 ## 节点事件触发模板
 
@@ -106,7 +116,7 @@ Loop 的可选 `fallback_node` 指向一个真实、可见的非入口节点。�
 
 作者已覆盖的执行、等待和结束状态按既定规则处理；执行失败、非法输入、依赖缺口、未识别事件等确定性检查识别的未覆盖状态进入所选兜底节点。无需逐条枚举异常连线，平台不猜测自然语言业务遗漏。
 
-兜底任务使用正常 Task 派发、Hooks、Agent 操作权和 complete_task。origin 保留进入原因。其他全局 Agent 可协助处理问题；兜底 Task 自身仍只有一个有效执行者，全局身份与其他支线可同时存在。处理或明确等待相关事项后，仍需完成兜底节点自身的输出契约，再 finish。
+兜底任务使用正常 Task 派发、Hooks、Agent 操作权和 report_task(event=completed)。origin 保留进入原因。其他全局 Agent 可协助处理问题；兜底 Task 自身仍只有一个有效执行者，全局身份与其他支线可同时存在。处理或明确等待相关事项后，仍需完成兜底节点自身的输出契约，再 finish。
 
 `start_run.fallback_node` 可覆盖 Loop 默认，空字符串明确关闭；运行中用 `change_settings.change.fallback_node` 设置节点 ID 或 null。关闭会取消尚未派发的自动兜底任务，已派发调用保留原操作权和实现。未启用时保留问题，不隐式选择其他 Agent。
 
@@ -155,9 +165,9 @@ Task 的 `parent_id` 指向所属的父 Task，顶层为 null；归属固定，�
 
 ## 明确的执行生命周期
 
-候选实现的 `lifecycle` 保存初始状态和 `{from,event,to,when?,parameters?}` 转移表。构建工具为新候选填入可编辑的模板，Engine 派发时固定该候选及转移表，网页从同一份定义显示执行阶段、附属监控和矩阵。已有 Run 的执行快照不跟随草稿变化；旧包未提供的 lifecycle 通过兼容模板读取，旧历史缺少的事件不补造。
+候选实现的 `lifecycle` 保存初始状态和 `{from,event,to,when?,parameters?}` 转移表。构建工具为新候选填入可编辑的模板，Engine 派发时固定该候选及转移表，网页从同一份定义显示执行阶段、附属监控和矩阵。已有 Run 的执行快照不跟随草稿变化；省略 lifecycle 的当前候选使用该 kind 的默认状态模板。
 
-`report_task` 是脚本、监控和 Agent 的统一事件入口。权限与版本校验后，由状态机匹配转移；completed 同时验证和提交所有结果，旧 complete_task 和脚本 stdout 只是这一入口的兼容适配。任务状态仍表达输入、操作权、派发、暂停与结束；执行的 lifecycle_state 表达作者定义的执行阶段，二者在界面中分别可见，不把监控轮询当作新的业务 Task。
+`report_task` 是脚本、监控和 Agent 的统一事件入口。权限与版本校验后，由状态机匹配转移；completed 同时验证和提交所有结果，Agent 通过 report_task 提交；命令脚本可通过报告工具或当前 JSON stdout 契约提交。任务状态仍表达输入、操作权、派发、暂停与结束；执行的 lifecycle_state 表达作者定义的执行阶段，二者在界面中分别可见，不把监控轮询当作新的业务 Task。
 
 转移记录含来源、时间、前后状态、事件、命中规则与进度/原因。未覆盖的转移保留原执行阶段并将任务标记为需要处理，依显式 fallback_node 进入既有兜底。检查失败保留最后已知外部状态并暂停监控；恢复沿用 external_id。已提交结果不因进程后来退出而撤回。没有完整交付的进程退出、超时和恢复异常由平台记录；正常外部等待本身不构成异常。
 
@@ -171,3 +181,21 @@ Task 的 `parent_id` 指向所属的父 Task，顶层为 null；归属固定，�
 模板步骤可声明 Run 内唯一 ref；输入的 task_ref/task_refs 和 after_refs 在写入时解析为既有 record/records/after。报告的所有 routes 批次共同解析，允许该报告内前向引用；单次 build_plan 可引用当前 Run 或该批任务。缺失、重复、未知端口及循环均拒绝，不创建占位或另设任务组生命周期。refs 保留在 Task spec，resolve_refs 和构建回执提供映射。
 
 参数契约和验收入口见 [contracts.md](../skills/loop-anything-platform/references/contracts.md) 与 [testing.md](../skills/loop-anything-platform/references/testing.md)。
+
+
+### 接续与精确观察
+
+暂停与继续沿用同一个 Run；暂停停止平台派发新的业务执行，不自动冻结已启动的外部训练。结果、状态、待办和自动推进规则保留，恢复后由原调度器继续。新 Run 接续也使用同一套正常推进逻辑，原执行仅通过既有结果回填入口交回事实，不另建恢复调度器。
+
+同一个 Loop 版本接续时，已经完成的入口不重新执行，保留原运行设置、输入与暂停点记录；显式传入的新启动设置覆盖对应项。state 展示元数据不参与该判断。用户明确选择另一个 Loop 版本时，新入口按选定定义初始化，既有任务仍保留原输入、实现、结果契约和资源，后续推进使用选定 Loop 对应节点的 routes/progression；已不在新 Loop 中的节点沿平台通常的未声明推进处理，不强制改为管家模式。
+
+等待来源 `kind: run` 表示整项工作，平台沿其 Timeline 观察当前 Run，后续再接续也无需改写引用。`kind: task` 表示指定任务，只读取该任务实际提交的精确结果版本。旧 Run 对外显示“已接续”，原观察器仍可收取在途结果，但不能安排新工作。被调用的子 Loop 也沿同一 Timeline 判断完成，不重复启动子任务。
+
+保留任务的 Skill、手册和执行资产从原安装包读取，不另外保存资源镜像。已派发任务沿原执行实际读取的输入版本；其余既有输入逐项固定版本，尚未产生的输出固定生产者的目标版本；原 Run 启动参数保留为已安排任务的输入。接续代理复用原执行精确结果。当前 Run 仍在等待的原执行可以完成已授权的状态和结果报告，但不能安排新工作。
+
+Agent 按需读取目标、限制和状态后工作。Auto Research 通过 `complete_research_decision.py` 一次提交业务状态、正式结果和任务安排；不再保存读取快照，也不要求提交时证明判断未过期。
+
+
+普通任务上下文不默认携带全局业务摘要；需要研究状态时显式读取 `read_timeline` 或分页 `read_business_state`，完整证据通过具体记录查询。读取不修改运行状态，也不构成后续提交的版本门槛。
+
+保留任务按 Task 保存所选实现快照，同一节点选择不同候选的任务不会共用一个实现；后续接续直接复用原快照身份，不继续叠加名称和定义。

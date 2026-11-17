@@ -112,6 +112,7 @@ class TimelineRuntime:
 
     def resolve_inputs(self, run, tasks):
         values, sources, missing = {}, {}, []
+        predecessors = set(tasks['spec'].get('after', []))
         for task_id in tasks['spec'].get('after', []):
             before = run['tasks'].get(task_id)
             if not before or before['status'] not in ('completed', 'skipped'):
@@ -123,6 +124,7 @@ class TimelineRuntime:
                     from loop_anything.runtime.model import record_refs
                     refs = record_refs(source)
                     records = [record_version(run, rid, revision) for rid, revision in refs]
+                    predecessors.update(rec['tasks'] for rec in records if rec and rec.get('tasks'))
                     absent = [ref for ref, rec in zip(refs, records) if rec is None]
                     if absent:
                         missing.extend({'input': name, 'record': rid, 'revision': revision or 1, 'reason': 'missing_record'} for rid, revision in absent)
@@ -142,6 +144,8 @@ class TimelineRuntime:
                 values[name], sources[name] = copy.deepcopy(value), provenance
             except (KeyError, IndexError, TypeError, ValueError) as exc:
                 missing.append({'input': name, 'reason': 'invalid_input', 'detail': str(exc)})
+        from loop_anything.runtime.steward import progression_waits
+        missing.extend(progression_waits(run, tasks, predecessors))
         ident, implementation = selected(run, tasks)
         if not missing and implementation is None:
             missing.append({'reason': 'missing_implementation', 'node': tasks['spec']['node']})
@@ -206,6 +210,8 @@ class TimelineRuntime:
                 continue
             deps[tasks['id']] = []
             for item in tasks['wait_reasons']:
+                if item.get('reason') == 'steward_decision':
+                    continue  # Waiting for a management decision is normal scheduling, not bad input.
                 if item.get('reason') == 'missing_implementation':
                     diagnostics.append({'kind': 'missing_implementation', 'tasks': tasks['id'], **item})
                     continue
@@ -253,18 +259,21 @@ class TimelineRuntime:
         self.advance_loops(run_id)
         jobs, deliveries = [], []
         with self.store.edit(run_id) as run:
-            if not run.get('operator_protocol'):
-                return  # No autonomous exception migration of historical Runs.
+            from loop_anything.runtime.timelines import advance_continuations
+            advance_continuations(self.store, run, self)
+            from loop_anything.runtime.steward import management_task
             if run['loop_definition'].get('rules'):
                 raise Invalid('This Run uses retired Engine rules. Publish a plans-based Loop; existing data is not migrated automatically.')
             if run['status'] == 'running' or (run['status'] == 'paused' and run['settings'].get('termination_signal')):
-                reason, _ = end_condition(run)
+                reason, _ = end_condition(run) if not run.get('superseded_by') else (None, None)
                 if reason:
                     self.end_run(run, reason)
-            if run['status'] == 'running':
-                self.apply_retries(run)
+            managing = run.get('steward') and any(management_task(t) and t['status'] in PENDING for t in run['tasks'].values())
+            if run['status'] == 'running' or managing:
+                if run['status'] == 'running' and not run.get('superseded_by'):self.apply_retries(run)
                 # Observe/consume existing tasks before admitting new tasks.
                 for e in run['executions']:
+                    if run['status'] != 'running':break
                     tasks = run['tasks'][e['task_id']]
                     if e['status'] != 'waiting' or e.get('worker_active') or e.get('observation_error') or monitor_ended(run, e):
                         continue
@@ -290,12 +299,19 @@ class TimelineRuntime:
                     elif e['wake_at'] <= time.time():
                         e['status'] = tasks['status'] = 'executing'
                         jobs.append((copy.deepcopy(e), copy.deepcopy(run), True))
-                active = sum(w['status'] in {'executing', 'decision'} or (w['status'] == 'waiting' and
-                    (selected(run, w)[1] or {}).get('kind') in ('external','loop')) for w in run['tasks'].values())
+                def occupies_slot(w):
+                    return w['status'] in {'executing', 'decision'} or (w['status'] == 'waiting' and
+                        (selected(run, w)[1] or {}).get('kind') in ('external', 'loop'))
+                active = sum(occupies_slot(w) for w in run['tasks'].values() if not management_task(w))
+                management_active = any(occupies_slot(w) for w in run['tasks'].values() if management_task(w))
                 candidates = sorted(run['tasks'].values(), key=lambda task: scope_for(run, task) is not None)
                 for tasks in candidates:
+                    if run.get('superseded_by'):break
+                    if management_task(tasks) and run.get('steward',{}).get('session_id'):continue
                     if tasks['status'] not in PENDING:
                         continue
+                    if run['status'] != 'running' and not management_task(tasks):continue
+                    if run.get('steward') and not run['initialized'] and tasks['id'] == run['loop_definition']['seed']['id'] and (selected(run,tasks)[1] or {}).get('kind') == 'agent':continue
                     values, sources, missing = self.resolve_inputs(run, tasks)
                     tasks['wait_reasons'] = missing
                     if missing:
@@ -325,7 +341,9 @@ class TimelineRuntime:
                         tasks.update(status='fault', budget_error=str(exc))
                         Store.log(run, 'budget_exhausted', tasks['id'])
                         continue
-                    if implementation['kind'] not in ('event', 'approval', 'timer') and active >= run['settings']['max_parallel']:
+                    if management_task(tasks) and management_active:
+                        continue
+                    if not management_task(tasks) and implementation['kind'] not in ('event', 'approval', 'timer') and active >= run['settings']['max_parallel']:
                         continue
                     e = self.new_execution(run, tasks, implementation, values, sources)
                     from loop_anything.runtime.flow_agent import NODE as FLOW_AGENT
@@ -348,10 +366,12 @@ class TimelineRuntime:
                     if e['status'] in ('decision', 'approval', 'waiting'):
                         e['started_at'] = time.time()
                     tasks['status'] = e['status']
-                    if e['status'] in ('executing', 'decision') or implementation['kind']=='loop':
+                    if management_task(tasks):
+                        management_active = True
+                    elif e['status'] in ('executing', 'decision') or implementation['kind']=='loop':
                         active += 1
                     Store.log(run, 'dispatched', tasks['id'] + ' → ' + e['node'], e['id'], {'sources': sources, 'origin': tasks['origin']})
-                self.diagnose(run)
+                if not run.get('superseded_by'):self.diagnose(run)
                 tasks = task_list(run, self)
                 run['attention_state'] = 'unexpected' if run.get('attention_error') else tasks['state']
                 if tasks['state'] != 'unexpected' and not run.get('attention_error') and not run.get('agent_sessions'):
@@ -360,6 +380,10 @@ class TimelineRuntime:
                         task.pop('agent_failures', None)
                 if run.get('attention_error') or any(t['kind'] in ('unexpected', 'request') for t in tasks['items']):
                     fallback = run['settings'].get('fallback_node')
+                    if run.get('steward'):
+                        from loop_anything.runtime.steward import attention
+                        attention(run, tasks['items'])
+                        fallback = None
                     pending = any(w['origin'].get('fallback') and w['status'] in PENDING | IN_FLIGHT | {'retrying'} for w in run['tasks'].values())
                     if fallback and not pending:
                         node = node_for(run, fallback)
@@ -390,7 +414,8 @@ class TimelineRuntime:
                 if notification['route'] != 'workspace' and 'sender' not in notification:
                     try:
                         route=run['settings'].get('notification_route',notification['route']) if notification['route']=='user' and 'requested_route' not in notification else notification['route']
-                        notification['route'],notification['sender']=sender_for(self.store,run,route)
+                        from loop_anything.runtime.notifications import delivery_context
+                        notification['route'],notification['sender']=sender_for(self.store,delivery_context(run,notification.get('context')),route)
                     except NotificationConfigurationError as exc:
                         notification.update(status='waiting_configuration',error=str(exc));continue
                 notification.update(status='sending', token=uid('delivery'), attempt=notification['attempt'] + 1)
@@ -409,6 +434,7 @@ class TimelineRuntime:
             if e.get('retry', {}).get('status') == 'pending':
                 e['retry']['status'] = 'superseded'
         for tasks in run['tasks'].values():
+            if tasks.get('origin', {}).get('steward'):continue
             if tasks['status'] not in END:
                 tasks['status'] = 'cancelled'
                 if tasks.get('execution_id'):
@@ -444,35 +470,53 @@ class TimelineRuntime:
         return e
 
     def check_owner(self, run, e, token):
-        if run['status'] in ('completed', 'terminated') or e['status'] not in IN_FLIGHT or e['token'] != token:
+        management = run['tasks'][e['task_id']].get('origin', {}).get('steward')
+        if (run['status'] in ('completed', 'terminated') and not management) or e['status'] not in IN_FLIGHT or e['token'] != token:
             raise Conflict('Execution no longer owns this tasks')
         tasks = run['tasks'][e['task_id']]
         if e['implementation']['kind'] == 'agent':
             require_scope(run, require_owner(run, token), e['task_id'])
-        # Results retain dispatched inputs. Explicit cancellation/retry revokes tokens;
-        # Agent submissions separately validate live task_version in complete_task.
+        if tasks.get('execution_id')!=e['id'] or tasks['revision']!=e['task_revision']:
+            raise Conflict('Execution no longer owns this Task revision')
+        # Reports retain the inputs and source versions captured at dispatch.
 
     def commit_in_run(self, run, e, envelope):
+        # Engine-generated reports can be caught inside a Store transaction. Validate
+        # the entire business/task batch on a copy before touching live state.
+        candidate=copy.deepcopy(run)
+        attempt=next(x for x in candidate['executions'] if x['id']==e['id'])
+        self._commit_in_run(candidate,attempt,envelope)
+        self._commit_in_run(run,e,envelope)
+
+    def _commit_in_run(self, run, e, envelope):
         if not isinstance(envelope, dict) or not isinstance(envelope.get('outputs', {}), dict) or not isinstance(envelope.get('tasks', []), list):
             raise Invalid('Completion envelope requires object outputs and array tasks')
         node = node_for(run, e['node'])
         tasks = run['tasks'][e['task_id']]
         outputs = envelope.get('outputs', {})
+        retained=run.get('retained_nodes',{}).get(e['node'])
+        output_types=retained['output_types'] if retained else {p:v['record_type'] for p,v in node['outputs'].items()}
+        if run.get('superseded_by') and any(envelope.get(k) for k in ('tasks','operations','settings')):
+            raise Conflict('An original execution may deliver results but cannot arrange new work')
         validate_result(run['loop_definition'], e['node'], outputs)
+        if tasks.get('origin', {}).get('steward'):
+            from loop_anything.runtime.steward import completed
+            completed(self.store, run, tasks, outputs)
         context = {'outputs': outputs, 'inputs': e['inputs'], 'parameters': e['parameters'],
                    'settings': dict(run['settings'], **envelope.get('settings', {})),
                    'completed': {name: sum(x['node'] == name and x['status'] == 'completed' for x in run['executions'])
                                  for name in run['loop_definition']['nodes']}}
         check_assertions(node, context)
-        if set(envelope) - {'outputs', 'tasks', 'settings'}:
+        if set(envelope) - {'outputs', 'tasks', 'settings', 'state', 'operations'}:
             raise Invalid('Unknown completion envelope field')
         if envelope.get('settings') is not None:
             if not node.get('initialize_timeline') or run['initialized']:
                 raise Invalid('Only initial semantic parsing may initialize settings')
-            if 'authorization' in envelope['settings'] and envelope['settings']['authorization'] != run['settings'].get('authorization', ''):
-                raise Invalid('Agent cannot grant itself user authorization')
             if set(envelope['settings']) - SEMANTIC_FIELDS - ENDING_FIELDS:
                 raise Invalid('Initializer cannot change Engine runtime fields')
+            for field in SEMANTIC_FIELDS:
+                if run.get('timeline',{}).get(field) and field in envelope['settings'] and envelope['settings'][field]!=run['timeline'][field]:
+                    raise Invalid('Existing Timeline '+field+' cannot be overwritten during initialization; use update_timeline')
             candidate = dict(run['settings'], **envelope['settings'])
             validate_settings(candidate)
             if node.get('agent_settings_schema'):
@@ -489,25 +533,46 @@ class TimelineRuntime:
         # Validate every destination before applying any shared-state write.
         for name, value in outputs.items():
             destination = tasks['spec']['outputs'][name]
-            previous = latest(run, destination['id'])
+            reused=e.get('continuation_record_refs',{}).get(name)
+            previous = record_version(run,reused['record'],reused['revision']) if reused else latest(run, destination['id'])
             expected = destination.get('expected_revision', 0)
-            if (previous['revision'] if previous else 0) != expected:
+            reuse=bool(tasks.get('continuation_source')) and reused and reused['record']==destination['id'] and previous and previous['value']==value
+            if tasks.get('continuation_source') and not reuse:raise Conflict('Continuation must use its exact committed results')
+            if not reuse and (previous['revision'] if previous else 0) != expected:
                 raise Conflict('Output record revision conflict: ' + destination['id'])
-            if previous and previous['type'] != node['outputs'][name]['record_type']:
+            if previous and not reuse and previous['type'] != output_types[name]:
                 raise Invalid('Cannot replace a record with a different type')
         if envelope.get('settings') is not None:
             run['settings'].update(copy.deepcopy(envelope['settings']))
             run['initialized'] = True
             Store.log(run, 'initialized', 'User meaning parsed into Programmable Timeline', e['id'], {'settings': run['settings']})
+        from loop_anything.runtime.business_state import apply as apply_state
+        apply_state(run,e,envelope.get('state',[]))
         actor = require_owner(run, e['token']) if e['implementation']['kind'] == 'agent' else None
         for planned in attach_tasks(run, envelope.get('tasks', []), e['task_id'], actor):
             add_task(run, planned, {'execution': e['id']})
+        operations=envelope.get('operations',[])
+        if not isinstance(operations,list):raise Invalid('operations must be task edits')
+        if operations:
+            from loop_anything.interfaces.agent_tasks import apply_task_edit, RunTools
+            schemas={d['name']:d['inputSchema'] for d in RunTools(self.store,run['id'],e['token']).definitions()}
+            for operation in operations:
+                if not isinstance(operation,dict) or set(operation)!={'tool','arguments'} or operation['tool'] not in ('build_plan','add_task','change_task'):
+                    raise Invalid('Unknown task operation in completed report')
+                if actor is None:raise Invalid('Task operations require a current Agent execution')
+                contract(operation['arguments'],schemas[operation['tool']],'Task operation')
+                apply_task_edit(run,operation['tool'],operation['arguments'],{'execution':e['id']},actor)
         refs = {}
         for name, value in outputs.items():
             destination = tasks['spec']['outputs'][name]
+            if tasks.get('continuation_source'):
+                pinned=e['continuation_record_refs'][name]
+                rec=record_version(run,pinned['record'],pinned['revision'])
+                refs[name]={'record':rec['id'],'revision':rec['revision']}
+                continue
             rec = {'id': destination['id'], 'revision': destination.get('expected_revision', 0) + 1,
-                   'type': node['outputs'][name]['record_type'], 'value': copy.deepcopy(value),
-                   'producer': e['id'], 'tasks': tasks['id'], 'at': time.time(), 'sources': copy.deepcopy(e['sources'])}
+                   'type': output_types[name], 'value': copy.deepcopy(value),
+                   'producer': e['id'], 'tasks': tasks['id'], 'source_run_id':run['id'], 'at': time.time(), 'sources': copy.deepcopy(e['sources'])}
             run['records'].setdefault(rec['id'], []).append(rec)
             refs[name] = {'record': rec['id'], 'revision': rec['revision']}
         e.update(status='completed', completed_at=time.time(), record_refs=refs, outputs=copy.deepcopy(outputs))
@@ -541,7 +606,8 @@ class TimelineRuntime:
             Store.log(run, 'stale_monitor_report', 'Late monitor report recorded without changing task state', e['id'],
                       {'report_id': report['report_id'], 'event': report['event'], 'state': e.get('lifecycle_state'), 'detail': copy.deepcopy(report)})
             return receipt
-        if run['status'] in ('completed', 'terminated') or e['status'] in END or e['status'] == 'fault':
+        management = run['tasks'][e['task_id']].get('origin', {}).get('steward')
+        if (run['status'] in ('completed', 'terminated') and not management) or e['status'] in END or e['status'] == 'fault':
             raise Conflict('Execution has ended; cannot report another transition')
         kind = e['implementation']['kind']
         external_id = report.get('external_id', e.get('external_id'))
@@ -610,6 +676,9 @@ class TimelineRuntime:
         if matched:
             for spec, origin in routed_tasks:
                 add_task(run, spec, origin)
+                if run.get('steward'):
+                    from loop_anything.runtime.steward import attach_decision
+                    attach_decision(run, run['tasks'][spec['id']])
             for firing in route_firings:
                 Store.log(run, 'route_fired', 'Flow decision requested' if firing.get('flow_agent') else 'Event expanded plan: ' + firing['plan'], e['id'],
                           dict(firing, task_id=task['id'], report_id=report['report_id'], event=event))
@@ -709,7 +778,7 @@ class TimelineRuntime:
                 request_text = process_prompt(implementation,context,implementation.get('prompt',DEFAULTS['task']),2)
             else:
                 node = node_for(snapshot, e['node'])
-                request = {'run_id': run_id, 'execution_id': e['id'], 'task_id': e['task_id'], 'token': e['token'],
+                request = {'workspace_id':self.engine.communication.settings()['instance_id'],'run_id': run_id, 'execution_id': e['id'], 'task_id': e['task_id'], 'token': e['token'],
                            'attempt': e['attempt'], 'task_revision': e.get('task_revision'),
                            'inputs': e['inputs'], 'parameters': e['parameters'], 'external_id': e.get('external_id'),
                            'timeline': snapshot, 'handbook': snapshot['loop_definition']['handbook'],
@@ -754,7 +823,7 @@ class TimelineRuntime:
                     current = self.engine.execution(current_run, e['id'])
                     if not owner_for(current_run, e['token']):
                         return 'finished'
-                    if current_run['status'] == 'terminated' or current.get('token') != e['token']:
+                    if (current_run['status'] == 'terminated' and not current_run['tasks'][current['task_id']].get('origin', {}).get('steward')) or current.get('token') != e['token']:
                         return 'revoked'
                 session.check = session_state
             if implementation.get('executor'):
@@ -765,7 +834,7 @@ class TimelineRuntime:
             else:
                 result = run_command(implementation['observe'] if observe else implementation['command'], request_text,
                                      implementation.get('timeout', None if implementation['kind'] == 'agent' else 60), implementation.get('cwd'),
-                                     stop=self.engine.stopping if implementation['kind'] == 'agent' else None, **({'session': session} if session else {}))
+                                     stop=self.engine.stopping if implementation['kind'] == 'agent' else None, context=implementation.get('_prompt_context'), **({'session': session} if session else {}))
             if e.get('assistance_resume') and session.doc.get('native_session_error'):raise Invalid(session.doc['native_session_error'])
             if observe:
                 with self.store.edit(run_id) as run:
@@ -783,7 +852,7 @@ class TimelineRuntime:
                     if owner_for(run, e['token']):
                         raise Invalid('Agent exited without calling finish')
                     return  # Tool writes already committed; stdout is not a business result.
-                # Direct tool reporting is authoritative; stdout is a compact adapter for old scripts.
+                # Direct tool reporting is authoritative; command stdout is its documented JSON result transport.
                 if current.get('token') != e['token'] or current['status'] in END | {'fault'}:
                     return
                 self.check_owner(run, current, e['token'])
@@ -793,14 +862,7 @@ class TimelineRuntime:
                 if envelope is not None:
                     if not isinstance(envelope, dict):
                         raise Invalid('Script response must be an object')
-                    if envelope.get('status') == 'waiting':
-                        report = {'event': 'progress' if current.get('external_id') else 'submitted',
-                                  'report_id': invocation, 'external_id': envelope.get('external_id'),
-                                  'poll_after': envelope.get('poll_after', 10), 'detail': envelope.get('detail', {})}
-                    elif 'event' in envelope:
-                        report = dict(envelope, report_id=envelope.get('report_id', invocation))
-                    else:
-                        report = {'event': 'completed', 'report_id': invocation, 'envelope': envelope}
+                    report = dict(envelope, report_id=envelope.get('report_id', invocation))
                     self.report_in_run(run, current, report, 'monitor' if observe else 'script')
                 elif not reported:
                     raise Invalid('Program exited without reporting a result')
@@ -891,11 +953,11 @@ class TimelineRuntime:
                 return
             row.update(status='waiting_configuration' if configuration_error else 'fault' if error else 'delivered', receipt=receipt, error=error)
             Store.log(run, 'notification_' + row['status'], row['message'], detail={'id': row['id'], 'route': row['route'], 'receipt': receipt, 'error': error})
-        if not error and notification.get('conversation') and snapshot.get('notification_conversation_id'):
+        if not error and notification.get('conversation') and notification.get('conversation_id'):
             from loop_anything.runtime.communication import service
             from loop_anything.runtime.communication_conversations import resolve, remember_context
             comm=service(self.store)
-            entry=resolve(comm,snapshot['notification_conversation_id'])
+            entry=resolve(comm,notification['conversation_id'])
             with comm.transaction() as db:
                 remember_context(comm,db,entry,receipt)
 
@@ -908,8 +970,8 @@ class TimelineRuntime:
         if not run.get('operator_protocol'):
             raise Invalid('Historical Run is inspect-only under the new operator protocol')
         guard_write(run, operator_token)
-        if 'authorization' in change and (owner_for(run, operator_token) or {}).get('kind') == 'background':
-            raise Invalid('Only the user may change user authorization')
+        if set(change) & SEMANTIC_FIELDS:
+            raise Invalid('Use update_timeline for objective/constraints and follow its check notice')
         allowed = SEMANTIC_FIELDS | ENDING_FIELDS | {'max_parallel', 'hooks', 'bindings', 'fallback_node', 'global_agent_node', 'notification_command', 'notification_route'}
         if set(change) - allowed:
             raise Invalid('Unknown Programmable Timeline field')
@@ -984,6 +1046,7 @@ class TimelineRuntime:
                     if e.get('retry', {}).get('status') == 'pending':
                         e['retry']['status'] = 'superseded'
                 for tasks in run['tasks'].values():
+                    if tasks.get('origin', {}).get('steward'):continue
                     if tasks['status'] not in END:
                         tasks['status'] = 'cancelled'
                         if tasks['execution_id']:
@@ -1005,11 +1068,6 @@ class TimelineRuntime:
         Store.log(run, action, 'Timeline command: ' + action, execution_id, {'gate': hook_firing})
 
     def recover(self, run):
-        if not run.get('operator_protocol'):
-            return
-        for notice in run.get('notifications', []):
-            if waiting_configuration(notice):
-                notice['status'] = 'waiting_configuration'
         # Terminal recovery already marked unknown processes interrupted. Preserve
         # their Task claims even when finish released the Agent identity earlier.
         with self.store.connection() as db:

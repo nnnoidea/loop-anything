@@ -33,7 +33,7 @@ class TeamPriorityTests(unittest.TestCase):
         self.client.configure(self.base.config['link'])
 
     def join_nas(self):
-        self.client.configure(self.nas['path'])
+        self.client.configure(self.nas['link'])
 
     def finish(self,ident):
         packet=self.client.request_record(ident)
@@ -77,16 +77,6 @@ class TeamPriorityTests(unittest.TestCase):
         self.assertTrue(any(p['kind']=='cancel' and p['request_id']==followup for _,p in messages))
         self.assertFalse(any(p['request_id']==followup for _,p in self.base.list('messages/worker')))
 
-    def test_legacy_connection_and_raw_envelope_still_resolve_original_team(self):
-        self.join_nas()
-        ident=self.client.submit({'agent_id':'papers','message':'legacy'})['request']['id']
-        packet=self.client.request_record(ident)
-        core.atomic_json(self.client.directory/'requests'/(ident+'.json'),packet)
-        self.client.config={'team':self.nas,'origin':self.client.config['origin']}
-        core.atomic_json(self.client.file,self.client.config)
-        self.client=Client(self.client.directory)
-        self.join_base();self.finish(ident)
-        self.assertEqual(self.client.read(ident)['result']['answer'],self.nas['id'])
 
     def test_base_error_never_publishes_or_reads_from_nas(self):
         self.join_nas();self.join_base()
@@ -104,14 +94,14 @@ class TeamPriorityTests(unittest.TestCase):
 
     def test_platform_defaults_and_old_run_scope_survive_default_change(self):
         engine=Engine(Store(self.root/'platform.db'));self.addCleanup(engine.close);comm=engine.communication
-        comm.config('team',link=self.nas['path'])
+        comm.config('team',link=self.nas['link'])
         key=ensure_loop(comm.store)
         old=comm.store.create(key,'Old NAS run',{'message':'before'},acquire=True)
         token=old['agent_sessions'][0]['token']
         first=comm.request({'location':'group','agent_id':'papers','message':'old request'})['request']
         with patch('loop_anything.runtime.team_transport.join',return_value=dict(self.base.config)):
             comm.config('team',link=self.base.config['link'])
-        comm.config('team',link=self.nas['path'])
+        comm.config('team',link=self.nas['link'])
         self.assertEqual(comm.settings()['default_team'],'team-base')
         new=comm.store.create(key,'New Base run',{'message':'after'})
         self.assertEqual(new['communication_group'],'team-base')

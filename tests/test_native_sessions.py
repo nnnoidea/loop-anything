@@ -31,10 +31,10 @@ from loop_anything.interfaces.agent_tasks import RunTools
 r=json.loads(sys.stdin.read().split('Run context:'+chr(10),1)[1]);t=RunTools(Store(sys.argv[1]),r['run_id'],r['token'])
 print(json.dumps({'type':'thread.started','thread_id':'native-exact-123'}),flush=True)
 i=t.call('read_task',{'task_id':'init'})
-t.call('complete_task',{'task_id':'init','task_version':i['task_version'],'envelope':{'settings':{'objective':'Keep running'},'outputs':{'result':'original result'}}})
+t.call('report_task', {'event':'completed','report_id':'complete','task_id':'init','envelope':{'settings':{'objective':'Keep running'},'outputs':{'result':'original result'}}})
 t.call('finish',{})
 """
-        self.impl['init']={'kind':'agent','agent_cli':'codex','command':[sys.executable,'-u','-c',code,self.store.filename],'cwd':str(Path(__file__).resolve().parents[1])}
+        self.impl['init']={'options': {'default': {'kind':'agent','agent_cli':'codex','command':[sys.executable,'-u','-c',code,self.store.filename],'cwd':str(Path(__file__).resolve().parents[1])}}, 'default': 'default'}
         key=self.store.publish(self.bp,self.impl)['key'];self.rid=self.store.create(key,'Native sessions')['id'];self.engine.tick(self.rid)
         for future in list(self.engine.futures):future.result(8)
         self.original=self.store.get(self.rid);self.eid=self.original['executions'][0]['id']
@@ -61,7 +61,7 @@ r=json.loads(Path(sys.argv[2]).read_text().split('Run context:'+chr(10),1)[1]);a
 t=RunTools(Store(sys.argv[3]),r['run_id'],r['token'])
 i=t.call('read_task',{'task_id':'init'});assert i['task']['status']=='completed'
 assert not RunTools(Store(sys.argv[3]),r['run_id'],sys.argv[4]).respond('finish',{})['ok']
-assert not t.respond('complete_task',{'task_id':'init','task_version':i['task_version'],'envelope':{'outputs':{'result':'overwrite'}}})['ok']
+assert not t.respond('report_task', {'event':'completed','report_id':'complete','task_id':'init','envelope':{'outputs':{'result':'overwrite'}}})['ok']
 print('RESUMED-EXACT',flush=True);input();t.call('finish',{});time.sleep(60)
 """
         args=dict(revision=info['revision'],provider='codex',native_session_id='native-exact-123',message='Explain the saved result',command=[sys.executable,'-u','-c',code,'{{session_id}}','{{prompt_file}}',self.store.filename,self.original['executions'][0]['token']])
@@ -79,7 +79,7 @@ print('RESUMED-EXACT',flush=True);input();t.call('finish',{});time.sleep(60)
         from loop_anything.interfaces.agent_tasks import acquire
         self.initial();released, exit_allowed = Event(), Event()
         self.addCleanup(exit_allowed.set)
-        def command(argv, prompt, *args):
+        def command(argv, prompt, *args, **kwargs):
             context=json.loads(prompt.split('Run context:\n',1)[1])
             RunTools(self.store,self.rid,context['token']).call('finish',{})
             released.set();exit_allowed.wait(5)
@@ -109,8 +109,8 @@ print('RESUMED-EXACT',flush=True);input();t.call('finish',{});time.sleep(60)
         with self.assertRaises(Conflict):resume(self.engine,self.rid,self.eid,dict(args,native_session_id='different-session'))
 
     def test_explicit_generated_session_id_reaches_cli_and_is_saved(self):
-        self.impl['init']={'kind':'agent','agent_cli':'claude','command':[sys.executable,'-c',
-            "import sys,uuid;uuid.UUID(sys.argv[1]);print(sys.argv[1])",'{{session_id}}']}
+        self.impl['init']={'options': {'default': {'kind':'agent','agent_cli':'claude','command':[sys.executable,'-c',
+            "import sys,uuid;uuid.UUID(sys.argv[1]);print(sys.argv[1])",'{{session_id}}']}}, 'default': 'default'}
         key=self.store.publish(self.bp,self.impl)['key'];rid=self.store.create(key,'Assigned native ID')['id'];self.engine.tick(rid)
         for future in list(self.engine.futures):future.result(8)
         execution=self.store.get(rid)['executions'][0]

@@ -73,8 +73,8 @@ class TeamRuntimeTests(unittest.TestCase):
             self.assertEqual(registry.show(ident)['runtime']['status'],'completed')
         finally:runtime.stop.set();thread.join(timeout=5)
 
-    def setup_service(self):
-        store=Store(self.root/'team/platform.sqlite3',journal_mode='DELETE');store.hosting_team=True
+    def setup_service(self, database_on_nas=False):
+        store=Store(self.root/('team' if database_on_nas else 'server')/'platform.sqlite3',journal_mode='DELETE');store.hosting_team=True
         engine=Engine(store);self.addCleanup(engine.close)
         box=ToolMailbox(store,self.root/'team',engine)
         engine.platform_url='nas://'+str(box.root);engine.executors.root=box.root
@@ -90,6 +90,16 @@ class TeamRuntimeTests(unittest.TestCase):
         with self.assertRaises(ValueError):client.invoke(engine.platform_url,'create_loop',{'name':'Changed'},'api-once',0)
         with store.connection() as db:self.assertEqual(db.execute('PRAGMA journal_mode').fetchone()[0],'delete')
         with Store(store.filename).connection() as db:self.assertEqual(db.execute('PRAGMA journal_mode').fetchone()[0],'delete')
+
+    def test_mailbox_restart_does_not_rejoin_a_disabled_named_agent_team(self):
+        store,engine,box,_=self.setup_service()
+        gid=box.agent_team['id']
+        self.assertEqual(engine.communication.settings()['default_team'],gid)
+        engine.communication.config('leave',group_id=gid)
+        restored=ToolMailbox(store,box.root,engine)
+        self.assertEqual(restored.agent_team['id'],gid)
+        self.assertFalse(engine.communication.settings()['groups'][gid]['enabled'])
+        self.assertIsNone(engine.communication.settings()['default_team'])
 
     def test_unified_client_operates_service_and_runs_local_work_only_when_started(self):
         store,engine,box,_=self.setup_service()
@@ -141,7 +151,7 @@ else:
     Path(sys.argv[1]).write_text('verified')
 ''')
         command=[sys.executable,'-I',str(script),str(done)]
-        base.implementations['produce']={'kind':'external','command':command,'observe':command}
+        base.implementations['produce']={'options': {'default': {'kind':'external','command':command,'observe':command}}, 'default': 'default'}
         base.initialize([task_spec('job','produce',{'source':{'record':'a'}},{'text':'out'})])
         self.pump(lambda:(box.tick(),engine.tick(base.id)),
                   lambda:base.read()['tasks']['job']['status'] in ('completed','fault') and self.settled(engine),15)
@@ -183,8 +193,8 @@ else:
         engine.platform_url='nas://'+str(box.root);engine.executors.root=box.root
         receiver=Receiver({'server':engine.platform_url},self.root/'receiver');self.addCleanup(receiver.close)
         receiver.tick();engine.executors.sync()
-        base.implementations['produce']={'kind':'command','executor':receiver.ident,
-            'command':[sys.executable,'-c','import json;print(json.dumps({"outputs":{"text":"remote-result"}}))']}
+        base.implementations['produce']={'options': {'default': {'kind':'command','executor':receiver.ident,
+            'command':[sys.executable,'-c','import json;print(json.dumps({\'event\':\'completed\',\'envelope\':{"outputs":{"text":"remote-result"}}}))']}}, 'default': 'default'}
         base.initialize([task_spec('job','produce',{'source':{'record':'a'}},{'text':'out'})])
         self.pump(lambda:(engine.executors.sync(),receiver.tick()),lambda:base.read()['tasks']['job']['status']=='completed')
         self.assertEqual(base.read()['records']['out'][-1]['value'],'remote-result')
@@ -196,8 +206,8 @@ else:
         engine.platform_url='nas://'+str(box.root);engine.executors.root=box.root
         receiver=Receiver({'server':engine.platform_url},self.root/'receiver');self.addCleanup(receiver.close)
         receiver.tick();engine.executors.sync();began=self.root/'began';release=self.root/'release'
-        code='import time,json;from pathlib import Path;p=Path('+repr(str(began))+');p.write_text(p.read_text()+"x" if p.exists() else "x")\nwhile not Path('+repr(str(release))+').exists():time.sleep(.02)\nprint(json.dumps({"outputs":{"text":"survived"}}))'
-        base.implementations['produce']={'kind':'command','executor':receiver.ident,'command':[sys.executable,'-c',code]}
+        code='import time,json;from pathlib import Path;p=Path('+repr(str(began))+');p.write_text(p.read_text()+"x" if p.exists() else "x")\nwhile not Path('+repr(str(release))+').exists():time.sleep(.02)\nprint(json.dumps({"event":"completed","envelope":{"outputs":{"text":"survived"}}}))'
+        base.implementations['produce']={'options': {'default': {'kind':'command','executor':receiver.ident,'command':[sys.executable,'-c',code]}}, 'default': 'default'}
         base.initialize([task_spec('job','produce',{'source':{'record':'a'}},{'text':'out'})])
         self.pump(lambda:(engine.executors.sync(),receiver.tick()),lambda:began.exists())
         engine.close()
@@ -226,11 +236,11 @@ def call(name,args):
  return result
 call('register_agent_session',{'execution_id':c['execution_id'],'provider':'custom','session_id':'original-session'})
 info=call('read_task',{'task_id':c['task_id']})
-call('report_task',{'task_id':c['task_id'],'task_version':info['task_version'],'event':'completed','report_id':'complete-one','envelope':{'outputs':{'text':'from-agent'}}})
+call('report_task',{'task_id':c['task_id'],'event':'completed','report_id':'complete-one','envelope':{'outputs':{'text':'from-agent'}}})
 call('finish',{})
 '''
-        base.implementations['produce']={'kind':'agent','executor':receiver.ident,'command':[sys.executable,'-c',code],
-            'resume_command':[sys.executable,'-c','pass','{{session_id}}','{{prompt}}']}
+        base.implementations['produce']={'options': {'default': {'kind':'agent','executor':receiver.ident,'command':[sys.executable,'-c',code],
+            'resume_command':[sys.executable,'-c','pass','{{session_id}}','{{prompt}}']}}, 'default': 'default'}
         base.initialize([task_spec('job','produce',{'source':{'record':'a'}},{'text':'out'})])
         self.pump(lambda:(box.tick(),engine.executors.sync(),receiver.tick()),
             lambda:base.read()['tasks']['job']['status']=='completed' and self.settled(engine),timeout=20)
@@ -263,21 +273,29 @@ assert r.get('ok'),r
 
     def test_headless_service_cli_and_portable_nas_client(self):
         root=self.root/'cli-team'
-        process=subprocess.Popen([sys.executable,'-m','loop_anything','serve','--team-dir',str(root),'--no-web','--allow-sleep'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        database=self.root/'private-server/workspace.sqlite3'
+        process=subprocess.Popen([sys.executable,'-m','loop_anything','--db',str(database),'serve','--team-dir',str(root),'--no-web','--allow-sleep'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
         try:
             self.pump(lambda:None,lambda:(root/'team.json').exists())
-            duplicate=subprocess.run([sys.executable,'-m','loop_anything','serve','--team-dir',str(root),'--no-web','--allow-sleep'],capture_output=True,text=True,timeout=5)
+            other_database=self.root/'other-server/workspace.sqlite3'
+            duplicate=subprocess.run([sys.executable,'-m','loop_anything','--db',str(other_database),'serve','--team-dir',str(root),'--no-web','--allow-sleep'],capture_output=True,text=True,timeout=5)
             self.assertNotEqual(duplicate.returncode,0)
-            self.assertIn('already owns',duplicate.stderr)
+            self.assertIn('already owns this NAS mailbox',duplicate.stderr)
+            self.assertFalse(other_database.exists())
             script=Path(__file__).resolve().parents[1]/'skills/loop-anything-platform/scripts/call.py'
             result=subprocess.run([sys.executable,str(script),'create_loop','--url','nas://'+str(root),
                 '--arguments','{"name":"Terminal only"}'],capture_output=True,text=True,timeout=15)
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
             self.assertTrue(json.loads(result.stdout)['ok'])
+            status=subprocess.run([sys.executable,str(script),'check','--url','nas://'+str(root)],capture_output=True,text=True,timeout=15)
+            self.assertEqual(status.returncode,0,status.stdout+status.stderr)
+            self.assertEqual(json.loads(status.stdout)['platform']['database'],str(database.resolve()))
+            self.assertFalse(list(root.glob('*.sqlite3')))
+            self.assertFalse((root/'packages').exists())
         finally:
             process.terminate();out,err=process.communicate(timeout=10)
         self.assertEqual(process.returncode,0,out+err)
-        with Store(root/'platform.sqlite3').connection() as db:self.assertEqual(db.execute('PRAGMA journal_mode').fetchone()[0],'delete')
+        with Store(database).connection() as db:self.assertEqual(db.execute('PRAGMA journal_mode').fetchone()[0],'delete')
 
     def test_bad_mailbox_entry_does_not_block_valid_work(self):
         store,engine,box,client=self.setup_service()
@@ -286,6 +304,54 @@ assert r.get('ok'),r
         box.tick()
         self.assertFalse(client.result(engine.platform_url,'aaa-bad')['ok'])
         self.assertTrue(client.result(engine.platform_url,'api-valid')['ok'])
+
+    def test_private_server_package_reaches_receiver_without_shared_package_directory(self):
+        from loop_anything.packaging.packages import install, make_archive, load_installed
+        store,engine,box,_=self.setup_service()
+        receiver=Receiver({'server':engine.platform_url},self.root/'receiver');self.addCleanup(receiver.close)
+        receiver.tick();engine.executors.sync()
+        base=fixture.RuntimeTests();base.setUp();self.addCleanup(base.tearDown)
+        bp=base.bp;bp['handbook']={'path':'skills/main.md','instructions':'Read the supplied handbook.'}
+        base.implementations['init']={'options': {'default': {'kind':'command','executor':receiver.ident,'command':[sys.executable,'scripts/worker.py']}}, 'default': 'default'}
+        script=b"""import json,sys
+from pathlib import Path
+c=json.load(sys.stdin)
+assert Path.cwd().resolve()==Path(c['resource_root']).resolve()
+assert Path(c['handbook']['resolved_path']).read_text()=='Portable handbook'
+assert len(Path('assets/data.bin').read_bytes())==800000
+print(json.dumps({'event':'completed','envelope':{'settings':{'objective':'Transport resources'},'outputs':{'a':'from receiver','b':'complete'}}}))
+"""
+        assets={'skills/main.md':(b'Portable handbook',False),'scripts/worker.py':(script,False),
+                'assets/data.bin':(b'x'*800000,False)}
+        key=install(store,make_archive({'loop_definition':bp,'implementations':base.implementations},assets))['key']
+        run=store.create(key,'Private package');engine.tick(run['id'])
+        self.pump(engine.executors.sync,lambda:bool(engine.executors.calls()))
+        job=engine.executors.calls()[0]
+        engine.executors.sync()
+        self.assertTrue(list((box.root/'executors'/receiver.ident/'inbox').glob('*-part-*.bin')))
+        _,package=load_installed(store.filename,key)
+        package.rename(self.root/'inaccessible-server-package')
+        self.pump(lambda:(engine.executors.sync(),receiver.tick()),
+                  lambda:store.get(run['id'])['tasks']['init']['status'] in ('completed','fault') and self.settled(engine))
+        self.assertEqual(store.get(run['id'])['tasks']['init']['status'],'completed',engine.executors.result(engine.executors.get(job['id'])))
+        self.assertEqual(store.get(run['id'])['records']['a'][-1]['value'],'from receiver')
+        engine.executors.sync();receiver.tick()
+        self.assertFalse((box.root/'packages').exists())
+        self.assertFalse(list(box.root.rglob('*.sqlite3')))
+        self.assertFalse(list((box.root/'executors'/receiver.ident/'inbox').iterdir()))
+        self.assertNotIn('resources',engine.executors.get(job['id'])['payload'])
+        self.assertTrue(list((receiver.root/'resources').glob('*/skills/main.md')))
+
+    def test_mailbox_cannot_be_reused_by_an_unrelated_workspace(self):
+        from loop_anything.runtime.model import Invalid
+        _,_,box,_=self.setup_service()
+        before=(box.root/'team.json').read_bytes()
+        other=Store(self.root/'another-server/workspace.sqlite3');other.hosting_team=True
+        engine=Engine(other);self.addCleanup(engine.close)
+        with self.assertRaisesRegex(Invalid,'another workspace'):ToolMailbox(other,box.root,engine)
+        self.assertEqual((box.root/'team.json').read_bytes(),before)
+
+
 
     def test_receiver_retries_outage_and_stop_closes_it_while_other_tasks_continue(self):
         registry=TaskRegistry(self.root/'personal')
@@ -356,9 +422,9 @@ assert r.get('ok'),r
         from loop_anything.interfaces.platform_tools import PlatformTools
         PlatformTools(base.store).call('communication_config',{'operation':'agent','agent_id':'helper','agent':{'name':'helper','description':'Find paper','local':True,
             'implementation':{'kind':'agent','executor':receiver.ident,'command':[sys.executable,'-c',prefix+helper],'prompt':'{{context}}'}}})
-        base.implementations['init']={'kind':'agent','executor':receiver.ident,'terminal':True,'agent_cli':'custom','prompt':'{{context}}',
+        base.implementations['init']={'options': {'default': {'kind':'agent','executor':receiver.ident,'terminal':True,'agent_cli':'custom','prompt':'{{context}}',
             'command':[sys.executable,str(script),str(state),'new','{{session_id}}','{{prompt}}'],
-            'resume_command':[sys.executable,str(script),str(state),'resume','{{session_id}}','{{prompt}}']}
+            'resume_command':[sys.executable,str(script),str(state),'resume','{{session_id}}','{{prompt}}']}}, 'default': 'default'}
         key=base.store.publish(base.bp,base.implementations)['key'];rid=base.store.create(key,'wait remotely')['id']
         def tick():
             box.tick();engine.executors.sync();receiver.tick();engine.communication.tick();engine.tick(rid)
@@ -401,7 +467,7 @@ assert r.get('ok'),r
     def test_team_paths_follow_client_mount_and_service_move(self):
         from loop_anything.interfaces.platform_tools import PlatformTools
         from loop_anything.packaging.packages import load_installed
-        store,engine,box,client=self.setup_service()
+        store,engine,box,client=self.setup_service(database_on_nas=True)
         tools=PlatformTools(store);draft=tools.call('create_loop',{'name':'Portable'})
         draft=tools.call('set_loop',{k:draft[k] for k in ('draft_id','revision')}|{'handbook':'Portable team workflow.'})
         saved=tools.call('set_implementation',{k:draft[k] for k in ('draft_id','revision')}|
@@ -409,7 +475,10 @@ assert r.get('ok'),r
         key=tools.call('publish_loop',{'draft_id':draft['draft_id'],'revision':saved['revision']})['key']
         old=str(box.root);alias=self.root/'client-mount';alias.symlink_to(box.root,target_is_directory=True)
         client.invoke('nas://'+str(alias),'_platform',request_id='client-path',wait=0);box.tick()
-        self.assertEqual(client.result('nas://'+str(alias),'client-path')['database'],str(alias/'platform.sqlite3'))
+        status=client.result('nas://'+str(alias),'client-path')
+        self.assertEqual(status['database'],str(Path(store.filename).resolve()))
+        self.assertEqual(status['database_location'],'server')
+        self.assertEqual(status['mailbox'],str(alias))
         changed=client.mount_path(old+'/file',[old],old+'/new')
         self.assertEqual(client.mount_path(changed,[old,old+'/new'],old+'/new'),changed)
         workspace=engine.communication.settings()['instance_id']
@@ -432,7 +501,7 @@ assert r.get('ok'),r
         engine.platform_url='nas://'+str(box.root);engine.executors.root=box.root
         receiver=Receiver({'server':engine.platform_url},self.root/'receiver');self.addCleanup(receiver.close)
         receiver.tick();engine.executors.sync()
-        base.implementations['produce']={'kind':'command','executor':receiver.ident,'command':['must-not-run']}
+        base.implementations['produce']={'options': {'default': {'kind':'command','executor':receiver.ident,'command':['must-not-run']}}, 'default': 'default'}
         base.initialize([task_spec('job','produce',{'source':{'record':'a'}},{'text':'out'})])
         self.pump(lambda:None,lambda:bool(engine.executors.calls()))
         job=engine.executors.calls()[0]
@@ -457,12 +526,12 @@ assert r.get('ok'),r
         engine.platform_url='nas://'+str(box.root);engine.executors.root=box.root
         receiver=Receiver({'server':engine.platform_url},self.root/'receiver');self.addCleanup(receiver.close)
         receiver.tick();engine.executors.sync()
-        base.implementations['produce']={'kind':'agent','executor':receiver.ident,'command':['must-not-start-again']}
+        base.implementations['produce']={'options': {'default': {'kind':'agent','executor':receiver.ident,'command':['must-not-start-again']}}, 'default': 'default'}
         base.initialize([task_spec('job','produce',{'source':{'record':'a'}},{'text':'out'})])
         self.pump(lambda:None,lambda:bool(engine.executors.calls()))
         job=engine.executors.calls()[0];attempt=next(e for e in base.read()['executions'] if e['task_id']=='job')
         agent=RunTools(base.store,base.id,attempt['token']);info=agent.call('read_task',{'task_id':'job'})
-        agent.call('report_task',{'task_id':'job','task_version':info['task_version'],'event':'completed','report_id':'committed',
+        agent.call('report_task',{'task_id':'job','event':'completed','report_id':'committed',
             'envelope':{'outputs':{'text':'saved-before-restart'}}});agent.call('finish',{})
         engine.close()
         replacement=Engine(base.store);self.addCleanup(replacement.close)

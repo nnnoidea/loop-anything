@@ -76,7 +76,7 @@ class MachineIdentity:
                 unavailable.append({'workspace_id':workspace,'database':path,'error':str(exc)})
         return {'machine_id':machine,'registered_agents':agents,'unavailable_workspaces':unavailable}
 
-    def claim(self, ident, database, owner=None, legacy=None):
+    def claim(self, ident, database, owner=None):
         """Serialize first use and moves; a live second copy cannot reuse an address."""
         path = Path(database).resolve()
         with self.transaction() as db:
@@ -84,10 +84,8 @@ class MachineIdentity:
             if owner and owner != machine:
                 return 'This workspace belongs to another machine; create a new workspace identity for this copy'
             row = db.execute('SELECT path FROM workspaces WHERE id=?', (ident,)).fetchone()
-            previous = row[0] if row else (legacy or {}).get('database')
+            previous = row[0] if row else None
             if previous and Path(previous).exists() and not Path(previous).samefile(path):
                 return 'Another local database already uses this workspace identity; create a new identity for the copy'
-            if not owner and legacy and legacy.get('host') != socket.gethostname():
-                return 'Legacy workspace has no machine identity and its original host differs; explicitly identify this copy before execution'
             db.execute('INSERT INTO workspaces VALUES (?,?) ON CONFLICT(id) DO UPDATE SET path=excluded.path', (ident, str(path)))
         return None

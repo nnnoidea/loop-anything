@@ -1,6 +1,6 @@
 # Scoped tool entry
 
-When wake-up context supplies `tool_url`, retain that execution endpoint. Read its directory with `scripts/call.py list --url <tool_url>`. Supply identity fields as its schema requires; do not switch endpoints to bypass scope. Without `tool_url`, use the ordinary platform entry and actual Run/Task identity.
+Managed wake-up processes automatically carry their scoped work binding. Read the directory with `scripts/call.py list` and call tools without selecting a URL. Supply execution identity fields required by the schema; the script and server preserve the original scope. A separately started Agent must use discovered resources and the returned work_id instead of guessing an endpoint.
 
 Node sessions only handle current Run tasks, reporting, waiting, and recovery. Read the task and current state, submit with the corresponding versions/scope, then `finish`. Edit reusable Loop definitions through an independent building agent or source files, not a node session.
 

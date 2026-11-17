@@ -47,15 +47,12 @@ class NotificationWaitTests(unittest.TestCase):
     def test_missing_outlet_waits_without_fallback_and_can_be_retried_after_restart(self):
         self.base.bp['nodes']['repair'] = {'instructions': 'Repair', 'inputs': {}, 'outputs': {}}
         self.base.bp['fallback_node'] = 'repair'
-        self.base.implementations['repair'] = {'kind': 'agent'}
+        self.base.implementations['repair'] = {'options': {'default': {'kind': 'agent'}}, 'default': 'default'}
         self.base.initialize()
         tools = RunTools(self.store, self.base.id)
         tools.call('notify', {'key': 'missing-outlet', 'message': 'Configure delivery', 'route': 'missing'})
         tools.call('notify', {'key': 'missing-command', 'message': 'Configure sender', 'route': 'user'})
         tools.call('notify', {'key': 'default', 'message': 'Available locally'})
-        # Previously persisted failures get the same treatment before and after recovery.
-        with self.store.edit(self.base.id) as run:
-            run['notifications'][0]['status'] = 'fault'
         self.assertEqual(tools.call('next_tasks', {})['state'], 'normal')
         self.engine.recover()
         for _ in range(4):self.engine.tick(self.base.id);self.settle()
@@ -79,7 +76,7 @@ class NotificationWaitTests(unittest.TestCase):
         self.assertTrue(any(i.get('notification_id') == 'notice:failed-send' for i in tools.call('next_tasks', {})['items']))
 
     def test_question_event_reply_and_timeout_are_persistent(self):
-        self.base.implementations['produce']={'kind':'event','event':'reply','wait':{'key':'{parameters.question}','timeout':60}}
+        self.base.implementations['produce']={'options': {'default': {'kind':'event','event':'reply','wait':{'key':'{parameters.question}','timeout':60}}}, 'default': 'default'}
         self.base.initialize([task_spec('answer','produce',{'source':{'record':'a'}},{'text':'answer'},parameters={'question':'budget'})])
         # External replies do not need to acquire an Agent session.
         user=RunTools(self.store,self.base.id)
@@ -94,9 +91,9 @@ class NotificationWaitTests(unittest.TestCase):
 
     def test_timer_restart_and_event_timeout_do_not_call_commands(self):
         self.base.bp['nodes']['wait']['outputs']={}
-        self.base.implementations['wait']={'kind':'timer','wait':{'seconds':'{parameters.delay}'}}
+        self.base.implementations['wait']={'options': {'default': {'kind':'timer','wait':{'seconds':'{parameters.delay}'}}}, 'default': 'default'}
         matrix=template('event');next(r for r in matrix['transitions'] if r['event']=='timeout')['notify']=[{'message':'Timed out','route':'workspace'}]
-        self.base.implementations['produce']={'kind':'event','event':'answer','wait':{'timeout':5},'lifecycle':matrix}
+        self.base.implementations['produce']={'options': {'default': {'kind':'event','event':'answer','wait':{'timeout':5},'lifecycle':matrix}}, 'default': 'default'}
         self.base.initialize([task_spec('clock','wait',parameters={'delay':10}),task_spec('cancel-clock','wait',parameters={'delay':10}),task_spec('answer','produce',{'source':{'record':'a'}},{'text':'answer'})])
         run=self.base.read();clock=next(e for e in run['executions'] if e['task_id']=='clock');deadline=clock['wait']['until']
         with self.store.edit(self.base.id) as run:change_task_in_run(run,{'task_id':'cancel-clock','operation':'cancel','reason':'No longer needed'})
@@ -110,7 +107,7 @@ class NotificationWaitTests(unittest.TestCase):
 
     def test_transition_and_script_notify_keep_scope_and_idempotency(self):
         matrix=template('command');next(r for r in matrix['transitions'] if r['event']=='completed')['notify']=[{'message':'Result {outputs.text}','route':'workspace'}]
-        self.base.implementations['produce']={'kind':'command','command':['script'],'lifecycle':matrix}
+        self.base.implementations['produce']={'options': {'default': {'kind':'command','command':['script'],'lifecycle':matrix}}, 'default': 'default'}
         def script(command,request,*args,**kwargs):
             c=json.loads(request);tool=RunTools(self.store,self.base.id,c['token'])
             args={'task_id':c['task_id'],'execution_id':c['execution_id'],'key':'script-progress','message':'progress'}
@@ -142,7 +139,7 @@ class NotificationWaitTests(unittest.TestCase):
 
     def test_invalid_wait_reference_is_a_visible_fault_without_stalling_other_tasks(self):
         self.base.bp['nodes']['wait']['outputs']={}
-        self.base.implementations['wait']={'kind':'timer','wait':{'seconds':{'$':['parameters','delays',3]}}}
+        self.base.implementations['wait']={'options': {'default': {'kind':'timer','wait':{'seconds':{'$':['parameters','delays',3]}}}}, 'default': 'default'}
         self.base.initialize([task_spec('bad','wait',parameters={'delays':[0]}),task_spec('good','wait',parameters={'delays':[0,0,0,0]})])
         self.engine.tick(self.base.id);self.settle()
         run=self.base.read()
@@ -153,8 +150,8 @@ class NotificationWaitTests(unittest.TestCase):
 
     def test_notification_templates_cannot_stall_dispatch_and_before_reads_inputs(self):
         self.base.bp['nodes']['wait']['outputs']={}
-        self.base.implementations['wait']={'kind':'timer','wait':{'seconds':0}}
-        self.base.implementations['produce']={'kind':'timer','wait':{'seconds':0,'outputs':{'text':'done'}}}
+        self.base.implementations['wait']={'options': {'default': {'kind':'timer','wait':{'seconds':0}}}, 'default': 'default'}
+        self.base.implementations['produce']={'options': {'default': {'kind':'timer','wait':{'seconds':0,'outputs':{'text':'done'}}}}, 'default': 'default'}
         e=self.base.start()
         hooks=[{'id':'bounds','action':'notify','phase':'before','frequency':'once','target':{'node':'wait'},'message':'{parameters.items.5}','route':'workspace'},
                {'id':'empty','action':'notify','phase':'after','frequency':'once','target':{'node':'wait'},'message':'{parameters.blank}','route':'workspace'},

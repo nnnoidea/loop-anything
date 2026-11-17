@@ -240,7 +240,7 @@ class Session:
                 raise Invalid('Platform stopped before command started')
             with tempfile.TemporaryDirectory(prefix='loop-agent-prompt-') as directory:
                 argv = [arg.replace('{{session_id}}', self.native_id) if self.native_id else arg for arg in command]
-                env = None
+                env = dict(getattr(self,'environment',os.environ))
                 if interactive:
                     import pty
                     self.master, slave = pty.openpty()
@@ -251,7 +251,7 @@ class Session:
                     argv = [arg.replace('{{prompt_file}}', str(file)).replace('{{prompt}}', prompt) for arg in argv]
                     # The helper acquires a controlling terminal without preexec_fn in a threaded host.
                     argv = [sys.executable, str(Path(__file__).with_name('terminal_child.py')), *argv]
-                    env = dict(os.environ, TERM='xterm-256color', LOOP_ANYTHING_PROMPT_FILE=str(file))
+                    env = dict(env, TERM='xterm-256color', LOOP_ANYTHING_PROMPT_FILE=str(file))
                 options = {'start_new_session': True} if os.name == 'posix' else {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP}
                 try:
                     self.process = subprocess.Popen(argv, stdin=slave if interactive else subprocess.PIPE,

@@ -22,13 +22,13 @@ from loop_anything.packaging.packages import (FORMAT, make_archive, read_archive
 from loop_anything.runtime.store import Store
 
 
-HANDLER = b'''import json,sys
+HANDLER = b"""import json,sys
 request=json.load(sys.stdin)
 if sys.argv[1]=='initialize':
-    print(json.dumps({'settings':{'objective':'Portable loop','completion_rule':{'op': 'and', 'args': [{'op': 'ge', 'args': [{'path': ['completed', 'finish']}, 1]}, {'op': 'eq', 'args': [{'path': 'active_tasks'}, 0]}]}},'outputs':{'result':'portable'},'tasks':[{'id':'last','node':'finish','inputs':{'value':{'record':'result'}},'outputs':{'done':{'id':'done'}}}]}))
+    print(json.dumps({'event':'completed','envelope':{'settings':{'objective':'Portable loop','completion_rule':{'op': 'and', 'args': [{'op': 'ge', 'args': [{'path': ['completed', 'finish']}, 1]}, {'op': 'eq', 'args': [{'path': 'active_tasks'}, 0]}]}},'outputs':{'result':'portable'},'tasks':[{'id':'last','node':'finish','inputs':{'value':{'record':'result'}},'outputs':{'done':{'id':'done'}}}]}}))
 else:
-    print(json.dumps({'outputs':{'done':request['inputs']['value']=='portable'}}))
-'''
+    print(json.dumps({'event':'completed','envelope':{'outputs':{'done':request['inputs']['value']=='portable'}}}))
+"""
 
 
 def document():
@@ -41,7 +41,7 @@ def document():
                        'inputs': {'value': {'type': 'string'}}, 'outputs': {'done': {'record_type': 'flag'}}}},
           'seed': {'id': 'first', 'node': 'initialize', 'inputs': {}, 'outputs': {'result': {'id': 'result'}}},
           'plans': {}}
-    return {'loop_definition': bp, 'implementations': {n: {'kind': 'command', 'command': ['python3', 'scripts/handler.py', n]} for n in bp['nodes']}}
+    return {'loop_definition': bp, 'implementations': {n: {'options': {'default': {'kind': 'command', 'command': ['python3', 'scripts/handler.py', n]}}, 'default': 'default'} for n in bp['nodes']}}
 
 
 def assets():
@@ -90,7 +90,7 @@ class PackageTests(unittest.TestCase):
         self.assertTrue(validate_v2(doc['loop_definition'], {})['valid'])
         from loop_anything.runtime.lifecycle import template
         personal=document();matrix=template('agent');matrix['transitions'][1]['notify']=[{'message':'done','route':'my-private-chat'}]
-        personal['implementations']['initialize']['lifecycle']=matrix
+        personal['implementations']['initialize']['options']['default']['lifecycle']=matrix
         with self.assertRaises(Invalid):make_archive(personal,assets())
         matrix['transitions'][1]['notify'][0]['route']='default'
         self.assertTrue(make_archive(personal,assets()))
@@ -122,14 +122,14 @@ class PackageTests(unittest.TestCase):
             self.assertEqual('completed', run['status'])
             self.assertTrue(run['records']['done'][-1]['value'])
             self.assertEqual(2, len(run['executions']))
-            self.assertEqual(['python3', 'scripts/handler.py', 'initialize'], run['implementations']['initialize']['command'])
+            self.assertEqual(['python3', 'scripts/handler.py', 'initialize'], run['implementations']['initialize']['options']['default']['command'])
         finally:
             runtime.close()
 
     def test_smoke_is_read_only_does_not_execute_or_repair(self):
         doc = document()
-        doc['implementations']['initialize']['command'] = ['/missing/original/python', '/missing/original/handler.py']
-        doc['implementations']['finish']['cwd'] = '/missing/original/workdir'
+        doc['implementations']['initialize']['options']['default']['command'] = ['/missing/original/python', '/missing/original/handler.py']
+        doc['implementations']['finish']['options']['default']['cwd'] = '/missing/original/workdir'
         doc['checks'] = {'paths': ['/missing/original/data'], 'env': ['STATELOOP_TEST_REQUIRED'], 'programs': ['missing-loop-program']}
         result = install(self.store, make_archive(doc, assets()))
         loaded, root = load_installed(self.store.filename, result['key'])
@@ -266,7 +266,7 @@ class PackageTests(unittest.TestCase):
 
     def test_smoke_resolves_relative_path_lookup_in_declared_cwd(self):
         doc = document()
-        doc['implementations']['initialize'] = {'kind': 'command', 'command': ['local-handler']}
+        doc['implementations']['initialize'] = {'options': {'default': {'kind': 'command', 'command': ['local-handler']}}, 'default': 'default'}
         content = assets()
         content['bin/local-handler'] = (b'#!/bin/sh\nexit 0\n', True)
         result = install(self.store, make_archive(doc, content))
@@ -278,18 +278,18 @@ class PackageTests(unittest.TestCase):
 
     def test_nonfinite_implementation_timeout_rejected_at_pack(self):
         doc = document()
-        doc['implementations']['initialize']['timeout'] = float('nan')
+        doc['implementations']['initialize']['options']['default']['timeout'] = float('nan')
         with self.assertRaises(Invalid):
             make_archive(doc, assets())
         from loop_anything.runtime.lifecycle import template
         personal=document();matrix=template('agent');matrix['transitions'][1]['notify']=[{'message':'done','route':'my-private-chat'}]
-        personal['implementations']['initialize']['lifecycle']=matrix
+        personal['implementations']['initialize']['options']['default']['lifecycle']=matrix
         with self.assertRaises(Invalid):make_archive(personal,assets())
         matrix['transitions'][1]['notify'][0]['route']='default'
         self.assertTrue(make_archive(personal,assets()))
         for implementation in (None, {'command': ['bad\x00command']}, {'kind':'command','command':['sender','private-recipient']}):
             bad = document()
-            bad['implementations']['$notifications'] = implementation
+            bad['implementations']['$notifications'] = {'options': {'default': implementation}, 'default': 'default'}
             with self.assertRaises(Invalid):
                 make_archive(bad, assets())
 

@@ -39,7 +39,7 @@ def main():
     parser.add_argument('--output', type=Path, help='HTML output; defaults to source with .html suffix')
     parser.add_argument('--draft-id', help='Also save docs/flow.md and docs/flow.html in this existing draft')
     parser.add_argument('--revision', type=int, help='Current draft revision, required when saving')
-    parser.add_argument('--url', help='Platform URL override (otherwise connection.json)')
+    parser.add_argument('--url', help='Original platform URL for the draft')
     args = parser.parse_args()
     if args.draft_id and args.revision is None:
         parser.error('--draft-id requires --revision from read_loop')
@@ -53,11 +53,8 @@ def main():
         if warnings:
             result['warnings'] = warnings
         if args.draft_id:
-            connection = Path(__file__).resolve().parent.parent / 'connection.json'
-            settings = json.loads(connection.read_text()) if connection.exists() else {}
-            url = args.url or settings.get('url')
-            if not url:
-                raise ValueError('Specify --url for the running platform')
+            from call import space_config
+            url=space_config().resolve(args.url,arguments={'draft_id':args.draft_id})
             result['revision'] = upload(source, output, args.draft_id, args.revision, url)
             result['draft_id'] = args.draft_id
         print(json.dumps(result, ensure_ascii=False, indent=2))

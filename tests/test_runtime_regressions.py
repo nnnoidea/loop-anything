@@ -78,8 +78,8 @@ class RuntimeRegressionTests(unittest.TestCase):
             receiver.tick();matrix=template('command')
             for rule in matrix['transitions']:
                 if rule['event']=='process_error':rule['to']='retry'
-            code='import json;from pathlib import Path;p=Path('+repr(str(effect))+');p.write_text(p.read_text()+"x" if p.exists() else "x");print(json.dumps({"outputs":{"text":"x"*'+str(size)+'}}))'
-            base.implementations['produce']={'kind':'command','executor':receiver.ident,'command':[sys.executable,'-c',code],'lifecycle':matrix}
+            code='import json;from pathlib import Path;p=Path('+repr(str(effect))+');p.write_text(p.read_text()+"x" if p.exists() else "x");print(json.dumps({"event":"completed","envelope":{"outputs":{"text":"x"*'+str(size)+'}}}))'
+            base.implementations['produce']={'options': {'default': {'kind':'command','executor':receiver.ident,'command':[sys.executable,'-c',code],'lifecycle':matrix}}, 'default': 'default'}
             base.initialize([fixture.task_spec('job','produce',{'source':{'record':'a'}},{'text':'out'})])
             def tick():
                 try:receiver.tick()
@@ -112,7 +112,7 @@ class RuntimeRegressionTests(unittest.TestCase):
         registry=TaskRegistry(self.root/'personal');pids=self.root/'pids'
         code='import os,time;from pathlib import Path;p=Path('+repr(str(pids))+');p.open("a").write(str(os.getpid())+"\\n");time.sleep(30)'
         ident=registry.register({'name':'Controlled action','every':.01,'repeat':False,'command':[sys.executable,'-c',code]})['id']
-        argv=[sys.executable,'-m','loop_anything','local','--root',str(registry.root),'start',ident]
+        argv=[sys.executable,'-m','loop_anything','client','local','--root',str(registry.root),'start',ident]
         process=subprocess.Popen(argv,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         try:
             self.pump(lambda:None,lambda:pids.exists() and bool(pids.read_text().strip()))
@@ -171,9 +171,9 @@ class RuntimeRegressionTests(unittest.TestCase):
         engine.platform_url='nas://'+str(box.root);engine.executors.root=box.root
         receiver=Receiver({'server':engine.platform_url},self.root/'receiver');self.addCleanup(receiver.close)
         receiver.tick();engine.executors.sync()
-        base.implementations['produce']={'kind':'external','executor':receiver.ident,
-            'command':[sys.executable,'-c','print(\'{"status":"waiting","external_id":"training-job","poll_after":0.01}\')'],
-            'observe':[sys.executable,'-c','import sys,json;c=json.load(sys.stdin);assert c["external_id"]=="training-job";print(\'{"outputs":{"text":"training-result"}}\')']}
+        base.implementations['produce']={'options': {'default': {'kind':'external','executor':receiver.ident,
+            'command':[sys.executable,'-c','print(\'{"external_id": "training-job", "poll_after": 0.01, "event": "submitted"}\')'],
+            'observe':[sys.executable,'-c','import sys,json;c=json.load(sys.stdin);assert c["external_id"]=="training-job";print(\'{"event": "completed", "envelope": {"outputs": {"text": "training-result"}}}\')']}}, 'default': 'default'}
         base.initialize([fixture.task_spec('job','produce',{'source':{'record':'a'}},{'text':'out'})])
         self.pump(lambda:(engine.executors.sync(),receiver.tick(),engine.tick(base.id)),
             lambda:base.read()['tasks']['job']['status']=='completed' and self.settled(engine),15)

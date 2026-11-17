@@ -1,3 +1,4 @@
+from tests.runtime_fixture import runtime_acquire, runtime_run
 """One author-to-user workflow through the public tools, not handwritten loop_definitions."""
 import io
 import base64
@@ -39,10 +40,10 @@ class PlatformToolTests(unittest.TestCase):
         self.assertEqual(draft['loop_definition']['records'],{})
         self.edit('set_loop',handbook='Discuss the objective, then initialize settings.')
         key=self.tools.call('publish_loop',{'draft_id':self.draft['draft_id'],'revision':self.draft['revision']})['key']
-        started=self.tools.call('start_run',{'key':key,'title':'Agreed goal','authorization':'Initialize only'})
+        started=runtime_run(self.tools.store, {'key':key,'title':'Agreed goal','authorization':'Initialize only'})
         args={'run_id':started['run_id'],'token':started['token']}
         info=self.tools.call('read_task',dict(args,task_id=started['entry_task_id']))
-        self.tools.call('complete_task',dict(args,task_id=started['entry_task_id'],task_version=info['task_version'],envelope={'settings':{'objective':'Goal from conversation'},'outputs':{}}))
+        self.tools.call('report_task',dict(args,event='completed',report_id='complete',task_id=started['entry_task_id'],envelope={'settings':{'objective':'Goal from conversation'},'outputs':{}}))
         self.tools.call('finish',args)
         run=self.store.get(started['run_id'])
         self.assertTrue(run['initialized']);self.assertEqual(run['settings']['objective'],'Goal from conversation')
@@ -56,7 +57,7 @@ class PlatformToolTests(unittest.TestCase):
         key=self.tools.call('publish_loop',{'draft_id':self.draft['draft_id'],'revision':self.draft['revision']})['key']
         node=self.tools.call('read_loop',{'key':key})['loop']['loop_definition']['nodes']['initialize']
         self.assertEqual(node['description'],'Prepare the agreed work.')
-        run=self.tools.call('start_run',{'key':key,'title':'Description check','authorization':'Initialize only'})
+        run=runtime_run(self.tools.store, {'key':key,'title':'Description check','authorization':'Initialize only'})
         task=self.tools.call('read_task',{'run_id':run['run_id'],'token':run['token'],'task_id':run['entry_task_id']})
         self.assertEqual(task['instructions'],'Full execution instructions.')
         self.assertEqual(task['skills'][0]['content'],'Keep this operational detail.')
@@ -102,7 +103,7 @@ class PlatformToolTests(unittest.TestCase):
         for id, terminal in [('convert', False), ('finish', True)]:
             self.edit('put_node', node_id=id, instructions='Complete the author task.', inputs=[{'name': 'value', 'type': 'string'}],
                       outputs=[{'name': 'result', 'type': 'string'}], skills=[{'name': 'author-method', 'content': 'AUTHOR METHOD: preserve the supplied result.'}] if terminal else [])
-        self.edit('put_asset', path='scripts/convert.py', content="import json,sys\nr=json.load(sys.stdin)\nprint(json.dumps({'outputs': {'result': r['inputs']['value'].upper()}}))\n")
+        self.edit('put_asset', path='scripts/convert.py', content="import json,sys\nr=json.load(sys.stdin)\nprint(json.dumps({'event':'completed','envelope':{'outputs': {'result': r['inputs']['value'].upper()}}}))\n")
         self.edit('set_implementation', node_id='initialize', kind='agent')
         self.edit('set_implementation', node_id='convert', kind='command', command=[sys.executable, 'scripts/convert.py'])
         self.edit('set_implementation', node_id='finish', kind='agent')
@@ -227,14 +228,14 @@ class PlatformToolTests(unittest.TestCase):
 
     def test_author_tools_publish_then_user_tools_initialize_and_run(self):
         key = self.build()
-        started = self.tools.call('start_run', {'key': key, 'title': 'User run', 'inputs': {'request': 'uppercase'}, 'authorization': 'Run this example'})
+        started = runtime_run(self.tools.store, {'key': key, 'title': 'User run', 'inputs': {'request': 'uppercase'}, 'authorization': 'Run this example'})
         id, token = started['run_id'], started['token']
         def call(tool_name, **arguments):
             return self.tools.call(tool_name, dict(run_id=id, token=token, **arguments))
         self.engine.tick(id)
         self.assertEqual([], self.store.get(id)['executions'])
         entry = call('read_task', task_id=started['entry_task_id'])
-        call('complete_task', task_id=started['entry_task_id'], task_version=entry['task_version'], envelope={'settings': {'objective': 'Use the author Loop', 'completion_rule': {'op': 'and', 'args': [{'op': 'ge', 'args': [{'path': ['completed', 'finish']}, 1]}, {'op': 'eq', 'args': [{'path': 'active_tasks'}, 0]}]}}, 'outputs': {'result': 'hello'}})
+        call('report_task', event='completed', report_id='complete', task_id=started['entry_task_id'], envelope={'settings': {'objective': 'Use the author Loop', 'completion_rule': {'op': 'and', 'args': [{'op': 'ge', 'args': [{'path': ['completed', 'finish']}, 1]}, {'op': 'eq', 'args': [{'path': 'active_tasks'}, 0]}]}}, 'outputs': {'result': 'hello'}})
         batch_tasks = call('build_plan', name='round', key='first', values={}, round='第1轮')['tasks']
         for _ in range(100):
             self.engine.tick(id)
@@ -247,7 +248,7 @@ class PlatformToolTests(unittest.TestCase):
         previous_token=token;token=finish_owner['token']
         info = call('read_task', task_id=finish['id'])
         self.assertEqual('HELLO', info['inputs']['value'])
-        call('complete_task', task_id=finish['id'], task_version=info['task_version'], envelope={'outputs': {'result': info['inputs']['value']}})
+        call('report_task', event='completed', report_id='complete', task_id=finish['id'], envelope={'outputs': {'result': info['inputs']['value']}})
         call('finish')
         token=previous_token
         call('read_timeline')
@@ -266,8 +267,8 @@ class PlatformToolTests(unittest.TestCase):
         with zipfile.ZipFile(io.BytesIO(bundle('http://localhost:1234'))) as archive:
             self.assertEqual(['platform/loop-anything-dispatch/SKILL.md','platform/loop-anything-local/SKILL.md','platform/loop-anything-platform/SKILL.md'], [n for n in archive.namelist() if n.endswith('/SKILL.md')])
             self.assertFalse(any(n.startswith('author/') for n in archive.namelist()))
-            connection = json.loads(archive.read('platform/loop-anything-platform/connection.json'))
-            self.assertEqual({'url': 'http://localhost:1234'}, connection)
+            connection = json.loads(archive.read('platform/loop-anything-platform/platform-source.json'))
+            self.assertEqual({'platform_url': 'http://localhost:1234'}, connection)
             self.assertIn('platform/loop-anything-platform/scripts/call.py', archive.namelist())
 
     def test_notification_destination_survives_restart_retry_and_parallel_runs(self):
@@ -279,7 +280,7 @@ class PlatformToolTests(unittest.TestCase):
         failure.write_text("import json,sys;print(json.dumps({'delivered':False,'error':'bridge offline'}));sys.exit(2)")
         destinations = [root / 'first.jsonl', root / 'second.jsonl']
         commands = [[sys.executable, str(sender), str(path)] for path in destinations]
-        started = [self.tools.call('start_run', {'key':key,'title':'Chat '+str(i),'authorization':'test',
+        started = [runtime_run(self.tools.store, {'key':key,'title':'Chat '+str(i),'authorization':'test',
                    'notification_command':commands[i]}) for i in range(2)]
         def agent(index, tool, **args):
             return self.tools.call(tool, dict(run_id=started[index]['run_id'], token=started[index]['token'], **args))
@@ -315,7 +316,7 @@ class PlatformToolTests(unittest.TestCase):
         # An ended Run can retry delivery without reopening its business state.
         with self.store.edit(started[0]['run_id']) as run:
             run['notifications'][-1]['status'] = 'fault'
-        self.assertTrue(self.tools.call('retry_notification', {'run_id':started[0]['run_id'], 'notification_id':notices[-1]['id']})['queued'])
+        self.assertTrue(self.tools.call('submit_run_request', {'request_id':'retry-ended-notice','run_id':started[0]['run_id'],'operation':'command','arguments':{'action':'retry_notification','notification_id':notices[-1]['id']}})['status']=='completed')
         self.assertEqual('completed',self.store.get(started[0]['run_id'])['status'])
 
 
@@ -362,6 +363,7 @@ class PlatformToolTests(unittest.TestCase):
         self.assertNotEqual(0,failed.returncode); self.assertFalse(json.loads(failed.stdout)['delivered'])
 
     def test_portable_client_accepts_generic_notification_command(self):
+        from tests.runtime_fixture import client_work
         import importlib.util
         from unittest.mock import patch
         script = Path(__file__).resolve().parents[1] / 'skills/loop-anything-platform/scripts/call.py'
@@ -372,7 +374,7 @@ class PlatformToolTests(unittest.TestCase):
         for tool,args in [('start_run',{'key':'loop','title':'Example','authorization':'test'}),
                           ('change_settings',{'run_id':'r','token':'own-token','revision':3,'change':{'guidance':'keep this'}})]:
             argv = [str(script),tool,'--url','http://127.0.0.1:8767','--notification-command','@'+str(path),'--arguments',json.dumps(args)]
-            with patch.object(sys,'argv',argv), patch.object(client,'fetch',return_value={'ok':True}) as send, patch('sys.stdout',new=io.StringIO()):
+            with client_work('http://127.0.0.1:8767',[('loop','loop'),('run','r')]), patch.object(sys,'argv',argv), patch.object(client,'fetch',return_value={'ok':True,'workspace_id':'test-workspace'}) as send, patch('sys.stdout',new=io.StringIO()):
                 with self.assertRaises(SystemExit) as done: client.main()
             self.assertEqual(0,done.exception.code)
             posted = json.loads(send.call_args.kwargs['data'])['arguments']
@@ -383,7 +385,7 @@ class PlatformToolTests(unittest.TestCase):
     def test_any_entry_reads_without_ownership_and_continues_same_timeline(self):
         from unittest.mock import patch
         key = self.build()
-        terminal = self.tools.call('start_run', {'key':key,'title':'Shared research','inputs':{'request':'compare'},
+        terminal = runtime_run(self.tools.store, {'key':key,'title':'Shared research','inputs':{'request':'compare'},
                      'authorization':'Edit this Run','notification_command':[sys.executable,'sender-for-original-chat.py']})
         rid = terminal['run_id']
         def write(session, tool_name, **args):
@@ -401,22 +403,23 @@ class PlatformToolTests(unittest.TestCase):
             raw = self.tools.call('read_run',{'run_id':rid})
             self.assertNotIn(terminal['token'],json.dumps(raw))
         self.assertEqual(before,self.store.get(rid))
-        extra=self.tools.call('acquire_run',{'run_id':rid})
+        extra=runtime_acquire(self.tools.store, {'run_id':rid})
         self.tools.call('finish',{'run_id':rid,'token':extra['token']})
-        self.assertTrue(self.tools.respond('change_settings',{'run_id':rid,'basis':self.tools.call('read_timeline',{'run_id':rid})['basis'],'revision':1,'change':{'objective':'User operation without credential gate'}})['ok'])
+        self.assertFalse(self.tools.respond('change_settings',{'run_id':rid,'revision':1,'change':{'objective':'Client cannot write directly'}})['ok'])
         task=write(terminal,'read_task',task_id=terminal['entry_task_id'])
-        write(terminal,'complete_task',task_id=terminal['entry_task_id'],task_version=task['task_version'],
-              envelope={'settings':{'objective':'Original objective'},'outputs':{'result':'Evidence from terminal'}})
+        write(terminal,'report_task', event='completed', report_id='complete', task_id=terminal['entry_task_id'],envelope={'settings':{'objective':'Original objective'},'outputs':{'result':'Evidence from terminal'}})
         batch = write(terminal,'build_plan',name='round',key='one',values={})['tasks']
         write(terminal,'finish')
         with self.assertRaises(Conflict): write(terminal,'read_timeline')
         # A fresh Agent with no chat history can inspect facts and edit the same Run.
-        feishu = self.tools.call('acquire_run',{'run_id':rid})
+        feishu = runtime_acquire(self.tools.store, {'run_id':rid})
         self.assertNotEqual(feishu['token'],terminal['token'])
         timeline = write(feishu,'read_timeline'); self.assertFalse(timeline['read_only'])
         record = self.tools.call('read_record',{'run_id':rid,'id':'initial.result'})
         self.assertEqual('Evidence from terminal',record['record']['value'])
-        write(feishu,'change_settings',revision=timeline['settings']['revision'],change={'objective':'Revised in Feishu','guidance':'Use the saved evidence'})
+        from tests.runtime_fixture import update_work
+        update_work(self.tools.store,rid,{'objective':'Revised in Feishu','constraints':'Use the saved evidence'})
+        write(feishu,'read_timeline')
         convert = next(t for t in batch if t['node']=='convert')
         write(feishu,'change_task',task_id=convert['id'],operation='update',inputs={'value':{'literal':'new input'}},reason='User changed the input')
         write(feishu,'finish')
@@ -426,12 +429,12 @@ class PlatformToolTests(unittest.TestCase):
         self.assertEqual(before['settings']['notification_command'],weixin['settings']['notification_command'])
         self.assertEqual(1,len(self.store.list()))
         self.assertEqual([],self.store.get(rid)['agent_sessions'])
-        weixin_owner = self.tools.call('acquire_run',{'run_id':rid})
+        weixin_owner = runtime_acquire(self.tools.store, {'run_id':rid})
         with self.assertRaises(Conflict):
-            write(weixin_owner,'change_settings',revision=timeline['settings']['revision'],change={'guidance':'stale overwrite'})
-        write(weixin_owner,'change_settings',revision=weixin['settings']['revision'],change={'guidance':'Confirmed in Weixin'})
+            update_work(self.tools.store,rid,{'constraints':'stale overwrite'},revision=timeline['timeline']['revision'])
+        update_work(self.tools.store,rid,{'constraints':'Confirmed in Weixin'})
         write(weixin_owner,'finish')
-        self.assertEqual('Confirmed in Weixin',self.tools.call('read_timeline',{'run_id':rid})['settings']['guidance'])
+        self.assertEqual('Confirmed in Weixin',self.tools.call('read_timeline',{'run_id':rid})['settings']['constraints'])
         self.assertEqual([],self.tools.call('list_runs',{'status':'completed'})['runs'])
 
     def test_readonly_inspection_of_active_agents_and_completed_run(self):
@@ -476,7 +479,7 @@ class PlatformToolTests(unittest.TestCase):
         self.assertTrue(loop_entry.is_absolute())
         self.assertIn('receiving machine', str(loop_entry))
         self.assertEqual('Loop business method', (loop_entry.parent / 'references/method.md').read_text())
-        run = tools.call('start_run', {'key': key, 'title': 'Read skills', 'inputs': {'request': 'Read only'}, 'authorization': 'Read the fixture Skills'})
+        run = runtime_run(tools.store, {'key': key, 'title': 'Read skills', 'inputs': {'request': 'Read only'}, 'authorization': 'Read the fixture Skills'})
         arguments = {'run_id': run['run_id'], 'token': run['token']}
         task = tools.call('read_task', dict(arguments, task_id=run['entry_task_id']))
         node_entry = Path(task['skills'][0]['resolved_path'])

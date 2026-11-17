@@ -1,3 +1,4 @@
+from tests.runtime_fixture import runtime_run
 import copy
 import io
 import json
@@ -40,6 +41,7 @@ class AuthoringCapabilitiesTests(unittest.TestCase):
 
     def tearDown(self):self.tmp.cleanup()
     def edit(self,name,**args):
+        if name=='put_node':args.setdefault('progression','rules')
         self.draft=self.tools.call(name,dict(draft_id=self.draft['draft_id'],revision=self.draft['revision'],**args));return self.draft
     def target(self,**args):return dict(draft_id=self.draft['draft_id'],**args)
     def report(self):
@@ -69,12 +71,12 @@ class AuthoringCapabilitiesTests(unittest.TestCase):
         self.assertEqual(review['after'],[state['by_ref']['work:A']['id'],state['by_ref']['work:C']['id']])
         self.assertNotIn('token',json.dumps(result));self.assertNotIn('must-never-run',json.dumps(result))
         key=self.tools.call('publish_loop',self.target(revision=self.draft['revision']))['key']
-        started=self.tools.call('start_run',{'key':key,'title':'Verify refs','authorization':'Only create tasks'})
+        started=runtime_run(self.tools.store, {'key':key,'title':'Verify refs','authorization':'Only create tasks'})
         owner=RunTools(self.store,started['run_id'],started['token']);info=owner.call('read_task',{'task_id':started['entry_task_id']})
-        owner.call('report_task',dict(self.report(),task_id=started['entry_task_id'],task_version=info['task_version']))
+        owner.call('report_task',dict(self.report(),task_id=started['entry_task_id']))
         refs=owner.call('resolve_refs',{'refs':['work:A','review:chosen']})['references']
         self.assertEqual(refs['work:A']['node'],'work')
-        preview=owner.call('edit_tasks',{'revision':self.store.get(started['run_id'])['revision'],'preview':True,'changes':[
+        preview=owner.call('edit_tasks',{'preview':True,'changes':[
             {'tool':'add_task','arguments':{'key':'later','node_id':'review','ref':'review:later','after_refs':['work:A'],
                                           'inputs':{'results':{'task_refs':['work:A'],'port':'result'}}}}]})
         self.assertEqual(preview['changes'][0]['after']['spec']['after'],[refs['work:A']['task_id']])

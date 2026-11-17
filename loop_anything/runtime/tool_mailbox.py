@@ -6,6 +6,7 @@ import traceback
 import uuid
 from loop_anything.runtime.team_transport import core
 from loop_anything.capabilities import service_info
+from loop_anything.runtime.model import Invalid
 
 
 class ToolMailbox:
@@ -14,11 +15,16 @@ class ToolMailbox:
         self.protection=None
         self.root.mkdir(parents=True,exist_ok=True)
         path=self.root/'team.json'
-        if not path.exists():core.atomic_json(path,{'version':1,'id':'service-'+uuid.uuid4().hex})
+        workspace=engine.communication.settings()['instance_id']
+        if not path.exists():core.atomic_json(path,{'version':1,'id':'service-'+uuid.uuid4().hex,'workspace_id':workspace})
         manifest=json.loads(path.read_text());self.ident=manifest['id']
+        if manifest.get('workspace_id')!=workspace:
+            raise Invalid('This NAS mailbox belongs to another workspace; restore its server data or choose a different mailbox directory')
+        manifest['workspace_id']=workspace
         manifest['roots']=list(dict.fromkeys([*manifest.get('roots',[]),str(Path(root).absolute()),str(self.root)]))
         core.atomic_json(path,manifest)
         engine.team_roots=manifest['roots'];engine.team_root=str(self.root)
+        self.agent_team=engine.communication.attach_nas_root(self.root)
         for part in ('requests','replies','history','rejected'):(self.root/'api'/part).mkdir(parents=True,exist_ok=True)
         with store.connection() as db:
             db.execute('CREATE TABLE IF NOT EXISTS tool_requests (id TEXT PRIMARY KEY, request TEXT NOT NULL, response TEXT)')
@@ -41,11 +47,12 @@ class ToolMailbox:
             if name!='_platform':
                 result=self.engine.communication.scoped_tool(scope[1],scope[2],name,args)
                 return dict(result,ok=not bool(result.get('pending')))
-            if not self.engine.communication.authorized({'request_id':scope[1],'token':scope[2]},worker=True):raise ValueError('Invalid execution identity')
+            if not self.engine.communication.authorized({'request_id':scope[1],'token':scope[2]}):raise ValueError('Invalid execution identity')
         if name=='_platform':
             power=self.protection.status() if self.protection else {'requested':False,'active':False}
-            database=str(Path(packet.get('client_root') or self.root)/Path(self.store.filename).name)
-            return {'service':service_info(),'system':platform.system(),'database':database,'keep_awake':power}
+            return {'workspace_id':self.engine.communication.settings()['instance_id'],'service':service_info(),'system':platform.system(),
+                    'database':str(Path(self.store.filename).resolve()),'database_location':'server',
+                    'mailbox':str(packet.get('client_root') or self.root),'keep_awake':power}
         if name=='_list':return {'ok':True,'service':service_info(),'instructions':tools.instructions,'tools':tools.definitions()}
         return tools.respond(name,args)
 

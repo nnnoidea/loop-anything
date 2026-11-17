@@ -4,8 +4,8 @@ const guideFields = {purpose:'它能帮你做什么',suitable_for:'适合什么�
 const kindNames = {agent:'Agent',command:'同步脚本',external:'异步任务',loop:'调用 Loop',event:'等待外部事件',approval:'等待用户确认',timer:'等待时间',mock:'平台内置模拟'};
 const objectValue = value => value && typeof value==='object' && !Array.isArray(value) ? value : {};
 function guideOf(bp){return objectValue(bp.guide);}
-function implementationOptions(entry){return entry?.kind?{default:entry}:(entry?.options || {});}
-function defaultImplementation(entry){return entry?.kind?'default':entry?.default;}
+function implementationOptions(entry){return entry?.options || {};}
+function defaultImplementation(entry){return entry?.default;}
 function chosenImplementation(item,node,bindings={}){
   const entry=item.implementations[node],id=Object.hasOwn(bindings,node)?bindings[node]:defaultImplementation(entry);
   return implementationOptions(entry)[id] || null;
@@ -27,11 +27,10 @@ function implementationSummary(item){
   const names=Object.keys(item.loop_definition.nodes),bound=names.filter(n=>Object.keys(implementationOptions(item.implementations[n])).length);
   return {missing:names.filter(n=>!chosenImplementation(item,n)),text:!bound.length?'仅Loop 定义 · 待接入实现':bound.length===names.length?'实现已绑定 · 环境另行检查':`部分实现 · ${bound.length}/${names.length} 已绑定`};
 }
-function executionLabel(implementation,version=2){
-  if(implementation && !implementation.kind){const id=defaultImplementation(implementation),count=Object.keys(implementationOptions(implementation)).length;return `${count} 个候选 · `+(id?`默认 ${id}：`+executionLabel(implementationOptions(implementation)[id],version):'尚未选择默认实现');}
+function executionLabel(implementation){
+  if(implementation && !implementation.kind){const id=defaultImplementation(implementation),count=Object.keys(implementationOptions(implementation)).length;return `${count} 个候选 · `+(id?`默认 ${id}：`+executionLabel(implementationOptions(implementation)[id]):'尚未选择默认实现');}
   if(!implementation)return '未选用实现 · 可在使用时选择';
   const label=kindNames[implementation.kind] || implementation.kind;
-  if(implementation.kind==='mock' || (version!==2 && implementation.simulation))return label+' · 平台内置模拟';
   if(implementation.dispatch)return label+' · 委派'+(implementation.dispatch.location==='local'?'本服务':'团队')+'具名 Agent '+implementation.dispatch.agent_id;
   if(implementation.command?.length)return label+' · '+(implementation.executor?'执行端 '+implementation.executor+' 执行命令':'在平台所在机器执行命令')+(implementation.simulation?'（作者标注为模拟，仍执行命令）':'');
   if(implementation.kind==='agent')return label+' · 等待外部提交，未配置自动命令';

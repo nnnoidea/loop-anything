@@ -7,8 +7,8 @@ from loop_anything.runtime.model import Invalid
 
 DEFAULTS = {
     'task': """Loop Anything has work for you. This session handles its current Run tasks only; do not use it to edit the reusable Loop definition. Loop construction belongs to a separate external Agent or source-file editing. Follow the author handbook and node Skills in the context. If the author provides wrapper scripts, use those entry points.
-For direct platform calls, use python3 PLATFORM_CLIENT TOOL --url PLATFORM_URL --arguments JSON with the context's platform_client and platform_url; include run_id and token for Run tools. Discovery tools use their own schema. Call read_capabilities to find existing mechanisms and references before writing helpers. The platform_guide is available when needed.
-When using platform tools directly, read the wake-up task with read_task. Read relevant state before deciding; managed reads record basis automatically. Stateless edits must pass basis from the decision read. Thinking does not reserve Timeline; commit conflicts return changed fields and require reconsideration, not blindly refreshed versions. scope_task=null grants global permission, otherwise modify only that Task and descendants. Report completed with report_task using a stable report_id, the task_version from that decision read and envelope containing declared outputs; arranging future work does not complete the current task. Check ok=true and, for reports, accepted=true after each call. After completing or deferring your task and handling in-scope issues, call finish (or the author's wrapper that does so). Exit only after finish succeeds. Ready descendants can remain for Engine dispatch.
+For direct platform calls, use python3 PLATFORM_CLIENT TOOL --arguments JSON with the context's platform_client. The process automatically carries an immutable work/platform binding; do not select or reconstruct a URL. Returned work_id identifies work when a separate Agent continues it; include run_id and token for Run tools. Discovery tools use their own schema. Call read_capabilities to find existing mechanisms and references before writing helpers. The platform_guide is available when needed.
+When using platform tools directly, read the wake-up task with read_task and inspect the relevant Timeline state. Reads do not reserve work or create a separate decision snapshot. scope_task=null grants global permission, otherwise modify only that Task and descendants. Report completed with report_task using your execution identity, a stable report_id and envelope containing declared outputs; arranging future work does not complete the current task. Check ok=true and, for reports, accepted=true after each call. After completing or deferring your task and handling in-scope issues, call finish (or the author's wrapper that does so). Exit only after finish succeeds. Ready descendants can remain for Engine dispatch. Reports preserve the inputs and sources captured for their execution.
 Declared node routes expand plans automatically from accepted events and mapped output parameters. Read routes with read_task, provide their required outputs, and inspect report receipt.routes; do not separately arrange the same work.
 If this CLI exposes its native conversation ID, record it early with register_agent_session for execution_id (Codex tools can read CODEX_THREAD_ID from their environment). Use only the actual current CLI ID; do not guess or search unrelated sessions.
 Communication uses the independent dispatch_skill and its shared publishing protocol; managed nodes retain this scoped platform entry for Run association. Read each member description (user-confirmed main task) before selecting help. For standalone work, start_collaboration provides a built-in Loop and supports adopting a real local caller session/PID; ordinary standalone request_assistance automatically tracks results in a built-in Run. Inside this Run keep using source={run_id,task_id}; do not start another collaboration. communication_status discovers explicitly exposed local named Agents and the Run group. request_assistance creates optional help with source={run_id,task_id} and token; read_assistance reads its request_id; scoped workers retain their execution credentials. Reads default to compact status/results; use include_logs only for diagnosis and advance after/offset from log_cursor/log_offset. Local help needs no group. pending/offered is not unavailable: the origin enforces the acceptance deadline (default 300 seconds). Do not cancel or recreate requests solely because a few seconds or reads show no grant; defer with wait_assistance or keep the request active. wait_assistance can defer this task until replies arrive. First register the actual native session and configure an exact resume command; after acceptance call finish. The platform resumes that SAME CLI session and Task with assistance_results and fresh credentials. Old tokens are obsolete. Missing sessions are an explicit error, never a reason to silently start a fresh conversation. Never build a polling loop, publish ordinary sessions as members, or treat help replies as your own completed output.
@@ -36,7 +36,7 @@ def process_prompt(config, context, template=None, indent=None):
     return encoded if template is None else template.replace('{{context}}',encoded)
 
 
-def receiver_context(value, team_root=None, mounted_root=None):
+def receiver_context(value, team_root=None, mounted_root=None, resource_root=None):
     import copy
     from loop_anything.runtime.tool_client import module
     value=copy.deepcopy(value);root=platform_skill_directory()
@@ -55,6 +55,18 @@ def receiver_context(value, team_root=None, mounted_root=None):
                 url,sep,scope=value[key][6:].partition('#');value[key]='nas://'+mount(url)+sep+scope
         for skill in [value.get('handbook'),*(value.get('skills') or [])]:
             if isinstance(skill,dict) and 'resolved_path' in skill:skill['resolved_path']=mount(skill['resolved_path'])
+    if resource_root:
+        from loop_anything.packaging.packages import member_path
+        # Only declared instruction references move; arbitrary business text/paths stay intact.
+        for context in (value, value.get('context')):
+            if not isinstance(context,dict):continue
+            context['resource_root']=str(resource_root)
+            task=context.get('task')
+            skills=[context.get('handbook'),*(context.get('skills') or [])]
+            if isinstance(task,dict):skills.extend(task.get('skills') or [])
+            for skill in skills:
+                if isinstance(skill,dict) and skill.get('path'):
+                    skill['resolved_path']=str(Path(resource_root)/member_path(skill['path']))
     return value
 
 
@@ -65,9 +77,10 @@ def mask_prompt(text, *tokens):
     return text
 
 
-def author_context(store, key, definition, node_id=None):
+def author_context(store, key, definition, node_id=None, resources=None):
+    resource_key,handbook=resources if resources else (key,definition.get('handbook',{}))
     def skill(value):
-        return resolve_skill(store.filename, key, value) if key else value
+        return resolve_skill(store.filename, resource_key, value) if resource_key else value
     root = platform_skill_directory()
     from loop_anything.capabilities import service_info
     from loop_anything.authoring_guidance import authoring_context
@@ -75,7 +88,7 @@ def author_context(store, key, definition, node_id=None):
     context = {'self': service(store).self_info(), 'platform': service_info(), 'platform_responsibilities': authoring_context(), 'capability_tool': 'read_capabilities', 'loop_key': key, 'platform_client': str(root / 'scripts/call.py'),
                'platform_guide': str(root / 'references/run.md'),
                'dispatch_skill': str(root.parent / 'loop-anything-dispatch/SKILL.md'),
-               'handbook': skill(definition.get('handbook', {}))}
+               'handbook': skill(handbook)}
     if node_id:
         node = definition['nodes'][node_id]
         context.update(node_id=node_id, instructions=node['instructions'],
@@ -87,11 +100,15 @@ def task_context(store, run, execution, platform_url, scope_task):
     from loop_anything.runtime.communication_views import summary
     from loop_anything.runtime.native_sessions import provider_for
     from loop_anything.runtime.communication import service
-    return dict(author_context(store, run['loop_key'], run['loop_definition'], execution['node']),
+    from loop_anything.runtime.timelines import task_resources
+    return dict(**author_context(store, run['loop_key'], run['loop_definition'], execution['node'], task_resources(run,execution['node'])),
+                timeline_id=run.get('timeline_id'), timeline=run.get('timeline'),
                 run_id=run['id'], created_by=run.get('created_by',''), execution_id=execution['id'], task_id=execution['task_id'],
                 token=execution['token'], scope_task=scope_task, platform_url=platform_url,
                 execution_executor=execution['implementation'].get('executor'),
                 flow_trigger=run['tasks'][execution['task_id']].get('origin', {}).get('flow_agent'),
+                steward_request=run.get('steward_requests', {}).get(run['tasks'][execution['task_id']].get('origin', {}).get('request_id')),
+                steward=({k:run['steward'][k] for k in ('agent_id','name','generation')} if run.get('steward') else None),
                 assistance_results=[summary(r) for r in run['tasks'].get(execution['task_id'],{}).get('assistance_results',[])],
                 assistance_resume=({'previous_execution_id':execution['assistance_resume']['execution_id'],
                                     'native_session':execution['assistance_resume']['native_session'],

@@ -1,3 +1,4 @@
+from tests.runtime_fixture import update_work
 """Run-wide operator and to-do protocol. Real Store/Engine; no model calls."""
 import copy
 import json
@@ -25,10 +26,10 @@ def definition():
           'records': {'text': text}, 'nodes': {'init': node(init=True), 'script': node(), 'reason': node(),
               'finish': node({'value': text}), 'wait': node()},
           'seed': task_spec('init', 'init'), 'plans': {}}
-    cmd = "import json,sys; r=json.load(sys.stdin); assert not r['parameters'].get('fail'), 'fixture failure'; print(json.dumps({'outputs': {'result':'script-result'}}))"
-    implementations = {k: {'kind': 'agent'} for k in bp['nodes']}
-    implementations['script'] = {'kind': 'command', 'command': [sys.executable, '-c', cmd]}
-    implementations['wait'] = {'kind': 'event', 'event': 'signal'}
+    cmd = "import json,sys; r=json.load(sys.stdin); assert not r['parameters'].get('fail'), 'fixture failure'; print(json.dumps({'event':'completed','envelope':{'outputs': {'result':'script-result'}}}))"
+    implementations = {k: {'options': {'default': {'kind': 'agent'}}, 'default': 'default'} for k in bp['nodes']}
+    implementations['script'] = {'options': {'default': {'kind': 'command', 'command': [sys.executable, '-c', cmd]}}, 'default': 'default'}
+    implementations['wait'] = {'options': {'default': {'kind': 'event', 'event': 'signal'}}, 'default': 'default'}
     return bp, implementations
 
 
@@ -36,7 +37,7 @@ def enable_fallback(bp, implementations, config=None):
     bp['nodes']['fallback'] = {'instructions': 'Handle current issues with the Run tools, then complete this task.',
                                'inputs': {}, 'outputs': {}, 'skills': [{'name': 'recovery', 'content': 'Inspect the actual failure.'}]}
     bp['fallback_node'] = 'fallback'
-    implementations['fallback'] = config or {'kind': 'agent'}
+    implementations['fallback'] = config if config is not None else {'options': {'default': {'kind': 'agent'}}, 'default': 'default'}
 
 
 def task_spec(id, node, inputs=None, **kw):
@@ -77,8 +78,7 @@ class RunAgentTests(unittest.TestCase):
         claimed = next((o for o in current['agent_sessions'] if o.get('task_id') == id), None)
         worker = RunTools(self.store, self.id, claimed['token']) if claimed else original
         info = worker.call('read_task', {'task_id': id})
-        result = worker.call('complete_task', {'task_id': id, 'task_version': info['task_version'],
-            'envelope': dict(outputs={'result': value}, **envelope)})
+        result = worker.call('report_task', {'event':'completed','report_id':'complete','task_id': id, 'envelope': dict(outputs={'result': value}, **envelope)})
         if worker.token != original.token:worker.call('finish', {})
         return result
 
@@ -91,12 +91,11 @@ class RunAgentTests(unittest.TestCase):
             time.sleep(.02)
         self.fail(str(self.read()['executions']))
 
-    def test_one_owner_per_run_including_interactive_and_background(self):
+    def test_same_task_executor_protection_and_independent_runs(self):
         key = self.store.publish(self.bp, self.implementations)['key']
-        created = subprocess.run([sys.executable, '-m', 'loop_anything', '--db', self.store.filename, 'create', key,
-                                  '--title', 'User Agent startup', '--authorization', 'Initialize and continue'],
-                                 text=True, capture_output=True, check=True)
-        result = json.loads(created.stdout)
+        from tests.runtime_fixture import runtime_run
+        result = runtime_run(self.store, {'key': key, 'title': 'Internal runtime fixture',
+            'authorization': 'Initialize and continue'})
         self.id = result['run_id']
         owner = self.read()['agent_sessions'][0]
         self.assertEqual(result['token'], owner['token'])
@@ -112,8 +111,8 @@ class RunAgentTests(unittest.TestCase):
         self.assertEqual('paused', self.read()['status'])
         self.engine.command(self.id, 'resume')
         self.tools = RunTools(self.store, self.id, owner['token'])
-        self.tools.call('change_settings', {'revision': 1, 'change': {'guidance': 'User requested change'}})
-        self.assertEqual('User requested change', self.tools.call('read_timeline', {})['settings']['guidance'])
+        update_work(self.store,self.id,{'constraints':'User requested change'})
+        self.assertEqual('User requested change', self.tools.call('read_timeline', {})['settings']['constraints'])
         self.complete('init', settings={'objective': 'User already discussed this'}, tasks=[task_spec('script', 'script'), task_spec('wait', 'wait')])
         self.assertTrue(self.read()['initialized'])
         self.assertEqual('completed', self.read()['tasks']['init']['status'])
@@ -190,7 +189,7 @@ class RunAgentTests(unittest.TestCase):
         self.until(lambda r: r['tasks']['script']['status'] == 'completed')
         helper = RunTools(self.store, self.id, next(o['token'] for o in self.read()['agent_sessions'] if o.get('task_id') == fallback['id']))
         info = helper.call('read_task', {'task_id': fallback['id']})
-        helper.call('complete_task', {'task_id': fallback['id'], 'task_version': info['task_version'], 'envelope': {'outputs': {}}})
+        helper.call('report_task', {'event':'completed','report_id':'complete','task_id': fallback['id'], 'envelope': {'outputs': {}}})
         helper.call('finish', {})
         self.complete('finish')
         self.tools.call('finish', {})
@@ -232,12 +231,12 @@ class RunAgentTests(unittest.TestCase):
     def test_authorization_is_text_and_background_cannot_expand_it(self):
         self.start()
         before = self.tools.call('read_timeline', {})['settings']
-        self.assertEqual(self.read()['settings']['authorization'], before['authorization'])
+        self.assertEqual(self.read()['settings']['constraints'], before['constraints'])
         with self.assertRaises(Invalid):
             self.tools.call('change_settings', {'revision': 1, 'change': {'authorization': 'Do anything'}})
-        self.tools.call('change_settings', {'revision': 1, 'change': {'guidance': 'Adapt within existing authorization'}})
+        self.tools.call('change_settings', {'revision': 1, 'change': {'max_parallel': 3}})
         self.assertEqual(2, self.tools.call('read_timeline', {})['settings']['revision'])
-        self.assertEqual(before['authorization'], self.read()['settings']['authorization'])
+        self.assertEqual(before['constraints'], self.read()['settings']['constraints'])
         self.complete('init', settings={'objective': 'Latest state'}, tasks=[task_spec('finish', 'finish', {'value': {'literal': 'ok'}})])
         self.complete('finish')
         self.tools.call('finish', {})
@@ -261,7 +260,7 @@ assert len(sys.argv)==4, 'Platform appended unrequested arguments'
 prompt=sys.stdin.read()
 r=json.loads(prompt.split('Run context:'+chr(10),1)[1]); t=RunTools(Store(sys.argv[-1]),r['run_id'],r['token'])
 i=t.call('read_task',{'task_id':'init'})
-t.call('complete_task',{'task_id':'init','task_version':i['task_version'],'envelope':{
+t.call('report_task', {'event':'completed','report_id':'complete','task_id':'init','envelope':{
  'settings':{'objective':'Wait'},'outputs':{'result':'done'},'tasks':[
  {'id':'wait','node':'wait','inputs':{},'outputs':{'result':{'id':'signal'}}}]}})
 t.call('finish',{})
@@ -270,7 +269,7 @@ while not Path(sys.argv[2]).exists(): time.sleep(.01)
 # A late process error must not change the next owner's tasks or operation right.
 raise RuntimeError('failure after finish')
 """
-        self.implementations['init'] = {'kind': 'agent', 'command': [sys.executable, '-c', script, str(marker), str(allow_exit), str(self.store.filename)], 'cwd': str(Path(__file__).resolve().parents[1])}
+        self.implementations['init'] = {'options': {'default': {'kind': 'agent', 'command': [sys.executable, '-c', script, str(marker), str(allow_exit), str(self.store.filename)], 'cwd': str(Path(__file__).resolve().parents[1])}}, 'default': 'default'}
         self.create()
         try:
             self.until(lambda r: marker.exists())
@@ -300,7 +299,7 @@ raise RuntimeError('failure after finish')
         self.engine.pool = ThreadPoolExecutor(max_workers=1)
         release = Event()
         self.engine.pool.submit(release.wait, 5)
-        self.implementations['init'] = {'kind': 'agent', 'command': [sys.executable, '-c', 'raise SystemExit(2)']}
+        self.implementations['init'] = {'options': {'default': {'kind': 'agent', 'command': [sys.executable, '-c', 'raise SystemExit(2)']}}, 'default': 'default'}
         self.create()
         try:
             with patch('loop_anything.runtime.timeline_runtime.run_command', wraps=run_command) as command:
@@ -318,7 +317,7 @@ raise RuntimeError('failure after finish')
     def test_platform_exit_stops_an_agent_without_a_timeout(self):
         marker = Path(self.tmp.name) / 'pid'
         code = "import os,time;from pathlib import Path;Path(%r).write_text(str(os.getpid()));time.sleep(30)" % str(marker)
-        self.implementations['init'] = {'kind': 'agent', 'command': [sys.executable, '-c', code]}
+        self.implementations['init'] = {'options': {'default': {'kind': 'agent', 'command': [sys.executable, '-c', code]}}, 'default': 'default'}
         self.create()
         self.until(lambda r: marker.exists())
         self.engine.close()
@@ -334,13 +333,13 @@ from loop_anything.interfaces.agent_tasks import RunTools
 from loop_anything.runtime.store import Store
 r=json.loads(sys.stdin.read().split('Run context:'+chr(10),1)[1]);t=RunTools(Store(sys.argv[-1]),r['run_id'],r['token'])
 i=t.call('read_task',{'task_id':'init'})
-t.call('complete_task',{'task_id':'init','task_version':i['task_version'],'envelope':{
+t.call('report_task', {'event':'completed','report_id':'complete','task_id':'init','envelope':{
  'settings':{'objective':'Inspect failure'},'outputs':{'result':'committed'},'tasks':[
  {'id':'reason','node':'reason','inputs':{},'outputs':{'result':{'id':'reason.result'}}}]}})
 # A final message neither writes this result nor proves that the Agent finished.
-print(json.dumps({'outputs':{'result':'fabricated-final-result'}}))
+print(json.dumps({'event':'completed','envelope':{'outputs':{'result':'fabricated-final-result'}}}))
 """
-        self.implementations['init'] = {'kind': 'agent', 'command': [sys.executable, '-c', script, str(self.store.filename)], 'cwd': str(Path(__file__).resolve().parents[1])}
+        self.implementations['init'] = {'options': {'default': {'kind': 'agent', 'command': [sys.executable, '-c', script, str(self.store.filename)], 'cwd': str(Path(__file__).resolve().parents[1])}}, 'default': 'default'}
         self.create()
         self.until(lambda r: any(e['node'] == 'reason' and e['status'] == 'decision' for e in r['executions']))
         for _ in range(3):
@@ -390,7 +389,7 @@ print(json.dumps({'outputs':{'result':'fabricated-final-result'}}))
         self.tools.call('resolve_request', {'task_id': request['id']})
         self.assertFalse(any(t['id'] == request['id'] for t in self.tools.call('next_tasks', {})['items']))
 
-    def test_changed_inputs_reject_only_that_submission_not_further_reading(self):
+    def test_pending_manual_work_can_use_updated_parameters_without_read_proof(self):
         self.start()
         e = self.read()['executions'][0]
         before = self.read()
@@ -400,15 +399,13 @@ print(json.dumps({'outputs':{'result':'fabricated-final-result'}}))
         self.complete('init', settings={'objective': 'Inspect'}, tasks=[task_spec('reason', 'reason')])
         task = self.tools.call('read_task', {'task_id': 'reason'})
         self.tools.call('change_task', {'task_id': 'reason', 'operation': 'update', 'parameters': {'new': True}, 'reason': 'Updated plan'})
-        with self.assertRaises(Conflict):
-            self.tools.call('complete_task', {'task_id': 'reason', 'task_version': task['task_version'], 'envelope': {'outputs': {'result': 'old'}}})
         self.complete('reason')
         self.assertEqual('completed', self.read()['tasks']['reason']['status'])
 
     def test_failed_command_cleanup_retains_operation_right(self):
         from unittest.mock import patch
         from loop_anything.runtime.host_runtime import CommandNotStopped
-        self.implementations['init']['command'] = [sys.executable, '-c', 'pass']
+        self.implementations['init']['options']['default']['command'] = [sys.executable, '-c', 'pass']
         self.create()
         with patch('loop_anything.runtime.timeline_runtime.run_command', side_effect=CommandNotStopped('Process tree is still alive')):
             self.engine.tick(self.id)
@@ -438,13 +435,13 @@ print(json.dumps({'outputs':{'result':'fabricated-final-result'}}))
 
     def test_agent_cannot_submit_a_script_or_approval_result(self):
         self.bp['nodes']['approve'] = copy.deepcopy(self.bp['nodes']['reason'])
-        self.implementations['approve'] = {'kind': 'approval'}
+        self.implementations['approve'] = {'options': {'default': {'kind': 'approval'}}, 'default': 'default'}
         self.start()
         self.complete('init', settings={'objective': 'Inspect'}, tasks=[task_spec('script', 'script'), task_spec('approve', 'approve')])
         for id in ('script', 'approve'):
             info = self.tools.call('read_task', {'task_id': id})
             with self.assertRaises(Invalid):
-                self.tools.call('complete_task', {'task_id': id, 'task_version': info['task_version'], 'envelope': {'outputs': {'result': 'fabricated'}}})
+                self.tools.call('report_task', {'event':'completed','report_id':'complete','task_id': id, 'envelope': {'outputs': {'result': 'fabricated'}}})
             self.assertNotIn(id + '.result', self.read()['records'])
 
     def test_paused_ready_tasks_are_waiting_not_immediate_agent_work(self):
@@ -455,7 +452,7 @@ print(json.dumps({'outputs':{'result':'fabricated-final-result'}}))
         self.assertFalse(tools.call('next_tasks', {})['has_tasks'])
         task = tools.call('read_task', {'task_id': 'init'})
         with self.assertRaises(Conflict):
-            tools.call('complete_task', {'task_id': 'init', 'task_version': task['task_version'], 'envelope': {'settings': {'objective': 'Test'}, 'outputs': {'result': 'done'}}})
+            tools.call('report_task', {'event':'completed','report_id':'complete','task_id': 'init', 'envelope': {'settings': {'objective': 'Test'}, 'outputs': {'result': 'done'}}})
         tools.call('finish', {})
         self.engine.tick(self.id)
         self.assertEqual([], self.read()['executions'])

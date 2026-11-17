@@ -102,3 +102,5 @@ Use deterministic path/op/args expressions with eq/le/ge/add/len/and/or. Array p
 - records: latest business result values by record ID.
 
 Assertions must state the author's expected behavior precisely. The platform does not infer a correct answer from prose. Parameter errors, missing references, unexpected transitions, and waiting tasks remain in results; a lack of exceptions does not establish Run completion.
+
+Scenarios use a simulated Run steward. The first entry report is applied through that steward; startup is completed automatically after valid initialization. Later decision results must be supplied by the scenario when needed. Fixed test paths should declare progression="rules", just like real Runs. task_count/tasks/by_id/counts describe business Tasks; internal_tasks exposes the simulated management executions separately. No real Agent command is invoked.

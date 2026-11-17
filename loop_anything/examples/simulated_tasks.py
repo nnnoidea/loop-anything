@@ -3,6 +3,7 @@
 Replace these command implementations to integrate real platforms / Agent services.
 """
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -17,8 +18,7 @@ def result(domain, action, request):
     settings = request['timeline']['settings']
     if domain == 'research':
         if action == 'initialize':
-            return {'settings': {'objective': '比较方法并基于组内指标迭代实验', 'requirements': ['组间独立推进'],
-                                'constraints': {'max_experiments': 4}, 'guidance': '使用 GA 结果设计 GC'},
+            return {'settings': {'objective': '比较方法并基于组内指标迭代实验', 'constraints': '组间独立推进，最多4次实验；使用 GA 结果设计 GC'},
                     'outputs': {'plan': {'experiments': [{'id': 'A1', 'duration': .3}, {'id': 'A2', 'duration': .5}, {'id': 'B1', 'duration': request['timeline']['inputs'].get('slow_duration', 3)}],
                                          'groups': [{'id': 'GA', 'metrics': ['metric.A1', 'metric.A2']}, {'id': 'GB', 'metrics': ['metric.B1']}],
                                          'done': False, 'reasoning': '模拟初始化 Agent；并未调用模型解析自然语言。'}}}
@@ -31,8 +31,8 @@ def result(domain, action, request):
                 task = json.dumps({'id': inputs['experiment']['id'], 'ready_at': time.time() + inputs['experiment']['duration']})
             data = json.loads(task)
             if time.time() < data['ready_at']:
-                return {'status': 'waiting', 'external_id': task, 'poll_after': .1}
-            return {'outputs': {'model': {'experiment': data['id'], 'uri': 'simulated://model/' + data['id']}}}
+                return {'event': 'progress' if request.get('external_id') else 'submitted', 'external_id': task, 'poll_after': .1}
+            return {'event': 'completed', 'envelope': {'outputs': {'model': {'experiment': data['id'], 'uri': 'simulated://model/' + data['id']}}}}
         if action == 'predict':
             id = inputs['model']['experiment']
             return {'outputs': {'prediction': {'experiment': id, 'uri': 'simulated://prediction/' + id}}}
@@ -47,12 +47,12 @@ def result(domain, action, request):
     if domain == 'trip':
         if action in ('initialize', 'replan'):
             id = 'proposal-' + request['task_id']
-            result = {'outputs': {'proposal': {'id': id, 'destination': settings['constraints'].get('destination', '上海'),
-                       'amount': min(settings['constraints'].get('budget', 3000), 2500),
+            budget=re.search(r'预算[：:]?(\d+)',settings['constraints'])
+            result = {'outputs': {'proposal': {'id': id, 'destination': ('北京' if '北京' in settings['constraints'] else '上海'),
+                       'amount': min(int(budget.group(1)) if budget else 3000,2500),
                        'reason': inputs.get('reason', '模拟初始化；并未调用模型解析自然语言')}}}
             if action == 'initialize':
-                result['settings'] = {'objective': '完成出差并处理行程异常', 'requirements': ['预订必须确认'],
-                                     'constraints': {'budget': 3000, 'destination': '上海'}}
+                result['settings'] = {'objective': '完成出差并处理行程异常', 'constraints': '预订必须确认，预算3000，目的地上海'}
             return result
         if action == 'book':
             p = inputs['proposal']
@@ -71,7 +71,7 @@ def respond(domain, action, request):
     reply = result(domain, action, request)
     if action == 'initialize':
         reply['settings']['completion_rule'] = {'op': 'and', 'args': [{'op': 'ge', 'args': [{'path': ['completed', 'finish']}, 1]}, {'op': 'eq', 'args': [{'path': 'active_tasks'}, 0]}]}
-    if reply.get('status') == 'waiting':
+    if domain == 'research' and action == 'train':
         return reply
     run = request['timeline']
     current = run['tasks'][request['task_id']]['spec']
@@ -144,8 +144,10 @@ if __name__ == '__main__':
                 scoped['timeline']['settings'] = call('read_timeline', {})['settings']
                 scoped['timeline']['tasks'][task['task_id']] = info['task']
                 envelope = respond(sys.argv[1], info['task']['spec']['node'], scoped)
-                call('complete_task', {'task_id': task['task_id'], 'task_version': info['task_version'], 'envelope': envelope})
+                call('report_task', {'event':'completed','report_id':'result:'+task['task_id'],'task_id': task['task_id'], 'envelope': envelope})
         call('finish', {})
         print(json.dumps({'submitted': True}))
     else:
-        print(json.dumps(respond(sys.argv[1], sys.argv[2], request), ensure_ascii=False))
+        reply = respond(sys.argv[1], sys.argv[2], request)
+        report = reply if (sys.argv[1], sys.argv[2]) == ('research', 'train') else {'event': 'completed', 'envelope': reply}
+        print(json.dumps(report, ensure_ascii=False))

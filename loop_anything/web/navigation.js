@@ -1,10 +1,14 @@
 'use strict';
 // Routes identify assets, draft editors and individual Runs; never mutate runtime state.
 let activeRoute={type:'home'}, navigationSerial=0;
-const editorSessions=new Map(),runReturns=new Map();
+const editorSessions=new Map(),runReturns=new Map(),routeScroll=new Map();
 function routeHash(route){
-  if(route.type==='communication')return '#communication';
-  if(route.type==='schedules')return '#schedules';
+  if(route.type==='communication')return '#communication/'+(route.tab||'agents');
+  if(route.type==='timelines'||route.type==='home')return '#work/timelines';
+  if(route.type==='timeline')return '#work/timelines/'+encodeURIComponent(route.id);
+  if(route.type==='run-list')return '#work/runs';
+  if(route.type==='monitors')return '#work/monitors';
+  if(route.type==='schedules')return '#work/schedules';
   if(route.type==='catalog')return '#loop_definitions';
   if(route.type==='loop')return '#loop/'+encodeURIComponent(route.key)+'/'+(route.tab || 'overview');
   if(route.type==='editor')return '#edit/'+encodeURIComponent(route.id)+(route.node?'/node/'+encodeURIComponent(route.node)+(route.implementation?'/implementation/'+encodeURIComponent(route.implementation):''):'');
@@ -14,14 +18,19 @@ function routeHash(route){
 }
 function parseRoute(hash){
   const parts=hash.replace(/^#/,'').split('/');
-  if(parts[0]==='communication')return {type:'communication'};
-  if(parts[0]==='schedules')return {type:'schedules'};
+  if(parts[0]==='communication')return {type:'communication',tab:['agents','requests','connections'].includes(parts[1])?parts[1]:'agents'};
+  if(parts[0]==='work'){
+    if(parts[1]==='timelines'&&parts[2])return {type:'timeline',id:decodeURIComponent(parts[2])};
+    const type={timelines:'timelines',runs:'run-list',monitors:'monitors',schedules:'schedules'}[parts[1]];
+    if(type)return {type};
+  }
   if(!parts[0])return {type:'home'};
   if(parts[0]==='loop_definitions')return {type:'catalog'};
   if(parts[0]==='loop')return {type:'loop',key:decodeURIComponent(parts[1] || ''),tab:['overview','flow','prepare'].includes(parts[2])?parts[2]:'overview'};
   if(parts[0]==='prepare')return {type:'prepare',id:decodeURIComponent(parts[1] || '')};
   if(parts[0]==='edit')return {type:'editor',id:decodeURIComponent(parts[1] || ''),...(parts[2]==='node'&&parts[3]?{node:decodeURIComponent(parts[3]),...(parts[4]==='implementation'&&parts[5]?{implementation:decodeURIComponent(parts[5])}:{})}:{})};
-  return {type:'run',id:decodeURIComponent(parts[0]==='run'?parts[1]:parts[0])}; // old #run-... links
+  if(parts[0]==='run'&&parts[1])return {type:'run',id:decodeURIComponent(parts[1])};
+  return {type:'home'};
 }
 function rememberEditor(){
   if(page!=='editor' || !editor)return;
@@ -37,6 +46,11 @@ function registerEditor(){
 async function navigateTo(route,{replace=false,external=false,capture=true}={}){
   if(route.type==='loop')route={type:'editor',id:route.key};
   const previous=activeRoute,serial=++navigationSerial;
+  routeScroll.set(routeHash(previous),window.scrollY);
+  if(page==='communication'&&route.type==='communication'){
+    if(!external)history[replace?'replaceState':'pushState'](null,'',routeHash(route));
+    activeRoute=structuredClone(route);showCommunicationTab(route.tab||'agents');updateNavigationUI();window.scrollTo(0,routeScroll.get(routeHash(route))||0);return true;
+  }
   // Reading another node preserves the authored iframe and never writes the definition.
   if(capture&&page==='editor'&&route.type==='editor'&&route.id===previous.id&&route.id===editor?.routeId){
     if(route.node&&!Object.hasOwn(editor.loop_definition.nodes,route.node)){toast('节点已不存在，请重新选择。');if(external)history.replaceState(null,'',routeHash(previous));return false;}
@@ -61,7 +75,11 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
     if(document.fullscreenElement===editorPage&&routeHash(route)!==routeHash(previous))await document.exitFullscreen();
     if(!external)history[replace?'replaceState':'pushState'](null,'',routeHash(route));
     activeRoute=structuredClone(route);
-    if(route.type==='communication'){page='communication';await renderCommunication();}
+    if(route.type==='communication'){page='communication';await refreshRunLibrary();await renderCommunication();}
+    else if(route.type==='timelines'||route.type==='home'){page='timelines';await showWorkLibrary();}
+    else if(route.type==='timeline'){page='timeline';await showWorkTimeline(route.id);}
+    else if(route.type==='run-list'){page='run-list';await refreshRunLibrary();}
+    else if(route.type==='monitors'){page='monitors';refreshMonitoring(true);}
     else if(route.type==='schedules'){page='schedules';refreshSchedules();}
     else if(route.type==='catalog'){page='catalog';await loadCatalog();}
     else if(route.type==='loop'){await openLoop(route.key);}
@@ -70,10 +88,11 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
       editor=session.editor;if(route.node&&!Object.hasOwn(editor.loop_definition.nodes,route.node))throw new Error('节点已不存在，请返回草稿总览。');editSelection=route.node?{node:route.node}:null;page='editor';
       populateMeta();renderEditor();renderProperties();
     }else if(route.type==='run'){
-      if(previous.type!=='run' && previous.type!=='home')runReturns.set(route.id,structuredClone(previous));
+      if(previous.type!=='run')runReturns.set(route.id,structuredClone(previous));
       selected=route.id;run=nextRun;settingsBase=null;filterNode=null;page='runs';renderRun();
-    }else{page='runs';await refresh();}
-    showPage();updateNavigationUI();window.scrollTo(0,0);if(page==='runs')requestAnimationFrame(()=>sizeTaskGraph());return true;
+    }else{page='timelines';await showWorkLibrary();}
+    if(serial!==navigationSerial)return false;
+    showPage();updateNavigationUI();window.scrollTo(0,routeScroll.get(routeHash(route))||0);if(page==='runs')requestAnimationFrame(()=>sizeTaskGraph());return true;
   }catch(error){
     if(serial!==navigationSerial)return false;
     if(external){activeRoute={type:'catalog'};history.replaceState(null,'','#loop_definitions');page='catalog';showPage();updateNavigationUI();}
@@ -85,8 +104,14 @@ function relatedRunsHTML(key){return relatedRunRows(key);}
 
 function updateNavigationUI(){
   $('run-list').querySelectorAll('[data-run]').forEach(b=>b.classList.toggle('chosen',page==='runs'&&b.dataset.run===selected));
-  const crumbs=[navLink({type:'catalog'},'Loop 库')];
-  if(page==='communication'){crumbs.push('Agent 通信');}
+  $('communication-nav').classList.toggle('active',page==='communication');
+  const workPage=['timelines','timeline','run-list','runs','monitors','schedules'].includes(page);
+  const crumbs=workPage?[navLink({type:'timelines'},'工作台')]:page==='communication'?['Agent 通信']:[navLink({type:'catalog'},'Loop 库')];
+  if(page==='communication'){crumbs.push({agents:'Agent',requests:'协作请求',connections:'连接配置'}[activeRoute.tab||'agents']);}
+  else if(page==='timelines'){crumbs.push('Timeline');}
+  else if(page==='timeline'){crumbs.push(navLink({type:'timelines'},'Timeline'));crumbs.push(esc($('timeline-title').textContent));}
+  else if(page==='run-list'){crumbs.push('运行');}
+  else if(page==='monitors'){crumbs.push('监控');}
   else if(page==='schedules'){crumbs.push('定时任务');}
   else if(page==='editor' && editor){
     if(editor.installedKey&&$('reader-runs')){renderRelatedRuns(editor.installedKey);safely(()=>refreshRelatedRuns(editor.installedKey));}
@@ -98,8 +123,8 @@ function updateNavigationUI(){
   }else if(page==='runs' && run){
     const c=catalog.find(c=>c.key===run.loop_key);
     const asset={type:'loop',key:run.loop_key,tab:'overview'};
-    crumbs.push(navLink(asset,(c?.loop_definition.name || run.loop_definition.id)+' · v'+run.loop_definition.version));crumbs.push(esc(run.title));
-    $('run-navigation').innerHTML=navLink(runReturns.get(run.id) || asset,'← 返回来源页面')+'<span>当前是一次运行</span>'+navLink(asset,'查看实际使用的 Loop 版本');
+    crumbs.push(navLink({type:'run-list'},'运行'));crumbs.push(esc(run.title));
+    $('run-navigation').innerHTML=navLink(runReturns.get(run.id) || {type:'run-list'},'← 返回来源页面')+'<span>当前是一次运行</span>'+navLink(asset,'查看实际使用的 Loop 版本');
   }
   $('breadcrumbs').innerHTML=crumbs.join('<span> / </span>');
 }

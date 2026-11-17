@@ -6,12 +6,8 @@ from loop_anything.runtime.model import Invalid, contract, check_schema, path, v
 from loop_anything.runtime.checks import validate_expression
 
 VERSION = 2
-SEMANTIC_FIELDS = {'intent', 'objective', 'requirements', 'constraints', 'guidance', 'authorization'}
+SEMANTIC_FIELDS = {'objective', 'constraints'}
 ENDING_FIELDS = {'completion_rule', 'termination_signal'}
-
-
-def is_v2(run):
-    return run.get('schema_version') == VERSION
 
 
 def expand(value, context):
@@ -55,9 +51,6 @@ def validate_v2(bp, implementations):
             raise Invalid('LoopDefinition and implementations must be objects')
         location = ['guide']
         validate_guide(bp)
-        location = ['schema_version']
-        if bp.get('schema_version') != VERSION:
-            raise Invalid('Expected Programmable Timeline schema_version=2')
         for key in ('id', 'version', 'entry'):
             location = [key]
             if not isinstance(bp.get(key), str) or not bp[key]:
@@ -70,10 +63,9 @@ def validate_v2(bp, implementations):
         validate_fallback(bp, implementations, bp.get('fallback_node'))
         location = ['global_agent_node']
         validate_global_agent(bp, implementations, bp.get('global_agent_node'))
-        location = ['flow_agent']
-        from loop_anything.runtime.flow_agent import validate as validate_flow_agent
-        validate_flow_agent(bp.get('flow_agent'))
-        if bp.get('flow_agent') is not None and '$flow_agent.decision' in bp.get('records', {}):
+        if 'flow_agent' in bp:
+            raise Invalid('Loop.flow_agent is not supported; the actual session calling start_run owns the Run')
+        if '$flow_agent.decision' in bp.get('records', {}):
             raise Invalid('$flow_agent.decision is reserved for built-in decision results')
         location = ['implementations']
         if '$notifications' in implementations:
@@ -98,6 +90,9 @@ def validate_v2(bp, implementations):
         from loop_anything.capabilities import require_supported
         location = ['requires']
         require_supported(bp.get('requires', []))
+        from loop_anything.runtime.business_state import validate_definition
+        location = ['state']
+        validate_definition(bp.get('state'))
         location = ['records']
         records = bp.get('records', {})
         if not isinstance(records, dict):
@@ -107,6 +102,10 @@ def validate_v2(bp, implementations):
             check_schema(schema)
         for name, node in nodes.items():
             location = ['nodes', name]
+            if node.get('progression') not in (None, 'steward', 'rules'):
+                raise Invalid('Node progression must be steward or rules')
+            if node.get('progression') == 'steward' and node.get('routes'):
+                raise Invalid('Steward progression owns the node completion; select rules to use explicit routes')
             if 'completion_checks' in node:
                 raise Invalid('Use assertions with eq for node completion checks')
             if 'terminal' in node:
@@ -247,8 +246,8 @@ def check_task(bp, tasks):
 
 
 def settings_defaults(title):
-    return {'revision': 1, 'intent': title, 'objective': '', 'authorization': '', 'requirements': [], 'constraints': {},
-            'guidance': '', 'max_parallel': 4, 'hooks': [], 'fallback_node': None, 'bindings': {}, 'completion_rule': None, 'termination_signal': ''}
+    return {'revision': 1, 'objective': '', 'constraints': '',
+            'max_parallel': 4, 'hooks': [], 'fallback_node': None, 'bindings': {}, 'completion_rule': None, 'termination_signal': ''}
 
 
 def validate_settings(settings):
@@ -263,14 +262,8 @@ def validate_settings(settings):
         validate_expression(settings['completion_rule'])
     if not isinstance(settings.get('termination_signal', ''), str):
         raise Invalid('termination_signal must be text explaining why the Run should end')
-    if not isinstance(settings.get('authorization', ''), str):
-        raise Invalid('User authorization must be natural-language text')
-    if not isinstance(settings['intent'], str) or not isinstance(settings['objective'], str) or not isinstance(settings['guidance'], str):
-        raise Invalid('Intent, objective and guidance must be strings')
-    if not isinstance(settings['requirements'], list) or not all(isinstance(x, str) for x in settings['requirements']):
-        raise Invalid('Requirements must be a string array')
-    if not isinstance(settings['constraints'], dict):
-        raise Invalid('Constraints must be an object')
+    if any(not isinstance(settings.get(k, ''), str) for k in SEMANTIC_FIELDS):
+        raise Invalid('Objective and constraints must be natural-language text')
     if type(settings['max_parallel']) is not int or not 1 <= settings['max_parallel'] <= 8:
         raise Invalid('Parallelism must be between 1 and 8')
 

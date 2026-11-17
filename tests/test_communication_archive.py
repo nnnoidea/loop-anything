@@ -1,4 +1,3 @@
-from communication_helpers import legacy_offer
 import json
 import tempfile
 import time
@@ -17,15 +16,14 @@ class CommunicationArchiveTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.a, self.b = [Communication(Store(self.root / (name + '.db'))) for name in ('a', 'b')]
-        config = self.a.config('group', path=str(self.root / 'nas'), create=True)['configuration']
+        config = self.a.config('team',link=str(self.root / 'nas'), create=True)['configuration']
         self.gid = next(iter(config['groups']))
-        self.b.config('group', path=str(self.root / 'nas'))
+        self.b.config('team',link=str(self.root / 'nas'))
         self.aid, self.bid = [c.settings()['instance_id'] for c in (self.a, self.b)]
         self.row = dict(id='request-test', origin=self.aid, executor=self.bid,
                         group_id=self.gid, assignment_id='assignment-test', state='assigned')
         with self.a.transaction() as db:
             self.a.save(db, self.row)
-        # Complete initial legacy reconciliation before measuring ordinary scans.
         self.scan(self.a, self.b)
 
     def tearDown(self):
@@ -47,10 +45,10 @@ class CommunicationArchiveTests(unittest.TestCase):
         return message
 
     def hot(self, message):
-        return self.root / 'nas' / 'messages' / message['target'] / (message['id'] + '.json')
+        return self.root / 'nas' / 'agents' / 'messages' / message['target'] / (message['id'] + '.json')
 
     def archived(self, message):
-        files = list((self.root / 'nas' / 'archive').glob('*/*/' + message['id'] + '.json'))
+        files = list((self.root / 'nas' / 'agents' / 'archive').glob('*/*/' + message['id'] + '.json'))
         self.assertEqual(len(files), 1)
         self.assertEqual(read_message(files[0]), message)
 
@@ -65,7 +63,7 @@ class CommunicationArchiveTests(unittest.TestCase):
         for delivered in messages:
             self.archived(delivered)
             self.archived(self.receipt(delivered))
-        self.assertFalse(list((self.root / 'nas' / 'messages').glob('*/*.json')))
+        self.assertFalse(list((self.root / 'nas' / 'agents' / 'messages').glob('*/*.json')))
         with patch('loop_anything.runtime.communication.read_message', wraps=read_message) as reads:
             self.scan(self.a, self.b, self.a, self.b)
             self.assertEqual(reads.call_count, 0)
@@ -108,7 +106,7 @@ class CommunicationArchiveTests(unittest.TestCase):
         ack = self.receipt(message)
         self.b.receive(ack)
         with patch('loop_anything.runtime.communication.publish_message', side_effect=OSError('NAS unavailable')):
-            drain(self.b, self.root / 'nas', self.gid)
+            drain(self.b, self.root / 'nas' / 'agents', self.gid)
         self.assertIn('NAS unavailable', self.b.transport_error)
         self.assertTrue(self.hot(message).exists())
         unlink = Path.unlink
@@ -116,7 +114,7 @@ class CommunicationArchiveTests(unittest.TestCase):
             if path == self.hot(message):raise OSError('Stopped after archive publication')
             return unlink(path, *args, **kwargs)
         with patch.object(Path, 'unlink', interrupted):
-            drain(self.b, self.root / 'nas', self.gid)
+            drain(self.b, self.root / 'nas' / 'agents', self.gid)
         self.archived(message)
         self.assertTrue(self.hot(message).exists())
         self.b = Communication(Store(self.b.store.filename))
@@ -140,50 +138,7 @@ class CommunicationArchiveTests(unittest.TestCase):
         self.scan(self.a)
         self.assertEqual(self.a.get(self.row['id'])['progress']['text'], 'next update')
 
-    def test_active_broadcast_remains_until_source_cancels_and_old_files_are_retired(self):
-        request = legacy_offer(self.a,location='group', group_id=self.gid, agent_id='missing', message='wait')['request']
-        self.scan(self.a, self.b)
-        with self.a.store.connection() as db:
-            message = json.loads(db.execute("SELECT document FROM communication_outbox WHERE json_extract(document,'$.kind')='offer'").fetchone()[0])
-        self.assertTrue(self.hot(message).exists())
-        self.a.control(request['id'], 'cancel', reason='Withdrawn by user')
-        self.scan(self.a)
-        self.assertFalse(self.hot(message).exists())
-        self.archived(message)
-        # Simulate an old release leaving a settled broadcast in the active folder.
-        publish_message(self.hot(message), message)
-        self.a = Communication(Store(self.a.store.filename))
-        self.scan(self.a)
-        self.assertFalse(self.hot(message).exists())
-        self.assertEqual(self.a.get(request['id'])['state'], 'cancelled')
 
-    def test_source_archives_granted_and_expired_announcements(self):
-        from loop_anything.runtime.engine import Engine
-        # This case uses real requests; discard the packet-only fixture row.
-        with self.a.transaction() as db:
-            db.execute('DELETE FROM communication_requests WHERE id=?', (self.row['id'],))
-        engine = Engine(self.a.store)
-        engine.communication = self.a
-        self.a.engine = engine
-        try:
-            granted, expired = [legacy_offer(self.a,location='group', group_id=self.gid,
-                agent_id='papers', message=label)['request'] for label in ('assign', 'expire')]
-            self.scan(self.a)
-            with self.a.store.connection() as db:
-                offers = [json.loads(row[0]) for row in db.execute("SELECT document FROM communication_outbox WHERE json_extract(document,'$.kind')='offer'")]
-            self.a.receive(dict(id='claim-test', sender=self.bid, target=self.aid,
-                request_id=granted['id'], group_id=self.gid, assignment_id=None,
-                kind='claim', payload={'agent_id': 'papers'}))
-            with patch('loop_anything.runtime.communication.time.time', return_value=expired['deadline'] + 1):
-                self.a.tick()
-            self.scan(self.a)
-            self.assertIsNotNone(self.a.get(granted['id']).get('assignment_id'))
-            self.assertEqual(self.a.get(expired['id'])['state'], 'unavailable')
-            for offer in offers:
-                self.archived(offer)
-                self.assertFalse(self.hot(offer).exists())
-        finally:
-            engine.close()
 
     def test_sent_receipts_do_not_periodically_republish_and_unsent_survives_restart(self):
         message = self.progress()

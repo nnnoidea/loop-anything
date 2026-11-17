@@ -17,6 +17,9 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
     from loop_anything.interfaces.schedules import ScheduleControls
     platform_tools = PlatformTools(store)
     schedules = ScheduleControls(store.filename)
+    space=getattr(engine,'space','local')
+    from loop_anything.runtime.tool_client import module
+    personal_spaces=module('spaces')
     root = Path(__file__).resolve().parents[1] / 'web'
     timeline_guide = (platform_skill_directory() / 'references/run.md').read_text(encoding='utf-8')
 
@@ -35,7 +38,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
         def may_post(self,parts,body):
             # These handles bind execution reports to a specific live request/turn.
             if len(parts)==5 and parts[0]=='communication' and parts[3:]==['api','tools']:
-                return not self.headers.get('Origin') and engine.communication.authorized({'request_id':parts[1],'token':parts[2]},worker=True)
+                return not self.headers.get('Origin') and engine.communication.authorized({'request_id':parts[1],'token':parts[2]})
             return True
 
         def send(self, data, status=200):
@@ -47,24 +50,37 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             self.end_headers()
             self.wfile.write(content)
 
+        def personal_settings_allowed(self):
+            return space=='local' and host in ('127.0.0.1','localhost','::1') and self.client_address[0] in ('127.0.0.1','::1') and self.headers.get('Host') in tuple(name+':'+str(server.server_port) for name in ('127.0.0.1','localhost','[::1]'))
+
         def do_GET(self):
             try:
                 self.get()
             except Conflict as exc:
-                self.send({'error': str(exc), **({'conflicts': exc.conflicts} if hasattr(exc, 'conflicts') else {})}, 409)
+                self.send({'error': str(exc)}, 409)
             except Invalid as exc:
                 self.send({'error': str(exc)}, 404)
 
         def get(self):
             parts = urlsplit(self.path).path.strip('/').split('/')
             query = {k:v[-1] for k,v in parse_qs(urlsplit(self.path).query,keep_blank_values=True).items()}
+            if parts == ['api','spaces']:
+                if not self.personal_settings_allowed():
+                    self.send({'space':space,'configuration':None});return
+                try:config=personal_spaces.read()
+                except (ValueError,OSError) as exc:self.send({'error':str(exc)},400);return
+                self.send({'space':space,'configuration':config,'current_url':engine.web_url});return
+            if parts == ['api', 'health']:
+                from loop_anything.capabilities import VERSION
+                self.send({'ok': True, 'service': 'loop-anything', 'version': VERSION})
+                return
             if parts == ['api', 'schedules']:
                 self.send(schedules.list())
                 return
             if len(parts)==5 and parts[0]=='communication' and parts[3:]==['api','tools']:
                 self.send(engine.communication.scoped_definitions(parts[1],parts[2]));return
             if len(parts)==5 and parts[0]=='communication' and parts[3:]==['api','platform']:
-                if not engine.communication.authorized({'request_id':parts[1],'token':parts[2]},worker=True):raise Conflict('Invalid execution credential')
+                if not engine.communication.authorized({'request_id':parts[1],'token':parts[2]}):raise Conflict('Invalid execution credential')
                 parts=['api','platform']
             if parts[0]=='web' or parts[:2]==['api','conversations']:
                 raise Invalid('独立网页 Agent 对话已移除；节点 session 仅用于 Run 任务。')
@@ -112,7 +128,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             if parts == ['api', 'platform']:
                 import platform
                 from loop_anything.capabilities import service_info
-                self.send({'service': service_info(), 'system': platform.system(), 'database': str(Path(store.filename).resolve()),
+                self.send({'workspace_id':engine.communication.settings()['instance_id'], 'service': service_info(), 'space':space, 'system': platform.system(), 'database': str(Path(store.filename).resolve()),
                            'keep_awake': power_status()})
             elif parts == ['api', 'catalog']:
                 self.send([dict(item, timeline_guide=timeline_guide) for item in store.catalog(query.get('include_archived')=='true')])
@@ -133,15 +149,18 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.send(platform_tools.call('list_runs',query))
             elif len(parts) == 3 and parts[:2] == ['api', 'runs']:
                 current = store.get(parts[2])
-                if current.get('operator_protocol'):
-                    from loop_anything.interfaces.agent_tasks import task_list
-                    current['agent_tasks'] = task_list(current, engine.timeline_runtime)
-                    for owner in current['agent_sessions']:
-                        wakeup = next((e for e in current['executions'] if e['id'] == owner.get('execution_id')), None)
-                        if wakeup and not wakeup['implementation'].get('command'):
-                            owner['tasks'] = task_list(current, engine.timeline_runtime, owner)['items']
+                from loop_anything.runtime.steward import expose_requests
+                expose_requests(current)
+                from loop_anything.interfaces.agent_tasks import task_list
+                current['agent_tasks'] = task_list(current, engine.timeline_runtime)
+                for owner in current['agent_sessions']:
+                    wakeup = next((e for e in current['executions'] if e['id'] == owner.get('execution_id')), None)
+                    if wakeup and not wakeup['implementation'].get('command'):
+                        owner['tasks'] = task_list(current, engine.timeline_runtime, owner)['items']
                 from loop_anything.runtime.timeline_plan import task_dependencies
-                current['task_dependencies'] = task_dependencies(current) if current.get('schema_version') == 2 else {}
+                current['task_dependencies'] = task_dependencies(current)
+                from loop_anything.runtime.timelines import public_status
+                current['status']=public_status(current)
                 self.send(current)
             elif len(parts) == 4 and parts[:2] == ['api', 'runs'] and parts[3] == 'artifact':
                 from loop_anything.packaging.packages import load_installed
@@ -162,7 +181,9 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                             raise Invalid('Invalid artifact field')
                     if schema.get('format') != 'file' or not isinstance(value, str):
                         raise Invalid('This output is not a declared file')
-                    _, package_root = load_installed(store.filename, run['loop_key'])
+                    from loop_anything.runtime.timelines import task_resources
+                    resource_key,_=task_resources(run,attempt['node'])
+                    _, package_root = load_installed(store.filename, resource_key)
                     directory = Path(attempt['implementation'].get('cwd') or package_root)
                     base = (directory if directory.is_absolute() else Path(package_root) / directory).resolve()
                     target = (base / value).resolve()
@@ -194,7 +215,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.send({'snapshot': run, 'execution_id': execution['id'], 'token': execution.get('token'),
                            'settings_revision': execution['settings_revision'], 'output_contract': node_for(run, execution['node'])['outputs']})
             else:
-                filename = {name: name for name in ('schedules.js', 'communication.js', 'communication.css', 'terminal.js', 'terminal.css', 'xterm.js', 'xterm-fit.js', 'xterm.css', 'app.js', 'notifications.js', 'lifecycle.js', 'loop_graph.js', 'flow_bridge.js', 'settings.js', 'forms.js', 'workspace.js', 'authoring.js', 'workspace.css', 'launch.js', 'task_history.js', 'style.css', 'graph.css', 'editor.js', 'editor.css', 'packages.js', 'library.js', 'library.css', 'navigation.js', 'run_library.js')}.get('/'.join(parts))
+                filename = {name: name for name in ('spaces.js', 'workbench.css', 'monitoring.js', 'monitoring.css', 'work.js', 'steward.js', 'schedules.js', 'communication.js', 'communication.css', 'terminal.js', 'terminal.css', 'xterm.js', 'xterm-fit.js', 'xterm.css', 'app.js', 'notifications.js', 'lifecycle.js', 'loop_graph.js', 'flow_bridge.js', 'settings.js', 'forms.js', 'workspace.js', 'authoring.js', 'workspace.css', 'launch.js', 'task_history.js', 'style.css', 'graph.css', 'editor.js', 'editor.css', 'packages.js', 'library.js', 'library.css', 'navigation.js', 'run_library.js')}.get('/'.join(parts))
                 if parts == ['']:
                     filename = 'index.html'
                 if not filename:
@@ -233,7 +254,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                     return
                 self.post(parts, body)
             except Conflict as exc:
-                self.send({'error': str(exc), **({'conflicts': exc.conflicts} if hasattr(exc, 'conflicts') else {})}, 409)
+                self.send({'error': str(exc)}, 409)
             except (Invalid, KeyError, TypeError, ValueError) as exc:
                 self.send({'error': str(exc)}, 400)
             except Exception:
@@ -241,6 +262,13 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.send({'error': 'Internal error; inspect engine console'}, 500)
 
         def post(self, parts, body):
+            if body.get('expected_workspace') is not None and body['expected_workspace']!=engine.communication.settings()['instance_id']:
+                raise Conflict('Request belongs to another platform workspace')
+            if parts==['api','spaces']:
+                if not self.personal_settings_allowed():
+                    self.send({'error':'Personal spaces can only be configured on the local service'},403);return
+                if set(body)!={'revision','change'} or type(body['revision']) is not int:raise Invalid('Supply configuration revision and change')
+                self.send({'space':space,'configuration':personal_spaces.configure(body['change'],body['revision']),'current_url':engine.web_url});return
             if len(parts) == 4 and parts[:2] == ['api', 'schedules']:
                 self.send(schedules.control(parts[2], parts[3], body))
                 return
@@ -305,17 +333,16 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             elif parts == ['api', 'publish']:
                 self.send(store.publish(body['loop_definition'],body['implementations']))
             elif parts == ['api', 'runs']:
-                self.send(store.create(body['key'], body['title'], body.get('inputs'), authorization=body.get('authorization', ''), acquire=body.get('acquire', False), bindings=body.get('bindings'), fallback_node=body.get('fallback_node'), global_agent_node=body.get('global_agent_node'), notification_command=body.get('notification_command'),notification_route=body.get('notification_route'),conversation_id=body.get('conversation_id'),chat_context=body.get('chat_context'),created_by=body.get('created_by')), 201)
+                self.send(PlatformTools(store).call('start_run', body), 201)
             elif len(parts) == 4 and parts[:2] == ['api', 'runs']:
                 run_id, action = parts[2:]
                 if action == 'request':
-                    from loop_anything.interfaces.agent_tasks import user_request
-                    result = user_request(store, run_id, body['text'], body.get('task_id'), body.get('operator_token'))
+                    result = platform_tools.call('submit_run_request', {
+                        'request_id': body['request_id'], 'run_id': run_id, 'operation': 'message',
+                        'message': body['text'], **{k: body[k] for k in ('created_by', 'chat_context', 'conversation_id', 'notification_route') if k in body}})
                 elif action == 'agent':
-                    from loop_anything.interfaces.agent_tasks import acquire, RunTools
-                    if body.get('operation') == 'acquire':
-                        result = acquire(store, run_id, body.get('task_id'))
-                    elif body.get('operation') == 'release_stopped':
+                    from loop_anything.interfaces.agent_tasks import RunTools
+                    if body.get('operation') == 'release_stopped':
                         from loop_anything.interfaces.agent_tasks import recover_owner
                         recover_owner(store, run_id, body['token'], body.get('confirmed_stopped'))
                         result = {'released': True}
@@ -332,14 +359,15 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                         result=PlatformTools(store).respond(body['tool'],arguments)
                         self.send(result, 200 if result['ok'] else 409 if result['error']['code'] == 'conflict' else 400)
                         return
-                elif action == 'tasks':
-                    from loop_anything.interfaces.agent_tasks import edit_tasks
-                    result = edit_tasks(store, run_id, body['changes'], body.get('revision'), body.get('operator_token'), body.get('preview', False), body.get('basis'))
-                elif action == 'settings':
-                    result = engine.change_settings(run_id, body['revision'], body['change'], body.get('operator_token'))
                 elif action == 'command':
-                    result = engine.command(run_id, body['action'], body.get('execution_id'),
-                                            **{k: body[k] for k in ('hook_firing', 'notification_id', 'operator_token') if k in body})
+                    if not body.get('operator_token'):
+                        from loop_anything.runtime.store import uid
+                        result = platform_tools.call('submit_run_request', {'request_id': body.get('request_id') or uid('control'),
+                            'operation': 'command', 'run_id': run_id,
+                            'arguments': {k: body[k] for k in ('action', 'hook_firing', 'notification_id') if k in body}})
+                    else:
+                        result = engine.command(run_id, body['action'], body.get('execution_id'),
+                                                **{k: body[k] for k in ('hook_firing', 'notification_id', 'operator_token') if k in body})
                 elif action == 'submit':
                     result = engine.submit(run_id, body['execution_id'], body['token'], body['envelope'])
                 elif action == 'event':
@@ -367,8 +395,8 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
     engine.platform_url = public_url or engine.web_url
     if initial_run is not None:
         try:
-            created = store.create(**initial_run)
-            print(json.dumps({'run_id': created['id'], 'package': initial_run['key']}, ensure_ascii=False), flush=True)
+            created = PlatformTools(store).call('start_run', initial_run)
+            print(json.dumps(created, ensure_ascii=False), flush=True)
         except Exception:
             server.server_close()
             engine.close()
@@ -376,6 +404,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
     from loop_anything.runtime.service_host import ServiceHost
     runtime=ServiceHost(engine,mailbox).start()
     print('Loop Anything workspace: http://127.0.0.1:%s' % server.server_port, flush=True)
+    print('Health check: ' + engine.web_url + '/api/health', flush=True)
     if host not in ('127.0.0.1', 'localhost'):
         print('Trusted workspace: http://<server-address>:%s' % server.server_port, flush=True)
     print('Database: ' + str(Path(store.filename).resolve()), flush=True)
@@ -383,7 +412,9 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
         print('WARNING: sleep protection unavailable: ' + protection.status()['error'], flush=True)
     if open_browser:
         import webbrowser
-        webbrowser.open('http://127.0.0.1:%s' % server.server_port)
+        try:target=personal_spaces.browser_url(personal_spaces.read()) if space=='local' else engine.web_url
+        except ValueError as exc:print(str(exc),flush=True)
+        else:webbrowser.open(target)
     print('Local engine active. Keep this process running; Ctrl+C exits.', flush=True)
     try:
         server.serve_forever()

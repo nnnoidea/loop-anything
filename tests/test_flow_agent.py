@@ -1,3 +1,4 @@
+from tests.runtime_fixture import runtime_run
 """A discovered flow recipe decides, hands off a durable wait, and returns on evidence."""
 import os
 import tempfile
@@ -48,7 +49,7 @@ class FlowAgentTests(unittest.TestCase):
 
     def start(self, completion=None):
         key = self.platform.call('publish_loop', {'draft_id': self.draft['draft_id'], 'revision': self.draft['revision']})['key']
-        started = self.platform.call('start_run', {'key': key, 'title': 'Existing Skill', 'authorization': 'Isolated test'})
+        started = runtime_run(self.platform.store, {'key': key, 'title': 'Existing Skill', 'authorization': 'Isolated test'})
         self.run_id = started['run_id']
         tools = RunTools(self.store, self.run_id, started['token'])
         settings = {'objective': 'Wait for evidence then decide'}
@@ -58,7 +59,7 @@ class FlowAgentTests(unittest.TestCase):
 
     def complete(self, tools, task_id, outputs, **envelope):
         info = tools.call('read_task', {'task_id': task_id})
-        args = dict(task_id=task_id, task_version=info['task_version'], report_id='complete:' + task_id,
+        args = dict(task_id=task_id, report_id='complete:' + task_id,
                     event='completed', envelope=dict(outputs=outputs, **envelope))
         receipt = tools.call('report_task', args)
         self.assertTrue(receipt['accepted'])

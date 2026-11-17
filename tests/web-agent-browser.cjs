@@ -1,119 +1,61 @@
-// A real local command chats through HTTP tools; no model, external account or user DB.
-const assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path'),net=require('node:net');
+// Isolated Chrome acceptance for delegated startup and steward replacement. No model calls.
+const assert=require('node:assert/strict');
 const {spawn,execFileSync}=require('node:child_process');
-const {chromium}=require('playwright');
+const fs=require('node:fs');
+const path=require('node:path');
+const os=require('node:os');
+const root=fs.mkdtempSync(path.join(os.tmpdir(),'loop-steward-browser-'));
+const setup="import json,os,sys\nfrom pathlib import Path\nfrom loop_anything.runtime.store import Store\nfrom loop_anything.runtime.engine import Engine\nfrom loop_anything.interfaces.platform_tools import PlatformTools\nroot=Path(sys.argv[1]);store=Store(root/'workspace.sqlite3');engine=Engine(store);tools=PlatformTools(store)\ncode=\"\"\"import json,sys\nfrom loop_anything.interfaces.agent_tasks import RunTools\nfrom loop_anything.runtime.store import Store\nc=json.loads(sys.stdin.read().split('Run context:'+chr(10),1)[1]);t=RunTools(Store(sys.argv[1]),c['run_id'],c['token'])\ndef complete(task, outputs, **envelope):\n i=t.call('read_task',{'task_id':task});t.call('report_task',{'task_id':task,'event':'completed','report_id':task,'envelope':dict(outputs=outputs,**envelope)})\nstate=t.call('read_timeline',{})\nif not t.call('read_run',{})['run']['initialized']:\n complete('initialize',{},settings={'objective':'Browser test'})\n t.call('read_timeline',{});t.call('add_task',{'key':'wait','node_id':'work','inputs':{}})\nif c['steward_request']['operation']=='edit_tasks':\n t.call('read_timeline',{});t.call('edit_tasks',c['steward_request']['arguments'])\ncomplete(c['task_id'],{'decision':{'answer':'Startup and management verified'}});t.call('finish',{})\n\"\"\"\nfor ident in ['first','second']:\n tools.call('communication_config',{'operation':'agent','agent_id':ident,'agent':{'name':ident,'description':'Browser test steward','local':True,'implementation':{'kind':'agent','cwd':str(Path.cwd()),'command':[sys.executable,'-c',code,store.filename]}}})\nd=tools.call('create_loop',{'name':'Browser steward workflow'})\nd=tools.call('set_loop',{'draft_id':d['draft_id'],'revision':d['revision'],'handbook':'Initialize and wait for results.'})\nd=tools.call('put_node',{'draft_id':d['draft_id'],'revision':d['revision'],'node_id':'work','instructions':'Wait for the user event','outputs':[]})\nd=tools.call('set_implementation',{'draft_id':d['draft_id'],'revision':d['revision'],'node_id':'work','kind':'event','event':'ready','wait':{'key':'ready'}})\nkey=tools.call('publish_loop',{'draft_id':d['draft_id'],'revision':d['revision']})['key'];print(key);engine.close()\n";
+fs.writeFileSync(path.join(root,'setup.py'),setup);
+const database=path.join(root,'workspace.sqlite3');
+const env={...process.env,PYTHONPATH:process.cwd()+path.delimiter+(process.env.PYTHONPATH||''),PYTHONDONTWRITEBYTECODE:'1',LOOP_ANYTHING_IDENTITY_DIR:path.join(root,'identity')};
+const args=['-m','loop_anything','--db',database,'serve','--port','0','--allow-sleep'];
+const children=new Set();
+function processStart(program,args){const child=spawn(program,args,{env,stdio:['ignore','pipe','pipe']});children.add(child);child.on('exit',()=>children.delete(child));child.stdout.setEncoding('utf8');child.stderr.setEncoding('utf8');return child;}
+async function until(check){for(let i=0;i<150;i++){const result=await check();if(result)return result;await new Promise(r=>setTimeout(r,100));}throw new Error('Timed out');}
+async function startServer(){const child=processStart('python3',args);let output='';child.stdout.on('data',s=>output+=s);child.stderr.on('data',s=>output+=s);const url=await until(()=>{assert.equal(child.exitCode,null,output);return output.match(/Loop Anything workspace: (http:\/\/127\.0\.0\.1:\d+)/)?.[1];});return [child,url];}
+function stop(child){if(child.exitCode!==null)return;return new Promise(resolve=>{child.once('exit',resolve);child.kill();});}
+function register(id,definition){const file=path.join(root,id+'.json');fs.writeFileSync(file,JSON.stringify(definition));execFileSync('python3',['-m','loop_anything','client','local','--root',database+'.schedules','register',file,'--id',id],{env});}
 (async()=>{
- const root=fs.mkdtempSync(path.join(os.tmpdir(),'loop-web-agent-ui-')),db=path.join(root,'runs.db'),agent=path.join(root,'agent.py');
- const seed=`import sys,json
-sys.path.insert(0,'tests')
-from test_run_agent import definition
-from test_web_agent import AGENT
-from loop_anything.runtime.store import Store
-bp,impl=definition();bp['name']='训练方案 · 网页协作验收'
-bp['nodes']['init']['label']='确认训练目标';bp['nodes']['script']['label']='提交训练'
-bp['defaults']={'request':'比较本地与远端的训练结果'}
-bp['nodes']['init']['inputs']={'request':{'type':'string','nonempty':True}};bp['seed']['inputs']={'request':{'run':'request'}}
-bp['guide']={'purpose':'先讨论目标和运行方式，再开始训练。','parameters':{'request':{'label':'训练目标'}}}
-impl['script']={'default':'local','options':{n:{'kind':'command','command':[sys.executable,'-c','import json;print(json.dumps({"outputs":{"result":%r}}))'%n]} for n in ('local','remote')}}
-open(sys.argv[2],'w').write(AGENT.replace("mode=sys.argv[1]", "mode='start' if c['start_requested'] else 'edit' if c['run_id'] else 'discuss'"))
-print(Store(sys.argv[1]).publish(bp,impl)['key'])`;
- const key=execFileSync('python3',['-c',seed,db,agent],{encoding:'utf8',env:{...process.env,PYTHONPYCACHEPREFIX:path.join(root,'pycache')}}).trim();
- const probe=net.createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r));
- const server=spawn('python3',['-m','loop_anything','--db',db,'serve','--port',String(port)],{env:{...process.env,PYTHONUNBUFFERED:'1',PYTHONPYCACHEPREFIX:path.join(root,'pycache')},stdio:['ignore','pipe','pipe']});
- let browser;
- try{
-  await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('Server startup timeout')),10000);server.stdout.on('data',d=>{if(String(d).includes('workspace:')){clearTimeout(timer);resolve();}});server.on('exit',c=>{clearTimeout(timer);reject(new Error('Server exited '+c));});});
-  browser=await chromium.launch({headless:true,channel:'chrome'});const page=await browser.newPage({viewport:{width:1720,height:1100}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
-  const url='http://127.0.0.1:'+port,get=async p=>(await (await page.request.get(url+'/api/'+p)).json());
-  await page.goto(url+'/#loop_definitions');await page.locator('#catalog-cards [data-create]').click();
-  await page.locator('#launch-page').waitFor({state:'visible'});
-  const firstPrep=page.url();
-  const originalCatalog=await get('catalog');
-  await page.locator('#preparation-flow [data-map-node="script"]').click();
-  const picker=page.locator('#preparation-flow [data-map-details="script"]');
-  assert.equal(await picker.locator('[data-candidate]').count(),2);
-  await picker.locator('[data-candidate="remote"] summary').filter({hasText:'查看命令与配置'}).click();
-  assert((await picker.locator('[data-candidate="remote"] pre').innerText()).includes('remote'));
-  await picker.locator('[data-candidate="remote"] [data-map-choice]').click();
-  assert((await page.locator('#preparation-flow [data-map-node="script"]').innerText()).includes('remote'));
-  assert.equal(await page.locator('#launch-bindings').count(),0);
-  // Preserve inherited and deliberately unbound states as well as explicit selection.
-  await picker.locator('[data-choice="null"]').click();
-  assert((await page.locator('#preparation-flow [data-map-node="script"]').innerText()).includes('尚未选用'));
-  await picker.locator('[data-choice=""]').click();
-  assert((await page.locator('#preparation-flow [data-map-node="script"]').innerText()).includes('local'));
-  await picker.locator('[data-candidate="remote"] [data-map-choice]').click();
-  assert.deepEqual(await get('catalog'),originalCatalog);
+ const key=execFileSync('python3',[path.join(root,'setup.py'),root],{env}).toString().trim();
+ const [server,url]=await startServer();
+ const chrome=processStart(process.env.CHROME_BIN||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',['--headless','--no-first-run','--no-default-browser-check','--disable-background-networking','--remote-debugging-port=0',`--user-data-dir=${path.join(root,'chrome')}`]);
+ let log='';chrome.stderr.on('data',s=>log+=s);
+ const port=await until(()=>{assert.equal(chrome.exitCode,null,log);return log.match(/DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)/)?.[1];});
+ const tabs=await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+ const ws=new WebSocket(tabs.find(t=>t.type==='page').webSocketDebuggerUrl);
+ await new Promise((resolve,reject)=>{ws.addEventListener('open',resolve,{once:true});ws.addEventListener('error',reject,{once:true});});
+ let seq=0;const pending=new Map(),exceptions=[];
+ ws.addEventListener('message',({data})=>{const msg=JSON.parse(data);if(msg.id){const [ok,fail]=pending.get(msg.id);pending.delete(msg.id);msg.error?fail(new Error(msg.error.message)):ok(msg.result);}if(msg.method==='Runtime.exceptionThrown')exceptions.push(msg.params.exceptionDetails);});
+ function send(method,params={}){return new Promise((resolve,reject)=>{const id=++seq;pending.set(id,[resolve,reject]);ws.send(JSON.stringify({id,method,params}));});}
+ async function evaluate(expression){const reply=await send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});if(reply.exceptionDetails)throw new Error(JSON.stringify(reply.exceptionDetails));return reply.result.value;}
+ await send('Runtime.enable');await send('Page.navigate',{url});
+ await until(()=>evaluate(`document.readyState==='complete' && catalog.length>0`));
+ await evaluate(`openCreate(${JSON.stringify(key)})`);
+ await evaluate(`document.querySelector('#launch-start').click()`);
+ await until(()=>evaluate(`document.querySelector('#launch-error').textContent.includes('请选择运行管家')`));
+ assert.equal(await evaluate(`document.querySelector('#create-dialog').open`),true);
+ await evaluate(`document.querySelector('#launch-steward').value='first';document.querySelector('#launch-start').click()`);
+ await until(()=>evaluate(`!!document.querySelector('#run-steward') && !document.querySelector('#run-steward').hidden`));
+ await until(()=>evaluate(`Object.values(run.steward_requests).some(r=>r.operation==='start'&&r.status==='completed')`));
+ assert.ok(await evaluate(`document.querySelector('#run-steward').textContent.includes('first')`));
+ await until(()=>evaluate(`Object.values(run.tasks).some(t=>t.spec.node==='work' && t.status==='waiting')`));
+ await evaluate(`openTaskEdit('cancel',Object.values(run.tasks).find(t=>t.spec.node==='work').id)`);
+ assert.equal(await evaluate(`document.querySelector('#task-edit-submit').textContent`),'提交给管家');
+ await evaluate(`document.querySelector('#task-edit-reason').value='Stop the test wait';document.querySelector('#task-edit-submit').click()`);
+ await until(()=>evaluate(`Object.values(run.tasks).some(t=>t.spec.node==='work' && t.status==='cancelled')`));
+ assert(await evaluate(`Object.values(run.steward_requests).some(r=>r.operation==='edit_tasks')`));
 
-  await page.locator('#create-title').fill('远端训练准备');
-  await page.locator('#web-chat-input').fill('尚未发送的想法');
-  await page.locator('#loop_definitions-nav').click();
-  await page.locator('#catalog-cards [data-create]').click();
-  await page.waitForURL(u=>u.hash.startsWith('#prepare/')&&u.href!==firstPrep);
-  await page.locator('#launch-page').waitFor({state:'visible'});
-  const secondPrep=page.url();assert.notEqual(firstPrep,secondPrep);
-  await page.locator('#create-title').fill('另一个准备页');
-  await page.locator(`#preparation-list a[href="${new URL(firstPrep).hash}"]`).click();
-  await page.waitForFunction(()=>document.querySelector('#create-title').value==='远端训练准备');
-  assert.equal(await page.locator('#web-chat-input').inputValue(),'尚未发送的想法');
-  await page.reload();await page.locator('#launch-page').waitFor({state:'visible'});
-  assert.equal(await page.locator('#preparation-list a').count(),2);
-  assert.equal((await get('runs')).length,0);
-  await page.locator('#web-agent-command').fill('python3\n'+agent);
-  await page.locator('#web-agent-prompt summary').click();
-  const template='作者网页入口\nWeb context:\n{{context}}';
-  await page.locator('#web-agent-prompt [data-agent-prompt]').fill(template);
-  await page.locator('#web-agent-prompt [data-prompt-preview]').click();
-  await page.locator('#prompt-preview').waitFor({state:'visible'});
-  const preview=await page.locator('#prompt-preview pre').innerText();
-  const context=JSON.parse(preview.split('Web context:\n')[1]);
-  assert.equal(context.run_id,null);assert(context.tool_url.includes('[运行时生成]'));
-  assert.equal((await get('runs')).length,0);
-  await page.locator('#prompt-preview button').click();
-  await page.locator('#web-agent-prompt [data-prompt-reset]').click();
-  const defaults=await get('agent-prompts');assert.equal(await page.locator('#web-agent-prompt [data-agent-prompt]').inputValue(),defaults.web);
-  await page.locator('#web-agent-prompt [data-agent-prompt]').fill(template);
-
-  await page.locator('#web-chat-input').fill('训练使用远端实现，先讨论，不启动。');await page.locator('#web-chat-send').click();
-  await page.locator('.chat-message.assistant').filter({hasText:'还没有启动'}).waitFor();
-  assert.equal((await get('runs')).length,0);
-  await page.waitForFunction(()=>document.querySelector('#preparation-flow [data-map-node="script"] .map-current-implementation').textContent.includes('remote'));
-  const prepURL=page.url();await page.reload();await page.locator('.chat-message.assistant').filter({hasText:'还没有启动'}).waitFor();
-  assert((await page.locator('#preparation-flow [data-map-node="script"] .map-current-implementation').innerText()).includes('remote'));
-  assert.equal(await page.locator('#web-agent-command').inputValue(),'python3\n'+agent);
-  assert.equal(await page.locator('#web-agent-prompt [data-agent-prompt]').inputValue(),template);
-  await page.locator('.chat-message.assistant .prompt-history summary').click();
-  const history=await page.locator('.chat-message.assistant .prompt-history pre').innerText();
-  assert.equal(JSON.parse(history.split('Web context:\n')[1]).tool_url.split('/').at(-1),'[REDACTED]');
-
-  await page.locator('#preparation-flow [data-map-node="script"]').click();
-  await page.screenshot({path:path.join(root,'preparation-desktop.png'),fullPage:true});
-  await page.setViewportSize({width:390,height:844});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1));
-  await page.screenshot({path:path.join(root,'preparation-mobile.png'),fullPage:true});await page.setViewportSize({width:1720,height:1100});
-  await page.locator('#launch-review').click();await page.locator('#launch-ack').check();await page.locator('#launch-start').click();
-  await page.waitForURL(/#run\//);await page.locator('.chat-message.assistant').filter({hasText:'已启动并初始化'}).waitFor();
-  const rows=await get('runs');assert.equal(rows.length,1);const id=rows[0].id;
-  await page.waitForFunction(()=>document.querySelectorAll('#preparation-list a').length===1);
-  await page.locator(`#preparation-list a[href="${new URL(secondPrep).hash}"]`).click();
-  await page.waitForFunction(()=>document.querySelector('#create-title').value==='另一个准备页');
-  await page.locator(`[data-run="${id}"]`).click();await page.waitForURL(/#run\//);await page.locator('#run-chat-host #web-chat-input').waitFor({state:'visible'});
-  for(let i=0;i<100;i++){const r=await get('runs/'+id);if(r.executions.some(e=>e.outputs?.result==='remote'))break;await page.waitForTimeout(100);if(i===99)throw new Error('Remote candidate did not run');}
-  await page.locator('#web-chat-input').fill('把当前指导修改为用户要求修改。');await page.locator('#web-chat-send').click();
-  await page.locator('.chat-message.assistant').filter({hasText:'已修改本次运行'}).waitFor();assert.equal((await get('runs/'+id)).settings.guidance,'用户要求修改');
-  assert.equal((await get('runs')).length,1);
-  await page.waitForFunction(()=>/^\d+%$/.test(document.querySelector('#graph-scale')?.textContent));await page.evaluate(()=>window.scrollTo(0,0));
-  await page.screenshot({path:path.join(root,'run-desktop.png'),fullPage:true});
-  // Completed notice is derived from the same Run, including changes made outside this page.
-  const tool=async(tool,arguments={})=>{const res=await page.request.post(url+'/api/tools',{headers:{'X-Loop-Anything':'workspace'},data:{tool,arguments}});const r=await res.json();assert(r.ok,JSON.stringify(r));return r;};
-  const o=await tool('acquire_run',{run_id:id}),r=await tool('read_timeline',{run_id:id,token:o.token});
-  await tool('change_settings',{run_id:id,token:o.token,revision:r.settings.revision,change:{termination_signal:'网页流程验收完成'}});await tool('finish',{run_id:id,token:o.token});
-  await page.locator('#web-chat-notices').filter({hasText:'运行已完成'}).waitFor();
-  await page.setViewportSize({width:390,height:844});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1));await page.screenshot({path:path.join(root,'run-mobile.png'),fullPage:true});
-  await page.goto(prepURL);await page.waitForURL(/#run\//);assert.equal((await get('runs')).length,1);await page.goto(url+'/#loop/'+encodeURIComponent(key));await page.locator('#loop-detail [data-map-node="script"]').click();
-  await page.locator('#loop-detail [data-map-details="script"] [data-candidate="remote"] [data-prepare-choice]').click();
-  await page.waitForURL(/#prepare\//);await page.locator('#launch-page').waitFor({state:'visible'});
-  assert((await page.locator('#preparation-flow [data-map-node="script"]').innerText()).includes('remote'));
-  assert.equal((await get('runs')).length,1);assert.deepEqual(await get('catalog'),originalCatalog);assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({ok:true,database:db,screenshots:root,run_id:id,real_model_calls:0}));
- }finally{if(browser)await browser.close();server.kill('SIGTERM');await new Promise(r=>server.exitCode!==null?r():server.once('exit',r));}
-})().catch(e=>{console.error(e);process.exitCode=1;});
+ await evaluate(`document.querySelector('[data-steward-requests]').click()`);
+ await until(()=>evaluate(`document.querySelector('#detail-dialog').open && document.querySelector('#detail-content').textContent.includes('Startup and management verified')`));
+ await evaluate(`document.querySelector('#detail-dialog').close();document.querySelector('[data-steward-switch]').click()`);
+ await until(()=>evaluate(`!!document.querySelector('#steward-select')`));
+ await evaluate(`document.querySelector('#steward-select').value='second';document.querySelector('#steward-confirm').click()`);
+ await until(()=>evaluate(`run.steward.agent_id==='second' && run.steward.generation===2`));
+ await until(()=>evaluate(`Object.values(run.steward_requests).every(r=>r.status==='completed')`));
+ assert.deepEqual(exceptions,[]);
+ const screenshot=await send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(root,'steward.png'),Buffer.from(screenshot.data,'base64'));
+ ws.close();await stop(server);await stop(chrome);
+ console.log('Chrome passed managed startup, request results, fresh-session takeover and page rendering.');
+ console.log(path.join(root,'steward.png'));
+})().catch(e=>{console.error(e);process.exitCode=1;for(const child of children)child.kill();});

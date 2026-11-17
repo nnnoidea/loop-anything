@@ -1,3 +1,4 @@
+from tests.runtime_fixture import update_work
 """Batch construction and real scheduling; no model calls or fake completion."""
 import copy
 import sys
@@ -30,10 +31,10 @@ def definition():
                               'inputs': {'data': {'from': 'prepare', 'port': 'data'},
                                          'experiment': {'literal': {'$': 'item'}}}},
                           'judge': {'node': 'judge', 'inputs': {'results': {'from': 'train', 'port': 'result', 'collect': True}}}}}})
-    script = "import json,sys; r=json.load(sys.stdin); print(json.dumps({'outputs': {'data': 'fresh'}} if r['timeline']['tasks'][r['task_id']]['spec']['node']=='prepare' else {'outputs': {'result': r['inputs']['data']+':'+r['inputs']['experiment']}}))"
-    implementations = {n: {'kind': 'agent'} for n in bp['nodes']}
+    script = "import json,sys; r=json.load(sys.stdin); print(json.dumps({'event':'completed','envelope':{'outputs': {'data': 'fresh'}}} if r['timeline']['tasks'][r['task_id']]['spec']['node']=='prepare' else {'event':'completed','envelope':{'outputs': {'result': r['inputs']['data']+':'+r['inputs']['experiment']}}}))"
+    implementations = {n: {'options': {'default': {'kind': 'agent'}}, 'default': 'default'} for n in bp['nodes']}
     for n in ('prepare', 'train'):
-        implementations[n] = {'kind': 'command', 'command': [sys.executable, '-c', script]}
+        implementations[n] = {'options': {'default': {'kind': 'command', 'command': [sys.executable, '-c', script]}}, 'default': 'default'}
     return bp, implementations
 
 
@@ -61,12 +62,10 @@ class PlanTests(unittest.TestCase):
         run = self.store.get(self.run_id)
         owner = next((o for o in run['agent_sessions'] if o.get('task_id') == task_id), None)
         worker = RunTools(self.store, self.run_id, owner['token']) if owner else original
-        if 'task_sets' in next(o for o in run['agent_sessions'] if o['token'] == worker.token).get('observed', {}):worker.call('next_tasks', {})
-        task = worker.call('read_task', {'task_id': task_id})
         envelope = {'outputs': outputs}
         if settings is not None:
             envelope['settings'] = dict(settings, completion_rule={'op': 'and', 'args': [{'op': 'ge', 'args': [{'path': ['completed', 'judge']}, 1]}, {'op': 'eq', 'args': [{'path': 'active_tasks'}, 0]}]})
-        result = worker.call('complete_task', {'task_id': task_id, 'task_version': task['task_version'], 'envelope': envelope})
+        result = worker.call('report_task', {'event':'completed','report_id':'complete','task_id': task_id, 'envelope': envelope})
         if worker.token != original.token:worker.call('finish', {})
         return result
 
@@ -111,7 +110,7 @@ class PlanTests(unittest.TestCase):
         self.assertFalse(self.tools.respond('build_plan', args)['ok'])
         self.assertEqual(self.store.get(self.run_id)['tasks'], before['tasks'])
         args['steps'] = {'train': {'inputs': {'data': {'record': 'cached'}}}}
-        preview = edit_tasks(self.store, self.run_id, [{'tool': 'build_plan', 'arguments': args}], before['revision'], self.e['token'], preview=True)
+        preview = edit_tasks(self.store, self.run_id, [{'tool': 'build_plan', 'arguments': args}], token=self.e['token'],  preview=True)
         self.assertEqual(preview['omitted'][0]['reason'], 'condition_false')
         self.assertEqual(self.store.get(self.run_id), before)
         result = self.tools.call('build_plan', args)
@@ -136,7 +135,7 @@ class PlanTests(unittest.TestCase):
         self.start()
         args = {'name': 'round', 'key': 'empty', 'values': {'experiments': ['a'], 'enabled': False}}
         before = self.store.get(self.run_id)
-        preview = edit_tasks(self.store, self.run_id, [{'tool': 'build_plan', 'arguments': dict(args, parent_id='')}], before['revision'], preview=True)
+        preview = edit_tasks(self.store, self.run_id, [{'tool': 'build_plan', 'arguments': dict(args, parent_id='')}],  preview=True)
         self.assertEqual([], preview['changes'])
         self.assertEqual(self.store.get(self.run_id), before)
         result = self.tools.call('build_plan', args)
@@ -227,7 +226,7 @@ class PlanTests(unittest.TestCase):
         self.assertNotIn('remove_skip', names)
 
     def test_aggregate_waits_for_last_committed_result(self):
-        self.implementations['train'] = {'kind': 'agent'}
+        self.implementations['train'] = {'options': {'default': {'kind': 'agent'}}, 'default': 'default'}
         self.start()
         self.tools.call('build_plan', {'name': 'round', 'key': 'join', 'values': {'experiments': ['a', 'b']},
             'steps': {'prepare': {'skip': True}, 'train': {'inputs': {'data': {'record': 'cached'}}}}})
@@ -258,15 +257,15 @@ class PlanTests(unittest.TestCase):
         self.tools.call('build_plan', {'name': 'round', 'key': 'allowed', 'values': {'experiments': ['a']}})
         self.assertEqual(4, len(self.store.get(self.run_id)['tasks']))
 
-    def test_public_writer_requires_revision_and_rolls_back_budget_failure(self):
+    def test_public_writer_rolls_back_budget_failure(self):
         self.bp['limits'] = {'max_tasks': 2}
         self.start()
         run = self.store.get(self.run_id)
         changes = [{'tool': 'build_plan', 'arguments': {'name': 'round', 'key': 'user', 'values': {'experiments': ['a']}}}]
-        with self.assertRaises(Conflict):
-            edit_tasks(self.store, self.run_id, changes, 0)
         with self.assertRaises(Invalid):
-            edit_tasks(self.store, self.run_id, changes, run['revision'], self.e['token'])
+            edit_tasks(self.store, self.run_id, changes)
+        with self.assertRaises(Invalid):
+            edit_tasks(self.store, self.run_id, changes, token=self.e['token'])
         self.assertEqual(run, self.store.get(self.run_id))
 
     def test_agent_previews_composed_plan_then_commits_followup_atomically(self):
@@ -281,7 +280,7 @@ class PlanTests(unittest.TestCase):
                     'values': {'experiments': ['a', 'b'], 'fresh': False, 'options': {'batch': 4, 'rate': .1}},
                     'steps': {'train': {'implementation': 'default', 'parameters': {'batch': 8},
                                         'inputs': {'data': {'record': 'cached'}}}}}}]
-        args = dict(auth, revision=before['revision'], changes=changes, preview=True)
+        args = dict(auth,  changes=changes, preview=True)
         preview = platform.call('edit_tasks', args)
         self.assertEqual(self.store.get(self.run_id), before)
         tasks = [c['after']['spec'] for c in preview['changes']]
@@ -302,19 +301,19 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(len(after['tasks']), 5)
         self.assertTrue(all('agent' in t['origin'] for key, t in after['tasks'].items() if key != 'init'))
         self.assertEqual(after['executions'], before['executions'])
-        with self.assertRaises(Conflict):platform.call('edit_tasks', dict(args, preview=False))
+        platform.call('edit_tasks', dict(args, preview=False))
+        self.assertEqual(after,self.store.get(self.run_id))
         invalid = [{'tool': 'add_task', 'arguments': {'key': 'rollback', 'node_id': 'prepare', 'inputs': {}}},
                    {'tool': 'add_task', 'arguments': {'key': 'invalid', 'node_id': 'missing', 'inputs': {}}}]
         with self.assertRaises(Invalid):
-            platform.call('edit_tasks', dict(auth, revision=after['revision'], changes=invalid))
+            platform.call('edit_tasks', dict(auth,  changes=invalid))
         self.assertEqual(after, self.store.get(self.run_id))
         with self.assertRaises(Conflict):
-            platform.call('edit_tasks', dict(args, token='expired', revision=after['revision']))
+            platform.call('edit_tasks', dict(args, token='expired'))
         with self.store.edit(self.run_id) as run:
             run['agent_sessions'] = []
         with self.assertRaises(Conflict):
-            RunTools(self.store, self.run_id).call('edit_tasks', {'revision': self.store.get(self.run_id)['revision'],
-                                                               'changes': changes, 'preview': True})
+            RunTools(self.store, self.run_id).call('edit_tasks', {'changes': changes, 'preview': True})
 
     def test_parameter_overrides_do_not_require_replaced_template_values(self):
         self.bp['plans']['round']['steps']['train']['parameters'] = {'batch': {'$': 'values.absent'}, 'rate': .1}
@@ -331,7 +330,7 @@ class PlanTests(unittest.TestCase):
         self.tools.call('build_plan', {'name': 'round', 'key': 'reuse', 'values': {'experiments': ['a']},
             'steps': {'prepare': {'skip': True}, 'train': {'inputs': {'data': {'record': 'cached'}}}}})
         self.commit()
-        self.engine.change_settings(self.run_id, 1, {'guidance': 'New intent'}, self.e['token'])
+        update_work(self.store,self.run_id,{'constraints':'New intent'})
         self.engine.tick(self.run_id)
         run = self.store.get(self.run_id)
         self.assertTrue(any(e['node'] == 'train' for e in run['executions']))
@@ -352,7 +351,8 @@ class PlanTests(unittest.TestCase):
             db.commit()
         with self.assertRaises(Invalid):
             self.engine.tick(run['id'])
-        self.assertEqual(run, self.store.get(run['id']))
+        with self.store.connection() as db:
+            self.assertEqual(run, json.loads(db.execute('SELECT document FROM runs WHERE id=?',(run['id'],)).fetchone()[0]))
 
 
 if __name__ == '__main__':

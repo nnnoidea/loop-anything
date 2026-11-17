@@ -81,10 +81,10 @@ Return delivered=true only after the external interface confirms success, not af
 ## Triggers, failures, and retries
 
 - Scripts/agents can notify proactively; authors configure transition notifications, users configure before/after/transition hooks.
-- Normal Engine completion generates one completion notification. Without an outlet or legacy command, use the platform notification area. User terminate is not successful completion.
+- Normal Engine completion generates one completion notification. Without an outlet or explicit notification command, use the platform notification area. User terminate is not successful completion.
 - Pause after three consecutive agent failures uses the same outlet, without waking a model to send it.
 - New notifications pin the outlet/send configuration when queued. Later changes affect only new notifications; retries retain the destination. Missing configuration becomes waiting_configuration, requiring explicit retry after setup; it is not runtime unexpected and does not wake fallback. Historical notices pin configuration on first send.
-- retry_notification takes run_id and notification_id, plus token if holding global scope. It can retry after Run completion without reopening the Run.
+- Clients submit a Run request with operation="command", arguments={action:"retry_notification",notification_id:ID}. Runtime Agents use command with their supplied identity. It can retry after Run completion without reopening the Run.
 - Timeout may mean delivery occurred but the receipt was lost. Verify before retrying; adapters can use notification IDs as idempotency keys when supported. Cross-system exactly-once delivery is not promised.
 
 Adapters need no chat history, duplicate Timeline, or separate agent scheduler. Actual failures preserve fault/receipts; all delivery records remain in the notification area for verification and explicit retry.

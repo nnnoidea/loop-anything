@@ -11,14 +11,14 @@ vm.runInContext(fs.readFileSync('loop_anything/web/loop_graph.js','utf8'),contex
 vm.runInContext(fs.readFileSync('loop_anything/web/navigation.js','utf8'),context);
 function run(code){return vm.runInContext(code,context);}
 test('routes round-trip versions, tabs, draft and Run identities with escaped keys',()=>{
-  for(const route of [{type:'catalog'},{type:'loop',key:'版本@1/a <b>',tab:'prepare'},{type:'editor',id:'draft-1'},{type:'editor',id:'draft-1',node:'训练/一'},{type:'editor',id:'draft-1',node:'训练/一',implementation:'远端/a'},{type:'run',id:'run-1'}]){
+  for(const route of [{type:'timelines'},{type:'timeline',id:'工作/一'},{type:'run-list'},{type:'monitors'},{type:'schedules'},{type:'communication',tab:'requests'},{type:'catalog'},{type:'loop',key:'版本@1/a <b>',tab:'prepare'},{type:'editor',id:'draft-1'},{type:'editor',id:'draft-1',node:'训练/一'},{type:'editor',id:'draft-1',node:'训练/一',implementation:'远端/a'},{type:'run',id:'run-1'}]){
     assert.deepEqual(JSON.parse(run(`JSON.stringify(parseRoute(routeHash(${JSON.stringify(route)})))`)),route);
   }
-  assert.equal(run("parseRoute('#run-legacy').id"),'run-legacy');
+  assert.equal(run("parseRoute('#run-legacy').type"),'home');
   assert.equal(run("parseRoute('#loop/a').tab"),'overview');
 });
 test('implementations and local readiness are separate; prose is never inferred',()=>{
-  assert.match(run("libraryCard({key:'x',loop_definition:{id:'x',version:'1',nodes:{a:{},b:{}}},implementations:{a:{kind:'agent'}}})"),/部分实现/);
+  assert.match(run("libraryCard({key:'x',loop_definition:{id:'x',version:'1',nodes:{a:{},b:{}}},implementations:{a:{options:{default:{kind:'agent'}},default:'default'}}})"),/部分实现/);
   assert.match(run("checkHTML({checks:[{kind:'runtime',status:'unknown'}]})"),/未验证/);
   assert.doesNotMatch(run("checkHTML({checks:[{kind:'runtime',status:'unknown'}]})"),/保证运行成功。<\/strong>/);
 });
@@ -26,10 +26,9 @@ test('all author text is escaped, including input source labels',()=>{
   const rendered=run("libraryCard({key:'<script>',loop_definition:{name:'<img onerror=x>',version:'1',guide:{purpose:'<script>x</script>'},nodes:{}},implementations:{}})");
   assert(!rendered.includes('<script>'));assert(rendered.includes('&lt;script&gt;'));
 });
-test('real commands marked simulated are still disclosed in v2',()=>{
-  assert.match(run("executionLabel({kind:'agent',command:['run'],simulation:'example'},2)"),/仍执行命令/);
-  assert.match(run("executionLabel({kind:'agent',command:['run'],simulation:'example'},1)"),/平台内置模拟/);
-  assert.match(run("executionLabel({kind:'agent',simulation:'example'},2)"),/等待外部提交/);
+test('real commands marked simulated are still disclosed',()=>{
+  assert.match(run("executionLabel({kind:'agent',command:['run'],simulation:'example'})"),/仍执行命令/);
+  assert.match(run("executionLabel({kind:'agent',simulation:'example'})"),/等待外部提交/);
 });
 test('execution and recovery descriptions follow dispatch and executor placement',()=>{
   const remote=run("executionLabel({kind:'agent',command:['codex'],executor:'worker-2'})");
@@ -38,7 +37,7 @@ test('execution and recovery descriptions follow dispatch and executor placement
   assert.match(named,/团队具名 Agent papers/);assert.doesNotMatch(named,/未配置自动命令/);
   assert.match(run("executionLabel({kind:'agent',dispatch:{location:'local',agent_id:'papers'}})"),/本服务具名 Agent/);
   assert.match(run("executionLabel({kind:'command',command:['script']})"),/平台所在机器/);
-  const fallback=run("fallbackSummary({loop_definition:{nodes:{repair:{}}},implementations:{repair:{kind:'agent',dispatch:{location:'group',agent_id:'papers'}}}},'repair')");
+  const fallback=run("fallbackSummary({loop_definition:{nodes:{repair:{}}},implementations:{repair:{options:{default:{kind:'agent',dispatch:{location:'group',agent_id:'papers'}}},default:'default'}}},'repair')");
   assert.match(fallback,/接单后执行/);assert.doesNotMatch(fallback,/只能等待外部 Agent/);
 });
 test('task execution badge follows Task selection and then its dispatched snapshot',()=>{

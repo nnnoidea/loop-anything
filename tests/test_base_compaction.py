@@ -12,7 +12,7 @@ from test_dispatch_transport import FakeBase, Client
 from loop_anything.runtime.engine import Engine
 from loop_anything.runtime.store import Store
 from loop_anything.runtime.dispatch import publish_results
-from loop_anything.runtime.model import Conflict
+from loop_anything.runtime.model import Conflict, Invalid
 from loop_anything.runtime.team_transport import core
 
 
@@ -48,7 +48,7 @@ class CompactBaseTests(unittest.TestCase):
         self.assertEqual(record['instance_id'],self.a.settings()['instance_id'])
 
     def test_results_stay_in_base_without_local_mirror_or_delete_permission(self):
-        self.agent();client=Client(self.root/'client');client.config={'team':self.team,'origin':'client-test'}
+        self.agent();client=Client(self.root/'client');client.config={'teams':{self.team['id']:self.team},'default_team':self.team['id'],'origin':'client-test'}
         created=client.submit({'agent_id':'a','message':'Give the full answer'})['request'];ident=created['id']
         calls=[];answer={'evidence':'完整证据，不压缩为摘要。'*5000}
         def worker(command,prompt,*a,**kw):
@@ -68,7 +68,7 @@ class CompactBaseTests(unittest.TestCase):
         self.assertEqual(self.media.get('results/'+ident+'.json')['result'],answer)
         row=self.b.get(ident)
         forged=core.envelope(dict(row,origin='client-test'),'result_read',{'receipt':'wrong'})
-        with self.assertRaises(Conflict):self.b.receive(forged)
+        with self.assertRaises(Invalid):self.b.receive(forged)
         packet=client.request_record(ident)
         with patch.object(self.media,'delete',side_effect=AssertionError('Automatic cloud deletion')):
             self.assertEqual(client.read(ident)['result'],answer)

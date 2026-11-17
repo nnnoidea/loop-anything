@@ -23,7 +23,7 @@ function renderV2Inspect(tab){
   if(tab==='records')return `<div class="task-card"><h2>结果记录</h2><p>只有正式完整提交的输出才会出现在这里。按记录身份保存版本、生产者和读取来源。</p></div>`+Object.entries(run.records).map(([id,versions])=>
     `<details class="task-card"><summary>${esc(id)} · ${esc(versions.at(-1).type)} · v${versions.length}</summary>${versions.slice().reverse().map(r=>`<p>v${r.revision} · <button data-exec="${esc(r.producer)}">查看生产执行</button></p><pre>${esc(pretty(r))}</pre>`).join('')}</details>`).join('');
   if(tab==='task-history')return renderTaskHistory();
-  const ended=!run.operator_protocol || ['completed','terminated'].includes(run.status);
+  const ended=['completed','terminated'].includes(run.status);
   return noticeScheduleHTML(run,run.settings.bindings||{})+run.settings.hooks.map(h=>`<details class="task-card"><summary>${esc(h.id)} · ${h.enabled===false?'已停用':'已启用'}</summary><pre>${esc(pretty(h))}</pre></details>`).join('')+run.hook_firings.filter(f=>f.status==='held').map(f=>`<div class="task-card">${esc(f.tasks)} · 暂停中 <button class="primary" data-release-gate="${esc(f.id)}" ${ended?'disabled':''}>放行本次工作</button></div>`).join('')+notificationCards();
 
 }

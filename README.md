@@ -1,71 +1,41 @@
 # Loop Anything
 
-**English** | [简体中文](README.zh-CN.md)
+**让 Agent 的长任务跨会话接着跑。**
 
-**Turn a long Skill into a workflow you can see, understand, and change.**
+今晚交给 Agent 一组实验，训练要跑几个小时。明早回来，你想直接知道：哪组跑完了？还在等什么？下一轮值得做什么？
 
-Research, training, analysis: an agent can handle each step. As the steps and iterations multiply, the whole process becomes harder to follow. Progress gets buried in conversations, one change affects pages of instructions, and the agent keeps rereading context and checking external jobs.
+Loop Anything 是给长程 Agent 任务用的工作台。平台保存进度、推进已安排的步骤，你已有的 Agent 在需要判断时接手。
 
-Loop Anything brings that process together through **visual workflows** and **Skills split by responsibility**. Bring your goal and an existing Skill; the platform Skill guides your agent through turning them into a Loop.
+[先看本地演示](#先看一个例子) · [接入你的 Agent](#安装平台)
 
-## See the whole workflow—and every step
+![三个长任务的断点：外部结果回来后按依赖推进；新会话连上同一平台后，从保存的工作进度接续；在工作台查看等待原因和结果，暂停检查后继续。](docs/images/agent-work-breakpoints.svg)
 
-See where agents make decisions, where scripts execute work, and how results reach the next step. During a run, progress, results, waiting, and failures have a place you can inspect.
+## 一场隔夜实验，谁来做什么？
 
-![Auto Research workflow and node details](docs/images/loop-overview.jpg)
+![Agent 先记录目标和预算、安排实验；平台执行步骤并观察训练；到决策点时 Agent 读取结果、安排下一步；平台继续执行并记录。](docs/images/agent-overnight-handoff.svg)
 
-*An actual Auto Research workflow view, shown with Chinese labels: eight nodes and two execution types. Select a node to inspect its purpose, implementation, and state transitions.*
+把任务交给平台后，当前会话可以结束。只要平台保持运行，它就会继续观察已接入的任务，并在配置的决策点唤醒 Agent。
 
-To change the workflow, point your agent to a node: **“Try a different approach here. Keep the rest.”**
+到了需要你确认的步骤，可以配置通知并等你放行。暂停会暂缓派发新步骤，已提交的训练仍由外部系统运行。
 
-## Split a long Skill into parts you can work on
+## 先看一个例子
 
-The platform Skill guides the building agent to separate responsibilities. Shared goals, constraints, and progression rules stay in the Loop handbook. Each node keeps its own methods, input/output contracts, and execution implementation.
+获取本仓库源码，在项目目录运行（Python 3.9+）：
 
-An example of how the instructions are organized:
-
-```mermaid
-flowchart TB
-    source["Existing long Skill"] --> builder["Platform Skill guides the building agent"]
-    builder --> loop["Loop handbook: shared goals, constraints and progression rules"]
-    loop -. read as needed .-> research["Research node<br/>Methods and decision criteria"]
-    loop -. read as needed .-> experiment["Experiment node<br/>Scripts and execution contracts"]
-    loop -. read as needed .-> analysis["Analysis node<br/>Interpretation and next steps"]
-    classDef agent fill:#eee9f7,stroke:#8061bc,color:#302244
-    classDef script fill:#e8f1f8,stroke:#367db5,color:#193b55
-    class research,analysis agent
-    class experiment script
+```sh
+python3 -m loop_anything --db ./.loop-anything/preview/preview.db serve --demo --port 8877
 ```
 
-**Understand, change, and verify each part on its own.** To change data preparation, focus on that node. Preserve its input/output contract and reuse the rest. Agents read the instructions relevant to their current task, reducing unrelated context, repeated instructions, and the risk of drift during long tasks.
+打开 [本地演示](http://127.0.0.1:8877/#loop_definitions)，沿着 **Loop 库 → Auto Research · 平台版 → 异步训练** 查看：数据从哪里来，训练结果怎样交给后续任务。
 
-Start with room for judgment: scripts and state machines handle known actions; a flow agent handles decisions that depend on the situation. After a few runs, you and your agent can turn stable paths into explicit rules.
+演示使用独立的预览数据库和模拟实现，无需配置模型或训练服务。预览期间保持终端运行。
 
-## Less busywork during long tasks
+## 安装平台
 
-![Four problems in long-running agent loops](docs/images/long-loop-pain-points.en.svg)
+按[安装指南](docs/installation.md)启动平台，把平台 Skill 加载到你常用的 Agent。挑一件经常需要等结果的工作，把它整理成可重复运行的流程，这就是 **Loop**。
 
-While training waits in a queue, the agent can finish its current work. The platform takes over with script checks or event waits, then advances the workflow when the condition is met. Progress and results remain available for subsequent tasks, reducing the time and tokens spent polling, rereading instructions, and rebuilding context.
+把任务说明和已有脚本发给 Agent，可以这样说：
 
-Work can also run on agents or scripts on other machines. When a task needs outside help, the collaboration result returns to the original workflow.
+> 用 Loop Anything 把这件事做成一个 Loop。让已有脚本跑批处理，等结果就绪后由你检查并给出下一步建议。下一批执行前等我确认。先给我一份可预览的草稿。
 
-## Start with the Skill you already have
-
-Give your agent this README, your Skill, and your goal:
-
-> Turn this Skill into a Loop. Split nodes by responsibility, draw the workflow and its relationships, and let the platform handle long waits. Keep decisions flexible where judgment is still needed; improve the workflow after it runs.
-
-- [Install and get started](docs/installation.md) (Chinese): let your agent set up the platform and Skills, or try a local preview.
-- [User guide](docs/user-guide.md) (Chinese): inspect progress and results, and control runs.
-- [Platform Skill](skills/loop-anything-platform/SKILL.md): construction and runtime guidance for your agent.
-- [Lightweight dispatch Skill](skills/loop-anything-dispatch/SKILL.md): send work to other agents without running the full platform.
-- [Developer guide](docs/development.md) (Chinese): development, tests, and distribution builds.
-
-## For the installation agent
-
-Loop Anything has two roles, which can share one machine:
-
-- **Server**: stores Loops and Runs, advances workflows, and provides the web interface.
-- **Client**: views, edits, and runs Loops through the server; also supports local task execution, receiving work, and personal scheduled or conditional jobs.
-
-**Before installing, ask the user which role this machine needs: server, client, or both.** Follow an existing explicit choice without asking again. Then use the [installation guide](docs/installation.md) to set up the chosen role and Skills. Receiving work and running local jobs require an explicit start; installation alone does not start them.
+[查看工作台使用说明](docs/user-guide.md) · [查看 Agent 接入说明](docs/agent-integration.md)

@@ -41,7 +41,7 @@ Interactive commands require at least one prompt placeholder. Long prompts are n
 
 - Interaction connects to the same running agent, not a new agent or another task owner.
 - Enter additional instructions or answer CLI questions directly. Ctrl+C is forwarded unchanged; the CLI determines its effect.
-- Use read_task, report_task/complete_task, and finish to submit results. Terminal text is not a business result.
+- Use read_task, report_task, and finish to submit results. Terminal text is not a business result.
 - After an interactive agent successfully calls finish, the platform stops that session's process group and saves output. Ordinary commands retain natural-exit behavior.
 - A completed terminal is inspection-only; do not send instructions to an agent that lost its operation identity. Continue through task orchestration; retry creates another attempt.
 - Configured timeout, platform shutdown, and unknown-process recovery still apply. Restart preserves output and marks old sessions interrupted; it does not automatically reconnect/resume vendor sessions or treat unknown side effects as success.

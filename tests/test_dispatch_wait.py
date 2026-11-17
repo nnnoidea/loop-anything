@@ -22,7 +22,7 @@ class DispatchWaitTests(TestCase):
 
     def test_wait_timeout_only_returns_last_status(self):
         with tempfile.TemporaryDirectory() as folder:
-            client=Client(Path(folder));client.config={'team':{'id':'team-wait','path':folder,'transport':'nas'}}
+            client=Client(Path(folder));client.config={'teams':{'team-wait':{'id':'team-wait','path':folder,'transport':'nas'}},'default_team':'team-wait'}
             with patch.object(client,'read',return_value={'id':'r','state':'running'}), \
                  patch.object(client,'control',side_effect=AssertionError('Must not cancel')), \
                  patch.object(client,'submit',side_effect=AssertionError('Must not republish')):

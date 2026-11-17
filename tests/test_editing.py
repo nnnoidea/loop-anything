@@ -55,22 +55,9 @@ class EditingTests(unittest.TestCase):
         self.assertNotIn('edit_protected', self.tools.call('read_loop', {'draft_id': draft['id']})['loop'])
         with self.assertRaises(Invalid):require_supported(['unknown_capability'])
 
-    def test_legacy_package_can_install_copy_edit_and_reexport_without_protection(self):
-        raw = self.legacy_package()
-        installed = install(self.store, raw)
-        self.assertEqual(install(self.store, raw)['key'], installed['key'])
-        original, root = load_installed(self.store.filename, installed['key'])
-        self.assertTrue(smoke(original, root)['package_valid'])
-        self.assertIn('edit_protection', original)  # Immutable package history remains exact.
-        draft = import_draft(self.store, raw)
-        edited = self.tools.call('put_asset', {'draft_id': draft['id'], 'revision': draft['revision'],
-                                             'path': 'notes.txt', 'content': 'updated instructions'})
-        copied = self.tools.call('copy_loop', {'key': installed['key'], 'new_version': True})
-        self.assertNotEqual(copied['revision'], 0)
-        import base64
-        exported = self.tools.call('export_loop', {'draft_id': edited['draft_id']})
-        doc, assets, _, _ = read_archive(base64.b64decode(exported['base64']))
-        self.assertNotIn('edit_protection', doc)
-        self.assertNotIn('loop_edit_protection', doc.get('requires', []))
-        self.assertNotIn('loop_edit_protection', doc['loop_definition'].get('requires', []))
-        self.assertEqual(assets['notes.txt'][0], b'updated instructions')
+    def test_retired_package_metadata_is_rejected_without_installing(self):
+        raw=self.legacy_package()
+        with self.assertRaises(Invalid):install(self.store,raw)
+        with self.assertRaises(Invalid):import_draft(self.store,raw)
+        with self.assertRaises(Invalid):require_supported(['loop_edit_protection'])
+        self.assertEqual(self.store.catalog(),[])

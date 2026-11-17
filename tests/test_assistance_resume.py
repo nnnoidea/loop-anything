@@ -22,7 +22,7 @@ NODE_CLI=r'''import json,sys
 from pathlib import Path
 from urllib.request import Request,urlopen
 state_path,mode,native,prompt=sys.argv[1:]
-c=json.loads(prompt);remote=c.get('kind')=='node_execution'
+c=json.loads(prompt.split('Run context:'+chr(10),1)[-1]);remote=c.get('kind')=='node_execution'
 if c.get('node_id')=='$flow_agent':assert c.get('flow_trigger',{}).get('event')=='completed','Flow trigger missing on this executor'
 def call(name,args):
  if not remote and name not in ('request_assistance','read_assistance'):args=dict(args,run_id=c['run_id'],token=c['token'])
@@ -39,7 +39,6 @@ if mode=='new':
  args={'location':'local','agent_id':'helper','message':'find paper'}
  if not remote:args.update(source={'run_id':c['run_id'],'task_id':c['task_id']},token=c['token'])
  created=call('request_assistance',args);helper=created['request']
- state['helper_token']=created['request_token'];p.write_text(json.dumps(state))
  call('wait_assistance',{'task_id':c['task_id'],'request_ids':[helper['id']],'seconds':30})
 else:
  state=json.loads(p.read_text());assert native==state['session'],'Wrong session ID'
@@ -51,11 +50,10 @@ else:
  assert not {'logs','last_sent','history','context'} & c['assistance_results'][0].keys(),c
  assert 'HELPER_LOG' not in json.dumps(c['assistance_results']),c
  lookup={'request_id':c['assistance_results'][0]['id']}
- if not remote:lookup['token']=state['helper_token']
  assert call('read_assistance',lookup)['request']['result']['paper']=='paper-found'
  info=call('read_task',{'task_id':c['task_id']})
  envelope={'outputs':{'decision':{'memory':state['memory'],'paper':c['assistance_results'][0]['result']['paper']}}} if c.get('flow_trigger') else {'settings':{'objective':'continuous reasoning'},'outputs':{'a':state['memory'],'b':c['assistance_results'][0]['result']['paper']}}
- call('report_task',{'task_id':c['task_id'],'task_version':info['task_version'],'event':'completed','report_id':'after-assistance','envelope':envelope})
+ call('report_task',{'task_id':c['task_id'],'event':'completed','report_id':'after-assistance','envelope':envelope})
 call('finish',{})
 if remote:call('communication_execute',{'request_id':c['request_id'],'token':c['token'],'tool':'complete','arguments':{'result':{}}})
 '''
@@ -112,19 +110,24 @@ class AssistanceResumeTests(unittest.TestCase):
                 source=Store(root/'0.db');case=fixture.RuntimeTests();case.setUp()
                 try:
                     if remote:
-                        config=tool(0,'communication_config',{'operation':'group','path':str(root/'nas'),'create':True})['configuration'];gid=next(iter(config['groups']))
-                        tool(1,'communication_config',{'operation':'group','path':str(root/'nas')})
+                        config=tool(0,'communication_config',{'operation':'team','link':str(root/'nas'),'create':True})['configuration'];gid=next(iter(config['groups']))
+                        tool(1,'communication_config',{'operation':'team','link':str(root/'nas')})
                         tool(1,'communication_config',{'operation':'agent','task_confirmed':True,'agent_id':'research','agent':{'name':'research','description':'Research experimental results','groups':[gid],'implementation':implementation}})
-                        case.implementations['init']={'kind':'agent','dispatch':{'location':'group','agent_id':'research'}}
-                    else:case.implementations['init']=implementation
+                        case.implementations['init']={'options': {'default': {'kind':'agent','dispatch':{'location':'group','agent_id':'research'}}}, 'default': 'default'}
+                    else:case.implementations['init']={'options': {'default': implementation}, 'default': 'default'}
                     if builtin:
-                        case.bp['flow_agent']=case.implementations['init']
+                        decision_implementation=case.implementations['init']['options']['default']
                         case.bp['nodes']['init']['routes']=[{'id':'decide','event':'completed','flow_agent':True}]
                         initial={'settings':{'objective':'Use help in a flow decision'},'outputs':{'a':'initial','b':'initial'}}
-                        case.implementations['init']={'kind':'command','command':[sys.executable,'-c','print('+repr(json.dumps(initial))+')']}
+                        case.implementations['init']={'options': {'default': {'kind':'command','command':[sys.executable,'-c','print('+repr(json.dumps({'event':'completed','envelope':initial}))+')']}}, 'default': 'default'}
                     key=source.publish(case.bp,case.implementations)['key']
                     if remote:tool(0,'communication_config',{'operation':'bind_loop','loop_key':key,'group_id':gid})
                     rid=source.create(key,'wait and resume')['id']
+                    if builtin:
+                        from loop_anything.runtime.steward import materialize
+                        with source.edit(rid) as managed:
+                            managed['steward']={'agent_id':'test-steward','name':'Test steward','generation':1,'implementation':decision_implementation}
+                            materialize(managed)
                     paused_admission=False
                     deadline=time.monotonic()+40
                     while time.monotonic()<deadline:

@@ -317,7 +317,7 @@ def resume(engine, run_id, execution_id, arguments):
                 from loop_anything.runtime.executors import run as remote_run
                 result=remote_run(engine,config,config['command'],prompt,config.get('timeout'),config.get('cwd'),engine.stopping,session,session_id,
                     {'kind':'resume','run_id':run_id,'execution_id':execution_id})
-            else:result=run_command(config['command'],prompt,config.get('timeout'),config.get('cwd'),engine.stopping,session)
+            else:result=run_command(config['command'],prompt,config.get('timeout'),config.get('cwd'),engine.stopping,session,context=config.get('_prompt_context'))
             if result.returncode:raise Invalid('Resume command failed: '+result.stdout[-1500:])
         except RemotePending:
             deferred=True

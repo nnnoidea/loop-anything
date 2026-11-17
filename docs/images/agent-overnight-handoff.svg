@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="586" viewBox="0 0 660 586" role="img">
+<title>什么时候轮到 Agent？</title><desc>以一组隔夜实验为例</desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#5a6e80"/></marker></defs>
+<rect width="100%" height="100%" fill="white"/>
+<rect x="28" y="22" width="5" height="30" rx="2" fill="#187e75"/>
+<text x="48" y="46" text-anchor="start" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="27" font-weight="bold" fill="#203449">什么时候轮到 Agent？</text>
+<text x="48" y="75" text-anchor="start" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="16" font-weight="normal" fill="#5a6e80">以一组隔夜实验为例</text>
+<g transform="translate(0,0)">
+<polyline points="185,140 185,519" fill="none" stroke="#5a6e80" stroke-width="2" stroke-dasharray="6 5"/>
+<rect x="65" y="82" width="240" height="60" rx="10" fill="#f1f6fa" stroke="#d8e2ea"/>
+<text x="185" y="118" text-anchor="middle" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="17" font-weight="normal" fill="#203449">你的 Agent</text>
+<polyline points="475,140 475,519" fill="none" stroke="#5a6e80" stroke-width="2" stroke-dasharray="6 5"/>
+<rect x="355" y="82" width="240" height="60" rx="10" fill="#f1f6fa" stroke="#d8e2ea"/>
+<text x="475" y="118" text-anchor="middle" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="17" font-weight="normal" fill="#203449">Loop Anything</text>
+<rect x="70" y="150" width="230" height="70" rx="10" fill="#f1f6fa" stroke="#d8e2ea"/>
+<text x="185" y="179.5" text-anchor="middle" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="17" font-weight="normal" fill="#203449">记录目标和预算</text>
+<text x="185" y="202.5" text-anchor="middle" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="17" font-weight="normal" fill="#203449">安排首批实验</text>
+<polyline points="185,220 185,235.5 475,235.5 475,247" fill="none" stroke="#5a6e80" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="335" y="228.5" text-anchor="middle" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="13" font-weight="normal" fill="#203449">交给平台执行</text>
+<rect x="360" y="251" width="230" height="70" rx="10" fill="#f1f6fa" stroke="#d8e2ea"/>
+<text x="475" y="280.5" text-anchor="middle" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="17" font-weight="normal" fill="#203449">跑已安排的步骤</text>
+<text x="475" y="303.5" text-anchor="middle" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="17" font-weight="normal" fill="#203449">观察训练、记录结果</text>
+<polyline points="475,321 475,336.5 185,336.5 185,348" fill="none" stroke="#5a6e80" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="335" y="329.5" text-anchor="middle" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="13" font-weight="normal" fill="#203449">结果就绪，唤醒 Agent</text>
+<rect x="70" y="352" width="230" height="70" rx="10" fill="#f1f6fa" stroke="#d8e2ea"/>
+<text x="185" y="381.5" text-anchor="middle" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="17" font-weight="normal" fill="#203449">读取对应结果</text>
+<text x="185" y="404.5" text-anchor="middle" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="17" font-weight="normal" fill="#203449">判断要不要追加实验</text>
+<polyline points="185,422 185,437.5 475,437.5 475,449" fill="none" stroke="#5a6e80" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="335" y="430.5" text-anchor="middle" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="13" font-weight="normal" fill="#203449">提交下一步安排</text>
+<rect x="360" y="453" width="230" height="70" rx="10" fill="#f1f6fa" stroke="#d8e2ea"/>
+<text x="475" y="482.5" text-anchor="middle" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="17" font-weight="normal" fill="#203449">按安排继续跑</text>
+<text x="475" y="505.5" text-anchor="middle" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="17" font-weight="normal" fill="#203449">记录输入和新结果</text>
+</g></svg>

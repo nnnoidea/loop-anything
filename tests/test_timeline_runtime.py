@@ -1,3 +1,4 @@
+from tests.runtime_fixture import update_work
 """Application-independent contracts: real Store/Engine, only handler replies supplied."""
 import copy
 import tempfile
@@ -34,8 +35,8 @@ class RuntimeTests(unittest.TestCase):
                              'produce': node({'source': {'type': 'string'}}, {'text': 'text'}),
                              'wait': node(outputs={'text': 'text'})},
                    'seed': task_spec('init', 'init', outputs={'a': 'a', 'b': 'b'}), 'rules': []}
-        self.implementations = {n: {'kind': 'agent'} for n in self.bp['nodes']}
-        self.implementations['wait'] = {'kind': 'event', 'event': 'signal'}
+        self.implementations = {n: {'options': {'default': {'kind': 'agent'}}, 'default': 'default'} for n in self.bp['nodes']}
+        self.implementations['wait'] = {'options': {'default': {'kind': 'event', 'event': 'signal'}}, 'default': 'default'}
 
     def tearDown(self):
         self.engine.close()
@@ -66,9 +67,8 @@ class RuntimeTests(unittest.TestCase):
         tools = RunTools(self.store, self.id, e['token'])
         owner = next((o for o in self.read()['agent_sessions'] if o['token'] == tools.token), None)
         if owner is None:raise Conflict('Agent execution has already finished')
-        if 'task_sets' in owner.get('observed', {}):tools.call('next_tasks', {})
         info = tools.call('read_task', {'task_id': e['task_id']})
-        tools.call('complete_task', {'task_id': e['task_id'], 'task_version': info['task_version'], 'envelope': envelope})
+        tools.call('report_task', {'event':'completed','report_id':'complete','task_id': e['task_id'], 'envelope': envelope})
         if not tools.call('next_tasks', {})['has_tasks']:
             tools.call('finish', {})
         return self.read()
@@ -154,9 +154,9 @@ class RuntimeTests(unittest.TestCase):
         from loop_anything.interfaces.agent_tasks import RunTools
         self.initialize([self.join(policy='current')])
         e = self.task('join')
-        self.engine.change_settings(self.id, 1, {'guidance': 'New instructions'})
+        update_work(self.store,self.id,{'constraints':'New instructions'})
         tools = RunTools(self.store, self.id, e['token'])
-        self.assertEqual(2, tools.call('read_timeline', {})['settings']['revision'])
+        self.assertEqual(3, tools.call('read_timeline', {})['timeline']['revision'])
         self.submit(e, {'outputs': {'ok': True}})
         self.assertTrue(self.read()['records']['done'][-1]['value'])
 
@@ -204,7 +204,7 @@ class RuntimeTests(unittest.TestCase):
         self.engine.change_settings(self.id, 1, {'max_parallel': 2})
         self.engine.tick(self.id)
         self.assertNotIn('join', self.read()['tasks'])
-        self.engine.change_settings(self.id, 2, {'guidance': 'new meaning'})
+        update_work(self.store,self.id,{'constraints':'new meaning'})
         self.engine.tick(self.id)
         self.assertNotIn('join', self.read()['tasks'])
 
@@ -234,7 +234,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_notification_failure_does_not_complete_delivery_or_block_work(self):
         e = self.start()
-        hooks = [{'id': 'failed', 'target': {'node': 'join'}, 'action': 'notify', 'phase': 'before', 'frequency': 'once', 'route': 'external'}]
+        hooks = [{'id': 'failed', 'target': {'node': 'join'}, 'action': 'notify', 'phase': 'before', 'frequency': 'once', 'route': 'user'}]
         self.engine.change_settings(self.id, 1, {'hooks': hooks}, operator_token=e['token'])
         self.submit(e, {'settings': {'objective': 'x'}, 'outputs': {'a': 'A', 'b': 'B'}, 'tasks': [self.join()]})
         self.engine.tick(self.id)
@@ -252,7 +252,7 @@ class RuntimeTests(unittest.TestCase):
     def test_intent_change_does_not_recreate_initializer(self):
         self.bp['seed']['policy'] = 'current'
         old = self.start()
-        self.engine.change_settings(self.id, 1, {'guidance': 'New initial instructions'}, operator_token=old['token'])
+        update_work(self.store,self.id,{'constraints':'New initial instructions'})
         self.engine.tick(self.id)
         current = self.read()['executions'][-1]
         self.assertEqual(old['id'], current['id'])

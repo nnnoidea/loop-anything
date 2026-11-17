@@ -126,6 +126,7 @@ class Executors:
             # Complete answers are already in Timeline; retain process outcome and native identity.
             job['payload'].pop('prompt',None)
             job['payload'].pop('prompt_context',None)
+            job['payload'].pop('resources',None)
             recorded=db.execute('SELECT document FROM execution_sessions WHERE id=?',(ident,)).fetchone()
             native=(job.get('session') or {}).get('native_session') or (json.loads(recorded[0]).get('native_session') if recorded else None)
             if native:
@@ -241,7 +242,7 @@ class Executors:
             files.put('controls/'+job['id']+'.json',job.get('controls',[]))
         else:
             files.put('acks/'+job['id']+'.json',{'accepted':True},immutable=True)
-            (folder/'inbox'/(job['id']+'.json')).unlink(missing_ok=True)
+            files.delete('inbox/'+job['id']+'.json')
 
     def run(self, config, command, prompt, timeout, cwd, stop, session, ident, metadata):
         executor=core.address(config['executor'])
@@ -262,6 +263,9 @@ class Executors:
                     payload['native_session']=session.doc.get('native_session')
                     payload['native_id']=session.native_id
                     payload['native_history']=session.doc.get('native_history',False)
+                from loop_anything.runtime.executor_resources import snapshot
+                resources=snapshot(self.store,metadata)
+                if resources is not None:payload['resources']=resources
                 job={'id':ident,'executor':executor,'token':secrets.token_urlsafe(32),'payload':payload,
                     'state':'queued','created_at':time.time(),'metadata':metadata}
                 if len(json.dumps(job,ensure_ascii=False).encode())>core.MAX_BYTES:raise Invalid('Execution context exceeds 32 MiB; use artifact references')

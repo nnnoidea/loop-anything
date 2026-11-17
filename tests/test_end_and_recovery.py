@@ -41,8 +41,7 @@ class EndAndRecoveryTests(unittest.TestCase):
         claimed = next((o for o in current['agent_sessions'] if o.get('task_id') == id), None)
         worker = RunTools(self.store, self.id, claimed['token']) if claimed else original
         info = worker.call('read_task', {'task_id': id})
-        worker.call('complete_task', {'task_id': id, 'task_version': info['task_version'],
-                                        'envelope': dict(outputs={'result': 'done'}, **envelope)})
+        worker.call('report_task', {'event':'completed','report_id':'complete','task_id': id, 'envelope': dict(outputs={'result': 'done'}, **envelope)})
         if worker.token != original.token:worker.call('finish', {})
 
     def until(self, condition):
@@ -116,7 +115,7 @@ assert i['skills'][0]['name']=='recovery'
 assert i['task']['origin']['issues']
 for item in t.call('next_tasks',{})['items']:
  if item['kind']!='task':t.call('defer_task',{'task_id':item['id'],'reason':'User must classify this event'})
-t.call('complete_task',{'task_id':r['task_id'],'task_version':i['task_version'],'envelope':{'outputs':{}}})
+t.call('report_task', {'event':'completed','report_id':'complete','task_id':r['task_id'],'envelope':{'outputs':{}}})
 t.call('finish',{})
 Path(sys.argv[1]).write_text(sys.argv[2])
 """
@@ -142,7 +141,7 @@ Path(sys.argv[1]).write_text(sys.argv[2])
         self.assertEqual('chosen', next(e for e in run['executions'] if e['task_id'] == fallback['id'])['implementation_id'])
 
     def test_three_failures_pause_and_notify_using_user_sender_once(self):
-        self.implementations['init'] = {'kind': 'agent', 'command': [sys.executable, '-c', 'raise SystemExit(2)']}
+        self.implementations['init'] = {'options': {'default': {'kind': 'agent', 'command': [sys.executable, '-c', 'raise SystemExit(2)']}}, 'default': 'default'}
         enable_fallback(self.bp, self.implementations, self.implementations['init'])
         delivered = self.root / 'notification.json'
         sender = "import json,sys;from pathlib import Path;r=json.load(sys.stdin);Path(sys.argv[1]).write_text(json.dumps(r));print(json.dumps({'delivered':True}))"
@@ -167,8 +166,8 @@ Path(sys.argv[1]).write_text(sys.argv[2])
 
     def test_branch_failure_then_fallback_pauses_after_three_total_calls(self):
         failure = {'kind': 'agent', 'command': [sys.executable, '-c', 'raise SystemExit(2)']}
-        self.implementations['reason'] = failure
-        enable_fallback(self.bp, self.implementations, failure)
+        self.implementations['reason'] = {'options': {'default': failure}, 'default': 'default'}
+        enable_fallback(self.bp, self.implementations, {'options': {'default': failure}, 'default': 'default'})
         self.create()
         self.complete('init', settings={'objective': 'Recover one branch'}, tasks=[task_spec('branch', 'reason')])
         self.tools.call('finish', {})
@@ -202,7 +201,7 @@ if n==1: raise SystemExit(2)
 r=json.loads(sys.stdin.read().split('Run context:'+chr(10),1)[1]);t=RunTools(Store(sys.argv[-1]),r['run_id'],r['token'])
 if r['task_id']=='init':
  i=t.call('read_task',{'task_id':'init'})
- t.call('complete_task',{'task_id':'init','task_version':i['task_version'],'envelope':{'outputs':{'result':'recovered'},'settings':{'objective':'Recovered'}}})
+ t.call('report_task', {'event':'completed','report_id':'complete','task_id':'init','envelope':{'outputs':{'result':'recovered'},'settings':{'objective':'Recovered'}}})
 else:
  for attempt in range(100):
   t.call('read_task',{'task_id':'init'})
@@ -212,11 +211,11 @@ else:
   except Conflict:time.sleep(.02)
  else:raise AssertionError('Old process never released its Task')
  i=t.call('read_task',{'task_id':r['task_id']})
- t.call('complete_task',{'task_id':r['task_id'],'task_version':i['task_version'],'basis':i['basis'],'envelope':{'outputs':{}}})
+ t.call('report_task', {'event':'completed','report_id':'complete','task_id':r['task_id'],'envelope':{'outputs':{}}})
 t.call('finish',{})
 """
-        self.implementations['init'] = {'kind': 'agent', 'command': [sys.executable, '-c', script, str(marker), str(self.store.filename)],
-                                 'cwd': str(Path(__file__).resolve().parents[1])}
+        self.implementations['init'] = {'options': {'default': {'kind': 'agent', 'command': [sys.executable, '-c', script, str(marker), str(self.store.filename)],
+                                 'cwd': str(Path(__file__).resolve().parents[1])}}, 'default': 'default'}
         enable_fallback(self.bp, self.implementations, self.implementations['init'])
         self.create(owned=False)
         run = self.until(lambda r: r['initialized'] and r['agent_sessions'] == [] and r['agent_failures'] == 0)

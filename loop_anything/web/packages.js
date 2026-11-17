@@ -13,7 +13,7 @@ packageDialog.innerHTML=`<div class="dialog-heading"><h2>分享与安装 Loop</h
 document.body.append(packageDialog);
 let uploadedPackage=null;
 function showPackage(authoring){
-  if(authoring){if(editor.loop_definition.schema_version!==2)throw new Error('Loop 包支持 v2 Loop 定义；旧版仍可使用 JSON 导出。');editor.assets ||= [];}
+  if(authoring)editor.assets ||= [];
   $('package-author').hidden=!authoring;$('package-result').textContent='';
   if(authoring)renderPackageAssets();
   uploadedPackage=null;$('package-upload').value='';$('package-edit').disabled=$('package-install').disabled=true;

@@ -141,7 +141,6 @@ class Base:
         self.table = config.get('table_id')
         self.pending_cleanup = {}
         self.cleanup_error = None
-        self._schema_ready=config.get('schema_version')==2
     def call(self, operation, *, table=True, body=None, **options):
         args=['base',operation,'--base-token',self.app]
         if table:args+=['--table-id',self.table]
@@ -199,7 +198,6 @@ class Base:
         return {'record_id':ident,'fields':dict(fields)}
 
     def ensure(self):
-        upgrading=not self._schema_ready
         tables=list(self.tables())
         if self.table:
             if not any(t['id']==self.table for t in tables):raise ValueError('Configured team table no longer exists')
@@ -220,9 +218,6 @@ class Base:
             elif current[name]['type']!=kind:raise ValueError('Team table field type changed: '+name)
         self.config['table_id']=self.table
         self._attachment_ready=True
-        self._schema_ready=True
-        self.config['schema_version']=2
-        if upgrading:_readable.backfill(self)
         try:
             self.setup_views()
             self.config.pop('view_error',None)
@@ -277,9 +272,10 @@ class Base:
         for fields in ordered:
             chunks = {int(f['part']):self.text(f['value']) for f in fields}
             count = int(fields[0]['count'])
-            if count < 1 or count > 12000 or set(chunks) != set(range(count)):continue
-            data = ''.join(chunks[i] for i in range(count)).encode()
-            # Old multipart rows remain readable; new large publications use native attachments.
+            if count == 0:continue  # Attachment upload is not published yet.
+            if count != 1:raise ValueError('Unsupported multipart communication record')
+            if set(chunks) != {0}:continue
+            data = chunks[0].encode()
             try:marker=json.loads(data)
             except ValueError:continue
             if isinstance(marker,dict) and marker.get('transport')=='attachment-json-v1':
@@ -305,7 +301,6 @@ class Base:
             try:yield key.rsplit('/',1)[-1], self.decode(rows,heartbeat=key.startswith('members/'))
             except FileNotFoundError:continue
     def put(self, key, value, immutable=False):
-        if not self._schema_ready:self.ensure()
         if key.startswith('members/') and value.get('instance_id'):
             readable_directory(self,value)
         display=readable_columns(key,value)
@@ -388,6 +383,12 @@ def default_team(teams, preferred=None):
     return next(iter(candidates)) if len(candidates)==1 else None
 
 
+def nas_group_path(root):
+    """One NAS root, with named-Agent traffic separate from API/executor mailboxes."""
+    root=Path(root).expanduser().resolve()
+    return root/'agents'
+
+
 def join(link, create=False, name=None, lark_cli='lark-cli', identity='user'):
     parsed = urlparse(link)
     if parsed.scheme in ('http','https'):
@@ -406,17 +407,20 @@ def join(link, create=False, name=None, lark_cli='lark-cli', identity='user'):
         # The Base token, rather than a racing manifest writer, defines the team identity.
         gid = 'team-' + hashlib.sha256(config['app_token'].encode()).hexdigest()[:32]
         return dict(config,id=gid,name=name or '团队',enabled=True)
-    path = Path(unquote(parsed.path) if parsed.scheme == 'file' else link).expanduser().resolve()
-    if parsed.scheme and parsed.scheme != 'file':raise ValueError('Use a Base URL or mounted NAS path')
+    if parsed.scheme and parsed.scheme not in ('file','nas'):raise ValueError('Use a Base URL or mounted NAS path')
+    if parsed.scheme=='nas' and (parsed.netloc or parsed.query or parsed.fragment):raise ValueError('Use nas:///absolute/mounted/team/path')
+    root = Path(unquote(parsed.path) if parsed.scheme in ('file','nas') else link).expanduser().resolve()
+    path = nas_group_path(root)
     if create:path.mkdir(parents=True,exist_ok=True)
     manifest = path/'group.json'
     if not manifest.exists() and create:
-        value = {'version':1,'id':'group-'+uuid.uuid4().hex[:12],'name':name or path.name,'description':''}
+        value = {'version':1,'id':'group-'+uuid.uuid4().hex[:12],'name':name or root.name,'description':''}
         try:
             with manifest.open('x',encoding='utf-8') as f:json.dump(value,f,ensure_ascii=False)
         except FileExistsError:pass
     group = json.loads(manifest.read_text())
-    return dict(group,transport='nas',path=str(path),link=path.as_uri(),enabled=True)
+    return dict(group,transport='nas',path=str(path),link='nas://'+str(root),
+                namespace='agents',enabled=True)
 
 
 def prepare_dispatch(request, instance, agent):

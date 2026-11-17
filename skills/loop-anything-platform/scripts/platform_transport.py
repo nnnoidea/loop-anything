@@ -45,9 +45,10 @@ def result(url, ident):
         return {'ok':True,'pending':True,'request_id':ident,'notice':'Request remains queued; read this same request ID. Do not submit a new request.'}
 
 
-def invoke(url, tool, arguments=None, request_id=None, wait=30):
+def invoke(url, tool, arguments=None, request_id=None, wait=30, expected_workspace=None):
     root,scope=endpoint(url)
     manifest=json.loads((root/'team.json').read_text(encoding='utf-8'))
+    if expected_workspace is not None and manifest.get('workspace_id')!=expected_workspace:raise ValueError('Request belongs to another platform workspace')
     ident=files.address(request_id or 'api-'+uuid.uuid4().hex)
     packet={'version':1,'id':ident,'team_id':manifest['id'],'tool':tool,'arguments':arguments or {},'scope':scope,'client_root':str(root)}
     path=root/'api/requests'/(ident+'.json')
@@ -71,4 +72,4 @@ def fetch(url, data=None, request_id=None, wait=30):
     base=url[:-10]
     if data is None:return invoke(base,'_list',request_id=request_id,wait=wait)
     packet=json.loads(data)
-    return invoke(base,packet['tool'],packet.get('arguments',{}),request_id,wait)
+    return invoke(base,packet['tool'],packet.get('arguments',{}),request_id,wait,packet.get('expected_workspace'))

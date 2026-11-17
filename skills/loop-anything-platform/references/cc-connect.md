@@ -30,7 +30,7 @@ Bind a named agent using a discovered reference through communication_config:
 {"operation":"agent","agent_id":"papers","agent":{"notification_bot":{"project":"papers","platform":"feishu"},"notification_route":""}}
 ```
 
-notification_bot=null clears mapping. Legacy notification_route remains supported; choosing either mapping clears the other, and two nonempty mappings are invalid. Changing a Bot does not change agent commands or sessions.
+notification_bot=null clears mapping. Named Agents use notification_bot; notification_route is not a named-Agent setting. Changing a Bot does not change agent commands or sessions.
 
 ## Follow the original conversation automatically
 
@@ -53,7 +53,6 @@ Direct HTTP/MCP clients can pass metadata:
 
 Include chat_id/thread_id/thread_root when present in the entry event. chat_type is optional and otherwise unknown. Workers cannot rewrite the entry origin. The platform extracts/persists ordinary cc-connect root sessions automatically, without extra environment variables.
 
-Legacy clients can register conversation_id with `communication_config(operation=conversation,conversation=METADATA,notification_command=LOCAL_ARGV)`. Old --config/--platform/--conversation arguments remain parseable but are not send preflights. Custom instances must supply actual --data-dir or use machine-level setup.
 
 ## Named platform outlets
 
@@ -69,7 +68,7 @@ An agent may read the Timeline and use send_event for a user's answer. This adap
 
 ## Generate a send command for the current chat
 
-This supports legacy explicit-command workflows. Prefer platform setup tools for new integration.
+Use platform setup tools for the bridge and explicit command outlets for other notification adapters.
 
 From an agent invoked in the destination chat, run at the Skill root:
 

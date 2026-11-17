@@ -2,7 +2,7 @@
 import base64
 import copy
 import re
-from loop_anything.interfaces.agent_tasks import RunTools, object_schema, acquire
+from loop_anything.interfaces.agent_tasks import RunTools, object_schema
 from loop_anything.runtime.timeline_model import validate_v2
 from loop_anything.runtime.model import Invalid, Conflict, contract, check_schema
 from loop_anything.runtime.store import uid
@@ -10,6 +10,7 @@ from loop_anything.runtime.implementations import options, default_id
 from loop_anything.interfaces.communication_tools import CHAT_CONTEXT
 
 WORKFLOW = ('Use the authoring_context in create_loop/copy_loop/read_loop to identify platform-owned work. read_capabilities explains automatic mechanisms, required declarations, author responsibilities, limits and composition examples, beyond the tool index. Use Loop drafts for authoring and Timeline tools for execution. Before writing adapters, inspect the available mechanisms: '
+            'Register the current server session with register_work_session. start_run binds that exact session automatically. Independent Timelines use create_timeline/read_work_timeline/update_timeline/append_timeline; wait_for resumes the current session from Run, Task or monitor evidence. No dedicated steward selection. Build Loop packages with the user Agent. Managed nodes use their supplied execution identity and runtime tools. '
             'put_step/connect_steps declare dependencies, each expansion, collect aggregation and when conditions; ref/after_refs and task_ref/task_refs bind work by authored identities; '
             'put_node.routes maps accepted node events and result parameters to plans: the platform creates Tasks atomically with the report; '
             'build_plan selects/omits steps and binds candidate implementations and Task parameters; '
@@ -19,8 +20,7 @@ WORKFLOW = ('Use the authoring_context in create_loop/copy_loop/read_loop to ide
             'read_loop selects a node, candidate, plan, step or package asset; read_plans/read_task return the current contracts. '
             'Use the parameter schemas in this running service catalog, not remembered fields from another version. '
             'Keep editing the existing draft; publish_loop makes a local usable version, export_loop shares it. '
-            'Find an existing Run with list_runs/read_timeline; ordinary workspace calls can omit token and the platform manages temporary scope. Managed executions must keep their supplied scoped identity; retain decision read basis and reconsider on commit conflict. '
-            'Start_run acquires entry ownership. Complete the entry task, inspect receipt.routes for generated work, and finish to release scope. Do not manually duplicate declared routes. '
+            'Find an existing Run with list_runs/read_timeline; client writes use submit_run_request. Managed executions keep their supplied scoped identity; reuse stable report and task keys for retries. '
             'Run completion requires change_settings completion_rule/termination_signal; a business status field does not end the Run. '
             'Platform Skills teach mechanisms; the author supplies business decisions.')
 TEXT = {'type': 'string'}
@@ -53,20 +53,9 @@ class PlatformTools:
         self.run_definitions = [d for d in RunTools(store, '', '').definitions() if d['name'] != 'read_capabilities']
 
     def _run_call(self,run_id,token,name,arguments):
-        if token is not None or next(d for d in self.run_definitions if d['name']==name)['annotations']['readOnlyHint']:
+        if token is not None or name == 'send_event' or next(d for d in self.run_definitions if d['name']==name)['annotations']['readOnlyHint']:
             return RunTools(self.store,run_id,token).call(name,arguments)
-        from loop_anything.runtime.optimistic import EDIT_TOOLS
-        if (name in EDIT_TOOLS - {'report_task'} or name in ('report_task','complete_task') and arguments.get('envelope',{}).get('tasks')) and 'basis' not in arguments:
-            raise Conflict('Read state first and pass its basis for a stateless Timeline edit')
-        return self._with_operator(run_id,lambda handle:RunTools(self.store,run_id,handle).call(name,arguments))
-
-    def _with_operator(self,run_id,operation):
-        from loop_anything.interfaces.agent_tasks import release_in_run
-        owner=acquire(self.store,run_id)
-        try:return operation(owner['token'])
-        finally:
-            with self.store.edit(run_id) as current:
-                if any(o['token']==owner['token'] for o in current['agent_sessions']):release_in_run(current,owner['token'])
+        raise Invalid('Use submit_run_request; runtime writes require the supplied execution identity')
 
     def definitions(self):
         draft = {'draft_id': TEXT, 'revision': {'type': 'integer'}}
@@ -82,14 +71,12 @@ class PlatformTools:
             ('list_loops', 'List installed Loops and drafts; archived items are hidden unless include_archived=true.', {'include_archived': BOOL}, [], True),
             ('archive_loop', 'Archive or restore a Loop version or draft without changing Runs. Supply key or draft_id; drafts also require revision.', {'key':TEXT,'draft_id':TEXT,'revision':{'type':'integer'},'archived':BOOL}, ['archived'], False),
             ('delete_loop', 'Delete a draft or unused installed Loop version. Existing Run or Loop-call references prevent deletion; archive instead to retain history. Does not delete Runs or external artifacts; modified package directories or incidental runtime files are retained. Drafts require their revision.', {'key':TEXT,'draft_id':TEXT,'revision':{'type':'integer'}}, [], False),
-            ('update_run', 'Edit Run title, display-name attribution or archived state, including ended Runs. metadata_revision is from the list summary; this is independent of execution revisions. No login or permission ownership is implied. Does not change business settings or recorded results.', {'run_id':TEXT,'metadata_revision':{'type':'integer'},'title':TEXT,'created_by':TEXT,'archived':BOOL}, ['run_id','metadata_revision'], False),
-            ('delete_run', 'Delete an ended Run and its Timeline after active executions and assistance finish, sessions are stopped, and remote receipts are applied. Delete child Runs first; an active parent still needs child results. Native sessions and external artifacts are retained. metadata_revision comes from list_runs.', {'run_id':TEXT,'metadata_revision':{'type':'integer'}}, ['run_id','metadata_revision'], False),
             ('smoke_runtime', 'Explicit runtime check of an installed Loop. Starts configured Agent commands (may call models), including fallback candidates, with a minimal startup prompt and bounded timeout. Simulates external lifecycle reports in a temporary Timeline; never calls business submit/observe commands. Optional node_id/implementation_id select candidates. cases supplies node, implementation, state, event and optional attempt/inputs/parameters/settings/detail/expected for conditional transitions. Does not start or change a business Run.', {'key': TEXT, 'node_id': TEXT, 'implementation_id': TEXT, 'timeout': {'type': 'number'}, 'cases': {'type': 'array', 'items': OBJ}}, ['key'], False),
             ('read_loop', 'Read a draft_id or installed key. Optional node_id (+ implementation_id), plan (+ step), or asset_path selects one part and its explicit references. Without selectors returns the complete Loop. Targeted reads include draft revision; asset text is decoded UTF-8.', {'draft_id': TEXT, 'key': TEXT, 'node_id': TEXT, 'implementation_id': TEXT, 'plan': TEXT, 'step': TEXT, 'asset_path': TEXT}, [], True),
-            ('create_loop', 'Create an editable Loop with a no-input Agent entry. The user Agent initializes Timeline settings from the conversation; add business ports only when needed. Add the author business handbook, tasks and implementations before validation.', {'name': TEXT, 'id': TEXT}, ['name'], False),
+            ('create_loop', 'Create an editable Loop with a no-input Agent entry. The current starter initializes from the independent Timeline and saved request; add business ports only when needed. Add the author business handbook, tasks and implementations before validation.', {'name': TEXT, 'id': TEXT}, ['name'], False),
             ('copy_loop', 'Copy an installed Loop and its resources to an editable draft. Existing Runs stay on their original version.', {'key': TEXT, 'name': TEXT, 'new_version': BOOL}, ['key'], False),
-            ('set_loop', 'Update draft metadata and the AUTHOR business handbook; handbook_path binds a package-relative Skill entry (empty clears). Preserve unspecified fields. remove_records explicitly deletes unused record types; referenced types are protected. Defaults and limits are explicit author choices. requires lists required capability IDs; scenarios stores author acceptance cases for test_loop. Parameter contracts support the documented conditional/composition subset; read_capabilities returns supported keywords. fallback_node selects a declared non-entry Agent node with no input ports; empty disables automatic fallback. flow_agent configures the built-in decision executor; only explicit node routes invoke it, without extra business nodes or a default advancement mode.', dict(draft, name=TEXT, version=TEXT, description=TEXT, handbook=TEXT, handbook_path=TEXT, defaults=OBJ, limits=OBJ, guide=OBJ, checks=OBJ, requires=STRINGS, scenarios=SCENARIOS, fallback_node=TEXT, global_agent_node=TEXT, flow_agent={"type":["object","null"],"description":"Explicit built-in flow Agent implementation (kind=agent, command/dispatch/executor and session options). Configuration alone never invokes it; source node routes {id,event,flow_agent:true,when?} request decisions. null clears; no default advancement mode."}, remove_records=STRINGS), ['draft_id', 'revision'], False),
-            ('put_node', 'Add or edit one node. description is a short user-facing purpose for the webpage; instructions and skills retain full execution guidance for Agents. Omit description when unknown; it never replaces instructions. Port lists use name plus type or schema; output record types are generated. Entry ports update initial locations. skills bind author methods. routes optionally declare event -> plan task generation, atomically with each accepted lifecycle report. A plan route has id/event/plan/values and optional each/when/steps/round. A built-in decision route has id/event/flow_agent=true and optional when; configure set_loop.flow_agent first. It needs no extra business node or plan. All explicitly matching routes execute; no implicit priority or default advancement. Map values and step overrides with $ references to outputs/inputs/parameters/settings/detail/task/transition/attempt/task_revision; each reads a context array and adds item/index. when is evaluated per item. Generated tasks belong to the source Task; duplicate reports never regenerate. Supplying routes replaces the list; [] clears it. plan_nodes remains the permission for scripts to arrange tasks explicitly; a route is itself an author declaration.', dict(draft, node_id=TEXT, instructions=TEXT, description={"type":"string","description":"Optional brief purpose for users: what this node does and delivers, without API fields or duplicated contracts. Empty clears the visible introduction."}, label=TEXT, inputs=PORTS, outputs=PORTS, skills={'type': 'array', 'items': object_schema({'name': TEXT, 'content': TEXT, 'path': TEXT}, ['name'])}, plan_nodes=STRINGS, routes=ROUTES, parameter_schema=OBJ, agent_settings_schema=OBJ, assertions={'type': 'array', 'items': OBJ}), ['draft_id', 'revision', 'node_id'], False),
+            ('set_loop', 'Update draft metadata and the AUTHOR business handbook; handbook_path binds a package-relative Skill entry (empty clears). Preserve unspecified fields. remove_records explicitly deletes unused record types; referenced types are protected. Defaults and limits are explicit author choices. requires lists required capability IDs; scenarios stores author acceptance cases for test_loop. Parameter contracts support the documented conditional/composition subset; read_capabilities returns supported keywords. fallback_node identifies a declared non-entry recovery helper with global Task scope; the Run steward owns automatic exception handling and can explicitly schedule that helper. The actual startup session supplies built-in decision execution; configure explicit node progression or routes for fixed paths.', dict(draft, name=TEXT, version=TEXT, description=TEXT, handbook=TEXT, handbook_path=TEXT, defaults=OBJ, limits=OBJ, state=OBJ, guide=OBJ, checks=OBJ, requires=STRINGS, scenarios=SCENARIOS, fallback_node=TEXT, global_agent_node=TEXT, remove_records=STRINGS), ['draft_id', 'revision'], False),
+            ('put_node', 'Add or edit one node. description is a short user-facing purpose for the webpage; instructions and skills retain full execution guidance for Agents. Omit description when unknown; it never replaces instructions. Port lists use name plus type or schema; output record types are generated. Entry ports update initial locations. skills bind author methods. routes optionally declare event -> plan task generation, atomically with each accepted lifecycle report. A plan route has id/event/plan/values and optional each/when/steps/round. A built-in decision route has id/event/flow_agent=true and optional when; the selected Run steward supplies its executor. It needs no extra business node or plan. All explicitly matching routes execute; no implicit priority or default advancement. Map values and step overrides with $ references to outputs/inputs/parameters/settings/detail/task/transition/attempt/task_revision; each reads a context array and adds item/index. when is evaluated per item. Generated tasks belong to the source Task; duplicate reports never regenerate. Supplying routes replaces the list; [] clears it. plan_nodes remains the permission for scripts to arrange tasks explicitly; a route is itself an author declaration.', dict(draft, node_id=TEXT, instructions=TEXT, description={"type":"string","description":"Optional brief purpose for users: what this node does and delivers, without API fields or duplicated contracts. Empty clears the visible introduction."}, label=TEXT, inputs=PORTS, outputs=PORTS, skills={'type': 'array', 'items': object_schema({'name': TEXT, 'content': TEXT, 'path': TEXT}, ['name'])}, plan_nodes=STRINGS, routes=ROUTES, parameter_schema=OBJ, agent_settings_schema=OBJ, assertions={'type': 'array', 'items': OBJ}), ['draft_id', 'revision', 'node_id'], False),
             ('remove_node', 'Remove a draft node only after removing steps that use it. The initialization node cannot be deleted.', dict(draft, node_id=TEXT), ['draft_id', 'revision', 'node_id'], False),
             ('set_implementation', 'Add/update a named candidate with implementation_id; default=true selects the Loop default, default=false clears it. Omit implementation_id for the compact default candidate. Choose candidates per Run via settings.bindings or per Task via implementation. Execution kinds: agent, command, external, event, timer, approval or loop. kind=loop calls an installed Loop on this service using loop={key,inputs,result}; inputs defaults to this Task inputs, result is a report envelope mapping from child records/settings/inputs/run_id using existing $ references. The same Task keeps its child Run across recovery/retries; create another Task for a new invocation. Parent/child pause and termination are independent. No command/observe scripts or Agent polling are needed. timer wait requires seconds or timezone-aware until; event wait accepts key/timeout. wait values support existing {parameters.x} or $ references. Timeouts emit timeout in the same lifecycle. Transition notify lists queue messages/questions atomically. command/observe are argv arrays, not shell strings. Optional Agent dispatch={location:group,agent_id:...} or capability delegates this node to the Run communication group, keeping Agent semantics; omitted dispatch remains local unless executor selects a registered headless receiver. Use list_executors then set executor to its exact ID for agent/command/external; omit executor to execute on the service machine. Do not combine executor and dispatch. Named local/remote assistance uses request_assistance and never requires creating a Loop. Agent output is recorded live automatically; terminal=true enables interactive PTY on macOS/Linux. Its command must contain {{prompt}} (initial prompt argument) or {{prompt_file}} (private prompt file path). Existing commands keep stdin prompt behavior. The same Agent owns the task; finish closes interactive execution. Optional agent_cli identifies codex/claude/custom; resume_command is explicit argv with {{session_id}} and {{prompt}} or {{prompt_file}}. Native IDs are captured from CLI startup output or register_agent_session; an explicit {{session_id}} in the initial command receives a fresh UUID (e.g. Claude --session-id). Never use --last to recover a task. Optional agent prompt fully replaces the default; {{context}} expands runtime context. parameter_schema optionally constrains the Task parameters for this candidate, in addition to the node contract. No defaults are injected. lifecycle holds the visible initial state and explicit from/event/to transitions with optional when and retry parameters. Conditions may read attempt; retry reuses the Task and agent hands off to the configured fallback. Only supplied fields change, including when kind is repeated. clear removes named optional fields; clear lifecycle explicitly restores the initial template for the selected kind. Changing kind requires lifecycle or clear lifecycle; incompatible fields must be explicitly cleared. Omitted collections are preserved; supplied lifecycle replaces the matrix. Configure notification outlets with set_notification_channels on the local platform. Unbind explicitly to share an incomplete Loop.', dict(draft, node_id=TEXT, kind={'type': 'string', 'enum': ['agent', 'command', 'external', 'event', 'approval', 'timer', 'loop']}, command=STRINGS, observe=STRINGS, cwd=TEXT, timeout={'type': 'number'}, event=TEXT, wait=OBJ, loop=OBJ, prompt=TEXT, terminal=BOOL, agent_cli={"type":"string","enum":["codex","claude","custom"]}, resume_command=STRINGS, executor=TEXT, dispatch=OBJ, lifecycle=OBJ, parameter_schema=OBJ, label=TEXT, description=TEXT, clear=STRINGS, unbind=BOOL, implementation_id=TEXT, default=BOOL), ['draft_id', 'revision', 'node_id'], False),
             ('put_asset', 'Write or explicitly remove one package file. docs/flow.html is the Agent-authored overview shown by the editor; docs/flow.md retains its source. read_capabilities(flow_diagram) describes the bundled renderer/template. Supply content (UTF-8) to write, or remove=true to delete. Unspecified executable preserves its previous value. Paths are package-relative; removal does not delete referenced nodes or other resources.', dict(draft, path=TEXT, content=TEXT, executable=BOOL, remove=BOOL), ['draft_id', 'revision', 'path'], False),
@@ -100,11 +87,9 @@ class PlatformTools:
             ('publish_loop', 'Publish a validated draft through the existing Loop package installer. auto_version=true selects a new version if already installed, preserving the Loop ID and old Runs. Returns the current draft revision. Does not start a Run.', dict(draft, auto_version=BOOL), ['draft_id', 'revision'], False),
             ('export_loop', 'Export draft definition and attached resources as a Loop ZIP. The CLI client can save the returned base64 via --output.', {'draft_id': TEXT}, ['draft_id'], True),
             ('read_loop_config', 'Read recipient config.json with key, or the shareable config.example.json template with draft_id (exactly one). Returns path/revision and author execution targets. Missing files use the package template or generated empty overrides. No online probes.', {'key': TEXT, 'draft_id': TEXT}, [], True),
-            ('set_loop_config', 'Replace recipient run configuration using the revision from read_loop_config. inputs holds this Loop startup parameters (e.g. data paths/service URLs); bindings selects candidates; implementations maps declared node IDs to candidate IDs to execution-field overrides. A new local candidate requires kind=agent/command/external and explicit bindings to select it; flow_agent overrides the existing built-in Agent execution only. clear explicitly removes optional execution fields. Workflow nodes/routes/lifecycle/Skill stay in the Loop. Changes affect new Runs, never existing Runs; local values are not exported with the package.', {'key': TEXT, 'revision': TEXT, 'config': OBJ}, ['key', 'revision', 'config'], False),
-            ('start_run', 'After user discussion, create a Run and acquire operation rights atomically. Complete entry_task_id using read_task/report_task (event=completed, report_id and task_version required), arrange tasks and finish; no second initializer is launched. Optional bindings map node IDs to candidate IDs or null; missing implementations do not prevent Run creation. Optional fallback_node overrides the Loop choice; an empty string disables fallback. chat_context carries entrance metadata without probing notifications; the platform records it and selects a local sender. Existing conversation_id reuses a registered entrance. Run notices and nested assistance inherit it. notification_command is this Run notification sender argv; persist an explicit chat destination rather than relying on the server environment.', {'key': TEXT, 'title': TEXT, 'created_by': TEXT, 'inputs': OBJ, 'authorization': TEXT, 'bindings': OBJ, 'fallback_node': TEXT, 'global_agent_node': TEXT, 'notification_command': STRINGS, 'notification_route': TEXT, 'conversation_id': TEXT, 'chat_context': CHAT_CONTEXT}, ['key', 'title', 'authorization'], False),
-            ('retry_notification', 'Retry one failed notification at its saved destination, including after the Run ends. Check whether an unknown delivery already arrived before retrying. Supply token if holding global operation rights; otherwise the platform creates an independent temporary identity; other thinking Agents do not block it.', {'run_id': TEXT, 'notification_id': TEXT, 'token': TEXT}, ['run_id', 'notification_id'], False),
+            ('set_loop_config', 'Replace recipient run configuration using the revision from read_loop_config. inputs holds this Loop startup parameters (e.g. data paths/service URLs); bindings selects candidates; implementations maps declared node IDs to candidate IDs to execution-field overrides. A new local candidate requires kind=agent/command/external and explicit bindings to select it. clear explicitly removes optional execution fields. Workflow nodes/routes/lifecycle/Skill stay in the Loop. Changes affect new Runs, never existing Runs; local values are not exported with the package.', {'key': TEXT, 'revision': TEXT, 'config': OBJ}, ['key', 'revision', 'config'], False),
+            ('start_run', 'Start in the CURRENT registered server session; the caller automatically owns the Run. Supply timeline_id to use saved work; continue_run_id explicitly recovers an interrupted Run without resubmitting in-flight work. A new Timeline uses objective/constraints. Keep request_id stable on retries.', {'request_id':TEXT, 'session_id':TEXT,'session_token':TEXT,'timeline_id':TEXT,'continue_run_id':TEXT,'objective':TEXT,'constraints':TEXT,'message':TEXT,'chat_context':CHAT_CONTEXT,'key':TEXT,'title':TEXT,'created_by':TEXT,'inputs':OBJ,'bindings':OBJ,'notification_command':STRINGS,'notification_route':TEXT}, ['request_id','session_id','session_token','key','title'], False),
             ('list_runs', 'Paginated compact Run summaries and per-person counts, without execution/record bodies. created_by is an exact display name (empty means unsigned), query searches titles/IDs/people/Loop names/objectives. Unix date bounds are inclusive from, exclusive to. Default last_activity_at desc excludes archived Runs. Reads and unchanged polling do not count as activity. root_only groups child Runs under their parent; parent_run_id retrieves children. Follow next_offset. Continuing work never requires a new Run.', {'query':TEXT,'status':TEXT,'created_by':TEXT,'loop_key':TEXT,'loop_id':TEXT,'created_from':{'type':'number'},'created_to':{'type':'number'},'active_from':{'type':'number'},'active_to':{'type':'number'},'sort':{'enum':['created_at','last_activity_at']},'order':{'enum':['asc','desc']},'archived':{'enum':['exclude','include','only']},'root_only':BOOL,'parent_run_id':TEXT,'kind':{'enum':['workflow','collaboration']},'limit':{'type':'integer','minimum':1,'maximum':200},'offset':{'type':'integer','minimum':0}}, [], True),
-            ('acquire_run', 'Acquire global rights when task_id is omitted, or the named task subtree when supplied. Identities may coexist in overlapping permission scopes; only the same Task execution claim conflicts. Timeline edits validate read basis atomically.', {'run_id': TEXT, 'task_id': TEXT}, ['run_id'], False),
         ]
         result = [{'name': n, 'description': d, 'inputSchema': object_schema(p, required), 'annotations': {'readOnlyHint': ro}}
                   for n, d, p, required, ro in defs]
@@ -112,11 +97,19 @@ class PlatformTools:
         result.extend(communication_definitions())
         from loop_anything.interfaces.executor_tools import definitions as executor_definitions
         result.extend(executor_definitions())
+        from loop_anything.interfaces.steward_tools import definitions as steward_definitions
+        result.extend(steward_definitions())
+        from loop_anything.interfaces.work_tools import definitions as work_definitions
+        result.extend(work_definitions())
+        node_tool = next(d for d in result if d['name'] == 'put_node')
+        node_tool['inputSchema']['properties']['progression'] = {'enum': ['steward', 'rules']}
+        node_tool['description'] += ' progression=steward returns completion to the Run steward; rules uses explicit routes/dependencies. Managed Runs default unspecified completion events to their steward; explicit routes own their events.'
         for original in self.run_definitions:
             d = copy.deepcopy(original)
             d['inputSchema']['properties'].update(run_id=TEXT, token=TEXT)
             d['inputSchema']['required'] += ['run_id']
-            d['description'] += ' Ordinary workspace calls may omit token; the platform manages temporary operation scope. Managed execution calls must use their supplied scoped identity.'
+            if d['name'] != 'send_event':
+                d['description'] += ' Client writes use submit_run_request. Runtime writes require the execution identity supplied by the platform.'
             result.append(d)
         return result
 
@@ -124,7 +117,7 @@ class PlatformTools:
         try:
             return dict(ok=True, **self.call(name, arguments))
         except (ValueError, KeyError, TypeError, StopIteration) as exc:
-            return {'ok': False, 'error': {'code': 'conflict' if isinstance(exc, Conflict) else 'invalid_request', 'message': str(exc), **({'conflicts': exc.conflicts} if hasattr(exc, 'conflicts') else {}), **({'path': exc.path} if isinstance(exc, Invalid) and exc.path else {})}}
+            return {'ok': False, 'error': {'code': 'conflict' if isinstance(exc, Conflict) else 'invalid_request', 'message': str(exc), **({'path': exc.path} if isinstance(exc, Invalid) and exc.path else {})}}
 
     def _draft(self, id, revision=None):
         draft = next((d for d in self.store.drafts() if d['id'] == id), None)
@@ -210,8 +203,6 @@ class PlatformTools:
                     if route.get('plan') == plan:
                         add(['loop_definition', 'nodes', ident, 'routes', index], route)
         if node:
-            if any(r.get('flow_agent') for r in bp['nodes'].get(node, {}).get('routes', [])):
-                add(['loop_definition', 'flow_agent'], bp.get('flow_agent'))
             for key in ('entry', 'fallback_node', 'global_agent_node'):
                 if not impl and bp.get(key) == node:
                     add(['loop_definition', key], node)
@@ -220,7 +211,7 @@ class PlatformTools:
                     add(['loop_definition', 'nodes', ident, 'plan_nodes'], item['plan_nodes'])
             if impl and default_id(loop['implementations'].get(node)) == impl:
                 entry = loop['implementations'][node]
-                add(['implementations', node] + ([] if 'kind' in entry else ['default']), entry if 'kind' in entry else impl)
+                add(['implementations', node, 'default'], impl)
             if bp.get('seed', {}).get('node') == node and (not impl or bp['seed'].get('implementation') == impl):
                 add(['loop_definition', 'seed'], bp['seed'])
         for name, template in bp.get('plans', {}).items():
@@ -299,15 +290,15 @@ class PlatformTools:
             raise Invalid('Unknown platform tool')
         contract(arguments, definitions[name]['inputSchema'], 'arguments')
         a = copy.deepcopy(arguments)
+        from loop_anything.interfaces.work_tools import definitions as work_definitions, call as work_call
+        if name in {d['name'] for d in work_definitions()}:return work_call(self.store,name,a)
+        from loop_anything.interfaces.steward_tools import definitions as steward_definitions, call as steward_call
+        if name in {d['name'] for d in steward_definitions()}:
+            return steward_call(self.store, name, a)
         from loop_anything.interfaces.executor_tools import definitions as executor_definitions, call as executor_call
         if name in {d['name'] for d in executor_definitions()}:return executor_call(self.store,name,a)
         from loop_anything.interfaces.communication_tools import definitions as communication_definitions, call as communication_call
         if name in {d['name'] for d in communication_definitions()}:
-            source=a.get('source') or {}
-            if name=='request_assistance' and source.get('run_id') and 'token' not in a:
-                return self._with_operator(source['run_id'],lambda handle:communication_call(self.store,name,dict(a,token=handle)))
-            if name=='wait_assistance' and 'token' not in a:
-                return self._with_operator(a['run_id'],lambda handle:communication_call(self.store,name,dict(a,token=handle)))
             return communication_call(self.store, name, a)
         if name in {d['name'] for d in self.run_definitions}:
             return self._run_call(a.pop('run_id'),a.pop('token',None),name,a)
@@ -362,10 +353,8 @@ class PlatformTools:
             return {'path': TEMPLATE, 'exists': asset is not None, 'revision': draft['revision'],
                     'config': decode(base64.b64decode(asset['base64'])) if asset else template(draft),
                     'scope': 'package_template', 'write_tool': 'put_asset'}
-        if name in ('archive_loop','delete_loop','update_run','delete_run'):
-            from loop_anything.runtime.run_library import manage_loop, update_run, delete_run
-            if name == 'update_run':return update_run(self.store, **a)
-            if name == 'delete_run':return delete_run(self.store, **a)
+        if name in ('archive_loop','delete_loop'):
+            from loop_anything.runtime.run_library import manage_loop
             return manage_loop(self.store, delete=name=='delete_loop', **a)
         if name == 'list_loops':
             return {'loops': [{'key': d['key'], 'loop_id': d['loop_definition']['id'], 'version': d['loop_definition']['version'], 'name': d['loop_definition'].get('name', d['loop_definition']['id']), 'archived_at':d.get('archived_at')} for d in self.store.catalog(a.get('include_archived',False))],
@@ -387,18 +376,11 @@ class PlatformTools:
             return {'loop': loop, 'authoring_context': authoring_context(),
                     'run_configuration': {'template_asset': 'config.example.json', 'read_tool': 'read_loop_config', 'write_tool': 'set_loop_config', 'note': 'Recipient execution configuration is separate; inspect before adapting paths, Agents or services.'}}
         if name == 'start_run':
-            run = self.store.create(a['key'], a['title'], a.get('inputs'), authorization=a['authorization'], acquire=True, bindings=a.get('bindings'), fallback_node=a.get('fallback_node'), global_agent_node=a.get('global_agent_node'), notification_command=a.get('notification_command'),notification_route=a.get('notification_route'),conversation_id=a.get('conversation_id'),chat_context=a.get('chat_context'),created_by=a.get('created_by'))
-            return {'run_id': run['id'], 'token': run['agent_sessions'][0]['token'], 'entry_task_id': run['loop_definition']['seed']['id']}
-        if name == 'retry_notification':
-            if not self.store.get(a['run_id']).get('operator_protocol'):
-                raise Invalid('Historical Run is inspect-only')
-            RunTools(self.store, a['run_id'], a.get('token', '')).runtime.command(a['run_id'], 'retry_notification', notification_id=a['notification_id'], operator_token=a.get('token'))
-            return {'queued': True, 'notification_id': a['notification_id']}
+            from loop_anything.runtime.work import start_run
+            return start_run(self.store,a)
         if name == 'list_runs':
             from loop_anything.runtime.run_library import list_runs
             return list_runs(self.store, **a)
-        if name == 'acquire_run':
-            return acquire(self.store, a['run_id'], a.get('task_id'))
         if name == 'create_loop':
             bp = {'schema_version': 2, 'id': a.get('id') or uid('loop'), 'name': a['name'], 'version': '1',
                   'entry': 'initialize', 'handbook': {'instructions': ''}, 'defaults': {},
@@ -406,7 +388,7 @@ class PlatformTools:
                       'initialize': {'label': '初始状态', 'instructions': '根据已确认的对话将目标、要求和约束写入 Timeline settings；按需安排后续任务，提交本节点后释放操作权。',
                           'initialize_timeline': True, 'inputs': {}, 'outputs': {}}},
                   'seed': {'id': 'initialize', 'node': 'initialize', 'inputs': {}, 'outputs': {}}, 'plans': {}}
-            return self._summary(self.store.save_draft(bp, {'initialize': {'kind': 'agent'}}), authoring=True)
+            return self._summary(self.store.save_draft(bp, {'initialize': {'options': {'default': {'kind': 'agent'}}, 'default': 'default'}}), authoring=True)
         if name == 'copy_loop':
             source = self._installed(a['key'])
             assets, checks = [], {}
@@ -454,7 +436,7 @@ class PlatformTools:
                     raise Invalid('Only existing unreferenced record types can be removed')
                 for record in set(a['remove_records']):
                     del bp['records'][record]
-            for field in ('name', 'version', 'description', 'defaults', 'limits', 'guide', 'fallback_node', 'global_agent_node', 'flow_agent', 'requires', 'scenarios'):
+            for field in ('name', 'version', 'description', 'defaults', 'limits', 'guide', 'fallback_node', 'global_agent_node', 'requires', 'scenarios', 'state'):
                 if field in a:
                     bp[field] = a[field]
             if 'fallback_node' in a:
@@ -474,7 +456,7 @@ class PlatformTools:
             if not re.fullmatch(r'[a-zA-Z0-9_-]+', id):
                 raise Invalid('Node ID accepts letters, numbers, underscore and hyphen')
             node = bp['nodes'].setdefault(id, {'instructions': '', 'inputs': {}, 'outputs': {}})
-            for field in ('instructions', 'description', 'label', 'skills', 'plan_nodes', 'routes', 'parameter_schema', 'agent_settings_schema', 'assertions'):
+            for field in ('instructions', 'description', 'label', 'skills', 'plan_nodes', 'routes', 'parameter_schema', 'agent_settings_schema', 'assertions', 'progression'):
                 if field in a:
                     node[field] = a[field]
             for direction in ('inputs', 'outputs'):

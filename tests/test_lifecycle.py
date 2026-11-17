@@ -30,7 +30,7 @@ class LifecycleTests(unittest.TestCase):
             dict(task_id=context['task_id'], execution_id=context['execution_id'], event=event, report_id=report_id, **fields))
 
     def external(self, handler):
-        self.base.implementations['produce'] = {'kind': 'external', 'command': ['submit'], 'observe': ['check']}
+        self.base.implementations['produce'] = {'options': {'default': {'kind': 'external', 'command': ['submit'], 'observe': ['check']}}, 'default': 'default'}
         with patch('loop_anything.runtime.timeline_runtime.run_command', side_effect=handler):
             self.base.initialize([task_spec('job', 'produce', {'source': {'record': 'a'}}, {'text': 'out'})])
             self.settle()
@@ -40,7 +40,7 @@ class LifecycleTests(unittest.TestCase):
         e = self.base.start()
         tools = RunTools(self.store, self.base.id, e['token'])
         info = tools.call('read_task', {'task_id': 'init'})
-        args = dict(task_id='init', task_version=info['task_version'], event='completed', report_id='final',
+        args = dict(task_id='init', event='completed', report_id='final',
                     envelope={'outputs': {'a': 'A', 'b': 'B'}, 'settings': {'objective': 'Test reporting'}})
         bad = dict(args, envelope={'outputs': {'a': 'A'}})
         with self.assertRaises(Invalid):
@@ -62,7 +62,7 @@ class LifecycleTests(unittest.TestCase):
         from concurrent.futures import ThreadPoolExecutor
         e=self.base.start();tools=RunTools(self.store,self.base.id,e['token'])
         info=tools.call('read_task',{'task_id':'init'})
-        progress={'task_id':'init','task_version':info['task_version'],'report_id':'progress-1','event':'progress'}
+        progress={'task_id':'init','report_id':'progress-1','event':'progress'}
         with ThreadPoolExecutor(max_workers=2) as pool:
             results=list(pool.map(lambda _:tools.call('report_task',progress),range(2)))
         self.assertEqual(sum(r.get('duplicate',False) for r in results),1)
@@ -72,8 +72,7 @@ class LifecycleTests(unittest.TestCase):
         tools.call('change_settings',{'revision':run['settings']['revision'],'change':{'hooks':[
             {'id':'notify','action':'notify','phase':'after','target':{'tasks':'init'},'route':'workspace','frequency':'always'}]}})
         info=tools.call('read_task',{'task_id':'init'})
-        completed=dict(progress,event='completed',report_id='final',task_version=info['task_version'],
-            envelope={'outputs':{'a':'A','b':'B'},'settings':{'objective':'One commit'}})
+        completed=dict(progress,event='completed',report_id='final',envelope={'outputs':{'a':'A','b':'B'},'settings':{'objective':'One commit'}})
         with ThreadPoolExecutor(max_workers=2) as pool:
             list(pool.map(lambda _:tools.call('report_task',completed),range(2)))
         run=self.base.read()
@@ -83,7 +82,7 @@ class LifecycleTests(unittest.TestCase):
 
     def test_direct_script_result_survives_exit_error_and_rejects_late_report(self):
         captured = {}
-        self.base.implementations['produce'] = {'kind': 'command', 'command': ['script']}
+        self.base.implementations['produce'] = {'options': {'default': {'kind': 'command', 'command': ['script']}}, 'default': 'default'}
         def handler(command, request, *args, **kw):
             context = json.loads(request);captured.update(context)
             self.call(context, 'completed', 'final', envelope={'outputs': {'text': 'done'}})
@@ -149,7 +148,7 @@ class LifecycleTests(unittest.TestCase):
         captured = {}
         def submit(command, request, *args, **kwargs):
             captured.update(json.loads(request))
-            return subprocess.CompletedProcess(command, 0, json.dumps({'status':'waiting','external_id':'remote-1','poll_after':100}), '')
+            return subprocess.CompletedProcess(command, 0, json.dumps({'event':'submitted','external_id':'remote-1','poll_after':100}), '')
         attempt = self.external(submit)
         for state in ('agent', 'fault', 'completed', 'retry'):
             with self.subTest(state=state):
@@ -181,13 +180,13 @@ class LifecycleTests(unittest.TestCase):
         import threading
         from concurrent.futures import ThreadPoolExecutor
         self.base.bp['nodes']['recover']=node();self.base.bp['fallback_node']='recover'
-        self.base.implementations['recover']={'kind':'agent'}
+        self.base.implementations['recover']={'options': {'default': {'kind':'agent'}}, 'default': 'default'}
         matrix=template('external');next(r for r in matrix['transitions'] if r['event']=='check_error')['to']='agent';validate(matrix)
         for target in ('fault','retry','completed'):
             bad=json.loads(json.dumps(matrix));next(r for r in bad['transitions'] if r['event']=='check_error')['to']=target
             with self.assertRaises(Invalid):validate(bad)
-        self.base.implementations['produce']={'kind':'external','command':['submit'],'observe':['check'],'lifecycle':matrix}
-        def submit(command,request,*args,**kwargs):return subprocess.CompletedProcess(command,0,json.dumps({'status':'waiting','external_id':'remote-1','poll_after':100}), '')
+        self.base.implementations['produce']={'options': {'default': {'kind':'external','command':['submit'],'observe':['check'],'lifecycle':matrix}}, 'default': 'default'}
+        def submit(command,request,*args,**kwargs):return subprocess.CompletedProcess(command,0,json.dumps({'event':'submitted','external_id':'remote-1','poll_after':100}), '')
         with patch('loop_anything.runtime.timeline_runtime.run_command',side_effect=submit):
             self.base.initialize([task_spec('job','produce',{'source':{'record':'a'}},{'text':'out'})]);self.settle()
         original=self.base.read();attempt=next(e for e in original['executions'] if e['task_id']=='job')
@@ -215,7 +214,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(len([e for e in run['executions'] if e['task_id']=='job']),1)
 
     def test_agent_missing_cwd_is_classified_as_start_configuration_error(self):
-        self.base.implementations['produce']={'kind':'agent','command':[sys.executable,'-c','pass'],'cwd':str(self.store.filename)+'.missing'}
+        self.base.implementations['produce']={'options': {'default': {'kind':'agent','command':[sys.executable,'-c','pass'],'cwd':str(self.store.filename)+'.missing'}}, 'default': 'default'}
         self.base.initialize([task_spec('job','produce',{'source':{'record':'a'}},{'text':'out'})])
         run=self.base.read();owner=run['agent_sessions'][0];RunTools(self.store,self.base.id,owner['token']).call('finish',{})
         self.engine.tick(self.base.id);self.settle()
@@ -226,12 +225,12 @@ class LifecycleTests(unittest.TestCase):
     def test_custom_matrix_uncovered_event_enters_only_configured_fallback(self):
         self.base.bp['nodes']['recover'] = node()
         self.base.bp['fallback_node'] = 'recover'
-        self.base.implementations['recover'] = {'kind': 'agent'}
+        self.base.implementations['recover'] = {'options': {'default': {'kind': 'agent'}}, 'default': 'default'}
         matrix = {'initial': 'loading', 'transitions': [
             {'from': 'loading', 'event': 'loaded', 'to': 'processing'},
             {'from': 'processing', 'event': 'completed', 'to': 'completed'}]}
         validate(matrix)
-        self.base.implementations['produce'] = {'kind': 'command', 'command': ['script'], 'lifecycle': matrix}
+        self.base.implementations['produce'] = {'options': {'default': {'kind': 'command', 'command': ['script'], 'lifecycle': matrix}}, 'default': 'default'}
         def handler(command, request, *args, **kw):
             context=json.loads(request)
             self.assertTrue(self.call(context,'loaded','1')['accepted'])
@@ -269,8 +268,8 @@ client=importlib.util.module_from_spec(spec);spec.loader.exec_module(client)
 client.report(context,'completed',report_id='done',envelope={'outputs':{'text':'done'}})
 assert client.report(context,'progress',report_id='late')['stale']
 ''')
-        self.base.implementations['produce']={'kind':'external','command':[sys.executable,'-c','print(\'{"status":"waiting","external_id":"remote-http","poll_after":0.02}\')'],'observe':[sys.executable,str(monitor)]}
-        self.base.implementations['init']={'kind':'command','command':[sys.executable,str(script)]}
+        self.base.implementations['produce']={'options': {'default': {'kind':'external','command':[sys.executable,'-c','print(\'{"external_id": "remote-http", "poll_after": 0.02, "event": "submitted"}\')'],'observe':[sys.executable,str(monitor)]}}, 'default': 'default'}
+        self.base.implementations['init']={'options': {'default': {'kind':'command','command':[sys.executable,str(script)]}}, 'default': 'default'}
         key=self.store.publish(self.base.bp,self.base.implementations)['key']
         ident=self.store.create(key,'HTTP')['id']
         with socket.socket() as sock:
@@ -325,8 +324,8 @@ assert client.report(context,'progress',report_id='late')['stale']
         matrix['transitions'][-2]['when']={'op':'eq','args':[{'path':'attempt'},1]}
         matrix['transitions'].append({'from':'executing','event':'failed','to':'retry',
             'when':{'op':'eq','args':[{'path':'attempt'},2]},'parameters':{'batch':8}})
-        script="import json,sys;c=json.load(sys.stdin);print(json.dumps({'event':'failed','report_id':'failed','detail':{'message':'retryable'}} if c['attempt']<3 else {'outputs':{'text':str(c['parameters'])}}))"
-        self.base.implementations['produce']={'kind':'command','command':[sys.executable,'-c',script],'lifecycle':matrix}
+        script="import json,sys;c=json.load(sys.stdin);print(json.dumps({'event':'failed','report_id':'failed','detail':{'message':'retryable'}} if c['attempt']<3 else {'event':'completed','envelope':{'outputs':{'text':str(c['parameters'])}}}))"
+        self.base.implementations['produce']={'options': {'default': {'kind':'command','command':[sys.executable,'-c',script],'lifecycle':matrix}}, 'default': 'default'}
         self.base.initialize([task_spec('work','produce',{'source':{'record':'a'}},{'text':'out'},parameters={'batch':16,'keep':42}),
             task_spec('downstream','join',{'a':{'record':'out'},'b':{'record':'b'}},{'ok':'done'},after=['work'])]);self.settle()
         run=self.base.read();first=next(e for e in run['executions'] if e['task_id']=='work')
@@ -347,10 +346,10 @@ assert client.report(context,'progress',report_id='late')['stale']
         self.assertEqual(len([e for e in self.base.read()['executions'] if e['task_id']=='work']),3)
 
     def test_external_failures_retry_then_agent_repairs_original_task(self):
-        self.base.bp['nodes']['recover']=node();self.base.bp['fallback_node']='recover';self.base.implementations['recover']={'kind':'agent'}
-        submit="import json,sys;c=json.load(sys.stdin);print(json.dumps({'status':'waiting','external_id':'job-'+str(c['attempt']),'poll_after':.001}))"
-        observe="import json,sys;c=json.load(sys.stdin);print(json.dumps({'event':'failed','report_id':'failed'} if not c['parameters'].get('fixed') else {'outputs':{'text':'repaired'}}))"
-        self.base.implementations['produce']={'kind':'external','command':[sys.executable,'-c',submit],'observe':[sys.executable,'-c',observe],'lifecycle':self.retry_matrix('external')}
+        self.base.bp['nodes']['recover']=node();self.base.bp['fallback_node']='recover';self.base.implementations['recover']={'options': {'default': {'kind':'agent'}}, 'default': 'default'}
+        submit="import json,sys;c=json.load(sys.stdin);print(json.dumps({'event':'submitted','external_id':'job-'+str(c['attempt']),'poll_after':.001}))"
+        observe="import json,sys;c=json.load(sys.stdin);print(json.dumps({'event':'failed','report_id':'failed'} if not c['parameters'].get('fixed') else {'event':'completed','envelope':{'outputs':{'text':'repaired'}}}))"
+        self.base.implementations['produce']={'options': {'default': {'kind':'external','command':[sys.executable,'-c',submit],'observe':[sys.executable,'-c',observe],'lifecycle':self.retry_matrix('external')}}, 'default': 'default'}
         self.base.initialize([task_spec('work','produce',{'source':{'record':'a'}},{'text':'out'})])
         run=self.advance(lambda r:any(e['node']=='recover' for e in r['executions']))
         attempts=[e for e in run['executions'] if e['task_id']=='work']
@@ -360,7 +359,7 @@ assert client.report(context,'progress',report_id='late')['stale']
         tools.call('read_task',{'task_id':'work'})
         tools.call('change_task',{'task_id':'work','operation':'retry','parameters':{'fixed':True},'reason':'Repair original task'})
         info=tools.call('read_task',{'task_id':fallback['task_id']})
-        tools.call('complete_task',{'task_id':fallback['task_id'],'task_version':info['task_version'],'envelope':{'outputs':{}}});tools.call('finish',{})
+        tools.call('report_task', {'event':'completed','report_id':'complete','task_id':fallback['task_id'],'envelope':{'outputs':{}}});tools.call('finish',{})
         run=self.advance(lambda r:r['tasks']['work']['status']=='completed')
         self.assertEqual(run['tasks']['work']['revision'],2)
         self.assertEqual(len([t for t in run['tasks'].values() if t['spec']['node']=='produce']),1)
@@ -372,10 +371,10 @@ assert client.report(context,'progress',report_id='late')['stale']
                 matrix=self.retry_matrix('external',parameters={'batch':0} if bad_parameters else None)
                 if not bad_parameters:matrix['transitions'][-1]['when']={'op':'ge','args':[{'path':'attempt'},1]}
                 validate(matrix)
-                self.base.implementations['produce']={'kind':'external','command':['submit'],'observe':['observe'],'lifecycle':matrix,
-                    'parameter_schema':{'type':'object','properties':{'batch':{'type':'integer','minimum':1}}}}
+                self.base.implementations['produce']={'options': {'default': {'kind':'external','command':['submit'],'observe':['observe'],'lifecycle':matrix,
+                    'parameter_schema':{'type':'object','properties':{'batch':{'type':'integer','minimum':1}}}}}, 'default': 'default'}
                 self.base.bp['version']=str(bad_parameters)
-                with patch('loop_anything.runtime.timeline_runtime.run_command',return_value=subprocess.CompletedProcess([],0,json.dumps({'status':'waiting','external_id':'job','poll_after':10}),'')):
+                with patch('loop_anything.runtime.timeline_runtime.run_command',return_value=subprocess.CompletedProcess([],0,json.dumps({'event':'submitted','external_id':'job','poll_after':10}),'')):
                     self.base.initialize([task_spec('work','produce',{'source':{'record':'a'}},{'text':'out'},parameters={'batch':16})]);self.settle()
                 run=self.base.read();e=next(e for e in run['executions'] if e['task_id']=='work')
                 result=RunTools(self.store,self.base.id,e['token']).call('report_task',{'task_id':'work','execution_id':e['id'],'event':'failed','report_id':'failed'})
@@ -385,7 +384,7 @@ assert client.report(context,'progress',report_id='late')['stale']
 
     def test_pending_retry_waits_for_scope_and_unconfirmed_exit_blocks_restart(self):
         matrix=self.retry_matrix('command')
-        self.base.implementations['produce']={'kind':'command','command':['work'],'lifecycle':matrix}
+        self.base.implementations['produce']={'options': {'default': {'kind':'command','command':['work'],'lifecycle':matrix}}, 'default': 'default'}
         with patch('loop_anything.runtime.timeline_runtime.run_command',return_value=subprocess.CompletedProcess([],0,json.dumps({'event':'failed','report_id':'failed'}),'')):
             self.base.initialize([task_spec('work','produce',{'source':{'record':'a'}},{'text':'out'})]);self.settle()
         from loop_anything.interfaces.agent_tasks import acquire
@@ -406,14 +405,14 @@ assert client.report(context,'progress',report_id='late')['stale']
         self.base.bp['nodes']['recover']=node();self.base.bp['fallback_node']='recover'
         matrix=template('agent')
         next(r for r in matrix['transitions'] if r['event']=='failed')['to']='retry'
-        self.base.implementations['recover']={'kind':'agent','lifecycle':matrix}
-        self.base.implementations['produce']={'kind':'command','command':[sys.executable,'-c','raise SystemExit(1)']}
+        self.base.implementations['recover']={'options': {'default': {'kind':'agent','lifecycle':matrix}}, 'default': 'default'}
+        self.base.implementations['produce']={'options': {'default': {'kind':'command','command':[sys.executable,'-c','raise SystemExit(1)']}}, 'default': 'default'}
         self.base.initialize([task_spec('work','produce',{'source':{'record':'a'}},{'text':'out'})])
         run=self.advance(lambda r:any(e['node']=='recover' for e in r['executions']))
         fallback=next(e for e in run['executions'] if e['node']=='recover')
         tools=RunTools(self.store,self.base.id,fallback['token'])
         info=tools.call('read_task',{'task_id':fallback['task_id']})
-        tools.call('report_task',{'task_id':fallback['task_id'],'task_version':info['task_version'],'event':'failed','report_id':'retry'})
+        tools.call('report_task',{'task_id':fallback['task_id'],'event':'failed','report_id':'retry'})
         for _ in range(3):self.engine.tick(self.base.id)
         run=self.base.read()
         self.assertEqual(run['tasks'][fallback['task_id']]['status'],'retrying')
@@ -422,7 +421,7 @@ assert client.report(context,'progress',report_id='late')['stale']
     def test_agent_process_retry_does_not_bypass_three_failure_pause(self):
         matrix=template('agent')
         next(r for r in matrix['transitions'] if r['event']=='process_error')['to']='retry'
-        self.base.implementations['produce']={'kind':'agent','command':[sys.executable,'-c','raise SystemExit(1)'],'lifecycle':matrix}
+        self.base.implementations['produce']={'options': {'default': {'kind':'agent','command':[sys.executable,'-c','raise SystemExit(1)'],'lifecycle':matrix}}, 'default': 'default'}
         self.base.initialize([task_spec('work','produce',{'source':{'record':'a'}},{'text':'out'})])
         owner=self.base.read()['agent_sessions'][0]
         RunTools(self.store,self.base.id,owner['token']).call('finish',{})
@@ -435,7 +434,7 @@ assert client.report(context,'progress',report_id='late')['stale']
         matrix=template('agent')
         for row in matrix['transitions']:
             if row['event'] in ('failed','process_error'):row['to']='retry'
-        self.base.implementations['produce']={'kind':'agent','command':['agent'],'lifecycle':matrix}
+        self.base.implementations['produce']={'options': {'default': {'kind':'agent','command':['agent'],'lifecycle':matrix}}, 'default': 'default'}
         ids=('with_finish','without_finish')
         self.base.initialize([task_spec(id,'produce',{'source':{'record':'a'}},{'text':id}) for id in ids])
         owner=self.base.read()['agent_sessions'][0];RunTools(self.store,self.base.id,owner['token']).call('finish',{})
@@ -443,7 +442,7 @@ assert client.report(context,'progress',report_id='late')['stale']
             context=json.loads(request.split('Run context:\n',1)[1]);tools=RunTools(self.store,self.base.id,context['token'])
             if context['task_id']=='with_finish':
                 info=tools.call('read_task',{'task_id':context['task_id']})
-                tools.call('report_task',{'task_id':context['task_id'],'task_version':info['task_version'],'event':'failed','report_id':'failed'})
+                tools.call('report_task',{'task_id':context['task_id'],'event':'failed','report_id':'failed'})
                 tools.call('finish',{})
             raise CommandNotStopped('Test: process still exists')
         with patch('loop_anything.runtime.timeline_runtime.run_command',side_effect=handler):
@@ -454,22 +453,23 @@ assert client.report(context,'progress',report_id='late')['stale']
             self.assertEqual(e['retry']['status'],'blocked');self.assertEqual(run['tasks'][id]['attempts'],1)
 
     def test_agent_can_release_its_scope_after_explicit_handoff(self):
-        self.base.bp['nodes']['recover']=node();self.base.bp['fallback_node']='recover';self.base.implementations['recover']={'kind':'agent'}
+        self.base.bp['nodes']['recover']=node();self.base.bp['fallback_node']='recover';self.base.implementations['recover']={'options': {'default': {'kind':'agent'}}, 'default': 'default'}
         matrix=template('agent');next(r for r in matrix['transitions'] if r['event']=='failed')['to']='agent'
-        self.base.implementations['produce']={'kind':'agent','lifecycle':matrix}
+        self.base.implementations['produce']={'options': {'default': {'kind':'agent','lifecycle':matrix}}, 'default': 'default'}
         self.base.initialize([task_spec('work','produce',{'source':{'record':'a'}},{'text':'out'})])
         owner=self.base.read()['agent_sessions'][0];RunTools(self.store,self.base.id,owner['token']).call('finish',{})
         self.engine.tick(self.base.id);run=self.base.read();e=next(e for e in run['executions'] if e['task_id']=='work')
         tools=RunTools(self.store,self.base.id,e['token']);info=tools.call('read_task',{'task_id':'work'})
-        tools.call('report_task',{'task_id':'work','task_version':info['task_version'],'event':'failed','report_id':'handoff'})
+        tools.call('report_task',{'task_id':'work','event':'failed','report_id':'handoff'})
         self.assertTrue(tools.call('finish',{})['finished'])
         run=self.advance(lambda r:any(e['node']=='recover' for e in r['executions']))
         self.assertEqual(run['tasks']['work']['status'],'fault')
         self.assertEqual(len([t for t in run['tasks'].values() if t['spec']['node']=='produce']),1)
 
     def test_matrix_cannot_bypass_completion_or_define_ambiguous_transition(self):
-        incomplete = {'a': None, 'b': {'options': None}, 'c': {'options': {'draft': None}}}
+        incomplete = {'b': {'options': {}}, 'c': {'options': {'draft': None}}}
         self.assertEqual(materialize(incomplete), incomplete)
+        with self.assertRaises(Invalid):materialize({'b': {'options': None}})
         value=template('command')
         value['transitions'].append({'from':'executing','event':'done','to':'completed'})
         with self.assertRaises(Invalid):validate(value)

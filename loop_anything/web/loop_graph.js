@@ -1,7 +1,6 @@
 'use strict';
 // Definition relationships, not runtime Task dependencies or inferred business routes.
 function loop_definitionEdges(bp){
-  if(bp.schema_version!==2)return [...(bp.transitions || [])];
   return Object.entries(bp.plans || {}).flatMap(([name,plan])=>Object.entries(plan.steps).flatMap(([key,step])=>[
     ...(step.after || []).filter(k=>plan.steps[k]).map(k=>({id:name,from:plan.steps[k].node,to:step.node})),
     ...Object.entries(step.inputs || {}).flatMap(([port,source])=>{
@@ -124,11 +123,12 @@ function nodeExecutorText(config){
 }
 function nodeAxesHTML(item,id,config,status=undefined){
   const node=item.loop_definition.nodes[id],routes=node.routes||[],agent=routes.some(r=>r.flow_agent===true);
+  const steward=!node.builtin&&!node.initialize_timeline&&(node.progression==='steward'||((!item.tasks||item.steward)&&node.progression!=='rules'&&!routes.some(r=>r.event==='completed')));
   const rules=routes.some(r=>r.plan)||loop_definitionEdges(item.loop_definition).some(e=>e.from===id);
-  const mode=agent?(rules?'mixed':'agent'):(rules?'rules':node.plan_nodes?.length?'task':'none');
+  const mode=steward?'agent':agent?(rules?'mixed':'agent'):(rules?'rules':node.plan_nodes?.length?'task':'none');
   const kind=config?.kind||'unknown',symbol=({agent:'✦',command:'⌘',external:'↗',event:'◇',timer:'◷',approval:'?',loop:'↳'})[kind]||'?';
   const who=nodeExecutorText(config);
-  const advancement=({mixed:'平台规则 / 流程 Agent',agent:'流程 Agent',rules:'平台按规则',task:'执行者安排后续任务',none:'未声明后续'})[mode];
+  const advancement=steward?(item.steward?'Run 管家':'启动后由管家判断'):({mixed:'平台规则 / 流程 Agent',agent:'流程 Agent',rules:'平台按规则',task:'执行者安排后续任务',none:'未声明后续'})[mode];
   const details=routes.map(r=>`${r.event}${hasTransitionCondition(r)?'（有条件）':''} → ${r.flow_agent?'流程 Agent':r.plan}`).join('；');
   const state=status===undefined?(item.tasks?'按具体 Task 查看':'未运行'):status;
   return `<span class="node-axes"><span class="node-axis"><span class="executor-shape executor-${esc(kind)}" aria-hidden="true">${symbol}</span><span>运行：${esc(who)}</span></span><span class="node-axis advancement advancement-${mode}" title="${esc(details||advancement)}">推进：${esc(advancement)}</span>${state!==null?`<span class="node-axis axis-state">状态：${esc(state)}</span>`:''}</span>`;

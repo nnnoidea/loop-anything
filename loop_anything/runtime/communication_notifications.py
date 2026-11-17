@@ -60,12 +60,6 @@ def refresh(comm,gid,group):
     from loop_anything.runtime.team_transport import transport
     media=transport(comm,group)
     bindings=copy.deepcopy(group.get('notification_bindings',{}))
-    # Legacy single-sender configuration becomes an entry for that machine, not a group-wide fallback.
-    try:legacy=media.get('notifications.json')
-    except FileNotFoundError:legacy=None
-    if legacy:
-        binding=validate_binding(legacy,gid)
-        bindings.setdefault(binding['sender_instance'],binding)
     for filename,value in media.list('notification-bindings'):
         binding=validate_binding(value,gid,filename.removesuffix('.json'))
         bindings[binding['sender_instance']]=binding
@@ -73,10 +67,8 @@ def refresh(comm,gid,group):
     with comm.transaction() as db:
         config=comm.settings(db)
         config['groups'][gid]['notification_bindings']=bindings;config['revision']+=1
-        config['groups'][gid].pop('notification_binding',None)
         db.execute('UPDATE communication_settings SET document=? WHERE id=1',(json.dumps(config),))
     group['notification_bindings']=bindings
-    group.pop('notification_binding',None)
 
 
 def select_binding(comm,request,state):

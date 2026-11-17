@@ -10,6 +10,8 @@ def add_task(run, spec, origin):
     """Install an explicit Task in the caller's Timeline transaction."""
     from loop_anything.runtime.store import Store
     from loop_anything.runtime.flow_agent import NODE as FLOW_AGENT
+    from loop_anything.runtime.steward import review_origin
+    origin = review_origin(run, origin)
     if spec.get('node') == FLOW_AGENT and not origin.get('flow_agent'):
         raise Invalid('Built-in flow decisions are created by explicit flow_agent routes')
     spec = copy.deepcopy(spec)
@@ -239,6 +241,7 @@ def build_plan(bp, name, key, values=None, steps=None, round_name=None, summary=
     tasks = resolve_task_references(tasks, known_tasks)
     for spec in tasks:check_task(bp, spec)
     summary['references'] = describe_references(tasks)
+    summary['steps']={name:[task['id'] for task in group] for name,group in groups.items()}
     # Catch ordering/data cycles before publishing the batch.
     producers = {d['id']: w['id'] for w in tasks for d in w['outputs'].values()}
     deps = {w['id']: list(w['after']) + [producers[rid] for source in w['inputs'].values()

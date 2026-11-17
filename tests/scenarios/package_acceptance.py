@@ -20,13 +20,13 @@ def definition():
         'plans': {}}
 
 
-SCRIPT = '''import json,sys
+SCRIPT = """import json,sys
 request=json.load(sys.stdin)
 if sys.argv[1]=='initialize':
-    print(json.dumps({'settings':{'objective':'Package handoff with simulated initialization','completion_rule':{'op':'ge','args':[{'path':['completed','finish']},1]}},'outputs':{'result':'portable'},'tasks':[{'id':'last','node':'finish','inputs':{'value':{'record':'result'}},'outputs':{'done':{'id':'done'}}}]}))
+    print(json.dumps({'event':'completed','envelope':{'settings':{'objective':'Package handoff with simulated initialization','completion_rule':{'op':'ge','args':[{'path':['completed','finish']},1]}},'outputs':{'result':'portable'},'tasks':[{'id':'last','node':'finish','inputs':{'value':{'record':'result'}},'outputs':{'done':{'id':'done'}}}]}}))
 else:
-    print(json.dumps({'outputs':{'done':request['inputs']['value']=='portable'}}))
-'''
+    print(json.dumps({'event':'completed','envelope':{'outputs':{'done':request['inputs']['value']=='portable'}}}))
+"""
 
 
 def main():
@@ -42,7 +42,7 @@ def main():
         with urlopen(req, timeout=15) as response:
             return json.load(response)
     bp = definition()
-    implementations = {n: {'kind': 'command', 'command': ['python3', 'scripts/action.py', n], 'simulation': True} for n in bp['nodes']}
+    implementations = {n: {'options': {'default': {'kind': 'command', 'command': ['python3', 'scripts/action.py', n], 'simulation': True}}, 'default': 'default'} for n in bp['nodes']}
     reports = []
     for count in (0, 1, 2):
         doc = {'loop_definition': bp, 'implementations': dict(list(implementations.items())[:count])}

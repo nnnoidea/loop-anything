@@ -28,7 +28,7 @@ class BranchTests(unittest.TestCase):
         self.id = self.store.create(key, 'Branches', acquire=True)['id']
         root = RunTools(self.store, self.id, self.read()['agent_sessions'][0]['token'])
         info = root.call('read_task', {'task_id': 'init'})
-        root.call('complete_task', {'task_id': 'init', 'task_version': info['task_version'], 'envelope': {
+        root.call('report_task', {'event':'completed','report_id':'complete','task_id': 'init', 'envelope': {
             'settings': {'objective': 'Compare two independent branches'}, 'outputs': {'result': 'start'},
             'tasks': [task_spec('a', 'reason'), task_spec('b', 'reason'),
                       task_spec('join', 'finish', {'value': {'record': 'a.result'}}, after=['a', 'b'])]}})
@@ -41,8 +41,7 @@ class BranchTests(unittest.TestCase):
 
     def complete(self, tools, task, **extra):
         info = tools.call('read_task', {'task_id': task})
-        return tools.call('complete_task', {'task_id': task, 'task_version': info['task_version'],
-            'envelope': dict(outputs={'result': task}, **extra)})
+        return tools.call('report_task', {'event':'completed','report_id':'complete','task_id': task, 'envelope': dict(outputs={'result': task}, **extra)})
 
     def test_branch_planning_cannot_edit_peer_ancestor_or_shared_join(self):
         agents = self.start()
@@ -107,7 +106,7 @@ class BranchTests(unittest.TestCase):
         self.assertEqual('join', global_owner['task_id'])
         self.assertIsNone(global_owner['scope_task'])
 
-    def test_existing_operator_keeps_its_global_scope(self):
+    def test_missing_session_data_is_checked_on_the_requested_run(self):
         key = self.store.publish(self.bp, self.impl)['key']
         run = self.store.create(key, 'Existing owner', acquire=True)
         self.id = run['id']
@@ -119,13 +118,8 @@ class BranchTests(unittest.TestCase):
             header['agent_session'].pop('task_id', None)
             db.execute('UPDATE runs SET document=? WHERE id=?', (json.dumps(header), self.id))
             db.commit()
-        converted = self.read()
-        self.assertEqual(original['token'], converted['agent_sessions'][0]['token'])
-        self.assertIsNone(converted['agent_sessions'][0]['scope_task'])
-        with self.assertRaises(Conflict):
-            acquire(self.store, self.id, 'init')
-        with self.assertRaises(Conflict):
-            RunTools(self.store, self.id, original['token']).call('finish', {})
+        from loop_anything.runtime.model import Invalid
+        with self.assertRaises(Invalid):Store(self.store.filename).get(self.id)
 
     def test_two_real_agent_commands_overlap_without_sharing_tokens(self):
         directory = Path(self.tmp.name)
@@ -142,10 +136,10 @@ while len(list(root.glob('*.started')))<2 and time.time()<limit:time.sleep(.02)
 assert len(list(root.glob('*.started')))==2, 'Agents were serialized'
 t=RunTools(Store(sys.argv[3]),p['run_id'],p['token'])
 i=t.call('read_task',{'task_id':p['task_id']})
-t.call('complete_task',{'task_id':p['task_id'],'task_version':i['task_version'],'envelope':{'outputs':{'result':p['task_id']}}})
+t.call('report_task', {'event':'completed','report_id':'complete','task_id':p['task_id'],'envelope':{'outputs':{'result':p['task_id']}}})
 t.call('finish',{})
 ''')
-        self.impl['reason'] = {'kind': 'agent', 'command': [sys.executable, str(script), str(directory), str(Path.cwd()), str(self.store.filename)], 'cwd': str(Path.cwd()), 'timeout': 12}
+        self.impl['reason'] = {'options': {'default': {'kind': 'agent', 'command': [sys.executable, str(script), str(directory), str(Path.cwd()), str(self.store.filename)], 'cwd': str(Path.cwd()), 'timeout': 12}}, 'default': 'default'}
         self.start()
         limit = time.time()+12
         while time.time()<limit:

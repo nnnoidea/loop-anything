@@ -11,7 +11,7 @@ from urllib.request import Request, urlopen
 
 from team_transport import atomic_json, connect, join, choose, prepare_dispatch, envelope, default_team
 
-END = {'completed','failed','cancelled','unavailable','not_selected'}
+END = {'completed','failed','cancelled','unavailable'}
 
 
 def wait_requests(read, request_ids, timeout=300, poll_interval=15):
@@ -51,21 +51,18 @@ class Client:
         self.directory=Path(directory).expanduser()
         self.file=self.directory/'connection.json'
         self.config=json.loads(self.file.read_text()) if self.file.exists() else {}
+        if self.config and ('teams' not in self.config or 'team' in self.config):raise ValueError('Unsupported connection configuration; join using a new configuration directory')
     def teams(self):
-        teams=dict(self.config.get('teams',{}))
-        old=self.config.get('team')
-        if old:teams.setdefault(old['id'],old)
-        return teams
+        return dict(self.config.get('teams',{}))
     def team(self, group_id=None):
         teams=self.teams()
-        selected=group_id or default_team(teams,self.config.get('default_team') or (self.config.get('team') or {}).get('id'))
+        selected=group_id or default_team(teams,self.config.get('default_team'))
         if selected not in teams:raise ValueError('Join a team link; specify group_id if multiple teams share the highest priority')
         if not teams[selected].get('enabled',True):raise ValueError('This team is disabled for new requests')
         return teams[selected]
     def save_teams(self, teams, preferred=None):
         selected=default_team(teams,preferred)
-        # Keep the old single-team field as a compatibility alias, not the connection registry.
-        self.config.update(teams=teams,default_team=selected,team=teams.get(selected))
+        self.config.update(teams=teams,default_team=selected)
         atomic_json(self.file,self.config)
     def configure(self, link, **kwargs):
         team=join(link,**kwargs)
@@ -76,7 +73,8 @@ class Client:
             with identity.open('x') as f:json.dump({'origin':self.config.get('origin') or 'client-'+uuid.uuid4().hex},f)
         except FileExistsError:pass
         self.config['origin']=json.loads(identity.read_text())['origin']
-        preferred=self.config.get('default_team') or (self.config.get('team') or {}).get('id')
+        preferred=self.config.get('default_team')
+        if team.get('namespace')=='agents' and teams.get(preferred,{}).get('transport')!='feishu_base':preferred=team['id']
         self.save_teams(teams,preferred)
         return {'team':team,'default_team':self.config['default_team'],'origin':self.config['origin']}
     def leave(self, group_id=None):
@@ -105,15 +103,9 @@ class Client:
     def request_team(self, ident, group_id=None):
         self.valid_id(ident)
         saved=self.directory/'requests'/(ident+'.json')
-        cache=self.directory/'results'/(ident+'.json')
-        if not saved.exists() and not cache.exists():return self.team(group_id)
-        value=json.loads((saved if saved.exists() else cache).read_text())
-        team=value.get('team') or value.get('request_ref',{}).get('team')
-        if not team:
-            # Legacy raw envelopes identify their team; never substitute today's default.
-            original=value['group_id'];team=self.teams().get(original)
-            if not team and cache.exists():team=json.loads(cache.read_text()).get('team')
-            if not team:raise ValueError('Reconnect the original team link for request '+ident+' ('+original+')')
+        if not saved.exists():return self.team(group_id)
+        value=json.loads(saved.read_text())
+        team=value['request_ref']['team'] if 'request_ref' in value else value['team']
         if group_id and group_id!=team['id']:raise ValueError('Request belongs to a different team')
         return team
     def request_record(self, ident):
@@ -122,11 +114,9 @@ class Client:
             ref=value['request_ref']
             try:return connect(ref['team']).get(ref['key'])
             except FileNotFoundError:raise ValueError('Original request was removed from team history')
-        return value.get('packet',value)
+        return value['packet']
     def read(self, ident, group_id=None):
         self.valid_id(ident)
-        cache=self.directory/'results'/(ident+'.json')
-        if cache.exists():return self.deliver_read_receipt(cache,json.loads(cache.read_text()))
         team=self.request_team(ident,group_id);media=connect(team)
         try:
             result=media.get('results/'+ident+'.json')
@@ -136,16 +126,7 @@ class Client:
                 if time.time()-member.get('updated_at',0)>media.offline_seconds:
                     result=dict(result,last_observed_state=result['state'],state='unknown',
                         state_hint='Receiver heartbeat is stale; execution may still be active. Do not republish as new work.')
-            if result.get('state') in END and result.get('result_receipt'):
-                saved=self.directory/'requests'/(ident+'.json')
-                packet=self.request_record(ident) if saved.exists() else None
-                if packet and packet['sender']==result.get('origin') and packet['assignment_id']==result.get('assignment_id'):
-                    receipt=envelope(packet['payload'],'result_read',{'receipt':result['result_receipt']})
-                    document={'request':result,'receipt':receipt,'team':team,'receipt_sent':False}
-                    # Never authorize cloud cleanup before the complete answer is durable locally.
-                    atomic_json(cache,document)
-                    return self.deliver_read_receipt(cache,document)
-            elif result.get('state') in END and team.get('transport')=='feishu_base':
+            if result.get('state') in END and team.get('transport')=='feishu_base':
                 saved=self.directory/'requests'/(ident+'.json')
                 if saved.exists():
                     packet=self.request_record(ident)
@@ -160,16 +141,6 @@ class Client:
             result={k:row[k] for k in ('id','state','agent_id','executor','deadline','created_at')}
             if time.time()>row['deadline']:result.update(state='unknown',state_hint='Acceptance not observed before the deadline; inspect the receiver before retrying as new work.')
             return result
-    def deliver_read_receipt(self, path, document):
-        result=dict(document['request'])
-        if not document.get('receipt_sent'):
-            packet=document['receipt']
-            try:
-                connect(document['team']).put('messages/'+packet['target']+'/'+packet['id']+'.json',packet,immutable=True)
-                document['receipt_sent']=True;atomic_json(path,document)
-            except (OSError,ValueError):result['receipt_pending']=True
-        return result
-
     @staticmethod
     def valid_id(ident):
         if not isinstance(ident,str) or not ident or len(ident)>100 or any(not(c.isascii() and (c.isalnum() or c in '_-')) for c in ident):

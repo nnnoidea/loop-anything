@@ -1,6 +1,6 @@
 # 统一 Loop 包：分享、安装、smoke、运行
 
-当前支持 v2 Loop 定义，扩展名 `.loop.zip`。普通包使用 `loop-anything-package/1`；使用事件路由、稳定引用、扩展契约、流程验收、Loop编辑保护或显式 requires 的包自动使用 `loop-anything-package/2`，并保存所需 capability IDs。旧服务明确拒绝新格式，接收服务也会检查实际能力。
+当前支持 v2 Loop 定义，扩展名 `.loop.zip`。仅使用 `loop-anything-package/2`，保存所需 capability IDs；接收服务检查实际能力，不读取或转换旧包格式。
 没有“Loop 定义包 / 半成品包 / 完整包”三种类型：同一格式允许零、部分、全部节点配置实现。
 结构有效即可分享、安装；缺失绑定只在实际需要执行相应任务时报告，不会自动补成 Agent 或模拟实现。
 历史 Run 保留；旧 v1 定义只读。原 CLI publish 复用相同包安装路径。
@@ -139,3 +139,5 @@ python3 -m loop_anything --db ./state/runs.sqlite3 smoke-runtime <key> --node ru
 `preview_plan` 只展开和校验草稿，`test_loop` 在隔离数据库中运行作者提供的模拟报告和断言。场景保存在 loop_definition.scenarios 并随包交付，编辑器「更多 → 流程验收」可保存和运行。入口与详细示例见 [平台测试手册](../skills/loop-anything-platform/references/testing.md)。
 
 能力发现还包括无需独立工具调用的调度、持久化、重启恢复、实现选择、原生查看和主机服务。create_loop/copy_loop/完整 read_loop 返回 authoring_context；read_capabilities 按机制说明 activation、平台职责、作者职责、配置、边界和组合示例。导出的 platform-capabilities.md 从同一份机制定义生成。
+
+候选实现目录统一为 `implementations.NODE = {"options":{"local":{"kind":"command","command":["python3","task.py"]}},"default":"local"}`。单候选也使用此结构，`default` 可省略以等待显式绑定；不接收裸 `{"kind":...}` 节点条目。执行脚本的 stdout 使用显式事件报告，见 [执行接口](timeline.md#执行接口)。

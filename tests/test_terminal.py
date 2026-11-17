@@ -164,11 +164,11 @@ assert os.isatty(0)
 print('ready for user',flush=True)
 answer=input()
 i=t.call('read_task',{'task_id':'init'})
-t.call('complete_task',{'task_id':'init','task_version':i['task_version'],'envelope':{'settings':{'objective':'Terminal'},'outputs':{'result':answer}}})
+t.call('report_task', {'event':'completed','report_id':'complete','task_id':'init','envelope':{'settings':{'objective':'Terminal'},'outputs':{'result':answer}}})
 t.call('finish',{})
 time.sleep(60)
 """
-        impl['init']={'kind':'agent','terminal':True,'command':[sys.executable,'-u','-c',code,self.store.filename,'{{prompt_file}}'],'cwd':str(Path(__file__).resolve().parents[1])}
+        impl['init']={'options': {'default': {'kind':'agent','terminal':True,'command':[sys.executable,'-u','-c',code,self.store.filename,'{{prompt_file}}'],'cwd':str(Path(__file__).resolve().parents[1])}}, 'default': 'default'}
         key=self.store.publish(bp,impl)['key'];run=self.store.create(key,'Terminal')
         try:
             engine.tick(run['id']);attempt=self.store.get(run['id'])['executions'][0]

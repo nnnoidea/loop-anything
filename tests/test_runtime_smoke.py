@@ -33,8 +33,8 @@ class RuntimeSmokeTests(unittest.TestCase):
         doc = document()
         doc['loop_definition']['nodes']['finish']['inputs'] = {}
         doc['loop_definition']['fallback_node'] = 'finish'
-        doc['implementations'] = {'initialize': {'kind': 'agent', 'command': [sys.executable, 'probe.py']},
-                                 'finish': {'kind': 'agent', 'command': [sys.executable, '-c', 'import sys;sys.stderr.write("directory not trusted");sys.exit(7)']}}
+        doc['implementations'] = {'initialize': {'options': {'default': {'kind': 'agent', 'command': [sys.executable, 'probe.py']}}, 'default': 'default'},
+                                 'finish': {'options': {'default': {'kind': 'agent', 'command': [sys.executable, '-c', 'import sys;sys.stderr.write("directory not trusted");sys.exit(7)']}}, 'default': 'default'}}
         result = install(self.store, make_archive(doc, {'probe.py': (script, False)}))
         loaded, root = load_installed(self.store.filename, result['key'])
         before = copy.deepcopy(loaded)
@@ -56,7 +56,7 @@ class RuntimeSmokeTests(unittest.TestCase):
     def test_interactive_prompt_echo_does_not_prove_model_reply(self):
         config = {'kind': 'agent', 'terminal': True, 'command': [sys.executable, '-u', '-c',
                   'import sys,time;print(sys.argv[1]);time.sleep(20)', '{{prompt}}']}
-        doc, root, _ = self.installed({'initialize': config})
+        doc, root, _ = self.installed({'initialize': {'options':{'default':config},'default':'default'}})
         report = runtime_smoke(doc, root, node_id='initialize', timeout=3)
         probe = next(c for c in report['checks'] if c['kind'] == 'agent_probe')
         self.assertEqual('unknown', probe['status'])
@@ -67,14 +67,14 @@ class RuntimeSmokeTests(unittest.TestCase):
         matrix = template('external')
         next(r for r in matrix['transitions'] if r['from'] == 'waiting' and r['event'] == 'failed')['to'] = 'retry'
         config = {'kind': 'external', 'command': [sys.executable, '-c', 'raise AssertionError("must not submit")'], 'observe': [sys.executable, '-c', 'raise AssertionError("must not observe")'], 'lifecycle': matrix}
-        doc, root, _ = self.installed({'finish': config})
+        doc, root, _ = self.installed({'finish': {'options':{'default':config},'default':'default'}})
         report = runtime_smoke(doc, root)
         self.assertTrue(report['ready'], report)
         retry = next(r for r in report['checks'] if r.get('state') == 'waiting' and r.get('event') == 'failed')
         self.assertIn('attempt 2', retry['detail'])
         self.assertFalse(report['verified'])  # Actual external services remain untested.
         matrix['transitions'] = [r for r in matrix['transitions'] if r['event'] != 'check_error']
-        doc, root, _ = self.installed({'finish': config})
+        doc, root, _ = self.installed({'finish': {'options':{'default':config},'default':'default'}})
         bad = runtime_smoke(doc, root)
         self.assertFalse(bad['ready'])
         self.assertTrue(any(r['status'] == 'fail' and r.get('event') == 'check_error' for r in bad['checks']))
@@ -83,7 +83,7 @@ class RuntimeSmokeTests(unittest.TestCase):
         retry_rule['when'] = {'op': 'le', 'args': [{'path': 'attempt'}, 2]}
         matrix['transitions'].append({'from': 'waiting', 'event': 'failed', 'to': 'agent',
                                      'when': {'op': 'ge', 'args': [{'path': 'attempt'}, 3]}})
-        doc, root, _ = self.installed({'finish': config})
+        doc, root, _ = self.installed({'finish': {'options':{'default':config},'default':'default'}})
         cases = [{'node': 'finish', 'implementation': 'default', 'state': 'waiting', 'event': 'failed', 'attempt': n, 'expected': to}
                  for n, to in [(1, 'retry'), (3, 'agent')]]
         checked = runtime_smoke(doc, root, cases=cases)
@@ -93,9 +93,9 @@ class RuntimeSmokeTests(unittest.TestCase):
         self.assertFalse(self.store.list())
 
     def test_timeout_and_corrupt_asset_do_not_become_success(self):
-        doc, root, _ = self.installed({'initialize': {'kind': 'agent', 'command': [sys.executable, '-c', 'import time;time.sleep(5)']}})
+        doc, root, _ = self.installed({'initialize': {'options':{'default':{'kind': 'agent', 'command': [sys.executable, '-c', 'import time;time.sleep(5)']}},'default':'default'}})
         report = runtime_smoke(doc, root, timeout=.05)
         self.assertFalse(report['ready'])
-        doc, root, _ = self.installed({'initialize': {'kind': 'agent', 'command': [sys.executable, 'probe.py']}}, {'probe.py': (b'raise AssertionError("must not execute")', False)})
+        doc, root, _ = self.installed({'initialize': {'options':{'default':{'kind': 'agent', 'command': [sys.executable, 'probe.py']}},'default':'default'}}, {'probe.py': (b'raise AssertionError("must not execute")', False)})
         (root / 'probe.py').write_text('changed')
         self.assertFalse(runtime_smoke(doc, root)['ready'])

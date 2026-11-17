@@ -35,7 +35,7 @@ class SelectionTests(unittest.TestCase):
 
     def complete(self, id, **extra):
         info = self.tools.call('read_task', {'task_id': id})
-        return self.tools.call('complete_task', {'task_id': id, 'task_version': info['task_version'], 'envelope': {'outputs': {'result': 'done'}, **extra}})
+        return self.tools.call('report_task', {'event':'completed','report_id':'complete','task_id': id, 'envelope': {'outputs': {'result': 'done'}, **extra}})
 
     def settings(self, **change):
         r = self.store.get(self.id)
@@ -60,12 +60,13 @@ class SelectionTests(unittest.TestCase):
         self.add(task_spec('work','script',parameters={'fail':True}))
         self.add(task_spec('downstream','finish',inputs={'value':{'record':'work.result'}},after=['work']))
         downstream=copy.deepcopy(self.store.get(self.id)['tasks']['downstream'])
-        run=self.until(lambda r:r['tasks']['work']['status']=='fault')
+        # A failure report can precede process exit; retries must wait for both.
+        run=self.until(lambda r:r['tasks']['work']['status']=='fault' and not any(e.get('worker_active') for e in r['executions'] if e['task_id']=='work'))
         self.assertEqual(run['tasks']['work']['revision'],1)
         self.tools.call('read_timeline', {})
         self.tools.call('read_task', {'task_id':'work'})
         self.tools.call('change_task',{'task_id':'work','operation':'retry','reason':'Transient failure'})
-        run=self.until(lambda r:r['tasks']['work']['status']=='fault')
+        run=self.until(lambda r:r['tasks']['work']['status']=='fault' and not any(e.get('worker_active') for e in r['executions'] if e['task_id']=='work'))
         self.assertEqual(run['tasks']['work']['revision'],1)
         self.tools.call('read_timeline', {})
         self.tools.call('read_task', {'task_id':'work'})
@@ -82,7 +83,7 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual([(d['before_revision'],d['after_revision']) for d in changes],[(1,1),(1,2)])
         self.assertEqual(changes[-1]['actor']['kind'],'interactive')
         self.assertNotIn('token',changes[-1]['actor'])
-        # Returning to identical parameters must still invalidate an older read token.
+        # Task revisions describe actual configuration changes; reads add no write prerequisite.
         self.tools.call('read_timeline', {})
         self.add(task_spec('decision','reason',parameters={}))
         info=self.tools.call('read_task',{'task_id':'decision'})
@@ -91,12 +92,12 @@ class SelectionTests(unittest.TestCase):
         self.tools.call('change_task',{'task_id':'decision','operation':'update','reason':'No change','parameters':{}})
         self.assertEqual(self.tools.call('read_task',{'task_id':'decision'})['task_revision'],1)
         for params in ({'value':1},{}):self.tools.call('change_task',{'task_id':'decision','operation':'update','reason':'Reconsider','parameters':params})
-        with self.assertRaises(Conflict):self.tools.call('complete_task',{'task_id':'decision','task_version':info['task_version'],'envelope':{'outputs':{'result':'stale'}}})
+        self.complete('decision')
         self.assertEqual(self.tools.call('read_task',{'task_id':'decision'})['task_revision'],3)
 
     def test_legacy_attempt_revisions_are_not_fabricated(self):
         self.start();self.add(task_spec('old','script',parameters={'fail':True}))
-        run=self.until(lambda r:r['tasks']['old']['status']=='fault')
+        run=self.until(lambda r:r['tasks']['old']['status']=='fault' and not any(e.get('worker_active') for e in r['executions'] if e['task_id']=='old'))
         old_id=run['tasks']['old']['execution_id']
         with self.store.edit(self.id) as run:
             run['tasks']['old'].pop('revision')
@@ -106,7 +107,7 @@ class SelectionTests(unittest.TestCase):
         self.tools.call('read_timeline', {})
         self.tools.call('read_task', {'task_id':'old'})
         self.tools.call('change_task',{'task_id':'old','operation':'retry','reason':'Retry same legacy task'})
-        run=self.until(lambda r:r['tasks']['old']['status']=='fault')
+        run=self.until(lambda r:r['tasks']['old']['status']=='fault' and not any(e.get('worker_active') for e in r['executions'] if e['task_id']=='old'))
         self.assertEqual(run['tasks']['old']['revision'],1)
         self.assertNotIn('task_revision',next(e for e in run['executions'] if e['id']==old_id))
         self.assertEqual(run['executions'][-1]['task_revision'],1)
@@ -115,7 +116,7 @@ class SelectionTests(unittest.TestCase):
         common={'type':'object','properties':{'count':{'type':'integer','minimum':1}},'required':['count']}
         local={'type':'object','properties':{'file':{'type':'string','nonempty':True}},'required':['file']}
         remote={'type':'object','properties':{'queue':{'type':'string','enum':['gpu']}},'required':['queue']}
-        command=copy.deepcopy(self.impl['script'])
+        command=copy.deepcopy(self.impl['script']['options']['default'])
         self.bp['nodes']['script']['parameter_schema']=common
         self.impl['script']={'default':'local','options':{'local':dict(command,parameter_schema=local),'remote':dict(command,parameter_schema=remote)}}
         self.bp['plans']={'pair':{'steps':{k:{'node':'script','inputs':{}} for k in ('a','b')}}}
@@ -159,13 +160,13 @@ class SelectionTests(unittest.TestCase):
         run=self.store.create(key,'Interactive entry',bindings={'init':'interactive'})
         self.assertEqual(run['settings']['bindings']['init'],'interactive')
         self.bp['fallback_node']='reason'
-        self.impl['reason']={'kind':'agent','parameter_schema':{'type':'object','required':['queue']}}
+        self.impl['reason']={'options': {'default': {'kind':'agent','parameter_schema':{'type':'object','required':['queue']}}}, 'default': 'default'}
         with self.assertRaises(Invalid):self.store.publish(self.bp,self.impl)
 
     def test_run_override_and_task_override_execute_without_new_loop(self):
         def command(value):
-            return {'kind': 'command', 'command': [sys.executable, '-c', 'import json; print(json.dumps({"outputs":{"result":'+repr(value)+'}}))']}
-        self.impl = {'init': {'kind': 'agent'}, 'script': {'default': 'local', 'options': {'local': command('local'), 'remote': command('remote')}}}
+            return {'kind': 'command', 'command': [sys.executable, '-c', 'import json; print(json.dumps({"event":"completed","envelope":{"outputs":{"result":'+repr(value)+'}}}))']}
+        self.impl = {'init': {'options': {'default': {'kind': 'agent'}}, 'default': 'default'}, 'script': {'default': 'local', 'options': {'local': command('local'), 'remote': command('remote')}}}
         self.bp['plans']={'pair':{'steps':{'a':{'node':'script','inputs':{}},'b':{'node':'script','inputs':{}}}}}
         self.start({'script': 'remote'})
         specs=self.tools.call('build_plan',{'name':'pair','key':'choose','values':{},'steps':{'b':{'implementation':'local'}}})['tasks']
@@ -193,7 +194,7 @@ class SelectionTests(unittest.TestCase):
         self.until(lambda r:r['tasks']['b']['status']=='completed')
         with self.assertRaises(Conflict):self.tools.call('change_task',{'task_id':'a','operation':'update','implementation':'second','reason':'Already executed'})
 
-    def test_missing_selection_is_reported_and_selecting_invalidates_old_read(self):
+    def test_missing_selection_is_reported_and_manual_execution_uses_current_selection(self):
         self.impl['reason']={'options':{'a':{'kind':'agent'},'b':{'kind':'agent'}}}
         self.start()
         self.add(task_spec('choose','reason'))
@@ -203,7 +204,6 @@ class SelectionTests(unittest.TestCase):
         self.settings(bindings={'reason':'a'})
         old=self.tools.call('read_task',{'task_id':'choose'})
         self.settings(bindings={'reason':'b'})
-        with self.assertRaises(Conflict):self.tools.call('complete_task',{'task_id':'choose','task_version':old['task_version'],'envelope':{'outputs':{'result':'stale'}}})
         self.complete('choose')
         self.assertEqual('b',self.store.get(self.id)['executions'][-1]['implementation_id'])
         with self.assertRaises(Invalid):self.settings(bindings={'reason':'absent'})
@@ -222,9 +222,9 @@ class SelectionTests(unittest.TestCase):
         key=tools.call('publish_loop',{'draft_id':draft['draft_id'],'revision':draft['revision']})['key']
         packed,root=load_installed(self.store.filename,key)
         self.assertEqual(entry,packed['implementations']['initialize']);self.assertTrue(smoke(packed,root)['startable'])
-        self.impl['script']={'default':'broken','options':{'broken':{'kind':'command','command':[sys.executable,'-c','raise SystemExit(2)']},'fixed':{'kind':'command','command':[sys.executable,'-c','print(\'{"outputs":{"result":"recovered"}}\')']}}}
+        self.impl['script']={'default':'broken','options':{'broken':{'kind':'command','command':[sys.executable,'-c','raise SystemExit(2)']},'fixed':{'kind':'command','command':[sys.executable,'-c','print(\'{"event": "completed", "envelope": {"outputs": {"result": "recovered"}}}\')']}}}
         self.start();self.add(task_spec('retry','script'))
-        r=self.until(lambda r:r['tasks']['retry']['status']=='fault')
+        r=self.until(lambda r:r['tasks']['retry']['status']=='fault' and not any(e.get('worker_active') for e in r['executions'] if e['task_id']=='retry'))
         old=copy.deepcopy(r['executions'][-1])
         self.tools.call('read_timeline', {})
         self.tools.call('read_task', {'task_id':'retry'})

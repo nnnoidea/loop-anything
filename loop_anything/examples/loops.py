@@ -53,7 +53,7 @@ def research():
         'metric': obj(experiment=TEXT, score=NUMBER), 'completion': obj(summary=TEXT)}
     nodes = {
         'initialize': node('理解研究目标', {'request': TEXT}, {'plan': 'plan'},
-            '按手册将用户要求写入 settings.objective/requirements/constraints，并提交首批实验与对比组。', initialize_timeline=True),
+            '按手册将用户要求写入 Timeline objective/constraints，并提交首批实验与对比组。', initialize_timeline=True),
         'data': node('准备数据', {'experiment': OBJECT}, {'dataset': 'dataset'}, '为本实验准备数据；提交 dataset URI。'),
         'train': node('异步训练', {'dataset': records['dataset'], 'experiment': OBJECT}, {'model': 'model'},
             '启动外部训练，返回任务 ID；观察到成功后提交 model，等待期间无需 Agent。'),
@@ -164,7 +164,7 @@ def implementations(domain, nodes, external=(), agents=(), approval=(), events=N
             result[name] = {'kind': 'external', 'command': cmd, 'observe': cmd + ['observe'], 'simulation': True}
         else:
             result[name] = {'kind': 'agent' if name in agents else 'command', 'command': cmd, 'simulation': True}
-    return result
+    return {node: {'options': {'default': config}, 'default': 'default'} for node, config in result.items()}
 
 
 if __name__ == '__main__':

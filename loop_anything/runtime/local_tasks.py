@@ -260,7 +260,7 @@ class LocalRuntime:
 
 def main(argv):
     parser=argparse.ArgumentParser(description='Standalone personal scheduling. Register/list never start tasks.')
-    parser.add_argument('--root',required=True,help='Personal registration directory; use a NAS path to retain history across machines')
+    parser.add_argument('--root',help='Explicit standalone registry; omitted uses the personal local platform registry, never the team default')
     sub=parser.add_subparsers(dest='action',required=True)
     register=sub.add_parser('register');register.add_argument('definition');register.add_argument('--id')
     sub.add_parser('list')
@@ -269,7 +269,12 @@ def main(argv):
     confirm=sub.add_parser('confirm-stopped');confirm.add_argument('id');confirm.add_argument('--execution-id',required=True)
     confirm.add_argument('--confirmed-stopped',action='store_true')
     start=sub.add_parser('start');start.add_argument('ids',nargs='+');start.add_argument('--jobs',type=int,default=4)
-    args=parser.parse_args(argv);registry=TaskRegistry(args.root)
+    args=parser.parse_args(argv)
+    if not args.root:
+        from loop_anything.paths import default_database
+        from loop_anything.runtime.tool_client import module
+        args.root=module('spaces').read()['local_registry'] or str(default_database())+'.schedules'
+    registry=TaskRegistry(args.root)
     if args.action=='register':result=registry.register(read(Path(args.definition)),args.id)
     elif args.action=='list':result=registry.list()
     elif args.action=='show':result=registry.show(args.id)

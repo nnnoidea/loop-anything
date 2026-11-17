@@ -22,6 +22,8 @@ class Engine:
         from loop_anything.runtime.communication import service
         self.communication = service(store)
         self.communication.engine = self
+        from loop_anything.runtime.work import WorkRuntime
+        self.work = WorkRuntime(self)
 
     def close(self):
         self.stopping.set()
@@ -49,10 +51,7 @@ class Engine:
             raise Invalid('Unknown execution')
 
     def current(self, run_id):
-        run = self.store.get(run_id)
-        if run.get('schema_version') != 2:
-            raise Invalid('Legacy v1 Runs are inspect-only; publish a Timeline-based Loop to execute')
-        return run
+        return self.store.get(run_id)
 
     def tick(self, run_id):
         self.executors.advance()
@@ -90,7 +89,7 @@ class Engine:
         self.terminals.recover(self.remote_recovery)
         self.communication.recover()
         for summary in self.store.list():
-            if summary.get('schema_version') != 2 or summary.get('identity_read_only'):
+            if summary.get('identity_read_only'):
                 continue
             with self.store.edit(summary['id']) as run:
                 self.timeline_runtime.recover(run)

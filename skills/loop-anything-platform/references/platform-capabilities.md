@@ -30,14 +30,64 @@ Organize instructions by responsibility and read on demand to reduce irrelevant 
 
 Read the relevant mechanism when implementing a design. activation=automatic means platform-managed; declared/configured requires author declarations or user configuration; operator requires an explicit operation.
 
+## timeline_business_state
+
+- Activation: configured
+- Platform handles: Owns stable Timeline business records, immutable results, atomic decisions and work bindings across Runs.
+- Author provides: Define business state in the Loop; optionally declare type summaries for display. Read current state and commit state plus task operations in report_task. Reuse work_key for one experiment and after_work for its dependent steps.
+- Configuration: `Loop.state`, `report_task.envelope.state/operations`, `build_plan.work_key`, `add_task.after_work`
+- Limits: The current Run plans work; retained original executions may finish their state/result report. Business meaning and validation belong to the Loop. Read business state through read_timeline/read_business_state as needed. Summaries do not replace full evidence.
+- Tools: read_business_state, read_work_timeline, report_task, build_plan
+- Reference: [references/work.md](work.md)
+
+## persistent_work
+
+- Activation: operator
+- Platform handles: Persists independent goals, constraints, Loop-defined business state, shared results and execution references; Run/Loop changes preserve work without an Agent handoff workflow.
+- Author provides: Define Loop-owned state and optional Loop.state display metadata. Use read_timeline/read_business_state; completed report envelopes can atomically commit state and task operations. Use stable work_key for experiments. Register the actual session, retain startup request IDs, and follow edit notices.
+- Configuration: `create_timeline`, `start_run.timeline_id/continue_run_id`, `update_timeline`
+- Limits: No automatic task freeze or rearrangement. Routine multi-Run sharing is outside the current scope.
+- Tools: read_business_state, create_timeline, list_timelines, resolve_continuation, take_over_run, read_work_timeline, update_timeline, append_timeline, register_work_session, start_run, claim_run
+- Reference: [references/work.md](work.md)
+
+## work_waits
+
+- Activation: operator
+- Platform handles: Checks cross-Run and monitor conditions and resumes the exact native server session with evidence.
+- Author provides: Register wait_for, finish Run scopes, exit the process and acknowledge handled events.
+- Configuration: `wait_for`, `cancel_wait`, `acknowledge_wait`
+- Limits: Active or unknown processes are never resumed concurrently. Failed or unavailable sessions need explicit recovery.
+- Tools: wait_for, read_wait, cancel_wait, acknowledge_wait, read_work_session, resume_work_session
+- Reference: [references/work.md](work.md)
+
+## shared_monitoring
+
+- Activation: operator
+- Platform handles: Executes optional registered or inline monitor definitions as independent parameterized instances and retains timestamped results.
+- Author provides: Supply a JSON-check script and explicit start/interval; Loop-owned scripts remain supported.
+- Configuration: `register_monitor`, `start_monitor`, `read_monitor`, `stop_monitor`
+- Limits: Registration never starts execution. Stale or failed readings are unknown. Stopping monitoring does not stop the experiment.
+- Tools: read_monitor_dashboard, read_monitor_history, register_monitor, list_monitor_scripts, start_monitor, read_monitor, list_monitors, stop_monitor, restart_monitor
+- Reference: [references/work.md](work.md)
+
+## run_steward
+
+- Activation: automatic
+- Platform handles: Binds the actual starter session and persists subsequent requests; default completion returns there.
+- Author provides: Register the real current server session. Start with an independent Timeline; use claim_run in the same session.
+- Configuration: `register_work_session`, `start_run`, `claim_run`
+- Limits: No separate named steward selection. A session cannot resume concurrently with its original process.
+- Tools: register_work_session, start_run, claim_run, submit_run_request, read_run_request, reply_run_request, answer_run_request
+- Reference: [references/steward.md](steward.md)
+
 ## run_library
 
 - Activation: operator
 - Platform handles: Server-side paginated summaries by person, Loop, status, and dates; meaningful progress updates activity, and child Runs inherit attribution. Archival preserves history; deletion protects references and live executions.
 - Author provides: Set the caller's name once and pass created_by on creation. Query with filters/next_offset; use metadata_revision to change title, attribution, and archival.
-- Configuration: `call.py profile --name`, `start_run.created_by`, `list_runs`, `update_run`, `delete_run`, `archive_loop`, `delete_loop`
+- Configuration: `call.py profile --name`, `start_run.created_by`, `list_runs`, `submit_run_request(operation=update_run/delete_run)`, `archive_loop`, `delete_loop`
 - Limits: Attribution is not an account or permission boundary. Reads/unchanged polling do not refresh activity. Deletion leaves native sessions and external artifacts. Archive referenced Loop versions instead of deleting them.
-- Tools: list_runs, start_run, update_run, delete_run, list_loops, archive_loop, delete_loop
+- Tools: list_runs, start_run, submit_run_request, list_loops, archive_loop, delete_loop
 - Reference: [references/run.md](run.md)
 
 ## loop_calls
@@ -53,20 +103,20 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 ## team_service
 
 - Activation: configured
-- Platform handles: One server persists team Loops, Runs, and state machines. Unified clients operate it over NAS/HTTP and optionally execute work locally; the server web UI is optional.
-- Author provides: Install with --role server or --role client. Clients combine service operations and local execution; save NAS addresses using local mount paths. Operations-only use still supports portable Skills without the runtime.
+- Platform handles: One server persists team Loops, Runs, and state machines. --db selects its storage independently of the NAS --team-dir mailbox. Clients operate it over NAS/HTTP and optionally execute work locally; the server web UI is optional.
+- Author provides: Install once with python3 install.py, without choosing a role or deployment mode. Configure team operation after installation: select server storage with --db and one NAS root with --team-dir; api/, executors/, and agents/ separate tool calls, process work, and named-agent communication. The service connects agents/ automatically without publishing agents. Platform and dispatch Skills accept the same root link using each machine’s mount path. Operations-only use still supports portable Skills without the runtime.
 - Configuration: `serve --team-dir`, `serve --no-web`, `client tool`, `call.py --url`, `call.py result`
-- Limits: Only one service opens the team database, using DELETE journaling. NAS must support locking/durable writes. Timeout does not cancel requests; a processing crash returns outcome_unknown without automatic replay. Validate real NAS behavior in deployment.
+- Limits: Only one service opens the database, using DELETE journaling; a separate mailbox lock prevents different databases from consuming one directory. The server database is selected independently of the NAS mailbox. Server workspace data must be preserved when moving machines; NAS messages alone are not a backup. NAS must support locking/durable writes. Timeout does not cancel requests; a processing crash returns outcome_unknown without automatic replay. Validate real NAS behavior in deployment.
 - Tools: list_loops, list_runs, read_capabilities
 - Reference: [references/team-runtime.md](team-runtime.md)
 
 ## headless_execution
 
 - Activation: configured
-- Platform handles: The unified client can receive assigned processes, persist deduplication/results, and forward interactive terminals. The service retains business state machines; exact sessions resume on their original executor.
+- Platform handles: The unified client can receive assigned processes and declared package resources, persist deduplication/results, and forward interactive terminals. Scripts and Skills are cached locally; the server package directory need not be shared. The service retains business state machines; exact sessions resume on their original executor.
 - Author provides: Use client local to register and explicitly start a receiver. Discover IDs with list_executors and select implementation.executor on a node or named agent. Install required CLIs/environment on the receiving client.
 - Configuration: `client local --root register/start`, `list_executors`, `read_executor_call`, `implementation.executor`
-- Limits: Disconnection does not reassign/restart work. A restarted service reconnects to the original call; a restarted receiver does not replay accepted commands with unknown outcomes. Native session history must remain accessible on the original executor. Legacy NAS/Base named communication remains supported.
+- Limits: Disconnection does not reassign/restart work. A restarted service reconnects to the original call; a restarted receiver does not replay accepted commands with unknown outcomes. Native session history must remain accessible on the original executor. NAS and Base use the same addressed dispatch protocol.
 - Tools: list_executors, read_executor_call, set_implementation, confirm_executor_stopped, executor_poll, executor_report
 - Reference: [references/team-runtime.md](team-runtime.md)
 
@@ -84,20 +134,10 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 
 - Activation: declared
 - Platform handles: Built-in flow decisions awaken on explicit event routes, reusing execution, sessions, wait/resume, and Timeline writes without extra authored flow nodes.
-- Author provides: Choose decision points from the user's goal, keep full business rules in the Loop handbook, and configure an actual CLI, executor, or dispatch. Do not choose a default progression mode for the user.
-- Configuration: `Loop.flow_agent`, `nodes.*.routes.flow_agent`, `read_task.flow_decisions`, `build_plan/edit_tasks/report_task/finish`
-- Limits: Configuring an executor alone does not trigger it. Without a matching route no agent is called. Decisions have global Run scheduling scope with commit validation. Explicit rule and agent routes can both fire; read receipts to avoid duplicate scheduling.
-- Tools: set_loop, put_node, acquire_run, read_timeline, read_task, build_plan, edit_tasks, report_task, finish, test_loop
-- Reference: [references/flow-agent.md](flow-agent.md)
-
-## builtin_flow_agent
-
-- Activation: declared
-- Platform handles: Identifies the built-in decision configuration/route protocol so old services cannot interpret it as ordinary event routing.
-- Author provides: Package capability declarations detect it automatically; see flow_agent for usage.
-- Configuration: `Loop.flow_agent`, `nodes.*.routes.flow_agent`
-- Limits: A compatibility declaration alone does not awaken an agent; explicit routing is required.
-- Tools: set_loop, put_node, read_task
+- Author provides: Choose decision points from the user's goal, keep full business rules in the Loop handbook, and bind the actual starting session for execution; use progression=rules for fixed paths.
+- Configuration: `nodes.*.routes.flow_agent`, `read_task.flow_decisions`, `build_plan/edit_tasks/report_task/finish`
+- Limits: Business completion defaults to the steward; explicit rules own their events. Decisions have global Run scheduling scope with commit validation. Explicit rule and agent routes can both fire; read receipts to avoid duplicate scheduling.
+- Tools: set_loop, put_node, read_timeline, read_task, build_plan, edit_tasks, report_task, finish, test_loop
 - Reference: [references/flow-agent.md](flow-agent.md)
 
 ## loop_configuration
@@ -126,7 +166,7 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 - Platform handles: Generates and persists a full machine UUID on demand, separate from workspace identity. communication_status.self and awakening contexts expose both directly.
 - Author provides: Read self and address directory members using instance_id plus agent_id; do not infer identity from MAC, hostname, or session.
 - Configuration: `communication_status.self`, `context.self`, `communication_config(operation=identity)`
-- Limits: Identity belongs to the connected platform user environment. instance_id aliases workspace_id. Moving/renaming preserves identity; copies need an explicitly new workspace identity without historical takeover. Do not copy identity storage with a business database to another machine.
+- Limits: Identity belongs to the connected platform user environment. instance_id is the transport address of the workspace. Moving/renaming preserves identity; copies need an explicitly new workspace identity without historical takeover. Do not copy identity storage with a business database to another machine.
 - Tools: communication_status, communication_workspace, communication_config
 - Reference: [references/communication.md](communication.md)
 
@@ -144,8 +184,8 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 
 - Activation: automatic/configured
 - Platform handles: Feishu-origin calls reply to the original conversation by default. Private chats use the entry Bot; group chats prefer the named agent's Bot while preserving the topic.
-- Author provides: Skill call.py carries chat_context only. The platform persists/reuses origin; the adapter retains the original entry, uses a known root with cc-connect, or passes an unresolved session unchanged. No Feishu permission/credential lookups. agent.notification_bot maps discovered local Bots; legacy notification_route remains compatible. Nested assistance inherits origin without rebuilding notification commands.
-- Configuration: `request_assistance.chat_context`, `start_run.chat_context`, `communication_config(operation=agent)`, `existing conversation_id compatibility`
+- Author provides: Skill call.py carries chat_context only. The platform persists/reuses origin; the adapter retains the original entry, uses a known root with cc-connect, or passes an unresolved session unchanged. No Feishu permission/credential lookups. agent.notification_bot maps discovered local Bots; named Agents use notification_bot. Nested assistance inherits origin without rebuilding notification commands.
+- Configuration: `request_assistance.chat_context`, `start_run.chat_context`, `communication_config(operation=agent)`, `persisted conversation binding`
 - Limits: Notification integration failure does not block business work. Fall back to the entry Bot only after definitive non-delivery (not started, not connected, or explicit rejection), not ambiguous failure. Preserve raw session_key; map an explicit topic to a root target in the same chat/topic, never to the main timeline. cc-connect owns actual delivery. Explicit outlets win; without origin use per-machine group outlets.
 - Tools: communication_config, request_assistance, start_run, read_assistance
 - Reference: [references/cc-connect.md](cc-connect.md)
@@ -183,7 +223,7 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 ## confirmed_agent_directory
 
 - Activation: configured
-- Platform handles: Group directories share user-confirmed duties, capabilities, and availability. Legacy unconfirmed descriptions do not accept new group work.
+- Platform handles: Group directories share user-confirmed duties, capabilities, and availability. Unconfirmed descriptions do not accept group work.
 - Author provides: Ask about duties and confirm description/group exposure before communication_config(task_confirmed=true). Reconfirm changed descriptions or added groups.
 - Configuration: `communication_config`, `communication_status`
 - Limits: An agent-written description is not user confirmation.
@@ -213,10 +253,10 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 ## agent_communication
 
 - Activation: configured/operator
-- Platform handles: All dispatch reuses loop-anything-dispatch; only receiving needs a running platform. Replies persist in full. Pass NAS artifacts only with shared access; native Feishu attachments are optional and automatically handle oversized inline messages. Base coalesces state, updates heartbeats in place, and archives acknowledged messages in the cloud. Requests/results remain for optional manual cleanup; clients do not auto-copy full bodies. One NAS/Base team link supplies directory/result views. Enabled Base wins; NAS is used only without Base, never to reroute failures. Existing Runs/requests retain transport. Names and IDs resolve through the directory; script wait timeouts do not cancel requests.
+- Platform handles: All dispatch reuses loop-anything-dispatch; only receiving needs a running platform. Replies persist in full. Pass NAS artifacts only with shared access; native Feishu attachments are optional and automatically handle oversized inline messages. Base coalesces state, updates heartbeats in place, and archives acknowledged messages in the cloud. Requests/results remain for optional manual cleanup; clients do not auto-copy full bodies. One NAS/Base team link supplies directory/result views. NAS shares the platform --team-dir root; named-agent traffic lives under agents/, while api/ and executors/ keep their own protocols. Each request retains its original team association. Enabled Base wins; NAS is used only without Base, never to reroute failures. Existing Runs/requests retain transport. Names and IDs resolve through the directory; script wait timeouts do not cancel requests.
 - Author provides: Set the receiving default with communication_config(operation=team,link=...), then expose agents after user-confirmed duties. Send-only clients use the independent Skill's join/leave/agents/submit/read/wait/control. Loop nodes retain scoped entries for registration/dispatch; wait_assistance then finish when needed.
 - Configuration: `communication_config`, `implementations.*.dispatch`, `request_assistance`, `wait_assistance`
-- Limits: Dispatch fixes one machine/agent; receivers persist then execute without another source grant. Old in-flight protocols remain compatible; the source owns the business Run. Recovery pins the original session; disconnection never auto-reruns work. Validate actual NAS/Base environments.
+- Limits: Dispatch fixes one machine/agent; receivers persist then execute without another source grant. The source owns the business Run. Recovery pins the original session; disconnection never auto-reruns work. Validate actual NAS/Base environments.
 - Tools: communication_workspace, communication_status, communication_config, request_assistance, read_assistance, control_assistance, wait_assistance, communication_execute
 - Reference: [references/communication.md](communication.md)
 
@@ -294,8 +334,8 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 
 - Activation: configured
 - Platform handles: Keeps the workspace service running on its installed host, with supported keep-awake controls and macOS background hosting.
-- Author provides: Choose/install the host, database, port, and credentials; configure the host to suit runtime needs.
-- Configuration: `service CLI`, `platform keep-awake setting`
+- Author provides: Choose/install the host, database, port, and credentials; configure the host to suit runtime needs. For an optional HTTP connectivity test use GET /api/health; plain HTTP needs no certificate checks, and testing an HTTPS proxy with curl -k skips caller-side verification.
+- Configuration: `service CLI`, `platform keep-awake setting`, `GET /api/health`
 - Limits: Remote compute, credentials, training environments, and cross-machine deployment belong to installation/business integration.
 - Tools: Provided by the runtime; no separate call required
 - Reference: [references/platform-capabilities.md](platform-capabilities.md)
@@ -373,9 +413,9 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 ## task_edits
 
 - Activation: operator
-- Platform handles: Atomically validates/applies ordered edits against basis and business scope, rolling back the group on failure.
-- Author provides: Decide from read evidence and reconsider after conflicts.
-- Configuration: `edit_tasks.basis`, `edit_tasks.changes`, `edit_tasks.preview`
+- Platform handles: Atomically validates/applies ordered edits within execution scope, rolling back the group on failure.
+- Author provides: Choose the needed edits; preview if helpful.
+- Configuration: `edit_tasks.changes`, `edit_tasks.preview`
 - Limits: Separate calls are not cross-call transactions. Use routes to commit results and successors together.
 - Tools: edit_tasks, change_task
 - Reference: [references/run.md](run.md)
@@ -395,7 +435,7 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 - Activation: declared
 - Platform handles: Native timer/event/approval Tasks persist waits; external events match by name/correlation key.
 - Author provides: Declare wait times, event keys, or approvals, and routes for subsequent work.
-- Configuration: `implementations.*.kind`, `implementations.*.wait`, `implementations.*.event`
+- Configuration: `implementations.*.options.*.kind`, `implementations.*.options.*.wait`, `implementations.*.options.*.event`
 - Limits: Notifications alone do not pause work; waiting needs an explicit Task. Adapters connect chat replies/business event sources.
 - Tools: set_implementation, send_event
 - Reference: [references/notifications.md](notifications.md)
@@ -407,27 +447,17 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 - Author provides: Configure actual send commands/destinations and declare content/question correlation keys.
 - Configuration: `platform notification channels`, `settings.notification_route`, `lifecycle.transitions.*.notify`, `notify.reply`
 - Limits: A platform notification record is not external delivery. The platform does not install chat Bots automatically.
-- Tools: notify, read_notification_channels, set_notification_channels, send_event, retry_notification
+- Tools: notify, read_notification_channels, set_notification_channels, send_event, submit_run_request
 - Reference: [references/notifications.md](notifications.md)
-
-## optimistic_edits
-
-- Activation: automatic/operator
-- Platform handles: Managed identities remember read versions; short commit transactions check basis, scope, and execution state without long Timeline occupancy.
-- Author provides: Without a sustained token, pass returned basis on edits. Use read_task for focused work and read_timeline/next_tasks for collection/absence decisions. Reconsider conflicts.
-- Configuration: `read_task.basis`, `read_timeline.basis`, `edit_tasks.basis`, `change_task.basis`
-- Limits: Do not merely replace version numbers and retry unchanged. Logs/ordinary progress are not conflicts. Identity, same-Task exclusivity, and native-session protection remain, including exit gaps after finish, resumed historical terminals, and unfinished remote processes.
-- Tools: read_task, read_timeline, next_tasks, edit_tasks, change_task, change_settings
-- Reference: [references/run.md](run.md)
 
 ## scopes
 
 - Activation: automatic
 - Platform handles: Restricts changes by Task ownership without excluding concurrent thinking; one valid executor remains per Task.
 - Author provides: Align ownership with responsibility and finish after completion/explicit waiting. Use an explicit global node for global decisions.
-- Configuration: `Task.parent_id`, `Loop.global_agent_node`, `acquire_run/finish`
+- Configuration: `Task.parent_id`, `Loop.global_agent_node`, `execution identity/finish`
 - Limits: Dependency differs from ownership; ready descendants can run before the parent agent finishes.
-- Tools: read_timeline, acquire_run, finish, read_task
+- Tools: read_timeline, finish, read_task
 - Reference: [references/run.md](run.md)
 
 ## run_control
@@ -437,7 +467,7 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 - Author provides: Choose intervention points/actions from user intent.
 - Configuration: `settings.hooks`, `command`, `defer_task`, `resolve_request`
 - Limits: The user's agent interprets natural-language authorization; the platform applies explicit operations and scope checks.
-- Tools: list_runs, start_run, read_run, next_tasks, read_record, complete_task, command, defer_task, resolve_request, change_settings
+- Tools: list_runs, start_run, read_run, next_tasks, read_record, command, defer_task, resolve_request, change_settings
 - Reference: [references/run.md](run.md)
 
 ## termination
@@ -500,16 +530,16 @@ An existing Skill needs situational decisions about what happens next. Get it ru
 {
   "use_when": "An existing Skill needs situational decisions about what happens next. Get it running, then gradually encode stable rules; the building agent configures explicit points from user goals.",
   "capabilities": [
+    "run_steward",
     "flow_agent",
-    "builtin_flow_agent",
     "event_routes",
     "scopes"
   ],
-  "prerequisites": "The Loop handbook keeps full objectives, rules, and completion conditions. set_loop accepts the loop fields below. Complete flow_agent with the actual user CLI or dispatch. With kind only, acquire_run(run_id,task_id) claims a pending decision; it will not run automatically. No extra node, port, or intermediary plan is required.",
-  "loop": {
-    "flow_agent": {
-      "kind": "agent"
-    }
+  "prerequisites": "The Loop handbook keeps full objectives, rules, and completion conditions. set_loop accepts the loop fields below. The actual server session calling start_run owns progression and reads the Loop Skill. No extra node, port, or intermediary plan is required.",
+  "startup": {
+    "session_id": "CURRENT_REGISTERED_SESSION",
+    "session_token": "CURRENT_SESSION_TOKEN",
+    "request_id": "STABLE_START_ID"
   },
   "source_routes": [
     {
@@ -519,7 +549,7 @@ An existing Skill needs situational decisions about what happens next. Get it ru
     }
   ],
   "execution": "The platform saves source Task/execution/report, event, conditions, and exact result-version references. The flow agent reads the full handbook, read_task.trigger, and source route_receipts, schedules successors, submits the full decision output, and calls finish. read_task(source_task) returns flow_decisions; read_task(decision_task)/read_record retrieve full results.",
-  "scope": "Built-in decisions have global scheduling scope in the current Run. Thinking does not lock Timeline; commits validate read evidence. One event can explicitly match both rule and agent routes; do not reschedule work already created by rules. No declared route means no flow-agent call.",
+  "scope": "Built-in decisions have global scheduling scope in the current Run. Reads are pure; short write transactions validate execution identity and scope. One event can explicitly match both rule and agent routes; do not reschedule work already created by rules. Unspecified completion events return to the steward; progression=rules selects mechanical paths.",
   "verification": [
     "test_loop",
     "read_task",
@@ -542,7 +572,7 @@ Independently installed machines need to discover a shared team and expose named
     "The receiver calls communication_config(operation=team,link=BASE_LINK_OR_NAS_DIRECTORY), returning the joined team ID and current default. Base is preferred; NAS is the fallback. A new NAS team needs create=true; Base tables are managed automatically.",
     "operation=agent configures local CLI, cwd, resume_command, and team scope after the user confirms duties. Joining a team does not expose agents automatically.",
     "Send-only users install loop-anything-dispatch and join the same link without running a platform.",
-    "Bind Loops to the team and retain scoped call entries. The web shows members, work, and results. Legacy NAS spaces/groups remain compatible."
+    "Bind Loops to the team and retain scoped call entries. The web shows members, work, and results. Shared-space discovery and single-root team links use explicit identities."
   ],
   "loop_configuration": {
     "tool": "read_capabilities",

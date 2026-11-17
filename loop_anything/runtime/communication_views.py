@@ -10,9 +10,9 @@ def summary(request):
             'created_at','updated_at','deadline','cancellation','selection_decision','native_session','output_source','result','error','progress','session','notification_binding',
             'notification_conversation','notification_origin','notification_route','notification_level','notification_policy')
     result=clean({k:request[k] for k in fields if k in request})
-    if request.get('state') in ('pending','offered'):
+    if request.get('state') == 'pending':
         result['next_action']='await_assignment'
-        result['state_hint']='Waiting for assignment, not unavailable. The origin enforces deadline; do not cancel or retry solely because a few seconds or reads show no grant.'
+        result['state_hint']='Waiting for assignment, not unavailable. The receiver enforces the acceptance deadline; do not cancel or retry solely because acceptance is not yet visible.'
     if len(result.get('message',''))>500:
         result['message']=result['message'][:500];result['message_truncated']=True
     notices=request.get('notifications',[])
@@ -28,14 +28,6 @@ def continuation_context(request):
         original=context['original_context']
     else:
         original=context
-        # Older platform follow-ups stored an entire previous request at each level.
-        owner=request
-        while isinstance(original,dict) and set(original)=={'previous_request'}:
-            previous=original['previous_request']
-            if not isinstance(previous,dict) or not {'id','kind','context'}<=previous.keys():break
-            if owner.get('session',{}).get('request_id')!=previous['id']:break
-            original=previous['context']
-            owner=previous
     previous=summary(request)
     previous['message']=request.get('message','')
     return {'previous_request':previous,'original_context':copy.deepcopy(original)}

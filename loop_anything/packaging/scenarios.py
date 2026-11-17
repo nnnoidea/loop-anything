@@ -76,11 +76,13 @@ def scenario_state(run):
     for task in run['tasks'].values():
         attempt = next((e for e in reversed(run['executions']) if e['task_id']==task['id']), {})
         rows.append(dict(task['spec'],status=task['status'],wait_reasons=task.get('wait_reasons',[]),error=attempt.get('error'),resolved_inputs=attempt.get('inputs'),outputs_value=attempt.get('outputs'),attempt=attempt.get('attempt',0)))
-    counts = {node:{'total':0,'completed':0} for node in run['loop_definition']['nodes']}
+    internal = [r for r in rows if run['loop_definition']['nodes'][r['node']].get('builtin')]
+    rows = [r for r in rows if not run['loop_definition']['nodes'][r['node']].get('builtin')]
+    counts = {node:{'total':0,'completed':0} for node, spec in run['loop_definition']['nodes'].items() if not spec.get('builtin')}
     for task in rows:
         counts[task['node']]['total'] += 1
         counts[task['node']][task['status']] = counts[task['node']].get(task['status'],0)+1
-    return {'status':run['status'],'task_count':len(rows),'tasks':rows,'by_ref':{t['ref']:t for t in rows if 'ref' in t},
+    return {'status':run['status'],'task_count':len(rows),'tasks':rows,'internal_tasks':internal,'by_ref':{t['ref']:t for t in rows if 'ref' in t},
             'by_id':{t['id']:t for t in rows},'counts':counts,
             'records':{k:v[-1]['value'] for k,v in run['records'].items()},
             'route_count':sum(h['kind']=='route_fired' for h in run['history'])}
@@ -98,8 +100,15 @@ def run_scenarios(document, scenarios=None):
         with tempfile.TemporaryDirectory(prefix='loop-scenario-') as directory:
             store=Store(Path(directory)/'test.sqlite3')
             # Persist only in this throwaway Store; no package assets or user database are opened.
+            simulated_bp=copy.deepcopy(bp)
+            handbook=simulated_bp.get('handbook',{})
+            if handbook.get('path'):
+                handbook.setdefault('instructions','Simulated reference: '+handbook.pop('path'))
+            for node in simulated_bp['nodes'].values():
+                for skill in node.get('skills',[]):
+                    if skill.get('path'):skill.setdefault('content','Simulated reference: '+skill.pop('path'))
             with store.connection() as db:
-                db.execute('INSERT INTO loop_definitions VALUES (?,?,?,?)',('scenario',digest(bp),json.dumps(bp),json.dumps(implementations)))
+                db.execute('INSERT INTO loop_definitions VALUES (?,?,?,?)',('scenario',digest(simulated_bp),json.dumps(simulated_bp),json.dumps(implementations)))
                 db.commit()
             engine=Engine(store);engine.pool.shutdown(wait=True);engine.pool=InlinePool()
             intercepted=[]
@@ -112,8 +121,13 @@ def run_scenarios(document, scenarios=None):
             engine.timeline_runtime.deliver=delivery
             run=None;receipts=[];checks=[];error=None;step_index=None
             try:
-                run=store.create('scenario',case['name'],case.get('inputs'),bindings=case.get('bindings'),authorization='Isolated author scenario',notification_route='workspace')
+                run=store.create('scenario',case['name'],case.get('inputs'),bindings=case.get('bindings'),authorization='',notification_route='workspace')
                 run_id=run['id']
+                from loop_anything.runtime.steward import start_in_run
+                with store.edit(run_id) as simulated:
+                    startup = start_in_run(simulated, {'agent_id':'scenario','name':'Simulated steward',
+                        'implementation':{'kind':'agent','command':['simulated-steward']}},
+                        'scenario-start','Simulated startup',{},automatic=True)['task_id']
                 def tick():
                     if len(store.get(run_id)['tasks'])>1000:raise Invalid('Scenario exceeded 1000 tasks')
                     engine.tick(run_id)
@@ -127,20 +141,33 @@ def run_scenarios(document, scenarios=None):
                     snapshot=store.get(run_id)
                     tasks=[t for t in snapshot['tasks'].values() if
                            (t['id']==step['task_id'] if 'task_id' in step else t['spec'].get('ref')==step['ref'] if 'ref' in step else t['spec']['node']==step['node'])]
+                    if step.get('node')=='$flow_agent':tasks=[t for t in tasks if t['status'] in ('executing','decision')]
                     if len(tasks)!=1:raise Invalid('Report selector must identify exactly one Task; use ref or task_id')
                     task=tasks[0]
                     attempts=[e for e in snapshot['executions'] if e['task_id']==task['id'] and ('attempt' not in step or e['attempt']==step['attempt'])]
+                    entry = not attempts and task['id']==snapshot['loop_definition']['seed']['id'] and not snapshot['initialized']
+                    if entry:attempts=[e for e in snapshot['executions'] if e['task_id']==startup]
                     if not attempts:raise Invalid('Selected task is not dispatched; inspect dependencies and implementation')
                     execution=attempts[-1];report=copy.deepcopy(step['report']);report.setdefault('report_id','scenario-'+str(step_index))
                     source='agent' if execution['implementation']['kind']=='agent' else 'monitor' if execution.get('external_id') else 'script'
                     try:
-                        with store.edit(run_id) as current:
-                            e=engine.execution(current,execution['id'])
-                            receipt=engine.timeline_runtime.report_in_run(current,e,report,source)
+                        if entry:
+                            manager=RunTools(store,run_id,execution['token'])
+                            info=manager.call('read_task',{'task_id':task['id']})
+                            arguments=dict(report,task_id=task['id'])
+                            receipt=manager.call('report_task',arguments)
                             if step.get('duplicate'):
-                                duplicate=engine.timeline_runtime.report_in_run(current,e,report,source)
+                                duplicate=manager.call('report_task',arguments)
                                 if not duplicate.get('duplicate'):raise Invalid('Duplicate report was not deduplicated')
                                 receipt=dict(receipt,duplicate_verified=True)
+                        else:
+                            with store.edit(run_id) as current:
+                                e=engine.execution(current,execution['id'])
+                                receipt=engine.timeline_runtime.report_in_run(current,e,report,source)
+                                if step.get('duplicate'):
+                                    duplicate=engine.timeline_runtime.report_in_run(current,e,report,source)
+                                    if not duplicate.get('duplicate'):raise Invalid('Duplicate report was not deduplicated')
+                                    receipt=dict(receipt,duplicate_verified=True)
                         if step.get('expect_error'):raise AssertionError('Expected report error: '+step['expect_error'])
                     except Invalid as exc:
                         if step.get('expect_error') and step['expect_error'] in str(exc):
@@ -148,8 +175,16 @@ def run_scenarios(document, scenarios=None):
                         raise
                     receipts.append(dict(receipt,step=step_index))
                     if receipt['accepted'] != step.get('accepted',True):raise Invalid('Report acceptance differs from expected value')
-                    if execution['implementation']['kind']=='agent' and receipt.get('completed'):
+                    if not entry and execution['implementation']['kind']=='agent' and receipt.get('completed'):
                         RunTools(store,run_id,execution['token']).call('finish',{})
+                    saved=store.get(run_id)
+                    if saved['initialized'] and saved['tasks'][startup]['status']!='completed':
+                        tick();saved=store.get(run_id)
+                        attempt=next(e for e in saved['executions'] if e['task_id']==startup)
+                        manager=RunTools(store,run_id,attempt['token'])
+                        info=manager.call('read_task',{'task_id':startup})
+                        manager.call('report_task',{'task_id':startup,'event':'completed','report_id':'scenario-started','envelope':{'outputs':{'decision':'Simulated initialization and declared routes'}}})
+                        manager.call('finish',{})
                 tick()
                 state=scenario_state(store.get(run_id))
                 for check in case['assertions']:

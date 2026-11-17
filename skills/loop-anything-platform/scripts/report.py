@@ -13,18 +13,19 @@ def _call(context, tool, fields):
     url = context.get('platform_url')
     if not url:
         raise RuntimeError('Reporting requires the running platform NAS or HTTP address from command context')
+    workspace=context.get('workspace_id') or context.get('self',{}).get('workspace_id')
     arguments = {key: context[key] for key in ('run_id', 'task_id', 'execution_id', 'token')}
     arguments.update(fields)
     if url.startswith('nas:'):
         # Scripts may load report.py by path without its directory on sys.path.
         spec=importlib.util.spec_from_file_location('_loop_report_transport',Path(__file__).with_name('platform_transport.py'))
         transport=importlib.util.module_from_spec(spec);spec.loader.exec_module(transport)
-        result=transport.invoke(url,tool,arguments)
+        result=transport.invoke(url,tool,arguments,expected_workspace=workspace)
         if not result.get('ok') or result.get('pending'):
             raise RuntimeError(json.dumps(result,ensure_ascii=False))
         return result
     request = Request(url.rstrip('/') + '/api/tools',
-                      data=json.dumps({'tool': tool, 'arguments': arguments}).encode(),
+                      data=json.dumps({'tool': tool, 'arguments': arguments, 'expected_workspace':workspace}).encode(),
                       headers={'Content-Type': 'application/json', 'X-Loop-Anything': 'workspace'})
     try:
         with urlopen(request, timeout=30) as response:

@@ -3,18 +3,6 @@ import copy
 from loop_anything.runtime.model import Conflict, Invalid
 
 
-def normalize_run(run):
-    # Preserve an existing operator's global right when reading the previous format.
-    if run.get('operator_protocol') and 'agent_sessions' not in run:
-        old = run.pop('agent_session', None)
-        by_execution = {e['id']: e['task_id'] for e in run.get('executions', [])}
-        run['agent_sessions'] = [dict(old, scope_task=None, task_id=by_execution.get(old.get('execution_id')) or (run['loop_definition']['seed']['id'] if not run['initialized'] else None))] if old else []
-        for task in run.get('tasks', {}).values():
-            source = task.get('origin', {})
-            task.setdefault('parent_id', by_execution.get(source.get('execution') or source.get('agent')))
-    return run
-
-
 def contains(run, scope, task_id):
     if scope is None:
         return True
@@ -28,7 +16,12 @@ def contains(run, scope, task_id):
 
 
 def owner_for(run, token):
-    return next((o for o in run.get('agent_sessions', []) if o['token'] == token), None)
+    owner = next((o for o in run.get('agent_sessions', []) if o['token'] == token), None)
+    task = run.get('tasks', {}).get((owner or {}).get('task_id'), {})
+    generation = task.get('origin', {}).get('steward')
+    if generation and generation != run.get('steward', {}).get('generation'):
+        return None
+    return owner
 
 
 def scope_for(run, task):

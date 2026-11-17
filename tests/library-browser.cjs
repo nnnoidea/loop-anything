@@ -25,7 +25,7 @@ for count in (0,1,2):
  b['nodes']['initialize']['plan_nodes']=['finish']
  b['nodes']['initialize']['skills']=[{'name':'author-method','content':'Author initialization method.'}]
  b['guide']={'purpose':'<script>不可执行的作者说明</script>','results':'一份比较结果','effects':'测试仅等待人工提交，不调用模型。','parameters':{'request':{'label':'本次目标','description':'写出希望比较什么'},'budget':{'label':'实验次数','description':'至少一次'}}}
- d['implementations']={n:{'kind':'agent'} for n in list(b['nodes'])[:count]}
+ d['implementations']={n:{'options':{'default':{'kind':'agent'}},'default':'default'} for n in list(b['nodes'])[:count]}
  if count==2:d['implementations']['initialize']={'default':'primary','options':{'primary':{'kind':'agent'},'secondary':{'kind':'agent'}}}
  raw=make_archive(d);keys.append(install(s,raw)['key'])
  if count==2:open(sys.argv[2],'wb').write(raw)
@@ -194,18 +194,19 @@ assert [n for n in z.namelist() if n.endswith('/SKILL.md')]==['platform/loop-any
     sb.plans={round:{parameters:{type:'object'},steps:{
       prepare:{node:'prepare',inputs:{}},
       finish:{node:'finish',after:['prepare'],inputs:{value:{from:'prepare',port:'result'}}}}}};
-    skipDefinition.implementations=Object.fromEntries(Object.keys(sb.nodes).map(n=>[n,{kind:'agent'}]));
+    skipDefinition.implementations=Object.fromEntries(Object.keys(sb.nodes).map(n=>[n,{options:{default:{kind:'agent'}},default:'default'}]));
     const headers={'X-Loop-Anything':'workspace'};
     const published=await (await page.request.post(url+'/api/publish',{headers,data:skipDefinition})).json();
-    const started=await (await page.request.post(url+'/api/tools',{headers,data:{tool:'start_run',arguments:{key:published.key,title:'UI omit',authorization:'Complete this local UI test'}}})).json();
-    assert(started.ok,JSON.stringify(started));const created={id:started.run_id};
+    // The library fixture exercises rendering, not client startup; test the public path in web-agent-browser.
+    const started=JSON.parse(execFileSync('python3',['-c',"import sys,json;from loop_anything.runtime.store import Store;from tests.runtime_fixture import runtime_run;print(json.dumps(runtime_run(Store(sys.argv[1]),{'key':sys.argv[2],'title':'UI omit','authorization':'Complete this local UI test'})))",database,published.key],{encoding:'utf8'}));
+    const created={id:started.run_id};
     assert(created.id,JSON.stringify(created));
     let state=await waitRun(created.id,s=>Boolean(s.agent_sessions?.[0])),init={task_id:sb.seed.id,token:state.agent_sessions[0].token};
     assert.equal(state.executions.length,0); // The user's Agent owns initialization; no background call.
     const tool=async(name,args)=>{const response=await page.request.post(url+'/api/tools',{headers,data:{tool:name,arguments:{...args,run_id:created.id,token:init.token}}});const result=await response.json();assert(response.ok(),JSON.stringify(result));return result;};
     await tool('build_plan',{name:'round',key:'round-1',round:'第1轮',values:{},steps:{prepare:{skip:true},finish:{inputs:{value:{record:'result'}}}}});
     const initialTask=await tool('read_task',{task_id:init.task_id});
-    await tool('complete_task',{task_id:init.task_id,task_version:initialTask.task_version,envelope:{settings:{objective:'Reuse existing record',completion_rule:{op:'ge',args:[{path:['completed','finish']},1]}},outputs:{result:'existing dataset'}}});
+    await tool('report_task',{event:'completed',report_id:'complete',task_id:init.task_id,envelope:{settings:{objective:'Reuse existing record',completion_rule:{op:'ge',args:[{path:['completed','finish']},1]}},outputs:{result:'existing dataset'}}});
     state=await waitRun(created.id,s=>Object.values(s.tasks).some(w=>w.spec.node==='finish' && w.status==='ready'));
     assert.equal(Object.keys(state.tasks).length,2);
     assert(!Object.values(state.tasks).some(w=>w.spec.node==='prepare'));
@@ -226,7 +227,7 @@ assert [n for n in z.namelist() if n.endswith('/SKILL.md')]==['platform/loop-any
     await page.screenshot({path:path.join(root,'ui-omitted.png'),fullPage:true});
     assert.equal(state.executions.filter(e=>e.node===sb.entry).length,1);
     assert.equal(state.tasks[init.task_id].status,'completed');
-    await tool('complete_task',{task_id:finish.id,task_version:finishTask.task_version,envelope:{outputs:{done:true}}});
+    await tool('report_task',{event:'completed',report_id:'complete',task_id:finish.id,envelope:{outputs:{done:true}}});
     await tool('finish',{});
     const completed=await waitRun(created.id,s=>s.status==='completed' && !s.agent_sessions?.[0]);
     assert.equal(completed.history.filter(h=>h.kind==='agent_acquired' && h.detail.kind==='background').length,0);

@@ -48,23 +48,6 @@ def directory(media, member):
         if value.get('enabled',True):media.put(prefix+'/'+name,dict(value,enabled=False))
 
 
-def backfill(media):
-    """One-time explicit join/upgrade: decorate existing rows without republishing work."""
-    grouped={}
-    for row in media.record_pages():
-        f=row['fields'];key=media.text(f.get('key',''))
-        if key.startswith(('members/','results/','messages/')) and not media.text(f.get('记录类型')):
-            grouped.setdefault(key,[]).append(row)
-    for key,rows in grouped.items():
-        try:value=media.decode(rows,heartbeat=key.startswith('members/'))
-        except FileNotFoundError:continue
-        if key.startswith('members/'):directory(media,value)
-        visible=columns(key,value)
-        for row in rows:
-            if int(row['fields']['part'])==0:
-                media.write_record(visible,row['record_id'])
-
-
 def views(media):
     common=['--base-token',media.app,'--table-id',media.table]
     def call(operation, **values):

@@ -32,7 +32,7 @@
 - Run 中调用 `change_settings`，传当前 settings revision 和 `change:{"bindings":{"train":"cluster"}}`。此映射整体替换；省略节点沿用 Loop 默认，节点值 null 表示本次暂不选用。
 - 构建任务时，`build_plan` 可提供 `steps.<step>.implementation`。省略时沿用模板或 Run 默认；空字符串表示撤销模板选择、使用 Run 默认。
 - 修改未派发任务或重试失败任务时，`change_task` 可提供 `implementation`。空字符串恢复继承 Run 默认。重试前仍需确认上一次执行的副作用。
-- `read_task` 返回候选配置、当前实际选择及 task_version。默认变化导致待执行任务选择变化时，需要重新读取，旧版本结果不能提交。
+- `read_task` 返回候选配置和当前实际选择。已分派执行保留实际输入和实现；修改默认候选影响后续任务。
 
 Loop 库展示候选和默认值，启动表单可直接选择；Timeline 设置可调整 Run 默认。任务级选择通过上述结构化工具操作。
 

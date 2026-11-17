@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="630" height="366" viewBox="0 0 630 366" role="img">
+<title>长任务最容易断在哪？</title><desc></desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#5a6e80"/></marker></defs>
+<rect width="100%" height="100%" fill="white"/>
+<rect x="28" y="22" width="5" height="30" rx="2" fill="#187e75"/>
+<text x="48" y="46" text-anchor="start" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="27" font-weight="bold" fill="#203449">长任务最容易断在哪？</text>
+<g transform="translate(0,0)">
+<text x="24" y="88" text-anchor="start" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="17" font-weight="bold" fill="#5a6e80">你遇到的事</text>
+<text x="278" y="88" text-anchor="start" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="17" font-weight="bold" fill="#5a6e80">Loop Anything 怎么接上</text>
+<rect x="24" y="104" width="197" height="70" rx="10" fill="#f1f6fa" stroke="#d8e2ea"/>
+<rect x="278" y="104" width="328" height="70" rx="10" fill="#edf7f4" stroke="#d8e2ea"/>
+<polyline points="225,139 269,139" fill="none" stroke="#187e75" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="39" y="132" text-anchor="start" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="21" font-weight="bold" fill="#203449">等几个小时</text>
+<text x="39" y="158" text-anchor="start" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="19" font-weight="normal" fill="#5a6e80">谁来盯结果？</text>
+<text x="294" y="132" text-anchor="start" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="21" font-weight="bold" fill="#203449">平台观察已接入的外部任务</text>
+<text x="294" y="158" text-anchor="start" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="19" font-weight="normal" fill="#203449">结果就绪，按依赖推进</text>
+<rect x="24" y="185" width="197" height="70" rx="10" fill="#f1f6fa" stroke="#d8e2ea"/>
+<rect x="278" y="185" width="328" height="70" rx="10" fill="#edf7f4" stroke="#d8e2ea"/>
+<polyline points="225,220 269,220" fill="none" stroke="#187e75" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="39" y="213" text-anchor="start" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="21" font-weight="bold" fill="#203449">换个会话</text>
+<text x="39" y="239" text-anchor="start" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="19" font-weight="normal" fill="#5a6e80">还要重新交代吗？</text>
+<text x="294" y="213" text-anchor="start" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="21" font-weight="bold" fill="#203449">新会话连上同一平台</text>
+<text x="294" y="239" text-anchor="start" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="19" font-weight="normal" fill="#203449">沿用目标、约束和已有结果</text>
+<rect x="24" y="266" width="197" height="70" rx="10" fill="#f1f6fa" stroke="#d8e2ea"/>
+<rect x="278" y="266" width="328" height="70" rx="10" fill="#edf7f4" stroke="#d8e2ea"/>
+<polyline points="225,301 269,301" fill="none" stroke="#187e75" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="39" y="294" text-anchor="start" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="21" font-weight="bold" fill="#203449">想中途检查</text>
+<text x="39" y="320" text-anchor="start" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="19" font-weight="normal" fill="#5a6e80">现在做到哪了？</text>
+<text x="294" y="294" text-anchor="start" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="21" font-weight="bold" fill="#203449">工作台显示等待原因和结果</text>
+<text x="294" y="320" text-anchor="start" font-family="PingFang SC,Noto Sans CJK SC,Microsoft YaHei,Arial,sans-serif" font-size="19" font-weight="normal" fill="#203449">可以暂停，检查后继续</text>
+</g></svg>

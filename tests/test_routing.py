@@ -1,3 +1,4 @@
+from tests.runtime_fixture import runtime_run
 """Results trigger author-defined plans atomically; no author-side task writer."""
 import sys
 import tempfile
@@ -24,7 +25,7 @@ class RoutingTests(unittest.TestCase):
         self.edit('put_node', node_id='evaluate', instructions='Run agreed parameters', inputs=[],
                   outputs=[{'name':'score','type':'number'}])
         self.edit('set_implementation', node_id='evaluate', implementation_id='local', kind='command', default=True,
-                  command=[sys.executable,'-c', 'import json,sys;r=json.load(sys.stdin);print(json.dumps({"outputs":{"score":r["parameters"]["batch"]*2}}))'],
+                  command=[sys.executable,'-c', 'import json,sys;r=json.load(sys.stdin);print(json.dumps({\'event\':\'completed\',\'envelope\':{"outputs":{"score":r["parameters"]["batch"]*2}}}))'],
                   parameter_schema={'type':'object','properties':{'batch':{'type':'integer'}},'required':['batch']})
         self.edit('put_node', node_id='review', instructions='Decide whether another round is needed',
                   inputs=[{'name':'scores','type':'array'}], outputs=[{'name':'decision','type':'object'}])
@@ -48,7 +49,7 @@ class RoutingTests(unittest.TestCase):
     def start(self):
         self.assertTrue(self.platform.call('validate_loop', {'draft_id':self.draft['draft_id']})['valid'])
         self.key = self.platform.call('publish_loop', {'draft_id':self.draft['draft_id'],'revision':self.draft['revision']})['key']
-        started = self.platform.call('start_run', {'key':self.key,'title':'Parameters only','authorization':'Run the requested work'})
+        started = runtime_run(self.platform.store, {'key':self.key,'title':'Parameters only','authorization':'Run the requested work'})
         self.id = started['run_id'];self.task_id=started['entry_task_id']
         self.tools = RunTools(self.store,self.id,started['token'])
         self.tools.call('read_task', {'task_id': self.task_id})
@@ -58,7 +59,7 @@ class RoutingTests(unittest.TestCase):
         settings={'objective':'Two rounds', 'completion_rule':{'op':'and','args':[
             {'op':'ge','args':[{'path':['completed','review']},2]},
             {'op':'eq','args':[{'path':'active_tasks'},0]}]}}
-        return dict(task_id=self.task_id,task_version=info['task_version'],report_id='initialize-result',event='completed',
+        return dict(task_id=self.task_id,report_id='initialize-result',event='completed',
                     envelope={'outputs':{'requests':requests},'settings':settings,**fields})
 
     def until_review(self):
@@ -89,12 +90,12 @@ class RoutingTests(unittest.TestCase):
         task,tools=self.until_review()
         info=tools.call('read_task',{'task_id':task['id']})
         self.assertEqual(info['inputs']['scores'],[4,6])
-        response=tools.call('report_task',{'task_id':task['id'],'task_version':info['task_version'],'event':'completed','report_id':'next',
+        response=tools.call('report_task',{'task_id':task['id'],'event':'completed','report_id':'next',
                                         'envelope':{'outputs':{'decision':{'again':True,'requests':[{'batch':5}]}}}})
         self.assertTrue(response['accepted']);tools.call('finish',{})
         task2,tools2=self.until_review();info2=tools2.call('read_task',{'task_id':task2['id']})
         self.assertEqual(info2['inputs']['scores'],[10])
-        tools2.call('report_task',{'task_id':task2['id'],'task_version':info2['task_version'],'event':'completed','report_id':'end',
+        tools2.call('report_task',{'task_id':task2['id'],'event':'completed','report_id':'end',
                                  'envelope':{'outputs':{'decision':{'again':False}}}})
         tools2.call('finish',{});self.engine.tick(self.id)
         run=self.store.get(self.id)
@@ -136,7 +137,7 @@ class RoutingTests(unittest.TestCase):
         self.edit('put_node',node_id='initialize',routes=[dict(self.route,event='proposal',values={'experiments':{'$':'detail.requests'}}),
                                                       dict(self.route,id='not_accepted',event='unknown')])
         self.start();info=self.tools.call('read_task',{'task_id':self.task_id})
-        args={'task_id':self.task_id,'task_version':info['task_version'],'report_id':'proposal','event':'proposal','detail':{'requests':[{'batch':2}]}}
+        args={'task_id':self.task_id,'report_id':'proposal','event':'proposal','detail':{'requests':[{'batch':2}]}}
         result=self.tools.call('report_task',args)
         self.assertTrue(result['accepted']);self.assertEqual(len(self.store.get(self.id)['tasks']),3)
         self.assertTrue(self.tools.call('report_task',args)['duplicate'])

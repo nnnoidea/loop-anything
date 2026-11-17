@@ -5,11 +5,11 @@ description: Use the Loop Anything client to schedule timed tasks or script-base
 
 # Local scheduling
 
-This Skill covers local scheduling and receiving within the unified client. Install with `python3 install.py --role client` from source or a distribution; use the returned Python path with `-m loop_anything client local`. The same client operates Loops through `client tool`; install `loop-anything-platform` for Loop operation instructions when needed. Installation starts neither a server nor a receiver. The older `--role local` and `-m loop_anything local` remain compatible.
+This Skill covers local scheduling and receiving within the unified client. Default installation is `python3 install.py` and includes the local server and client. Use the returned Python path with `-m loop_anything client local`. The same client operates Loops through `client tool`; install `loop-anything-platform` for Loop operation instructions when needed. macOS installation starts the local platform; receiving and personal tasks still require an explicit start. Use `-m loop_anything client local` for personal registrations.
 
-Confirm the registration directory with the user; a cluster can use a personal NAS directory. Use `list` to find, reuse, or update existing registrations. Registration does not start work. `start` the specific ID only when execution is requested. Moving machines or reloading the Skill must not automatically start historical jobs.
+Without `--root`, use the local platform registry from personal spaces settings (or the default workspace .schedules directory). An explicit `--root` selects standalone scheduling; a cluster can use a personal NAS directory. Use `list` to find, reuse, or update existing registrations. Registration does not start work. `start` the specific ID only when execution is requested. Moving machines or reloading the Skill must not automatically start historical jobs.
 
-For a job the user wants to manage from the workspace's Scheduled Tasks page, register it on the server using the directory shown under “如何登记任务” as `--root`. The page lists those registrations and offers explicit start and stop. Personal client schedules in other directories remain accessible via their own CLI registry.
+The local platform webpage and `client local` without `--root` use the same personal task registry. This remains local even when the default tool space is team. An explicit `--root` chooses another standalone registry; those jobs are not automatically shared or copied into a platform. Reading the registry never starts work.
 
 ```sh
 "<CLIENT_PYTHON>" -m loop_anything client local --root /nas/users/me/schedules list
@@ -55,6 +55,8 @@ Wake an agent only for actions requiring judgment; scripts perform recurring che
 `server` also accepts reachable HTTP(S). `capacity` defaults to 1, range 1–8. After registration and explicit start, `show` returns `runtime.executor_id`, also discoverable through platform `list_executors`. Concurrent receivers use different registration IDs. Select the returned executor ID in a node or named agent's `implementation.executor`. Required CLIs, working directories, and credentials must be available on the receiver.
 
 The receiver executes processes; the team service advances the Loop state machine. Temporary disconnection records errors and keeps checking. Service restart reconnects original calls; receiver restart does not replay accepted commands with unknown results. A cancellation received before startup reports not-executed; already-started commands follow the original stop process. Task sessions resume on the original executor; preserve native CLI history on NAS when needed.
+
+The NAS address is only a mailbox; server data may be private to that server. Declared package scripts and Skills arrive with requests and are materialized in the receiver's resource cache (`resource_root` in context). Use those local instruction paths, or join a declared relative Skill `path` to `resource_root` when a later tool reply contains a server path. External business data, Agent CLIs, credentials, and explicitly configured working directories still need to be available locally.
 
 Remote queues and receipt waits are advanced by the service scheduler without occupying a service execution thread continuously. The executor persists and transfers large results in chunks; `delivering` means delivery is pending. Network retries resend results, not commands. Use `read_executor_call` for status and complete results.
 

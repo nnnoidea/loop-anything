@@ -21,7 +21,7 @@ class CommandStartError(Invalid):
     """The configured program or working directory could not be opened."""
 
 
-def lock_database(filename):
+def lock_database(filename, resource='database'):
     lock = open(str(Path(filename).resolve()) + '.engine.lock', 'a+b')
     try:
         if os.name == 'nt':
@@ -37,19 +37,24 @@ def lock_database(filename):
     except OSError as exc:
         lock.close()
         if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
-            raise Invalid('Another engine already owns this database') from exc
+            raise Invalid('Another engine already owns this ' + resource) from exc
         raise
     return lock  # Closing the descriptor releases either OS lock.
 
 
-def run_command(command, request_text, timeout, cwd=None, stop=None, session=None):
+def run_command(command, request_text, timeout, cwd=None, stop=None, session=None, context=None):
+    env=dict(os.environ);env.pop('LOOP_ANYTHING_WORK',None)
+    if context is not None:
+        from loop_anything.runtime.tool_client import module
+        env['LOOP_ANYTHING_WORK']=module('routing').bind_context(context) or 'unavailable-work-origin'
     if session is not None:
+        session.environment=env
         return session.run(command, request_text, timeout, cwd, stop)
     if stop is not None and stop.is_set():
         raise Invalid('Platform stopped before command started')
     options = {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session': True}
     try:
-        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', cwd=cwd, **options)
+        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', cwd=cwd, env=env, **options)
     except OSError as exc:
         raise CommandStartError('Cannot start command in cwd ' + str(cwd or Path.cwd()) + ': ' + str(exc)) from exc
     deadline = time.monotonic() + timeout if timeout is not None else None

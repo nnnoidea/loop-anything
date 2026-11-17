@@ -10,7 +10,6 @@ from unittest.mock import patch
 from loop_anything.runtime.store import Store
 from loop_anything.runtime.engine import Engine
 from loop_anything.runtime.model import Invalid, Conflict
-from communication_helpers import legacy_offer
 
 
 class CommunicationTests(unittest.TestCase):
@@ -30,43 +29,12 @@ class CommunicationTests(unittest.TestCase):
                     'local':local,'groups':list(groups),'implementation':{'kind':'agent','command':[sys.executable,'-c','pass']}})
 
     def groups(self):
-        config = self.a.config('group', path=str(self.root/'nas'), create=True)['configuration']
+        config = self.a.config('team',link=str(self.root/'nas'), create=True)['configuration']
         gid = next(iter(config['groups']))
-        for comm in (self.b,self.c):comm.config('group',path=str(self.root/'nas'))
+        for comm in (self.b,self.c):comm.config('team',link=str(self.root/'nas'))
         return gid
 
-    def test_delayed_claim_remains_valid_before_default_acceptance_deadline(self):
-        gid=self.groups();self.agent(self.b,groups=[gid])
-        created=legacy_offer(self.a,location='group',group_id=gid,agent_id='papers',message='help')['request']
-        self.assertAlmostEqual(created['deadline']-created['created_at'],300,places=2)
-        self.assertEqual(created['next_action'],'await_assignment')
-        with patch('loop_anything.runtime.communication.time.time',return_value=created['created_at']+29):
-            self.a.tick()
-            self.assertEqual(self.a.get(created['id'])['state'],'pending')
-            self.a.receive({'id':'delayed-claim','kind':'claim','request_id':created['id'],
-                'sender':self.b.settings()['instance_id'],'target':self.a.settings()['instance_id'],
-                'group_id':gid,'assignment_id':None,'payload':{'agent_id':'papers'}})
-        self.assertEqual(self.a.get(created['id'])['state'],'assigned')
 
-    def test_cancelled_request_explains_late_claim_rejection_to_executor(self):
-        gid=self.groups();self.agent(self.b,groups=[gid])
-        created=legacy_offer(self.a,location='group',group_id=gid,agent_id='papers',message='help')['request']
-        with self.a.store.connection() as db:
-            offer=next(json.loads(r[0]) for r in db.execute('SELECT document FROM communication_outbox') if json.loads(r[0])['kind']=='offer')
-        self.b.receive(offer)
-        cancelled=self.a.control(created['id'],'cancel',reason='User withdrew the task')['request']
-        self.assertEqual(cancelled['cancellation']['previous_state'],'pending')
-        with self.b.store.connection() as db:
-            claim=next(json.loads(r[0]) for r in db.execute('SELECT document FROM communication_outbox') if json.loads(r[0])['kind']=='claim')
-        self.a.receive(claim)
-        with self.a.store.connection() as db:
-            reply=next(json.loads(r[0]) for r in db.execute('SELECT document FROM communication_outbox') if json.loads(r[0])['kind']=='not_selected')
-        self.b.receive(reply)
-        decision=self.b.read(created['id'])['request']['selection_decision']
-        self.assertEqual(decision['reason'],'cancelled')
-        self.assertEqual(decision['source_state'],'cancelled')
-        self.assertEqual(decision['cancellation']['reason'],'User withdrew the task')
-        self.assertTrue(any(e['kind']=='claim_not_selected' for e in self.a.get(created['id'])['history']))
 
     def cycle(self, predicate, timeout=15):
         until = time.monotonic()+timeout
@@ -81,7 +49,7 @@ class CommunicationTests(unittest.TestCase):
     def worker(self, command, prompt, *args, **kwargs):
         context=json.loads(prompt.split('\n',1)[1])
         for comm in (self.a,self.b,self.c):
-            if comm.authorized(context,worker=True):
+            if comm.authorized(context):
                 comm.worker_call(context['request_id'],context['token'],'complete',{'result':{'papers':['one']}})
                 return subprocess.CompletedProcess(command,0,'','')
         raise AssertionError('No worker identity')
@@ -97,7 +65,7 @@ class CommunicationTests(unittest.TestCase):
         self.assertEqual(self.a.get(result['request']['id'])['result'],{'papers':['one']})
         with self.a.store.connection() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM communication_outbox').fetchone()[0],0)
-        self.assertTrue(self.a.authorized({'request_id':result['request']['id'],'token':result['request_token']}))
+        self.assertNotIn('request_token',result)
         self.assertFalse(self.a.authorized({'request_id':result['request']['id'],'token':'wrong'}))
 
     def test_assistance_context_task_accepts_business_json_without_blocking_launch(self):
@@ -191,7 +159,7 @@ class CommunicationTests(unittest.TestCase):
         base=fixture.RuntimeTests();base.setUp()
         try:
             gid=self.groups();self.agent(self.b,groups=[gid]);self.agent(self.b,'local-helper')
-            base.implementations['init']={'kind':'agent','dispatch':{'location':'group','agent_id':'papers'}}
+            base.implementations['init']={'options': {'default': {'kind':'agent','dispatch':{'location':'group','agent_id':'papers'}}}, 'default': 'default'}
             from loop_anything.packaging.packages import make_archive,install
             base.bp['nodes']['init']['skills']=[{'name':'method','path':'skills/method/SKILL.md'}]
             content=b'# Method\n'+b'x'*1100000
@@ -202,7 +170,7 @@ class CommunicationTests(unittest.TestCase):
                 context=json.loads(prompt.split('\n',1)[1])
                 if context['kind']=='assistance':return self.worker(command,prompt,*args,**kw)
                 self.assertEqual(Path(context['context']['task']['skills'][0]['resolved_path']).read_bytes(),content)
-                comm=self.b if self.b.authorized(context,worker=True) else self.c
+                comm=self.b if self.b.authorized(context) else self.c
                 def source(tool,arguments):
                     response=comm.worker_call(context['request_id'],context['token'],'source_call',{'tool':tool,'arguments':arguments})
                     ident=response['call']['id'];deadline=time.monotonic()+4
@@ -217,7 +185,7 @@ class CommunicationTests(unittest.TestCase):
                 while comm.get(child['id'])['state'] not in ('completed','failed') and time.monotonic()<until:time.sleep(.01)
                 self.assertEqual(comm.worker_call(context['request_id'],context['token'],'read_assistance',{'request_id':child['id']})['request']['result']['papers'],['one'])
                 info=source('read_task',{'task_id':'init'})
-                source('report_task',{'task_id':'init','task_version':info['task_version'],'event':'completed','report_id':'done',
+                source('report_task',{'task_id':'init','event':'completed','report_id':'done',
                     'envelope':{'outputs':{'a':'A','b':'B'},'settings':{'objective':'remote'}}})
                 source('finish',{})
                 comm.worker_call(context['request_id'],context['token'],'complete',{'result':{}})
@@ -388,7 +356,7 @@ class CommunicationTests(unittest.TestCase):
         with self.assertRaises(Conflict):other.communication.request({'location':'local','message':'help'})
         other.communication.config('identity',name='Clone',regenerate=True)
         self.assertNotEqual(other.communication.settings()['instance_id'],source)
-        gid=self.groups();members=self.root/'nas'/'members';members.mkdir(exist_ok=True)
+        gid=self.groups();members=self.root/'nas'/'agents'/'members';members.mkdir(exist_ok=True)
         (members/'bad.json').write_text('{broken')
         self.a.scan();self.assertTrue((members/(self.a.settings()['instance_id']+'.json')).exists())
 
@@ -557,7 +525,7 @@ class CommunicationTests(unittest.TestCase):
             gid=self.groups();self.agent(self.b,'research',groups=[gid]);self.agent(self.c if remote_child else self.b,'helper',groups=[gid] if remote_child else [])
             config=self.b.settings()['agents']['research']['implementation']
             self.b.config('agent',agent_id='research',agent={'implementation':dict(config,resume_command=[sys.executable,'-c','pass','{{session_id}}','{{prompt}}'])})
-            base.implementations['init']={'kind':'agent','dispatch':{'location':'group','agent_id':'research'}}
+            base.implementations['init']={'options': {'default': {'kind':'agent','dispatch':{'location':'group','agent_id':'research'}}}, 'default': 'default'}
             key=self.a.store.publish(base.bp,base.implementations)['key'];self.a.config('bind_loop',loop_key=key,group_id=gid)
             runid=self.a.store.create(key,'remote wait')['id']
             def worker(command,prompt,*args,**kw):

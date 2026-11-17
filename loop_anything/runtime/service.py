@@ -40,17 +40,20 @@ def option(config, flag, default):
     return argv[argv.index(flag) + 1] if flag in argv else default
 
 
-def definition(python, database=None, port=None, host=None, previous=None):
+def definition(python, database=None, port=None, host=None, previous=None, space=None):
     database = str(Path(database or option(previous, '--db', default_database())).expanduser().resolve())
     port = int(port if port is not None else option(previous, '--port', DEFAULT_PORT))
+    space=space or option(previous,'--space','local')
+    if space not in ('local','team'):raise Invalid('Choose local or team space')
     host = host or option(previous, '--host', '127.0.0.1')
+    if space=='local' and host not in ('127.0.0.1','localhost','::1'):raise Invalid('Local space requires a loopback host')
     if not 1 <= port <= 65535:
         raise Invalid('Service port must be between 1 and 65535')
     env = dict((previous or {}).get('EnvironmentVariables', {}))
     env.update(PATH=os.environ.get('PATH', '/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin'), PYTHONUNBUFFERED='1')
     argv = [str(Path(python).absolute()), '-I', '-m', 'loop_anything', '--db', database,
-            'serve', '--host', host, '--port', str(port)]
-    if '--allow-sleep' in (previous or {}).get('ProgramArguments', []):
+            'serve', '--host', host, '--port', str(port),'--space',space]
+    if space=='local' or '--allow-sleep' in (previous or {}).get('ProgramArguments', []):
         argv.append('--allow-sleep')
     logs = data_directory() / 'logs'
     return {'Label': LABEL, 'ProgramArguments': argv, 'WorkingDirectory': str(Path(database).parent),
@@ -96,7 +99,7 @@ def available(config):
                 raise Invalid('Service port is occupied; stop the foreground preview or choose another port') from exc
 
 
-def manage(action, database=None, port=None, host=None, open_browser=False):
+def manage(action, database=None, port=None, host=None, open_browser=False, space=None):
     if sys.platform != 'darwin':
         raise Invalid('Native background service currently supports macOS; use serve on this system')
     config = configuration()
@@ -120,7 +123,7 @@ def manage(action, database=None, port=None, host=None, open_browser=False):
     if action == 'install':
         if loaded:
             raise Invalid('Stop the background service before changing its configuration')
-        config = definition(sys.executable, database, port, host, config)
+        config = definition(sys.executable, database, port, host, config,space=space)
         available(config)
         service_file().parent.mkdir(parents=True, exist_ok=True)
         Path(config['StandardOutPath']).parent.mkdir(parents=True, exist_ok=True)
@@ -144,5 +147,8 @@ def manage(action, database=None, port=None, host=None, open_browser=False):
         time.sleep(.2)
     if open_browser:
         import webbrowser
-        webbrowser.open(address(config))
+        from loop_anything.runtime.tool_client import module
+        client=module('spaces')
+        target=address(config) if option(config,'--space','local')=='team' else client.browser_url(client.read())
+        webbrowser.open(target)
     return status()

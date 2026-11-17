@@ -3,7 +3,7 @@ const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const vm=require('node:vm');
-const ctx=vm.createContext({location:{origin:'http://127.0.0.1:8769'},document:{addEventListener(){}},esc:v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),pretty:v=>JSON.stringify(v,null,2),kindNames:{agent:'Agent',command:'脚本'},chosenImplementation:(item,id)=>item.implementations[id]});
+const ctx=vm.createContext({location:{origin:'http://127.0.0.1:8769'},document:{addEventListener(){}},esc:v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),pretty:v=>JSON.stringify(v,null,2),kindNames:{agent:'Agent',command:'脚本'},chosenImplementation:(item,id)=>item.implementations[id]?.options?.[item.implementations[id].default]});
 for(const name of ['loop_graph','lifecycle'])vm.runInContext(fs.readFileSync(`loop_anything/web/${name}.js`,'utf8'),ctx);
 const run=code=>vm.runInContext(code,ctx);
 ctx.atob=atob;ctx.TextDecoder=TextDecoder;
@@ -86,7 +86,7 @@ test('execution, advancement and status stay independent for script nodes with f
   for(const text of ['executor-command','运行：脚本 · worker-A','advancement-agent','推进：流程 Agent','状态：等待中'])assert.ok(html.includes(text),text);
   assert.ok(run('nodeStateHTML(item,"work",{kind:"command"})').includes('内置流程 Agent'));
   ctx.item.loop_definition.nodes.work.routes=[];
-  assert.match(run('nodeAxesHTML(item,"work",{kind:"agent"})'),/推进：未声明后续/);
+  assert.match(run('nodeAxesHTML(item,"work",{kind:"agent"})'),/推进：启动后由管家判断/);
   assert.equal(JSON.stringify({...ctx.item,loop_definition:{...ctx.item.loop_definition,nodes:{work:{routes:[{id:'judge',event:'completed',flow_agent:true}]}}}}),before);
 });
 
@@ -112,7 +112,7 @@ test('generic role triplets separate the executor, state-machine decision and ne
   assert.match(matrix.split('<tbody>')[1],/data-role-kind="machine"/);
 });
 test('flow decisions and node relationships use the same roles without guessing Agent choices',()=>{
-  ctx.roleItem={loop_definition:{schema_version:2,nodes:{source:{routes:[{id:'ask',event:'completed',flow_agent:true,when:false}],plan_nodes:['target']},target:{}},plans:{p:{steps:{a:{node:'source'},b:{node:'target',after:['a']}}}}},implementations:{source:{kind:'command'},target:{kind:'agent'}}};
+  ctx.roleItem={loop_definition:{schema_version:2,nodes:{source:{routes:[{id:'ask',event:'completed',flow_agent:true,when:false}],plan_nodes:['target']},target:{}},plans:{p:{steps:{a:{node:'source'},b:{node:'target',after:['a']}}}}},implementations:{source:{options:{default:{kind:'command'}},default:'default'},target:{options:{default:{kind:'agent'}},default:'default'}}};
   const before=JSON.stringify(ctx.roleItem),html=run('nodeStateHTML(roleItem,"source",{kind:"command"})');
   assert.match(html,/来源执行[\s\S]*?data-role-kind="script"/);
   assert.match(html,/后续判断[\s\S]*?data-role-kind="agent"/);

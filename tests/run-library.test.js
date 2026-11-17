@@ -5,7 +5,7 @@ const fs=require('node:fs');
 const vm=require('node:vm');
 const code=fs.readFileSync('loop_anything/web/run_library.js','utf8');
 function context(extra={}){
-  return vm.createContext({Date,URLSearchParams,selected:null,labels:{running:'运行中'},
+  return vm.createContext({Date,URLSearchParams,selected:null,labels:{running:'运行中'},badge:status=>`<span>${status}</span>`,
     esc:v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),
     ...extra});
 }
@@ -94,7 +94,7 @@ test('a shrinking result set returns to a valid page and archived Loops remain f
   }});
   vm.runInContext(code.slice(0,code.indexOf('let runFilterTimer')),ctx);
   await vm.runInContext('runOffset=30; refreshRunLibrary()',ctx);
-  assert.deepEqual(offsets,[30,0]);assert.equal(field('runs-page').textContent,'1–2 / 2');
+  assert.deepEqual(offsets,[30,0]);assert.equal(field('runs-page-number').textContent,'1–2 / 2');
   assert.match(field('runs-loop').innerHTML,/archived-loop/);
 });
 

@@ -33,7 +33,7 @@ assert json.loads(probe.stdout)['self']==c['self']
 print("执行进度：正在检查",flush=True)
 identity=call("communication_status",{})
 assert identity["self"]==c["self"],identity
-assert identity["instance_id"]==c["self"]["workspace_id"],identity
+assert "instance_id" not in identity,identity
 call("native_session",{"provider":"custom","id":sys.argv[2] if len(sys.argv)>2 else "session-"+c["request_id"]})
 call("progress",{"message":"已读取任务"})
 if c["kind"]=="node_execution":
@@ -44,7 +44,7 @@ if c["kind"]=="node_execution":
   return v
  info=source("read_task",{"task_id":c["task_id"]})
  source("resolve_refs",{})
- source("report_task",{"task_id":c["task_id"],"task_version":info["task_version"],"event":"completed","report_id":"http-node-done","envelope":{"outputs":{"a":"A","b":"B"},"settings":{"objective":"HTTP remote node"}}})
+ source("report_task",{"task_id":c["task_id"],"event":"completed","report_id":"http-node-done","envelope":{"outputs":{"a":"A","b":"B"},"settings":{"objective":"HTTP remote node"}}})
  source("finish",{})
  call("complete",{"result":{}})
 else:
@@ -82,9 +82,9 @@ class CommunicationHTTPTests(unittest.TestCase):
                 self.assertTrue(tool(0,'communication_config',{'operation':'identity','name':'open workspace'})['ok'])
                 independent=tool(0,'request_assistance',{'location':'local','agent_id':'not-configured','message':'independent help'})
                 self.assertEqual(tool(0,'read_assistance',{'request_id':independent['request']['id']})['request']['state'],'unavailable')
-                group=tool(0,'communication_config',{'operation':'group','path':str(root/'nas'),'create':True})
+                group=tool(0,'communication_config',{'operation':'team','link':str(root/'nas'),'create':True})
                 gid=next(iter(group['configuration']['groups']))
-                tool(1,'communication_config',{'operation':'group','path':str(root/'nas')})
+                tool(1,'communication_config',{'operation':'team','link':str(root/'nas')})
                 tool(1,'set_notification_channels',{'revision':0,'channels':{'test-outlet':{'label':'测试投递','command':[sys.executable,'-c','import json;print(json.dumps({"delivered":True,"channel":"test"}))']}}})
                 binding=tool(1,'communication_config',{'operation':'group_notifications','group_id':gid,'notification_route':'test-outlet'})['notification_binding']
                 for _ in range(100):
@@ -115,7 +115,7 @@ class CommunicationHTTPTests(unittest.TestCase):
                 for origin,location in ((1,'local'),(0,'group')):
                     business_context={'task':'分析实验结果并查找相关论文'}
                     created=tool(origin,'request_assistance',{'location':location,'group_id':gid,'agent_id':'papers','message':'查论文','context':business_context})
-                    args={'request_id':created['request']['id'],'token':created['request_token']}
+                    args={'request_id':created['request']['id']}
                     self.assertTrue(tool(origin,'read_assistance',{'request_id':args['request_id']})['ok'])
                     for _ in range(100):
                         result=tool(origin,'read_assistance',args)['request']
@@ -135,7 +135,7 @@ class CommunicationHTTPTests(unittest.TestCase):
                     if location=='local':
                         resumed=tool(origin,'control_assistance',dict(args,action='followup',message='继续解释',resume=True))
                         for _ in range(100):
-                            continued=tool(origin,'read_assistance',{'request_id':resumed['request']['id'],'token':resumed['request_token']})['request']
+                            continued=tool(origin,'read_assistance',{'request_id':resumed['request']['id']})['request']
                             if continued['state'] in ('completed','failed'):break
                             time.sleep(.1)
                         self.assertEqual(continued['state'],'completed',continued)
@@ -150,7 +150,7 @@ class CommunicationHTTPTests(unittest.TestCase):
                 from loop_anything.runtime.store import Store
                 definition=fixture.RuntimeTests();definition.setUp()
                 try:
-                    definition.implementations['init']={'kind':'agent','dispatch':{'location':'group','agent_id':'papers'}}
+                    definition.implementations['init']={'options': {'default': {'kind':'agent','dispatch':{'location':'group','agent_id':'papers'}}}, 'default': 'default'}
                     source_store=Store(root/'a.db');key=source_store.publish(definition.bp,definition.implementations)['key']
                     tool(0,'communication_config',{'operation':'bind_loop','loop_key':key,'group_id':gid})
                     runid=source_store.create(key,'real remote node')['id']

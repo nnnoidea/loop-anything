@@ -37,10 +37,7 @@ def deliver_command(adapter, payload, runner):
 
 
 def waiting_configuration(notice):
-    # Recognize older outbox rows as well, before the next recovery/save.
-    error = notice.get('error') or ''
-    return notice['status'] == 'waiting_configuration' or (notice['status'] == 'fault' and
-        (error == 'No notification transport configured' or error.startswith('Notification outlet is not configured: ')))
+    return notice['status'] == 'waiting_configuration'
 
 
 def validate_notice(value):
@@ -87,7 +84,7 @@ def sender_for(store, run, route):
     requested=route
     route = run['settings'].get('notification_route', 'user') if route == 'default' else route
     if route == 'workspace':return route, {}
-    if route in ('user','external'):
+    if route == 'user':
         command = run['settings'].get('notification_command')
         sender = {'command': command} if command else {}
         if run.get('notification_conversation_id'):
@@ -110,10 +107,24 @@ def sender_for(store, run, route):
     return route, resolve_outlet(config)
 
 
-def enqueue(store, run, key, notice, task_id=None, execution_id=None):
+def delivery_context(run, context):
+    if not context or not any(k in context for k in ('notification_route', 'notification_command', 'conversation_id')):
+        return run
+    target = dict(run, settings=dict(run['settings']))
+    target.pop('notification_conversation_id', None)
+    target['settings'].pop('notification_command', None)
+    target['settings']['notification_route'] = context.get('notification_route', 'user')
+    if 'notification_command' in context:
+        target['settings']['notification_command'] = context['notification_command']
+    if context.get('conversation_id') and not any(k in context for k in ('notification_route', 'notification_command')):
+        target['notification_conversation_id'] = context['conversation_id']
+    return target
+
+
+def enqueue(store, run, key, notice, task_id=None, execution_id=None, context=None):
     validate_notice(notice)
     if not isinstance(key, str) or not key:raise Invalid('Notification key is required')
-    fingerprint = digest([notice, task_id])
+    fingerprint = digest([notice, task_id, context]) if context else digest([notice, task_id])
     old = next((n for n in run['notifications'] if n['id'] == key), None)
     if old:
         if old.get('fingerprint') != fingerprint:raise Conflict('Notification key already used for different content')
@@ -121,14 +132,17 @@ def enqueue(store, run, key, notice, task_id=None, execution_id=None):
     row = dict(id=key, tasks=task_id, execution=execution_id, message=notice['message'], requested_route=notice.get('route','default'),
                status='pending', attempt=0, at=time.time(), fingerprint=fingerprint)
     if notice.get('reply'):row['reply'] = copy.deepcopy(notice['reply'])
-    try:row['route'], row['sender'] = sender_for(store, run, row['requested_route'])
+    target = delivery_context(run, context)
+    if context:row['context'] = copy.deepcopy(context)
+    try:row['route'], row['sender'] = sender_for(store, target, row['requested_route'])
     except NotificationConfigurationError as exc:
-        route=run['settings'].get('notification_route','user') if row['requested_route']=='default' else row['requested_route']
+        route=target['settings'].get('notification_route','user') if row['requested_route']=='default' else row['requested_route']
         row.update(route=route, status='waiting_configuration', error=str(exc))
-    if run.get('notification_conversation_id') and row.get('route') in ('user','external'):
+    if target.get('notification_conversation_id') and row.get('route') == 'user':
         from loop_anything.runtime.communication import service
         from loop_anything.runtime.communication_conversations import resolve
-        row['conversation']=resolve(service(store),run['notification_conversation_id'])['conversation']
+        row['conversation_id'] = target['notification_conversation_id']
+        row['conversation']=resolve(service(store),row['conversation_id'])['conversation']
     run['notifications'].append(row)
     Store.log(run, 'notification', 'Notification queued', execution_id, {'notification_id':key, 'task_id':task_id})
     return row

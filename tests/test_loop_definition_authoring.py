@@ -41,7 +41,7 @@ class AuthoringTests(unittest.TestCase):
 
     def test_publish_from_draft_then_run_and_new_version(self):
         bp = definition()
-        implementations = {'input': {'kind': 'agent'}, 'finish': {'kind': 'agent'}}
+        implementations = {'input': {'options': {'default': {'kind': 'agent'}}, 'default': 'default'}, 'finish': {'options': {'default': {'kind': 'agent'}}, 'default': 'default'}}
         draft = self.store.save_draft(bp, implementations)
         key = self.store.publish(draft['loop_definition'], draft['implementations'])['key']
         run_id = self.store.create(key, 'Visual authoring run')['id']
@@ -60,7 +60,7 @@ class AuthoringTests(unittest.TestCase):
                 if result == 'hello':
                     envelope.update(settings={'objective': 'Finish', 'completion_rule': {'op': 'and', 'args': [{'op': 'ge', 'args': [{'path': ['completed', 'finish']}, 1]}, {'op': 'eq', 'args': [{'path': 'active_tasks'}, 0]}]}}, tasks=[{'id': 'finish', 'node': 'finish',
                         'inputs': {'message': {'record': 'source'}}, 'outputs': {'result': {'id': 'done'}}}])
-                tools.call('complete_task', {'task_id': task_id, 'task_version': task['task_version'], 'envelope': envelope})
+                tools.call('report_task', {'event':'completed','report_id':'complete','task_id': task_id, 'envelope': envelope})
             tools.call('finish', {})
             for owner in self.store.get(run_id)['agent_sessions']:
                 RunTools(self.store, run_id, owner['token']).call('finish', {})
@@ -77,8 +77,8 @@ class AuthoringTests(unittest.TestCase):
 
     def test_bad_implementation_or_removed_output_cannot_publish(self):
         bp = definition()
-        self.assertFalse(validate(bp, {'input': {'kind': 'command', 'command': 'python script.py'}})['valid'])
-        implementations = {'input': {'kind': 'agent'}, 'finish': {'kind': 'agent'}}
+        self.assertFalse(validate(bp, {'input': {'options': {'default': {'kind': 'command', 'command': 'python script.py'}}, 'default': 'default'}})['valid'])
+        implementations = {'input': {'options': {'default': {'kind': 'agent'}}, 'default': 'default'}, 'finish': {'options': {'default': {'kind': 'agent'}}, 'default': 'default'}}
         del bp['records']['text']
         self.assertFalse(validate(bp, implementations)['valid'])
         for bp, implementations in [(None, {}), ({'nodes': {'a': None}}, {}), (definition(), [])]:

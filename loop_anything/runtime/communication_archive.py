@@ -43,33 +43,6 @@ def acknowledge(db, receipt):
     retire(db, 'id=?', (message['id'],))
 
 
-def reconcile_legacy(comm, root, group_id, instance):
-    """Once per mount/process, retire old publications already settled in SQLite."""
-    from loop_anything.runtime.communication import read_message
-    key = (group_id, str(root))
-    if key in comm.archive_scanned_groups:
-        return
-    for path in (root / 'messages').glob('*/*.json'):
-        try:
-            message = read_message(path)
-        except (OSError, ValueError):
-            continue
-        if not isinstance(message, dict) or message.get('group_id') != group_id:
-            continue
-        if path.stem != message.get('id') or path.parent.name != message.get('target'):
-            continue
-        with comm.transaction() as db:
-            if message.get('sender') == instance and message.get('kind') != 'ack':
-                pending = db.execute('SELECT 1 FROM communication_outbox WHERE id=?', (message['id'],)).fetchone()
-                if not pending:
-                    enqueue(db, message)
-            elif message.get('target') == instance and message.get('kind') == 'ack':
-                received = db.execute('SELECT document FROM communication_inbox WHERE id=?', (message['id'],)).fetchone()
-                if received and matches(json.loads(received[0]), message):
-                    enqueue(db, message)
-    comm.archive_scanned_groups.add(key)
-
-
 def drain(comm, root, group_id):
     """Archive from durable content first, then remove the hot copy, then the journal."""
     from loop_anything.runtime.communication import identifier, read_message
@@ -129,7 +102,7 @@ def drain_media(comm, media, group_id):
             """SELECT document FROM communication_archive_queue WHERE json_extract(document,'$.group_id')=?
             AND ((json_extract(document,'$.kind')='ack' AND json_extract(document,'$.target')=?)
               OR (json_extract(document,'$.kind')!='ack' AND json_extract(document,'$.sender')=?)
-              OR (json_extract(document,'$.kind') IN ('dispatch','cancel','input','result_read') AND json_extract(document,'$.target')=?))""",
+              OR (json_extract(document,'$.kind') IN ('dispatch','cancel','input') AND json_extract(document,'$.target')=?))""",
             (group_id,instance,instance,instance))]
     for message in messages:
         try:

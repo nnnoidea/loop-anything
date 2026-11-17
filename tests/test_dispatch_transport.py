@@ -19,6 +19,46 @@ from dispatch import Client
 
 
 class DispatchTests(unittest.TestCase):
+    def test_one_nas_root_serves_platform_tools_and_named_agent_dispatch(self):
+        from loop_anything.runtime.tool_mailbox import ToolMailbox
+        from loop_anything.runtime.tool_client import module
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder).resolve();engine=Engine(Store(root/'server/workspace.sqlite3'));self.addCleanup(engine.close)
+            shared=root/'shared';box=ToolMailbox(engine.store,shared,engine);comm=engine.communication
+            gid=box.agent_team['id'];url='nas://'+str(shared)
+            self.assertEqual(Path(box.agent_team['path']),shared/'agents')
+            self.assertEqual(comm.settings()['agents'],{})
+            client=Client(root/'client');joined=client.configure(str(shared))
+            self.assertEqual(joined['team']['link'],url)
+            api=module('platform_transport')
+            api.invoke(joined['team']['link'],'create_loop',{'name':'Same NAS root'},'api-shared-root',wait=0);box.tick()
+            self.assertTrue(api.result(url,'api-shared-root')['ok'])
+            comm.config('agent',agent_id='papers',task_confirmed=True,agent={
+                'name':'Papers','description':'Find papers','groups':[gid],
+                'implementation':{'kind':'agent','command':[sys.executable,'-c','pass']}})
+            self.assertEqual(joined['team']['id'],gid)
+            request=client.submit({'agent_name':'Papers','message':'Return a full answer'})['request']
+            packet=client.request_record(request['id'])
+            self.assertTrue((shared/'agents/messages'/packet['target']/(packet['id']+'.json')).is_file())
+            calls=[]
+            def worker(command,prompt,*args,**kwargs):
+                context=json.loads(prompt.split('\n',1)[1]);calls.append(context['request_id'])
+                comm.worker_call(context['request_id'],context['token'],'complete',{'result':{'answer':'Complete reply'}})
+                return subprocess.CompletedProcess(command,0,'','')
+            with patch('loop_anything.runtime.host_runtime.run_command',side_effect=worker):
+                deadline=time.monotonic()+8
+                while time.monotonic()<deadline:
+                    comm.last_scan=0;comm.tick()
+                    if client.read(request['id'])['state']=='completed':break
+                    time.sleep(.02)
+                self.assertEqual(client.read(request['id'])['result'],{'answer':'Complete reply'})
+            self.assertEqual(calls,[request['id']])
+            self.assertTrue((shared/'agents/results'/(request['id']+'.json')).is_file())
+            self.assertFalse((shared/'messages').exists())
+            self.assertFalse((shared/'executors').exists())
+            self.assertFalse(list(shared.rglob('*.sqlite3')))
+
+
     def test_client_exits_receiver_finishes_and_duplicate_cannot_execute_twice(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);e=Engine(Store(root/'receiver.sqlite3'));comm=e.communication
@@ -48,7 +88,7 @@ class DispatchTests(unittest.TestCase):
                 self.assertIn('collaboration',row)
                 self.assertTrue(any(c['state']=='completed' for c in row['rpc'].values()),row['rpc'])
                 self.assertEqual(len(comm.store.list()),1)
-                self.assertFalse(list((root/'nas/messages'/row['executor']).glob('*.json')))
+                self.assertFalse(list((Path(team['path'])/'messages'/row['executor']).glob('*.json')))
                 mutated=json.loads(json.dumps(packet));mutated['payload']['message']='different'
                 with self.assertRaises(ValueError):comm.receive(mutated)
             # A fresh process imports only the Skill, with no installed platform on sys.path.
@@ -226,7 +266,7 @@ class BaseTests(unittest.TestCase):
             with patch('loop_anything.runtime.team_transport.join',return_value=team):comm.config('team',link=team['link'])
             comm.config('agent',agent_id='a',task_confirmed=True,agent={'name':'Agent','description':'Help','groups':[team['id']],
                 'implementation':{'kind':'agent','command':[sys.executable,'-c','pass']}})
-            client=Client(root/'client');client.config={'team':team,'origin':'client-test'}
+            client=Client(root/'client');client.config={'teams':{team['id']:team},'default_team':team['id'],'origin':'client-test'}
             request=client.submit({'message':'test','agent_id':'a'})['request']
             def worker(command,prompt,*a,**k):
                 info=json.loads(prompt.split('\n',1)[1])
@@ -277,14 +317,15 @@ class BaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);team=core.join(str(root/'team'),create=True);media=core.connect(team)
             media.put('results/test.json',{'answer':42})
-            (root/'outside').mkdir();(root/'team/escape').symlink_to(root/'outside',target_is_directory=True)
+            directory=Path(team['path'])
+            (root/'outside').mkdir();(directory/'escape').symlink_to(root/'outside',target_is_directory=True)
             for key in ('../leak.json','escape/leak.json','/tmp/leak.json'):
                 with self.assertRaises(ValueError):media.put(key,{'private':'task'})
             with self.assertRaises(ValueError):core.choose([],agent_id='a',instance_id='../outside')
-            manifest=root/'team/group.json';value=json.loads(manifest.read_text());value['id']='different-team';manifest.write_text(json.dumps(value))
+            manifest=directory/'group.json';value=json.loads(manifest.read_text());value['id']='different-team';manifest.write_text(json.dumps(value))
             with self.assertRaises(ValueError):media.get('results/test.json')
             with self.assertRaises(ValueError):media.put('messages/receiver/new.json',{'private':'task'})
-            self.assertFalse((root/'team/messages/receiver/new.json').exists())
+            self.assertFalse((directory/'messages/receiver/new.json').exists())
 
 
     def test_heartbeat_updates_one_existing_row_even_for_a_large_member_directory(self):

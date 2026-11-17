@@ -43,7 +43,7 @@ Use actual IDs from `read_loop` and `read_loop_config.targets`; these are illust
 
 A new local candidate for an existing node needs `kind:agent/command/external`. The platform does not select it automatically; choose through `bindings`. Existing candidate kinds cannot change here; choose another candidate instead. Omitted startup bindings inherit configuration. Explicit bindings replace the entire mapping: `{}` uses Loop defaults; a node's `null` leaves it unbound.
 
-`flow_agent` uses the same execution overrides for an already-declared built-in flow agent without adding business nodes. Edit nodes, contracts, Skills, routes, and lifecycle rules in the Loop definition. Notification outlets, Bots, and team connections use existing platform tools, not duplicate configuration here.
+Built-in decision execution comes from the server named Agent selected as Run steward; there is no `flow_agent` execution override in the Loop or recipient configuration. Edit nodes, contracts, Skills, routes, and lifecycle rules in the Loop definition. Notification outlets, Bots, and team connections use existing platform tools, not duplicate configuration here.
 
 Save `{ "key":"pkg-...", "revision":"READ_REVISION", "config":{...} }` in a local JSON file, then:
 

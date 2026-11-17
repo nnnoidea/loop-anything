@@ -18,8 +18,7 @@ def template(document):
     return {
         '$comment': '接收方运行配置：inputs 填写此 Loop 使用的路径、外部服务地址等启动参数；bindings 选择已有候选；implementations 按 节点ID/候选ID 覆盖命令、工作目录或执行位置。空对象沿用包配置。只影响新 Run；凭据使用执行环境，不写入分享模板。',
         'inputs': {}, 'bindings': {},
-        'implementations': {},
-        **({'flow_agent': {}} if document['loop_definition'].get('flow_agent') else {})}
+        'implementations': {}}
 
 
 def decode(raw):
@@ -85,9 +84,9 @@ def patch(target, changes, label):
 
 def apply(document, config):
     """Compose a Run snapshot. No mutation, online probes, shell expansion or inferred mapping."""
-    if not isinstance(config, dict) or set(config) - {'$comment', 'inputs', 'bindings', 'implementations', 'flow_agent'}:
-        raise Invalid('运行配置仅支持 inputs、bindings、implementations、flow_agent 和 $comment')
-    for field in ('inputs', 'bindings', 'implementations', 'flow_agent'):
+    if not isinstance(config, dict) or set(config) - {'$comment', 'inputs', 'bindings', 'implementations'}:
+        raise Invalid('运行配置仅支持 inputs、bindings、implementations 和 $comment')
+    for field in ('inputs', 'bindings', 'implementations'):
         if field in config and not isinstance(config[field], dict):
             raise Invalid('运行配置 ' + field + ' 必须是对象')
     result = copy.deepcopy(document)
@@ -104,16 +103,7 @@ def apply(document, config):
             updated = patch(available.get(ident, {}), fields, node + '/' + ident)
             if node not in candidates:
                 candidates[node] = {'options': {}}
-            if 'kind' in candidates[node] and ident == 'default':
-                candidates[node] = updated
-            else:
-                if 'kind' in candidates[node]:
-                    candidates[node] = {'options': {'default': candidates[node]}, 'default': 'default'}
-                candidates[node].setdefault('options', {})[ident] = updated
-    if config.get('flow_agent'):
-        if not bp.get('flow_agent'):
-            raise Invalid('This Loop has no built-in flow_agent to configure')
-        bp['flow_agent'] = patch(bp['flow_agent'], config['flow_agent'], 'flow_agent')
+            candidates[node]['options'][ident] = updated
     validate_bindings(bp, candidates, config.get('bindings', {}))
     return result
 
@@ -133,8 +123,6 @@ def read(store, key):
                         'implementations': {n: {i: {k: v for k, v in c.items() if k in FIELDS}
                                                for i, c in options(entry).items()}
                                             for n, entry in ((n, document.get('implementations', {}).get(n)) for n in document['loop_definition']['nodes'])}}
-    if document['loop_definition'].get('flow_agent'):
-        saved['targets']['flow_agent'] = {k: v for k, v in document['loop_definition']['flow_agent'].items() if k in FIELDS}
     return saved
 
 

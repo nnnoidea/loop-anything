@@ -1,3 +1,4 @@
+from tests.runtime_fixture import update_work
 """Real runtime acceptance. Example code only builds definitions / returns handler JSON."""
 import json
 import threading
@@ -110,9 +111,11 @@ class PlatformLoopTests(unittest.TestCase):
                     any(v.get('record') == decision_record for v in w['spec']['inputs'].values())]
         for task_id in affected:
             tools.call('change_task', {'task_id': task_id, 'operation': 'cancel', 'reason': 'User explicitly replaces the old approval and route'})
-        tools.call('change_settings', {'revision': 1, 'change': {'constraints': {'destination': '北京', 'budget': 2200}}})
+        update_work(self.store,self.id,{'constraints':'目的地北京，预算2200，预订必须确认'})
         with self.assertRaises(Conflict):
             self.approve(old)
+        # Reread independent Timeline changes before making further decisions.
+        tools.call('read_timeline',{})
         # Arrange the user-requested replacement before resuming deterministic advancement.
         tools.call('build_plan', {'name': 'replan', 'key': 'changed-requirements', 'values': {'reason': 'User changed requirements'}})
         tools.call('finish', {})
@@ -122,7 +125,7 @@ class PlatformLoopTests(unittest.TestCase):
         self.assertEqual('北京', current['inputs']['proposal']['destination'])
         hooks = [{'id': 'before-book', 'action': 'pause', 'phase': 'before', 'frequency': 'once', 'target': {'node': 'book'}},
                  {'id': 'notify-book', 'action': 'notify', 'route': 'workspace', 'phase': 'after', 'frequency': 'always', 'target': {'node': 'book'}, 'message': '预订结果已写入'}]
-        self.engine.change_settings(self.id, 2, {'hooks': hooks})
+        self.engine.change_settings(self.id, self.store.get(self.id)['settings']['revision'], {'hooks': hooks})
         self.approve(current)
         run = self.until(lambda r: any(w['status'] == 'held' for w in r['tasks'].values()))
         self.assertFalse(any(e['node'] == 'book' for e in run['executions']))
@@ -152,7 +155,7 @@ class PlatformLoopTests(unittest.TestCase):
         old = self.pending('approval')
         self.approve(old)
         # Change occurs between formal approval commit and the next dispatch tick.
-        self.engine.change_settings(self.id, 1, {'guidance': 'Change destination'})
+        update_work(self.store,self.id,{'constraints':'Change destination'})
         self.engine.tick(self.id)
         run = self.until(lambda r: any(e['node'] == 'book' for e in r['executions']))
         self.assertEqual('completed', next(e for e in run['executions'] if e['id'] == old['id'])['status'])

@@ -7,6 +7,9 @@
 /SEMANTICS.md
 /semantics/
 
+# User-authored Loops stay local; only the platform is published
+/loops/
+
 # Generated distributions and build caches
 dist/
 artifacts/

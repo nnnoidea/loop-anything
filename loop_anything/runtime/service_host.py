@@ -14,6 +14,7 @@ class ServiceHost:
         self.mailbox=mailbox
 
     def tick(self):
+        self.engine.work.tick()
         if self.mailbox:
             from loop_anything.runtime.executors import service
             backend=service(self.engine.store);backend.root=self.mailbox.root;backend.sync()

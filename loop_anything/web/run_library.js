@@ -19,7 +19,7 @@ function runFilters(){
   return args;
 }
 function runSummaryHTML(row){
-  return `<button class="run-item ${selected===row.id?'chosen':''}" data-run="${esc(row.id)}"><strong>${esc(row.title)}</strong><small>${esc(labels[row.status]||row.status)} · ${esc(row.loop_name||'Loop')}${row.archived_at?' · 已归档':''}</small><small>启动 ${esc(runDate(row.created_at))}</small><small>活跃 ${esc(runDate(row.last_activity_at))}</small>${row.parent_run_id?'<small>子 Run</small>':''}</button>${row.child_count?`<details class="run-children" data-run-children="${esc(row.id)}"><summary>子 Run · ${row.child_count}</summary><div class="run-child-list"></div></details>`:''}`;
+  return `<button class="run-item" data-run="${esc(row.id)}"><span class="run-row-main"><strong>${esc(row.title)}</strong><small>${esc(row.loop_name||'Loop')}${row.parent_run_id?' · 子 Run':''}${row.archived_at?' · 已归档':''} · 启动 ${esc(runDate(row.created_at))}</small></span>${badge(row.status)}<span class="run-row-time"><small>最近活跃</small>${esc(runDate(row.last_activity_at))}</span><span class="row-arrow" aria-hidden="true">›</span></button>${row.child_count?`<details class="run-children" data-run-children="${esc(row.id)}"><summary>子 Run · ${row.child_count}</summary><div class="run-child-list"></div></details>`:''}`;
 }
 function groupedRunsHTML(rows,groups=[]){
   const people=new Map();for(const row of rows){const name=row.created_by||'';if(!people.has(name))people.set(name,[]);people.get(name).push(row);}
@@ -48,7 +48,7 @@ async function refreshRunLibrary(){
     for(const el of $('run-list').querySelectorAll('.run-person'))if(closed.has(el.dataset.runPerson))el.open=false;
     for(const el of $('run-list').querySelectorAll('.run-children'))if(children.has(el.dataset.runChildren)){el.dataset.childOffset=children.get(el.dataset.runChildren);el.open=true;}
   }
-  $('runs-page').textContent=result.total?`${runOffset+1}–${runOffset+runs.length} / ${result.total}`:'0 条';
+  $('runs-page-number').textContent=result.total?`${runOffset+1}–${runOffset+runs.length} / ${result.total}`:'0 条';
   $('runs-prev').disabled=runOffset===0;$('runs-next').disabled=runNext===null;
   await Promise.all([...$('run-list').querySelectorAll('.run-children[open]')].map(element=>showRunChildren(element)));
 }
@@ -114,12 +114,10 @@ document.addEventListener('click',event=>safely(async()=>{
   if(target.id==='runs-prev'||target.id==='runs-next'){runOffset=target.id==='runs-prev'?Math.max(0,runOffset-30):runNext??runOffset;await refreshRunLibrary();}
   if(target.dataset.childPage!==undefined)await showRunChildren(target.closest('[data-run-children]'),Number(target.dataset.childPage));
   if(target.dataset.relatedKey)await refreshRelatedRuns(target.dataset.relatedKey,Number(target.dataset.relatedPage),true);
-  if(target.id==='archive-run'&&run){await platformCall('update_run',{run_id:run.id,metadata_revision:run.metadata_revision||0,archived:!run.archived_at});runOffset=0;await refresh();}
+  if(target.id==='archive-run'&&run){await platformCall('submit_run_request',{request_id:randomKey(),run_id:run.id,operation:'update_run',arguments:{metadata_revision:run.metadata_revision||0,archived:!run.archived_at}});runOffset=0;await refresh();}
   if(target.id==='delete-run'&&run&&confirm('删除这次运行的记录和结果？这不会停止外部任务，原生 Agent 会话与外部产物会保留。')){
-    await platformCall('delete_run',{run_id:run.id,metadata_revision:run.metadata_revision||0});run=null;selected=null;runOffset=0;await navigateTo({type:'home'});await refresh();
+    await platformCall('submit_run_request',{request_id:randomKey(),run_id:run.id,operation:'delete_run',arguments:{metadata_revision:run.metadata_revision||0}});run=null;selected=null;runOffset=0;await navigateTo({type:'run-list'});await refresh();
   }
   if(target.dataset.loopArchive){await platformCall('archive_loop',{key:target.dataset.loopArchive,archived:target.dataset.archived!=='true'});await loadCatalog();}
   if(target.dataset.loopDelete&&confirm('删除这个 Loop 版本？已有运行仍依赖它时，请使用归档。')){await platformCall('delete_loop',{key:target.dataset.loopDelete});await loadCatalog();}
 }));
-
-if(window.matchMedia('(max-width: 650px)').matches)$('run-browser').open=false;

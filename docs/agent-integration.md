@@ -24,8 +24,8 @@
 返回对象中的 `id`、`agent_sessions[0].token` 和 `loop_definition.seed.id` 分别是 Run、操作令牌和入口任务。
 用户 Agent 对 `/api/runs/{id}/agent` 发送 `{token,tool,arguments}`，按顺序：
 
-1. `read_task` 读取入口任务的完整要求、task_version 和输出契约。
-2. `complete_task` 提交已讨论好的初始 settings 和入口输出，不重复询问用户。
+1. `read_task` 读取入口任务的完整要求和输出契约。
+2. `report_task(event=completed)` 提交已讨论好的初始 settings 和入口输出，不重复询问用户。
 3. 使用 `read_plans/build_plan` 安排本次需要的 Task；继续处理当前可处理任务与问题。
 4. 完成本次任务、处理本范围异常后 `finish`，后续已安排任务可以交给 Engine。
 
@@ -58,7 +58,7 @@ python3 /平台Skill/scripts/call.py read_task --arguments '{"run_id":"RUN_ID","
 
 实际唤醒记录保存发送内容，网页在执行尝试下只读查看，平台令牌已遮蔽；以后修改提示词不改写历史。
 
-默认提示词不强制读取平台手册。作者可用随包脚本封装 Timeline 工具，由节点 Skill 说明业务入口；Agent 只需理解作者接口。封装沿用原权限、版本、输出与 finish 校验，没有另一份状态或独立工具注册。
+默认提示词不强制读取平台手册。作者可用随包脚本封装 Timeline 工具，由节点 Skill 说明业务入口；Agent 只需理解作者接口。封装沿用执行身份、作用范围、正式输出与 finish 约定，没有另一份状态或独立工具注册。
 
 例如，用户选择从标准输入接收 prompt 的 Codex 命令：
 
@@ -98,7 +98,7 @@ python3 /平台Skill/scripts/call.py read_task --arguments '{"run_id":"RUN_ID","
 
 ## 跨入口继续同一 Run
 
-终端或聊天桥接背后的 Agent 连接同一个平台实例。list_runs 定位已有运行；read_timeline/next_tasks/read_task/read_record/read_plans 无 token 时仅从当前快照读取，不取得写入权。普通工作区写入可省略 token，由平台处理临时操作范围；连续或支线操作仍可显式 acquire_run，重新读取版本后使用原有工具，最后 finish。托管节点使用唤醒身份，错误或过期 token 不会自动放宽范围。read_timeline 的 read_only=true 明确表示没有操作权，带令牌读取仍按原范围展示。显式无效令牌报错。Run 目标、约束、决定、结果和任务是共同上下文，聊天记录与通知目的地不承担状态同步。
+终端或聊天桥接背后的 Agent 连接同一个平台实例。list_runs 定位已有运行；read_timeline/next_tasks/read_task/read_record/read_plans 无 token 时仅从当前快照读取，不取得写入权。客户端通过 submit_run_request 提交修改；托管执行使用提供的身份和原有工具，完成后 finish。托管节点使用唤醒身份，错误或过期 token 不会自动放宽范围。read_timeline 的 read_only=true 明确表示没有操作权，带令牌读取仍按原范围展示。显式无效令牌报错。Run 目标、约束、决定、结果和任务是共同上下文，聊天记录与通知目的地不承担状态同步。
 
 ## 本机具名外援与群组远端 Agent
 
@@ -114,7 +114,7 @@ python3 /平台Skill/scripts/call.py read_task --arguments '{"run_id":"RUN_ID","
 
 ## 聊天入口通知（0.5.7）
 
-飞书入口经 Skill 客户端自动保存原会话；私聊由入口 Bot 回复，群聊的执行确认和结果优先使用具名 Agent 的 `notification_bot={project,platform}` 所映射 Bot（旧 notification_route 兼容），并保持原话题。发送前明确不可用才回退入口，发送结果未知不自动换 Bot。嵌套外援继承原来源；显式通知出口覆盖，无聊天来源保留按机器优先级。先用 read_cc_connect/configure_cc_connect 接入本机桥接并发现 Bot，再用 communication_config 设置具名 Agent 的映射；无需自行拼接命令。接入、直接发送及 API 用法见平台 Skill 的 `references/cc-connect.md`；话题需开启 cc-connect 话题隔离并保留 root session key。
+飞书入口经 Skill 客户端自动保存原会话；私聊由入口 Bot 回复，群聊的执行确认和结果优先使用具名 Agent 的 `notification_bot={project,platform}` 所映射 Bot，并保持原话题。发送前明确不可用才回退入口，发送结果未知不自动换 Bot。嵌套外援继承原来源；显式通知出口覆盖，无聊天来源保留按机器优先级。先用 read_cc_connect/configure_cc_connect 接入本机桥接并发现 Bot，再用 communication_config 设置具名 Agent 的映射；无需自行拼接命令。接入、直接发送及 API 用法见平台 Skill 的 `references/cc-connect.md`；话题需开启 cc-connect 话题隔离并保留 root session key。
 
 ## 编辑与运行范围
 
@@ -122,7 +122,7 @@ Loop 编辑可直接使用平台工具，无需口令或解锁。旧包的编辑
 
 ## 通知接入职责
 
-call.py 只将聊天入口的渠道、Bot project和完整session key作为chat_context随request_assistance/start_run传递；不探测cc-connect、读取配置或查询飞书，也不提前注册会话。平台保存并复用来源、选择出口与回退，发送适配器直接调用cc-connect，不自行查询飞书、读取Bot凭据或预检渠道权限。配置或桥接不可用仅形成通知错误，任务仍可执行。旧conversation_id和显式通知出口继续兼容；原话题不静默改投，未知送达不重复发送。
+call.py 只将聊天入口的渠道、Bot project和完整session key作为chat_context随request_assistance/start_run传递；不探测cc-connect、读取配置或查询飞书，也不提前注册会话。平台保存并复用来源、选择出口与回退，发送适配器直接调用cc-connect，不自行查询飞书、读取Bot凭据或预检渠道权限。配置或桥接不可用仅形成通知错误，任务仍可执行。显式通知出口独立于聊天入口；原话题不静默改投，未知送达不重复发送。
 
 ## 独立派单
 

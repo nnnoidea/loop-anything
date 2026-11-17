@@ -1,25 +1,74 @@
-"""Install this local distribution in an isolated environment and create a launcher."""
+"""Install Loop Anything: local workspace, team connections, and task tools in one application."""
 import argparse
 from pathlib import Path
 import shlex
+import re
+import shutil
+import tempfile
+from contextlib import contextmanager, nullcontext
+from urllib.parse import urlsplit
 import subprocess
 import sys
 import venv
 
-from loop_anything.paths import data_directory
+from loop_anything.paths import data_directory, default_database, DEFAULT_PORT
+from loop_anything.packaging.launcher import register
+
+
+@contextmanager
+def recover_service(environment, previous):
+    """Keep a known-good environment before stopping an existing macOS service."""
+    from loop_anything.runtime.service import launchctl, target, manage, service_file
+    if not previous:
+        yield
+        return
+    loaded = launchctl('print', target(), check=False).returncode == 0
+    plist = service_file()
+    saved = plist.read_bytes()
+    with tempfile.TemporaryDirectory(prefix='loop-install-backup-', dir=environment.parent) as folder:
+        backup = Path(folder) / 'venv'
+        shutil.copytree(environment, backup, symlinks=True)
+        (Path(folder) / 'service.plist').write_bytes(saved)
+        launchers = {path: (path.read_bytes(), path.stat().st_mode) if path.exists() else None
+                     for path in (environment.parent / 'Loop Anything.command', environment.parent / 'Stop Loop Anything.command')}
+        try:
+            manage('stop')
+            yield
+        except (Exception, KeyboardInterrupt) as original:
+            try:
+                # A failed startup may have left the new process loaded.
+                manage('stop')
+                shutil.rmtree(environment)
+                shutil.copytree(backup, environment, symlinks=True)
+                plist.write_bytes(saved)
+                plist.chmod(0o600)
+                for path, content in launchers.items():
+                    if content is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        path.write_bytes(content[0])
+                        path.chmod(content[1])
+                if loaded:
+                    manage('start')
+            except Exception as recovery:
+                # Do not discard the only known-good copy when recovery fails.
+                retained = environment.parent / ('recovery-' + Path(folder).name)
+                Path(folder).rename(retained)
+                raise RuntimeError('Installation failed: %s; recovery failed: %s. Original environment saved at %s; inspect service status before retrying.' % (original, recovery, retained)) from original
+            raise
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prefix', type=Path, default=data_directory() / 'app', help='Application directory; runtime data is stored separately')
     parser.add_argument('--package', type=Path, help='Local source directory or wheel to install (default: bundled wheel, otherwise this source directory)')
-    parser.add_argument('--no-service', action='store_true', help='Install without registering a macOS background service')
-    parser.add_argument('--role',choices=['server','client','platform','local'],default='server',help='server hosts the platform; client operates it and optionally runs local jobs/receivers. platform/local remain aliases for server/client')
-    parser.add_argument('--db', type=Path, help='Existing workspace for the macOS service; upgrades retain the saved workspace')
-    parser.add_argument('--port', type=int, help='macOS service port; upgrades retain the saved port')
-    parser.add_argument('--host', help='macOS service bind address; default is loopback')
+    parser.add_argument('--team-url', help='Personal team tool address (HTTP or NAS)')
+    parser.add_argument('--team-web-url', help='Personal team web address')
+    parser.add_argument('--default-space', choices=['auto', 'local', 'team'], help='Default for new work; existing work keeps its platform')
+    parser.add_argument('--port', type=int, help='Local listening port; omitted values keep the existing setting')
     args = parser.parse_args()
-    client = args.role in ('client', 'local')
+    if args.port is not None and not 1 <= args.port <= 65535:
+        parser.error('Port must be between 1 and 65535')
     if sys.version_info < (3, 9):
         parser.error('Python 3.9 or newer is required')
     distribution = Path(__file__).resolve().parent
@@ -39,65 +88,89 @@ def main():
         # this venv can overwrite its interpreter links before pip can run.
         subprocess.run([str(python), '-I', '-c',
                         'import sys; assert sys.version_info >= (3, 9), "Python 3.9+ required"'], check=True)
-    background = sys.platform == 'darwin' and not args.no_service and not client
+    from loop_anything.runtime.service import option, address, definition
+    from loop_anything.runtime.tool_client import module
+    spaces = module('spaces')
+    personal = spaces.read()
+    previous = None
+    background = sys.platform == 'darwin'
+    launcher = prefix / ('Loop Anything.cmd' if windows else 'Loop Anything.command' if background else 'loop-anything')
+    existing_launcher = launcher.read_text(encoding='utf-8') if launcher.exists() else None
     if background:
-        from loop_anything.runtime.service import configuration, manage, definition, available
+        from loop_anything.runtime.service import configuration, available
         previous = configuration()
-        expected = str(environment / 'bin/python')
-        if previous and previous['ProgramArguments'][0] != expected:
+        if previous and previous['ProgramArguments'][0] != str(python):
             parser.error('Another application directory owns the service; use its --prefix or remove that service first')
-        if previous:
-            manage('stop')
-        available(definition(expected, args.db, args.port, args.host, previous))
-    if not existing_environment:
-        venv.EnvBuilder(with_pip=True).create(environment)
-    subprocess.run([str(python), '-m', 'pip', '--disable-pip-version-check', 'install', '--upgrade', '--force-reinstall', '--no-deps', str(source)], check=True)
-    if windows:
-        launcher = prefix / 'Loop Anything.cmd'
-        default='if "%~1"=="" (\n"%~dp0venv\\Scripts\\python.exe" -I -m loop_anything client --help\nexit /b\n)\n' if client else ''
-        launcher.write_text('@echo off\n'+default+'"%~dp0venv\\Scripts\\python.exe" -I -m loop_anything %*\nif errorlevel 1 pause\n', encoding='ascii')
-    else:
-        launcher = prefix / ('Loop Anything.command' if sys.platform == 'darwin' else 'loop-anything')
-        command = shlex.quote(str(python)) + ' -I -m loop_anything'
-        script = '#!/bin/sh\n'
-        if background:
-            script += 'if [ "$#" -eq 0 ]; then\n  exec ' + command + ' service start --open\nfi\n'
-        elif client:
-            script += 'if [ "$#" -eq 0 ]; then\n  exec ' + command + ' client --help\nfi\n'
-        launcher.write_text(script + 'exec ' + command + ' "$@"\n', encoding='utf-8')
-        launcher.chmod(0o755)
-    print('\nInstalled. Open or run: ' + str(launcher))
-    if background:
-        stopper = prefix / 'Stop Loop Anything.command'
-        stopper.write_text('#!/bin/sh\nexec ' + shlex.quote(str(python)) + ' -I -m loop_anything service stop\n', encoding='utf-8')
-        stopper.chmod(0o755)
-        command = [str(python), '-I', '-m', 'loop_anything']
-        if args.db is not None:
-            command += ['--db', str(args.db.expanduser().resolve())]
-        command += ['service', 'install']
+    database = str(Path(option(previous, '--db', default_database())).expanduser().resolve())
+    space = option(previous, '--space', 'local')
+    local = urlsplit(personal['local_url']) if personal['local_url'] else None
+    port = args.port if args.port is not None else int(option(previous, '--port',
+            (local.port or 80) if local and local.scheme == 'http' and not local.path else DEFAULT_PORT))
+    proposed = definition(python, database=database, port=port, previous=previous)
+    changes = {key: value for key, value in (
+        ('team_url', args.team_url), ('team_web_url', args.team_web_url),
+        ('default_space', args.default_space)) if value is not None}
+    if space == 'local':
+        if not personal['local_url'] or args.port is not None:
+            changes['local_url'] = address(proposed)
+        if not personal['local_registry']:
+            changes['local_registry'] = database + '.schedules'
+    spaces.validate(dict(personal, **changes))  # Fail before stopping or updating anything.
+    serve_args = ['--db', database, 'serve', '--port', str(port), '--host', '127.0.0.1', '--space', 'local', '--open']
+    if existing_launcher and not background:
+        # The foreground launcher's current command is its saved workspace configuration.
+        script = existing_launcher
         if args.port is not None:
-            command += ['--port', str(args.port)]
-        if args.host is not None:
-            command += ['--host', args.host]
-        subprocess.run(command, check=True)
+            script, count = re.subn(r'--port [0-9]+(?=\s|$)', '--port ' + str(port), script)
+            if count != 1:
+                parser.error('Cannot identify one listening port in the existing launcher; edit its serve command directly')
+    elif windows:
+        default = 'if "%~1"=="" (\n"%~dp0venv\\Scripts\\python.exe" -I -m loop_anything ' + subprocess.list2cmdline(serve_args) + '\nexit /b\n)\n'
+        script = '@echo off\nchcp 65001 >nul\n' + default + '"%~dp0venv\\Scripts\\python.exe" -I -m loop_anything %*\nif errorlevel 1 pause\n'
+    else:
+        command = shlex.quote(str(python)) + ' -I -m loop_anything'
+        default = 'service start --open' if background else shlex.join(serve_args)
+        script = '#!/bin/sh\nif [ "$#" -eq 0 ]; then\n  exec ' + command + ' ' + default + '\nfi\nexec ' + command + ' "$@"\n'
+    with recover_service(environment, previous) if background else nullcontext():
+        if background:
+            available(proposed)
+        if not existing_environment:
+            venv.EnvBuilder(with_pip=True).create(environment)
+        subprocess.run([str(python), '-m', 'pip', '--disable-pip-version-check', 'install', '--upgrade', '--force-reinstall', '--no-deps', str(source)], check=True)
+        launcher.write_text(script, encoding='utf-8')
+        if not windows:
+            launcher.chmod(0o755)
+        registration = register(launcher)
+        if background:
+            stopper = prefix / 'Stop Loop Anything.command'
+            stopper.write_text('#!/bin/sh\nexec ' + shlex.quote(str(python)) + ' -I -m loop_anything service stop\n', encoding='utf-8')
+            stopper.chmod(0o755)
+            command = [str(python), '-I', '-m', 'loop_anything', '--db', database, 'service', 'install', '--port', str(port)]
+            subprocess.run(command, check=True)
+        # Only write missing or explicitly supplied personal values, with a revision check.
+        if changes:
+            spaces.configure(changes, revision=personal['revision'])
+    print('\nLoop Anything installed. Open or run: ' + str(launcher))
+    print('Registered CLI: ' + registration['command'])
+    print('New terminals: loop-anything --help')
+    print('For this terminal: ' + registration['current_terminal'])
+    if background:
         print('Background service installed. Codex and the terminal can close. Stop with: ' + str(stopper))
-    elif not client:
+    else:
         print('Foreground launcher: keep its terminal running. Ctrl+C exits.')
     print('CLI Python: ' + str(python))
-    if client:
-        print('Client installed: service tools, local scheduling, and task receiving. No service or receiver was started.')
-        print('Operate the service: -m loop_anything client tool <TOOL> --url <nas-or-http-url>')
-        print('Register/list do not start tasks. Explicitly start selected IDs with: -m loop_anything client local --root <registry-directory> start <ID>')
     print('Install the Agent Skills for platform operations, dispatch, and local execution (also after upgrades):')
-    print(str(python) + ' -m loop_anything skills --install-dir <Agent-Skill-directory> --url <nas-or-http-url>')
-    if client:
-        print('For standalone local jobs only, export with --only local instead; no service URL is needed.')
-    print('For an existing generated Skill, keep its platform URL and add --replace to update it. Reload the Skill in your Agent, then run scripts/call.py check.')
-    print('No shell PATH or Agent settings were changed.')
+    print(str(python) + ' -m loop_anything skills --install-dir <Agent-Skill-directory>')
+    print('Open Loop Anything to manage your work. Team addresses and defaults can be configured after installation.')
+    print('Personal addresses and default space are stored on this machine, separate from Skill files.')
+    print('Configure a team: loop-anything spaces --team-url <HTTP_OR_NAS_URL>')
+    print('Choose the default: loop-anything spaces --default auto|local|team')
+    print('Update generated Skills with --replace; this does not change personal space settings. Reload the Skill, then run scripts/call.py check.')
+    print('Agent settings were not changed.')
 
 
 if __name__ == '__main__':
     try:
         main()
-    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
         raise SystemExit('Installation failed: ' + str(exc))

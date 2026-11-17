@@ -102,7 +102,7 @@ Prefer routes for result-triggered plans. Package wrappers are for genuinely rep
 
 Wrappers call the same HTTP tools or call.py and read actual address/Run/Task/token from wake-up context. Do not hardcode local paths or copy the Timeline. Background nodes use platform_url with run_id/token. A provided tool_url is already identity-bound; follow [scoped entry](scoped-entry.md), without those fields in arguments. Read resolved_path directly and resolve references/scripts relative to its directory.
 
-Reread required versions, check every receipt, and return actual submission outcomes. Reuse edit_tasks preview/atomic commit for grouped edits. Reports and independent task edits are separate transactions: if complete_task succeeds and build_plan fails, do not rerun completion from scratch. Use stable arrangement keys, retain completed receipts, reread Tasks/plans, and skip committed steps on recovery. A few known successors may be submitted in completion-envelope tasks; batched successors use atomic routes. Recover separate calls according to their actual boundaries. Required outputs and finish still apply; scope/version/output checks remain enforced.
+Check every receipt and return actual submission outcomes. Reuse edit_tasks preview/atomic commit for grouped edits. Reports and independent task edits are separate transactions: if report_task(event=completed) succeeds and build_plan fails, do not rerun completion from scratch. Use stable arrangement keys, retain completed receipts, reread Tasks/plans, and skip committed steps on recovery. A few known successors may be submitted in completion-envelope tasks; batched successors use atomic routes. Recover separate calls according to their actual boundaries. Required outputs and finish still apply; execution identity, scope and output checks remain enforced.
 
 Agent candidates support a shared prompt string alongside command. set_implementation can edit prompt alone. Example:
 
@@ -144,6 +144,8 @@ Change only an existing candidate's command:
 {"draft_id":"DRAFT_ID","revision":12,"node_id":"train","implementation_id":"local","command":["python3","scripts/train_v2.py"]}
 ```
 
+The stored implementations catalog maps each node to `{options:{CANDIDATE_ID:{kind:"agent"}},default:"CANDIDATE_ID"}`. Even one candidate uses options; a bare `{kind:...}` node entry is rejected. default is optional; an unselected candidate waits for an explicit binding.
+
 set_implementation changes supplied fields only, even when kind is repeated. Omitted prompt/cwd/timeout/lifecycle remain; editing a candidate does not change its default selection implicitly. Use default:true explicitly. clear:["timeout","prompt"] removes optional fields; the same field cannot be cleared/set together. Empty prompt sends empty content; clear prompt restores the platform default.
 
 Optional object parameter_schema constrains a candidate's Task parameters in addition to the node contract. Read it through targeted read_loop. Omission preserves it; clear:["parameter_schema"] removes it. Validation never injects defaults.
@@ -172,9 +174,9 @@ For a normal decision node that needs whole-Run scope, set global_agent_node and
 
 ## Execution lifecycle and attached monitoring
 
-Storage and transition calculation are separate: Timeline stores facts/state/history; the generic state machine evaluates lifecycle rules; the platform commits state/results/matching arrangements together. Authors still use set_implementation, routes, and report_task; existing Loops need no migration, state store, or internal transition calls. External identity, observation times, and check errors remain separate; waiting alone does not prove monitoring is healthy.
+Storage and transition calculation are separate: Timeline stores facts/state/history; the generic state machine evaluates lifecycle rules; the platform commits state/results/matching arrangements together. Authors still use set_implementation, routes, and report_task; authors do not need a separate state store or internal transition calls. External identity, observation times, and check errors remain separate; waiting alone does not prove monitoring is healthy.
 
-Candidates determine sync/async execution. set_implementation stores an explicit lifecycle:{initial,transitions} template, readable/editable through tools. Templates are not business decisions. Old packages without lifecycle remain unchanged; views show the kind template and dispatch snapshots the actual rules.
+Candidates determine sync/async execution. set_implementation stores an explicit lifecycle:{initial,transitions} template, readable/editable through tools. Templates are not business decisions. Omitting lifecycle uses the current kind template; dispatch snapshots the actual rules.
 
 Rows are {from,event,to}. Multiple rows for one state/event require distinct when conditions, with exactly one runtime match; row order is not priority. Expressions read inputs, parameters, settings, detail, outputs, attempt (one-based execution count), task_revision. State/event IDs allow letters, numbers, underscores, hyphens. initial starts the attempt; completed/fault/retry/agent are exits, not ordinary stages with outgoing transitions. retry starts another attempt of the same Task. agent uses the configured fallback or leaves an issue. completed requires a completed event with every output, passing outputs/assertions validation. Lifecycle describes an execution stage; the Task may wait for inputs, scope, or pause points before execution.
 
@@ -264,4 +266,4 @@ For conditional transitions, cases supplies node, implementation, state, event, 
 
 See [contracts](contracts.md) for conditional parameters, stable Task/output refs, validate_parameters, and preview_plan, and [testing](testing.md) for test_loop/scenarios. read_capabilities exposes these and other mechanisms.
 
-Exports derive capability requirements from routes, extended schemas, refs, scenarios, and requires. New-capability packages use package/2 so older services reject explicitly; ordinary old packages retain package/1. requires may add explicit requirements. Install/import/copy/reexport preserve package requirements; unknown formats reject rather than downgrade. Reread live schemas after updating a service; source edits alone are not a running-service upgrade.
+Exports derive capability requirements from routes, extended schemas, refs, scenarios, and requires. All packages use package/2; package/1 is unsupported. requires may add explicit requirements. Install/import/copy/reexport preserve package requirements; unknown formats reject rather than downgrade. Reread live schemas after updating a service; source edits alone are not a running-service upgrade.

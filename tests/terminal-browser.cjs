@@ -23,7 +23,7 @@ answer=input()
 print('RECEIVED: '+answer,flush=True)
 t=RunTools(Store(sys.argv[1]),r['run_id'],r['token']);i=t.call('read_task',{'task_id':'init'})
 t.call('register_agent_session',{'execution_id':r['execution_id'],'provider':'custom','session_id':'browser-native-123'})
-t.call('complete_task',{'task_id':'init','task_version':i['task_version'],'envelope':{'settings':{'objective':'Browser terminal'},'outputs':{'result':answer}}})
+t.call('report_task',{'event':'completed','report_id':'complete','task_id':'init','envelope':{'settings':{'objective':'Browser terminal'},'outputs':{'result':answer}}})
 t.call('finish',{})
 time.sleep(60)
 """
@@ -36,7 +36,7 @@ r=json.loads(Path(sys.argv[2]).read_text().split('Run context:'+chr(10),1)[1]);t
 assert t.call('read_task',{'task_id':'init'})['task']['status']=='completed'
 print('RESTORED browser-native-123',flush=True);input();t.call('finish',{});time.sleep(60)
 """
-impl['init']={'kind':'agent','terminal':True,'agent_cli':'custom','resume_command':[sys.executable,'-u','-c',resume_code,'{{session_id}}','{{prompt_file}}',sys.argv[1]],'command':[sys.executable,'-u','-c',code,sys.argv[1],'{{prompt_file}}'],'cwd':str(Path.cwd())}
+impl['init']={'options':{'default':{'kind':'agent','terminal':True,'agent_cli':'custom','resume_command':[sys.executable,'-u','-c',resume_code,'{{session_id}}','{{prompt_file}}',sys.argv[1]],'command':[sys.executable,'-u','-c',code,sys.argv[1],'{{prompt_file}}'],'cwd':str(Path.cwd())}},'default':'default'}
 key=s.publish(bp,impl)['key'];run=s.create(key,'终端会话验收');draft=s.save_draft(bp,impl)
 print(json.dumps({'run':run['id'],'draft':draft['id']}))`;
  const info=JSON.parse(execFileSync(process.env.PYTHON || 'python3',['-c',seed,db],{encoding:'utf8'}));

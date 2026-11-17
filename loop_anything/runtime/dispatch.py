@@ -39,7 +39,7 @@ def accept(comm, message):
              'notification_conversation','previous_request_id','source_reference','parent_request','protocol','executor',
              'assignment_id','dispatch_client'}
     row={k:copy.deepcopy(v) for k,v in payload.items() if k in allowed}
-    row.update(state='assigned',history=[],rpc={},logs=[],access_token=secrets.token_urlsafe(32))
+    row.update(state='assigned',history=[],rpc={},logs=[])
     if detached:
         from loop_anything.runtime.collaboration import ensure_loop
         loop_key=ensure_loop(comm.store)
@@ -82,11 +82,6 @@ def accept(comm, message):
         else:comm.emit(db,row,message['sender'],'ack',{'message_id':message['id']})
 
 
-def result_receipt(row):
-    from loop_anything.runtime.model import digest
-    return digest({k:row.get(k) for k in ('id','assignment_id','state','result','error','native_session')})
-
-
 def publish_results(comm,media,gid):
     from loop_anything.runtime.communication_views import summary
     from loop_anything.runtime.model import digest
@@ -114,7 +109,7 @@ def read_remote_logs(comm,row,after,offset,max_chars):
     with comm.transaction() as db:
         current=comm.get(row['id'],db);reads=current.setdefault('log_reads',{})
         query=reads.get(key)
-        if query and query.get('result') is not None and (row['state'] in {'completed','failed','cancelled','unavailable','not_selected'} or time.time()-query['at']<15):
+        if query and query.get('result') is not None and (row['state'] in {'completed','failed','cancelled','unavailable'} or time.time()-query['at']<15):
             return dict(query['result'],logs_pending=False)
         if not query or query.get('result') is not None:
             from loop_anything.runtime.store import uid
@@ -144,8 +139,3 @@ def receive_read(comm,db,row,message):
         page=comm.read(row['id'],include_logs=True,**payload['arguments'])['request']
         comm.emit(db,row,row['origin'],'logs_response',{'id':payload['id'],
             'page':{k:page[k] for k in ('logs','log_cursor','log_offset','log_more')}})
-    elif kind=='result_read':
-        from loop_anything.runtime.communication import END
-        if not row.get('dispatch_client') or row['state'] not in END or payload.get('receipt')!=result_receipt(row):
-            raise Conflict('Read receipt does not match the completed result')
-        row.update(result_consumed=True,result_read_at=time.time())

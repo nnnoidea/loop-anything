@@ -123,13 +123,8 @@ class RunLibraryTests(unittest.TestCase):
         comm=SimpleNamespace(store=self.store,requests=lambda:[stale],settings=lambda:{'instance_id':'local'},get=lambda ident:retained)
         reconcile(comm)  # An already fetched request must not crash the next reconciliation after deletion.
 
-    def test_legacy_header_is_backfilled_and_draft_management_uses_its_revision(self):
-        ident=self.create(name='')
-        with self.store.connection() as db:
-            db.execute("UPDATE runs SET document=json_remove(document,'$.last_activity_at','$.created_by') WHERE id=?",(ident,));db.commit()
-        store=Store(self.store.filename)
-        summary=list_runs(store,created_by='')['runs'][0]
-        self.assertIsNotNone(summary['last_activity_at']);self.assertEqual(summary['created_by'],'')
+    def test_draft_management_uses_its_revision(self):
+        store=self.store
         manage_loop(store,draft_id=self.draft['draft_id'],revision=self.draft['revision'],archived=True)
         self.assertEqual(store.drafts(False),[])
         with self.assertRaises(Conflict):manage_loop(store,draft_id=self.draft['draft_id'],revision=999,delete=True)
@@ -178,24 +173,6 @@ class RunLibraryTests(unittest.TestCase):
             job['applied']=True;db.execute('UPDATE executor_calls SET document=?',(json.dumps(job),));db.commit()
         delete_run(self.store,ident,0)
 
-    def test_unpartitioned_history_preserves_activity_and_execution_count(self):
-        ident=self.create();old=self.store.get(ident)
-        old.pop('last_activity_at',None)
-        old['executions']=[{'id':'historic-attempt'}]
-        old['history']=[{'id':'done','kind':'committed','at':500},
-                        {'id':'poll','kind':'observation','at':900},
-                        {'id':'progress','kind':'transition','at':950,'detail':{'from':'waiting','to':'waiting','event':'progress'}}]
-        with self.store.connection() as db:
-            db.execute('UPDATE runs SET document=? WHERE id=?',(json.dumps(old),ident))
-            db.execute('DELETE FROM timeline_parts WHERE run_id=?',(ident,));db.commit()
-        migrated=Store(self.store.filename)
-        row=list_runs(migrated,active_from=450)['runs'][0]
-        self.assertEqual(row['last_activity_at'],500)
-        self.assertEqual(row['execution_count'],1)
-        # Repair an earlier library version which filled legacy activity with creation time.
-        with self.store.connection() as db:
-            db.execute("UPDATE runs SET document=json_set(document,'$.last_activity_at',json_extract(document,'$.created_at')) WHERE id=?",(ident,));db.commit()
-        self.assertEqual(list_runs(Store(self.store.filename))['runs'][0]['last_activity_at'],500)
 
     def test_delete_preserves_unconfirmed_native_sessions(self):
         ident=self.create();self.end(ident)
@@ -216,24 +193,26 @@ class RunLibraryTests(unittest.TestCase):
         self.assertTrue(any(row['key']==key for row in self.store.catalog()))
 
     def test_broken_optional_name_profile_does_not_block_platform_calls(self):
+        from tests.runtime_fixture import client_work
         spec=importlib.util.spec_from_file_location('broken_profile_client','skills/loop-anything-platform/scripts/call.py')
         client=importlib.util.module_from_spec(spec);spec.loader.exec_module(client)
         profile=Path(self.tmp.name)/'broken-profile.json';profile.write_text('{broken')
         with patch.dict(os.environ,LOOP_ANYTHING_PROFILE=str(profile)),patch('sys.stdout',new_callable=io.StringIO),patch('sys.stderr',new_callable=io.StringIO):
             for tool in ('read_run','start_run'):
-                with patch.object(client,'fetch',return_value={'ok':True}) as fetch,patch.object(sys,'argv',['call.py',tool,'--url','http://example.invalid','--arguments','{}']):
+                with client_work('http://example.invalid',[('loop','test')]),patch.object(client,'fetch',return_value={'ok':True,'workspace_id':'test-workspace'}) as fetch,patch.object(sys,'argv',['call.py',tool,'--url','http://example.invalid','--arguments','{}']):
                     with self.assertRaises(SystemExit) as done:client.main()
                     self.assertEqual(done.exception.code,0)
                     self.assertNotIn('created_by',json.loads(fetch.call_args.kwargs['data'])['arguments'])
 
     def test_local_profile_does_not_need_connection_and_new_runs_inherit_it(self):
+        from tests.runtime_fixture import client_work
         path=Path('skills/loop-anything-platform/scripts/call.py')
         spec=importlib.util.spec_from_file_location('run_profile_client',path);client=importlib.util.module_from_spec(spec);spec.loader.exec_module(client)
         profile=str(Path(self.tmp.name)/'profile.json')
         with patch.dict(os.environ,LOOP_ANYTHING_PROFILE=profile),patch('sys.stdout',new_callable=io.StringIO):
             with patch.object(sys,'argv',['call.py','profile','--name','tdh']):client.main()
             self.assertEqual(json.loads(Path(profile).read_text())['user_name'],'tdh')
-            with patch.object(client,'fetch',return_value={'ok':True}) as fetch,patch.object(sys,'argv',['call.py','start_run','--url','http://example.invalid','--arguments','{"key":"test","title":"Run","authorization":"test"}']):
+            with client_work('http://example.invalid',[('loop','test')]),patch.object(client,'fetch',return_value={'ok':True,'workspace_id':'test-workspace'}) as fetch,patch.object(sys,'argv',['call.py','start_run','--url','http://example.invalid','--arguments','{"key":"test","title":"Run","authorization":"test"}']):
                 with self.assertRaises(SystemExit) as done:client.main()
                 self.assertEqual(done.exception.code,0)
                 payload=json.loads(fetch.call_args.kwargs['data'])

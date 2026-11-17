@@ -1,3 +1,4 @@
+from tests.runtime_fixture import runtime_run
 """Conversation routing uses simulated machines/receipts; no real chat is contacted."""
 import importlib.util
 import json
@@ -9,7 +10,7 @@ from unittest.mock import patch
 
 import test_communication as fixtures
 from loop_anything.runtime.model import Invalid
-from loop_anything.runtime.communication_conversations import register, resolve, from_source
+from loop_anything.runtime.communication_conversations import resolve, from_source
 from communication_helpers import notification_groups
 
 SCRIPTS=Path(__file__).resolve().parents[1]/'skills/loop-anything-platform/scripts'
@@ -18,7 +19,13 @@ import cc_connect_context as bridge
 
 
 class ConversationTests(unittest.TestCase):
-    setUp=fixtures.CommunicationTests.setUp
+    def setUp(self):
+        fixtures.CommunicationTests.setUp(self)
+        def sender(bot,destination=''):
+            return {'command':[sys.executable,'-c','pass'],'channel':'cc-connect','identity':bot['project'],'destination':destination,'timeout':60}
+        for name,value in [('sender',sender),('validate_bot',lambda bot:None)]:
+            patched=patch('loop_anything.runtime.cc_connect.'+name,side_effect=value)
+            patched.start();self.addCleanup(patched.stop)
     tearDown=fixtures.CommunicationTests.tearDown
     groups=notification_groups
     cycle=fixtures.CommunicationTests.cycle
@@ -28,13 +35,13 @@ class ConversationTests(unittest.TestCase):
         session='feishu:oc_chat:ou_user' if private else 'feishu:oc_chat:root:om_topic'
         context=dict(platform='feishu',chat_id='oc_chat',chat_type='p2p' if private else 'group',session_key=session,
                      thread_root=None if private else 'om_topic',entry_project='entrance')
-        return register(self.a,dict(conversation=context,notification_command=[sys.executable,'-c','pass']))['conversation_id']
+        return from_source(self.a,context)['id']
 
     def bot(self,comm,gid=None):
         comm.store.notification_channels({'bot':dict(channel='cc-connect',identity='papers-bot',destination='unused',
             command=[sys.executable,'-c','pass'])},revision=0)
         self.agent(comm,groups=[gid] if gid else [])
-        comm.config('agent',agent_id='papers',agent={'notification_route':'bot'})
+        comm.config('agent',agent_id='papers',agent={'notification_bot':{'project':'papers-bot','platform':'feishu'}})
         for machine in (self.a,self.b,self.c):machine.last_scan=0;machine.scan()
 
     def completed(self, conversation, gid=None, **args):
@@ -107,7 +114,7 @@ class ConversationTests(unittest.TestCase):
         try:
             key=self.a.store.publish(case.bp,case.implementations)['key']
             cid=self.entry()
-            started=PlatformTools(self.a.store).call('start_run',dict(key=key,title='chat run',authorization='test',conversation_id=cid))
+            started=runtime_run(PlatformTools(self.a.store).store, dict(key=key,title='chat run',authorization='test',conversation_id=cid))
             run=self.a.store.get(started['run_id'])
             self.assertEqual(run['notification_conversation_id'],cid)
             self.assertEqual(run['settings']['notification_command'],[sys.executable,'-c','pass'])
@@ -183,13 +190,13 @@ class ConversationTests(unittest.TestCase):
     def test_metadata_registration_reuses_binding_and_delivery_failure_does_not_fail_task(self):
         self.agent(self.a)
         context={'platform':'feishu','entry_project':'entrance','session_key':'feishu:oc_chat:root:om_topic'}
-        with patch.object(bridge,'read_config',side_effect=AssertionError('No channel preflight on request')):
+        with patch.object(bridge,'read_config',side_effect=AssertionError('No channel preflight on request')), patch('loop_anything.runtime.cc_connect.sender',return_value={'configuration_error':'configure_cc_connect unavailable'}):
             binding=from_source(self.a,context);self.assertEqual(binding['id'],from_source(self.a,context)['id'])
             created=self.a.request(dict(location='local',agent_id='papers',message='work without cc-connect',chat_context=context))['request']
         with self.a.transaction() as db:
             row=self.a.get(created['id'],db);row.update(state='completed',result={'answer':42});self.a.save(db,row)
         def unavailable(command,text,*args):return subprocess.CompletedProcess(command,2,json.dumps({'delivered':False,'not_sent':True,'error':'cc-connect unavailable'}),'')
-        with patch('loop_anything.runtime.host_runtime.run_command',side_effect=unavailable):
+        with patch('loop_anything.runtime.host_runtime.run_command',side_effect=unavailable), patch('loop_anything.runtime.cc_connect.sender',return_value={'configuration_error':'configure_cc_connect unavailable'}):
             self.cycle(lambda:self.a.get(created['id']).get('notifications',[{}])[-1].get('status')=='waiting_configuration')
         current=self.a.get(created['id']);self.assertEqual(current['state'],'completed');self.assertEqual(current['result'],{'answer':42})
         self.assertIn('configure_cc_connect',current['notifications'][-1]['error'])
@@ -208,57 +215,23 @@ class ConversationTests(unittest.TestCase):
         with self.a.transaction() as db:remember_context(self.a,db,binding,{'conversation':dict(checked,chat_id='another')})
         self.assertEqual(resolve(self.a,binding['id'])['conversation'],checked)
 
-    def test_platform_selects_configured_entry_adapter_with_local_paths(self):
+    def test_entry_uses_bridge_not_old_outlet_command(self):
         command=[sys.executable,'adapter.py','--config','/local/bridge.toml','--data-dir','/local/bridge']
         self.a.store.notification_channels({'entry':{'channel':'cc-connect','identity':'entrance','destination':'old destination','command':command,'cwd':'/local/working'}},revision=0)
         binding=from_source(self.a,{'platform':'feishu','entry_project':'entrance','session_key':'feishu:oc_chat:root:om_topic'})
         saved=resolve(self.a,binding['id'],include_sender=True)
-        self.assertEqual(saved['sender']['command'],command);self.assertEqual(saved['sender']['cwd'],'/local/working')
+        self.assertEqual(saved['sender']['command'],[sys.executable,'-c','pass']);self.assertNotIn('cwd',saved['sender'])
         self.assertEqual(saved['sender']['destination'],'feishu:oc_chat:root:om_topic')
         self.assertNotIn('/local/',json.dumps(binding))
 
-    def test_same_bot_multiple_destinations_preserve_identical_adapter(self):
+    def test_entry_does_not_merge_old_outlet_adapters(self):
         command=[sys.executable,'adapter.py','--data-dir','/configured/bridge']
         self.a.store.notification_channels({name:{'channel':'cc-connect','identity':'entrance','destination':name,'command':command,'timeout':timeout} for name,timeout in (('chat-a',60),('chat-b',90))},revision=0)
         binding=from_source(self.a,{'platform':'feishu','entry_project':'entrance','session_key':'feishu:oc_chat:root:om_topic'})
         sender=resolve(self.a,binding['id'],include_sender=True)['sender']
-        self.assertEqual(sender['command'],command);self.assertEqual(sender['timeout'],90)
+        self.assertEqual(sender['command'],[sys.executable,'-c','pass']);self.assertEqual(sender['timeout'],60)
         self.assertEqual(sender['destination'],'feishu:oc_chat:root:om_topic')
 
-    def test_conflicting_entry_adapters_record_configuration_error_without_blocking_work(self):
-        self.a.store.notification_channels({name:{'channel':'cc-connect','identity':'entrance','destination':name,'command':[sys.executable,name+'.py']} for name in ('a','b')},revision=0)
-        context={'platform':'feishu','entry_project':'entrance','session_key':'feishu:oc_chat:root:om_topic'}
-        self.agent(self.a)
-        created=self.a.request(dict(location='local',agent_id='papers',message='keep working',chat_context=context))['request']
-        with self.a.transaction() as db:
-            row=self.a.get(created['id'],db);row.update(state='completed',result={'answer':42});self.a.save(db,row)
-        with patch('loop_anything.runtime.host_runtime.run_command',side_effect=AssertionError('Ambiguous sender must not execute')):
-            self.cycle(lambda:self.a.get(created['id']).get('notifications',[{}])[-1].get('status')=='waiting_configuration')
-        self.assertEqual(self.a.get(created['id'])['state'],'completed')
-        import test_timeline_runtime as runtime
-        from loop_anything.interfaces.platform_tools import PlatformTools
-        from loop_anything.runtime.notifications import enqueue
-        case=runtime.RuntimeTests();case.setUp()
-        try:
-            key=self.a.store.publish(case.bp,case.implementations)['key']
-            started=PlatformTools(self.a.store).call('start_run',dict(key=key,title='ambiguous adapter',authorization='test',chat_context=context))
-            run=self.a.store.get(started['run_id']);notice=enqueue(self.a.store,run,'notice',{'message':'result'})
-            self.assertEqual(notice['status'],'waiting_configuration');self.assertIn('Multiple adapters',notice['error'])
-            self.a.store.notification_channels({'a':{'channel':'cc-connect','identity':'entrance','destination':'unused','command':[sys.executable,'a.py']}},revision=1)
-            with self.a.store.edit(run['id']) as saved:
-                retried=enqueue(self.a.store,saved,'fixed-notice',{'message':'result'})
-                self.assertEqual(retried['sender']['command'],[sys.executable,'a.py'])
-            self.sent=[]
-            notice_id=self.a.get(created['id'])['notifications'][-1]['id']
-            self.a.control(created['id'],'retry_notification',notification_id=notice_id)
-            with patch('loop_anything.runtime.host_runtime.run_command',side_effect=self.receipt):
-                self.cycle(lambda:self.a.get(created['id'])['notifications'][-1]['status']=='delivered')
-            self.assertEqual(self.sent[-1]['conversation']['thread_root'],'om_topic')
-            chosen=resolve(self.a,self.a.get(created['id'])['notification_conversation']['id'],include_sender=True)['sender']['command']
-            self.a.store.notification_channels({'a':{'channel':'cc-connect','identity':'entrance','command':[sys.executable,'different.py']}},revision=2)
-            refreshed=resolve(self.a,self.a.get(created['id'])['notification_conversation']['id'],include_sender=True,refresh_sender=True)
-            self.assertEqual(refreshed['sender']['command'],chosen)
-        finally:case.tearDown()
 
     def test_run_metadata_reaches_timeline_notification_without_cli_probe(self):
         import test_timeline_runtime as runtime
@@ -269,31 +242,29 @@ class ConversationTests(unittest.TestCase):
             key=self.a.store.publish(case.bp,case.implementations)['key']
             context={'platform':'feishu','entry_project':'entrance','session_key':'feishu:oc_chat:root:om_topic'}
             tools=PlatformTools(self.a.store)
-            with patch.object(bridge,'capture_arguments',side_effect=AssertionError('No eager capture')):
-                started=tools.call('start_run',dict(key=key,title='chat run',authorization='test',chat_context=context))
+            with patch.object(bridge,'catalog',side_effect=AssertionError('No eager capture')):
+                started=runtime_run(tools.store, dict(key=key,title='chat run',authorization='test',chat_context=context))
             run=self.a.store.get(started['run_id']);self.assertIn('notification_conversation_id',run)
             notice=enqueue(self.a.store,run,'test-notice',{'message':'result'})
             self.assertEqual(notice['conversation']['session_key'],context['session_key'])
-            self.assertEqual(notice['status'],'waiting_configuration')
-            self.assertIn('configure_cc_connect',notice['error'])
-            explicit=tools.call('start_run',dict(key=key,title='explicit',authorization='test',chat_context=context,notification_route='workspace'))
+            self.assertEqual(notice['status'],'pending')
+            self.assertEqual(notice['sender']['command'],[sys.executable,'-c','pass'])
+            explicit=runtime_run(tools.store, dict(key=key,title='explicit',authorization='test',chat_context=context,notification_route='workspace'))
             self.assertNotIn('notification_conversation_id',self.a.store.get(explicit['run_id']))
         finally:case.tearDown()
 
 
-    def test_thread_metadata_survives_registration_and_legacy_receipt_upgrade(self):
+    def test_thread_metadata_survives_registration_and_delivery_receipt(self):
         from loop_anything.runtime.communication_conversations import remember_context
         source={'platform':'feishu','entry_project':'entrance','session_key':'feishu:oc_chat:thread:omt_topic'}
         binding=from_source(self.a,source)
         self.assertEqual(binding['conversation']['thread_id'],'omt_topic')
         self.assertIsNone(binding['conversation']['thread_root'])
         context=dict(binding['conversation'],chat_type='group')
-        registered=register(self.a,{'conversation':context,'notification_command':[sys.executable,'-c','pass']})
-        self.assertEqual(resolve(self.a,registered['conversation_id'])['conversation']['thread_id'],'omt_topic')
-        legacy=dict(binding,conversation=dict(binding['conversation'],thread_root='omt_topic'))
-        legacy['conversation'].pop('thread_id')
+        registered=from_source(self.a,context)
+        self.assertEqual(resolve(self.a,registered['id'])['conversation']['thread_id'],'omt_topic')
         with self.a.transaction() as db:
-            remember_context(self.a,db,legacy,{'conversation':context})
+            remember_context(self.a,db,binding,{'conversation':context})
         updated=resolve(self.a,binding['id'])['conversation']
         self.assertEqual(updated['thread_id'],'omt_topic');self.assertIsNone(updated['thread_root'])
 
@@ -302,7 +273,7 @@ class ConversationTests(unittest.TestCase):
         source={'platform':'feishu','entry_project':'entrance','session_key':'feishu:oc_chat:thread:omt_topic','thread_root':'om_real'}
         binding=from_source(self.a,source)
         self.assertEqual(binding['conversation']['thread_root'],'om_real')
-        registered=register(self.a,{'conversation':binding['conversation'],'notification_command':[sys.executable,'-c','pass']})
+        registered=from_source(self.a,binding['conversation'])
         self.assertEqual(registered['conversation']['thread_root'],'om_real')
         source.pop('thread_root');binding=from_source(self.a,source)
         self.bot(self.a)
@@ -327,7 +298,7 @@ class ConversationTests(unittest.TestCase):
         try:
             key=self.a.store.publish(case.bp,case.implementations)['key']
             source={'platform':'feishu','entry_project':'entrance','session_key':'feishu:oc_chat:thread:omt_topic'}
-            started=PlatformTools(self.a.store).call('start_run',dict(key=key,title='topic',authorization='test',chat_context=source))
+            started=runtime_run(PlatformTools(self.a.store).store, dict(key=key,title='topic',authorization='test',chat_context=source))
             with self.a.store.edit(started['run_id']) as run:
                 notice=enqueue(self.a.store,run,'first',{'message':'result'})
                 notice.update(status='sending',token='delivery-token')
@@ -357,30 +328,32 @@ class ConversationTests(unittest.TestCase):
 class BridgeDeliveryTests(unittest.TestCase):
     def test_client_only_carries_metadata_with_no_bridge_or_channel_access(self):
         import call as client
+        from tests.runtime_fixture import client_work
         import os
         from io import StringIO
-        for tool in ('request_assistance','start_run'):
-            for extra in ({},{'notification_route':'workspace'},{'conversation_id':'existing'},{'source':{'run_id':'run-a'}}):
+        for tool in ('request_assistance','start_run','submit_run_request'):
+            for extra in ({},{'notification_route':'workspace'},{'source':{'run_id':'run-a'}}):
                 with self.subTest(tool=tool,extra=extra):
                     calls=[]
-                    def fetch(url,data=None):
+                    def fetch(url,data=None,**kwargs):
+                        if data is None:return {'workspace_id':'test-workspace'}
                         body=json.loads(data);calls.append(body);return {'ok':True}
-                    argv=['call',tool,'--url','http://remote.example:1','--arguments',json.dumps(dict(message='help',**extra))]
-                    with patch.object(sys,'argv',argv),patch.object(sys,'stdout',new_callable=StringIO),patch.dict(os.environ,{'CC_PROJECT':'entrance','CC_SESSION_KEY':'feishu:oc_chat:ou_user','PATH':''}),patch.object(bridge,'capture_arguments',side_effect=AssertionError('Client must not capture')),patch.object(client,'fetch',side_effect=fetch):
+                    argv=['call',tool,'--url','http://remote.example:1','--arguments',json.dumps(dict(message='help',**({'operation':'explain','run_id':'existing-run'} if tool=='submit_run_request' else {}),**extra))]
+                    with client_work('http://remote.example:1',[('run','run-a'),('run','existing-run')]),patch.object(sys,'argv',argv),patch.object(sys,'stdout',new_callable=StringIO),patch.dict(os.environ,{'CC_PROJECT':'entrance','CC_SESSION_KEY':'feishu:oc_chat:ou_user','PATH':''}),patch.object(bridge,'catalog',side_effect=AssertionError('Client must not capture')),patch.object(client,'fetch',side_effect=fetch):
                         with self.assertRaises(SystemExit) as exit:client.main()
                         self.assertEqual(exit.exception.code,0)
                     self.assertEqual(len(calls),1);self.assertEqual(calls[0]['tool'],tool)
                     if not extra:self.assertEqual(calls[0]['arguments']['chat_context'],{'platform':'feishu','entry_project':'entrance','session_key':'feishu:oc_chat:ou_user'})
                     else:self.assertNotIn('chat_context',calls[0]['arguments'])
 
-    def test_generated_sender_preserves_custom_executable_and_config(self):
+    def test_generated_sender_preserves_custom_executable_and_data_directory(self):
         import notify_cc_connect as adapter
         import os
         with patch.dict(os.environ,{'CC_PROJECT':'entry','CC_SESSION_KEY':'feishu:oc_chat:root:om_root'}),patch.object(adapter.shutil,'which',side_effect=lambda p:p):
-            argv=adapter.sender_command('/custom/cc-connect','/custom/data','/custom/config.toml')
+            argv=adapter.sender_command('/custom/cc-connect','/custom/data')
         self.assertEqual(argv[argv.index('--executable')+1],'/custom/cc-connect')
         self.assertEqual(argv[argv.index('--data-dir')+1],'/custom/data')
-        self.assertEqual(argv[argv.index('--config')+1],'/custom/config.toml')
+        self.assertNotIn('--config',argv)
 
     def test_adapter_subprocess_accepts_installed_cli_at_custom_path_without_cache(self):
         import tempfile
@@ -390,7 +363,7 @@ class BridgeDeliveryTests(unittest.TestCase):
             cli.chmod(0o700)
             config.write_text('[[projects]]\nname="entry"\n[[projects.platforms]]\ntype="feishu"\n[projects.platforms.options]\nthread_isolation=true\n')
             origin=dict(platform='feishu',entry_project='entry',chat_id='oc_chat',chat_type='group',session_key='feishu:oc_chat:thread:omt_topic',thread_id='omt_topic',thread_root='om_real')
-            result=subprocess.run([sys.executable,str(SCRIPTS/'notify_cc_connect.py'),'--project','entry','--executable',str(cli),'--data-dir',str(root/'no-cache'),'--config',str(config)],input=json.dumps({'id':'n','message':'result','conversation':origin}),text=True,capture_output=True,timeout=45)
+            result=subprocess.run([sys.executable,str(SCRIPTS/'notify_cc_connect.py'),'--project','entry','--executable',str(cli),'--data-dir',str(root/'no-cache')],input=json.dumps({'id':'n','message':'result','conversation':origin}),text=True,capture_output=True,timeout=45)
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
             sent=json.loads(log.read_text());receipt=json.loads(result.stdout)
             self.assertEqual(sent['argv'][sent['argv'].index('--session')+1],'feishu:oc_chat:root:om_real')
@@ -411,7 +384,7 @@ class BridgeDeliveryTests(unittest.TestCase):
             for project in ('entry','helper'):
                 context={'platform':'feishu','entry_project':'entry','session_key':session,'chat_type':'unknown'}
                 payload={'id':'n','message':'result','outlet':{'identity':project},'conversation':context,'alternate_bot':True}
-                with patch.object(sys,'argv',['adapter','--config','/missing/config']),patch.object(sys,'stdin',StringIO(json.dumps(payload))),patch.object(sys,'stdout',new_callable=StringIO) as out,patch.object(bridge,'read_config',side_effect=AssertionError('No per-send configuration read')),patch.object(adapter.shutil,'which',return_value='/fake/cc'),patch.object(adapter.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'','')) as send:
+                with patch.object(sys,'argv',['adapter']),patch.object(sys,'stdin',StringIO(json.dumps(payload))),patch.object(sys,'stdout',new_callable=StringIO) as out,patch.object(bridge,'read_config',side_effect=AssertionError('No per-send configuration read')),patch.object(adapter.shutil,'which',return_value='/fake/cc'),patch.object(adapter.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'','')) as send:
                     adapter.main()
                 self.assertEqual(send.call_count,1)
                 self.assertEqual(send.call_args.args[0][3],project)

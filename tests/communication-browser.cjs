@@ -13,10 +13,10 @@ const {spawn,execFileSync}=require('node:child_process'),{chromium}=require('pla
   await page.locator('#communication-nav').click();try{await page.locator('#communication-page h1').waitFor();}catch(e){console.error(await page.evaluate(()=>({toast:document.querySelector('#toast').textContent,html:document.querySelector('#communication-page')?.outerHTML,page:page,route:activeRoute})),errors,logs);throw e;}
   assert.equal(await page.locator('#communication-page h1').textContent(),'Agent 通信');
   const bridgeConfig=path.join(root,'cc-connect.toml');fs.writeFileSync(bridgeConfig,'[[projects]]\nname="papers"\n[[projects.platforms]]\ntype="feishu"\n[projects.platforms.options]\nthread_isolation=true\n');
-  await page.locator('#notification-outlets').click();await page.locator('#cc-config').fill(bridgeConfig);await page.locator('#cc-executable').fill(python);await page.locator('#save-cc-connection').click();
+  await page.locator('[data-comm-tab=connections]').click();await page.locator('#notification-outlets').click();await page.locator('#cc-config').fill(bridgeConfig);await page.locator('#cc-executable').fill(python);await page.locator('#save-cc-connection').click();
   await page.waitForFunction(()=>document.querySelector('#cc-connection')?.textContent.includes('papers · feishu'));
   await page.screenshot({path:path.join(root,'cc-connect.png'),fullPage:true});await page.locator('#outlet-dialog .close-dialog').click();
-  await page.locator('#communication-agent-add').click();await page.locator('#communication-agent-form [name=name]').fill('本机论文助手');
+  await page.locator('[data-comm-tab=agents]').click();await page.locator('#communication-agent-add').click();await page.locator('#communication-agent-form [name=name]').fill('本机论文助手');
   await page.locator('#communication-agent-form [name=notification_bot]').selectOption(JSON.stringify({project:'papers',platform:'feishu'}));
   await page.locator('#communication-agent-form [name=description]').fill('只在本机调用，不需要群组');
   // Keep the Python split separator literal while preserving real newlines in the argv item.
@@ -24,13 +24,14 @@ const {spawn,execFileSync}=require('node:child_process'),{chromium}=require('pla
   command[2]=command[2].replace('print(urllib.request.urlopen',"print('LOG-BEGIN'+'x'*20000+'LOG-END',flush=True)\nprint(urllib.request.urlopen");
   await page.locator('#communication-agent-form [name=command]').fill(JSON.stringify(command));await page.locator('#communication-agent-form button.primary').click();await page.locator('#communication-dialog').waitFor({state:'hidden'});
   await page.waitForFunction(()=>document.querySelector('#communication-request [name=agent]')?.options.length===1);
-  await page.locator('#communication-request [name=message]').fill('测试没有 Loop、没有 NAS 的本机外援');await page.locator('#communication-request button.primary').click();
+  await page.locator('[data-comm-tab=requests]').click();await page.locator('#communication-request [name=message]').fill('测试没有 Loop、没有 NAS 的本机外援');await page.locator('#communication-request button.primary').click();
   await page.waitForFunction(()=>document.querySelector('#comm-detail-state')?.textContent.includes('已完成'));
   assert((await page.locator('#comm-detail-result').textContent()).includes('浏览器本机外援完成'));
   await page.waitForFunction(()=>document.querySelector('#comm-detail-logs')?.textContent.includes('LOG-END'));
   const output=await page.locator('#comm-detail-logs').textContent();assert.equal(output.split('LOG-BEGIN').length,2);assert(output.includes('x'.repeat(20000)+'LOG-END'));
   const runs=await (await page.request.get(base+'/api/runs')).json();assert.equal(runs.length,1);await page.locator('[data-collaboration-run]').waitFor();assert.equal(await page.locator('[data-collaboration-run]').getAttribute('data-collaboration-run'),runs[0].id);
   await page.screenshot({path:path.join(root,'request.png'),fullPage:true});await page.locator('#communication-dialog [data-comm-close]').click();
+  await page.locator('[data-comm-tab=connections]').click();
   const nas=path.join(root,'nas');fs.mkdirSync(nas);
   await page.locator('#communication-space [name=path]').fill(nas);await page.locator('#communication-space [name=name]').fill('协作空间');await page.locator('#communication-space button').click();
   await page.waitForFunction(()=>document.querySelector('#communication-space-group [name=space]')?.options.length===2);
@@ -54,7 +55,7 @@ const {spawn,execFileSync}=require('node:child_process'),{chromium}=require('pla
   await page.screenshot({path:path.join(root,'onboarding.png'),fullPage:true});
   const outletResponse=await page.request.post(base+'/api/tools',{data:{tool:'set_notification_channels',arguments:{revision:0,channels:{test:{label:'测试群出口',channel:'cc-connect',identity:'project-test',destination:'chat-test',command:[python,'-c','print(\'{"delivered":true}\')']}}}},headers:{'X-Loop-Anything':'workspace'}});
   assert((await outletResponse.json()).ok);
-  await page.locator('#notification-outlets').click();assert.equal(await page.locator('[data-outlet-channel]').inputValue(),'cc-connect');await page.locator('#save-outlets').click();await page.locator('#outlet-dialog').waitFor({state:'hidden'});
+  await page.locator('[data-comm-tab=connections]').click();await page.locator('#notification-outlets').click();assert.equal(await page.locator('[data-outlet-channel]').inputValue(),'cc-connect');await page.locator('#save-outlets').click();await page.locator('#outlet-dialog').waitFor({state:'hidden'});
   const savedOutlets=await (await page.request.get(base+'/api/notification-channels')).json();assert.equal(savedOutlets.channels.test.channel,'cc-connect');
   await page.locator('[data-comm-edit]').click();await page.locator('#communication-agent-form [name=notification_route]').selectOption('test');await page.locator('#communication-agent-form button.primary').click();await page.locator('#communication-dialog').waitFor({state:'hidden'});
   assert.equal(Object.values((await workspaceRead()).configuration.agents)[0].notification_route,'test');

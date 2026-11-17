@@ -5,9 +5,8 @@ import sqlite3
 import time
 import uuid
 from contextlib import contextmanager, nullcontext
-from loop_anything.runtime.task_scope import normalize_run
 from pathlib import Path
-from loop_anything.runtime.model import Conflict, Invalid, validate, current_definition
+from loop_anything.runtime.model import Conflict, Invalid, validate
 
 
 def uid(prefix):
@@ -19,8 +18,9 @@ class Store:
         self.filename = str(filename)
         Path(filename).parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
-            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='blueprints'").fetchone():
-                raise Invalid('This database uses the pre-0.2 names. Convert a backup before opening it with Loop Anything; the original has not been changed.')
+            tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if 'run_requests' in tables and 'receipt' not in {r[1] for r in db.execute('PRAGMA table_info(run_requests)')}:
+                raise Invalid('run_requests is missing the receipt column required to store request results')
             existing=db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='platform_settings'").fetchone()
             saved=db.execute("SELECT value FROM platform_settings WHERE key='journal_mode'").fetchone() if existing else None
             mode=journal_mode or (json.loads(saved[0]) if saved else 'WAL')
@@ -36,7 +36,14 @@ class Store:
               PRIMARY KEY(run_id, section, item));
             CREATE TABLE IF NOT EXISTS loop_drafts (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, updated_at REAL NOT NULL, document TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS loop_packages (key TEXT PRIMARY KEY, digest TEXT NOT NULL, root TEXT NOT NULL, document TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS run_requests (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, fingerprint TEXT NOT NULL, receipt TEXT);
             ''')
+            from loop_anything.runtime import timelines
+            timelines.initialize(db)
+            from loop_anything.runtime import business_state
+            business_state.initialize(db)
+            from loop_anything.runtime.work import initialize as initialize_work
+            initialize_work(db)
             from loop_anything.runtime.run_library import initialize
             initialize(db)
             db.execute("INSERT OR REPLACE INTO platform_settings VALUES ('journal_mode',?)",(json.dumps(mode),));db.commit()
@@ -82,7 +89,7 @@ class Store:
         with self.connection() as db:
             packages = {r[0] for r in db.execute('SELECT key FROM loop_packages')}
             archived = dict(db.execute('SELECT key, archived_at FROM loop_library'))
-            return [dict(key=r['key'], archived_at=archived.get(r['key']), loop_definition=current_definition(json.loads(r['document'])), implementations=json.loads(r['implementations']),
+            return [dict(key=r['key'], archived_at=archived.get(r['key']), loop_definition=copy.deepcopy(json.loads(r['document'])), implementations=json.loads(r['implementations']),
                          **({'package_key': r['key']} if r['key'] in packages else {}))
                     for r in db.execute('SELECT * FROM loop_definitions ORDER BY key') if include_archived or not archived.get(r['key'])]
 
@@ -126,7 +133,7 @@ class Store:
             db.commit()
         return {'id': draft_id, 'revision': revision, 'updated_at': now, 'loop_definition': loop_definition, 'implementations': implementations, **extra}
 
-    def create(self, key, title, inputs=None, settings=None, authorization='', acquire=False, bindings=None, fallback_node=None, global_agent_node=None, notification_command=None, notification_route=None, _db=None, conversation_id=None, chat_context=None, created_by=None):
+    def create(self, key, title, inputs=None, settings=None, authorization='', acquire=False, bindings=None, fallback_node=None, global_agent_node=None, notification_command=None, notification_route=None, _db=None, conversation_id=None, chat_context=None, created_by=None, timeline_id=None, continue_run_id=None):
         from loop_anything.runtime.run_library import user_name
         created_by = user_name(created_by or '')
         if chat_context and not conversation_id and notification_route is None and notification_command is None:
@@ -144,6 +151,7 @@ class Store:
         item = next((c for c in self.catalog() if c['key'] == key), None)
         if item is None:
             raise Invalid('Unknown loop_definition')
+        requested_bindings=bindings
         configuration = None
         if item.get('package_key'):
             from loop_anything.packaging.packages import load_installed, smoke
@@ -159,8 +167,6 @@ class Store:
             if bindings is None:
                 bindings = configured['bindings']
         loop_definition = item['loop_definition']
-        if loop_definition.get('schema_version') != 2:
-            raise Invalid('Legacy v1 loop_definitions are inspect-only; publish a Timeline-based Loop to execute')
         report = validate(loop_definition, item['implementations'])
         if not report['valid']:
             raise Invalid('Run requires complete valid implementations: ' + '; '.join(report['errors']))
@@ -175,30 +181,27 @@ class Store:
                'executions': [], 'events': [], 'history': []}
         if configuration is not None:
             run['configuration'] = dict({k: copy.deepcopy(configuration[k]) for k in ('path', 'revision', 'config')}, package_root=str(root))
-        from loop_anything.runtime.flow_agent import materialize as materialize_flow
-        materialize_flow(run, root if item.get('package_key') else None)
         if inherit_conversation:run['notification_conversation_id']=conversation_id
-        if loop_definition.get('schema_version') == 2:
-            from loop_anything.runtime.timeline_runtime import initialize_run
-            initialize_run(run, bindings)
-            if not isinstance(authorization, str):
-                raise Invalid('User authorization must be text')
-            run['settings']['authorization'] = authorization
-            if notification_route is not None:
-                if not isinstance(notification_route,str) or not notification_route:raise Invalid('notification_route must be nonempty')
-                run['settings']['notification_route']=notification_route
-            if notification_command is not None:
-                from loop_anything.runtime.timeline_model import validate_settings
-                run['settings']['notification_command'] = copy.deepcopy(notification_command)
-                validate_settings(run['settings'])
-            if fallback_node is not None:
-                run['settings']['fallback_node'] = fallback_node or None
-            from loop_anything.runtime.timeline_model import validate_fallback
-            validate_fallback(loop_definition, run['implementations'], run['settings']['fallback_node'])
-            if global_agent_node is not None:
-                run['settings']['global_agent_node'] = global_agent_node or None
-            from loop_anything.runtime.timeline_model import validate_global_agent
-            validate_global_agent(loop_definition, run['implementations'], run['settings'].get('global_agent_node'))
+        from loop_anything.runtime.timeline_runtime import initialize_run
+        initialize_run(run, bindings)
+        if not isinstance(authorization, str):
+            raise Invalid('User authorization must be text')
+        run['settings']['constraints'] = authorization
+        if notification_route is not None:
+            if not isinstance(notification_route,str) or not notification_route:raise Invalid('notification_route must be nonempty')
+            run['settings']['notification_route']=notification_route
+        if notification_command is not None:
+            from loop_anything.runtime.timeline_model import validate_settings
+            run['settings']['notification_command'] = copy.deepcopy(notification_command)
+            validate_settings(run['settings'])
+        if fallback_node is not None:
+            run['settings']['fallback_node'] = fallback_node or None
+        from loop_anything.runtime.timeline_model import validate_fallback
+        validate_fallback(loop_definition, run['implementations'], run['settings']['fallback_node'])
+        if global_agent_node is not None:
+            run['settings']['global_agent_node'] = global_agent_node or None
+        from loop_anything.runtime.timeline_model import validate_global_agent
+        validate_global_agent(loop_definition, run['implementations'], run['settings'].get('global_agent_node'))
         with self.connection() as comm_db:
             if comm_db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='communication_settings'").fetchone():
                 comm_settings=json.loads(comm_db.execute('SELECT document FROM communication_settings WHERE id=1').fetchone()[0])
@@ -211,10 +214,23 @@ class Store:
             from loop_anything.interfaces.agent_tasks import acquire_in_run
             acquire_in_run(run, 'interactive', task_id=run['loop_definition']['seed']['id'])
         self.log(run, 'created', 'Run created; entry Task is recorded before scheduling')
+        def attach(db):
+            from loop_anything.runtime import timelines
+            timelines.attach(db, run, timeline_id)
+            if continue_run_id:
+                explicit={name:copy.deepcopy(run['settings'][name]) for name,value in (
+                    ('bindings',requested_bindings),('fallback_node',fallback_node),('global_agent_node',global_agent_node),
+                    ('notification_command',notification_command),('notification_route',notification_route)) if value is not None}
+                timelines.continue_from(self, db, run, continue_run_id)
+                run['settings'].update(explicit)
+                run['inputs'].update(inputs or {})
         if _db is not None:
+            attach(_db)
             self._save(_db, run)
         else:
             with self.connection() as db:
+                db.execute('BEGIN IMMEDIATE')
+                attach(db)
                 self._save(db, run)
                 db.commit()
         return run
@@ -246,7 +262,7 @@ class Store:
 
     # Timeline partitions share one SQLite transaction; task attempts and history
     # remain separate from the current task arrangements.
-    PARTS = {'tasks': 'tasks', 'executions': 'attempts', 'records': 'records',
+    PARTS = {'tasks': 'tasks', 'executions': 'attempts',
              'history': 'history', 'events': 'events',
              'notifications': 'notifications', 'hook_firings': 'hook_firings'}
 
@@ -255,44 +271,54 @@ class Store:
         if row is None:
             raise Invalid('Unknown Run')
         run = json.loads(row[0])
-        if run.pop('_storage', None) != 2:
-            return normalize_run(run)  # Legacy snapshots are migrated transactionally on next edit.
+        run.pop('_storage', None)
+        if not isinstance(run.get('agent_sessions'),list) or not isinstance(run.get('timeline_id'),str) or not run['timeline_id']:
+            raise Invalid('Run needs a Timeline reference and agent sessions')
         loop_definition = db.execute('SELECT document, implementations FROM loop_definitions WHERE key=?', (run['loop_key'],)).fetchone()
-        run.update(loop_definition=current_definition(json.loads(loop_definition[0])), implementations=json.loads(loop_definition[1]))
+        run.update(loop_definition=copy.deepcopy(json.loads(loop_definition[0])), implementations=json.loads(loop_definition[1]))
         if run.get('configuration'):
             from loop_anything.packaging.configuration import effective
             package = db.execute('SELECT document FROM loop_packages WHERE key=?', (run['loop_key'],)).fetchone()
             snapshot = run['configuration']
             configured = effective(json.loads(package[0]), snapshot['package_root'], snapshot['config'])
             run.update({k: configured[k] for k in ('loop_definition', 'implementations')})
-        if run['loop_definition'].get('flow_agent') is not None:
-            from loop_anything.runtime.flow_agent import materialize as materialize_flow
-            package = db.execute('SELECT root FROM loop_packages WHERE key=?', (run['loop_key'],)).fetchone()
-            materialize_flow(run, run.get('configuration', {}).get('package_root') or (package[0] if package else None))
         if run['loop_definition']['id']=='platform-collaboration' and run.get('collaboration',{}).get('coordinator_implementation'):
-            run['implementations']['coordinate']=copy.deepcopy(run['collaboration']['coordinator_implementation'])
+            run['implementations']['coordinate']={'options': {'default': copy.deepcopy(run['collaboration']['coordinator_implementation'])}, 'default': 'default'}
+        if run.get('steward'):
+            from loop_anything.runtime.steward import materialize
+            materialize(run)
+        from loop_anything.runtime.timelines import materialize_retained
+        materialize_retained(run)
         for field, section in self.PARTS.items():
             rows = [json.loads(r[0]) for r in db.execute(
                 'SELECT document FROM timeline_parts WHERE run_id=? AND section=? ORDER BY position', (run_id, section))]
             if field == 'tasks':
                 run[field] = {v['id']: v for v in rows}
-            elif field == 'records':
-                run[field] = {}
-                for v in rows:
-                    run[field].setdefault(v['id'], []).append(v)
             else:
                 run[field] = rows
-        return normalize_run(run)
+        entry=next((t for t in run['tasks'].values() if t['origin'].get('entry') and t['spec']['node']==run['loop_definition']['entry']),None)
+        if entry:run['loop_definition']['seed']['id']=entry['id']
+        if run.get('timeline_id'):
+            from loop_anything.runtime import timelines
+            timeline=timelines.get(db,run['timeline_id'])
+            timelines.project(run,timeline)
+            from loop_anything.runtime import business_state
+            run['business_state']=business_state.load(db,timeline)
+            run['records']=business_state.results(db,run['timeline_id'])
+            run['arrangements']=business_state.arrangements(db,run['timeline_id'])
+        return run
 
     def _save(self, db, run):
         if not db.in_transaction: db.execute('BEGIN IMMEDIATE')
         if not db.execute('SELECT 1 FROM loop_definitions WHERE key=?',(run['loop_key'],)).fetchone():
             raise Conflict('Loop version was deleted before this Run could be saved')
-        if run.get('schema_version') != 2:
-            db.execute('INSERT OR REPLACE INTO runs VALUES (?,?)', (run['id'], json.dumps(run, allow_nan=False)))
-            return
-        header = {k: v for k, v in run.items() if k not in self.PARTS and k not in ('loop_definition', 'implementations')}
-        header['_storage'] = 2
+        from loop_anything.runtime import timelines
+        timelines.persist(db, run)
+        from loop_anything.runtime import business_state
+        business_state.save_results(db,run)
+        business_state.save_arrangements(db,run)
+        header = {k: v for k, v in run.items() if k not in self.PARTS and k not in ('loop_definition', 'implementations', 'timeline', 'business_state', 'records', 'arrangements')}
+        header['settings'] = {k:v for k,v in run['settings'].items() if k not in ('objective','constraints')}
         for field, section in self.PARTS.items():
             values = run.get(field, [])
             if field == 'tasks':
@@ -303,9 +329,12 @@ class Store:
                 'SELECT item, position, document FROM timeline_parts WHERE run_id=? AND section=?', (run['id'], section))}
             retained = set()
             for position, value in enumerate(values):
-                key = value['id'] + ('@' + str(value['revision']) if field == 'records' else '')
+                key = value['id']
                 retained.add(key)
                 document = json.dumps(value, ensure_ascii=False, allow_nan=False)
+                if field == 'history' and key not in old and value.get('kind') in ('committed','agent_action_change','completed','terminated'):
+                    timelines.append(db,run['timeline_id'],'execution:'+run['id']+':'+key,value['message'],'action',
+                                     [{'run_id':run['id'],'execution_id':value.get('execution'),'detail':value.get('detail')}],actor='platform')
                 if old.get(key) != (position, document):
                     db.execute('INSERT OR REPLACE INTO timeline_parts VALUES (?,?,?,?,?)',
                                (run['id'], section, key, position, document))
@@ -313,6 +342,10 @@ class Store:
                 db.execute('DELETE FROM timeline_parts WHERE run_id=? AND section=? AND item=?', (run['id'], section, key))
         db.execute('INSERT INTO runs VALUES (?,?) ON CONFLICT(id) DO UPDATE SET document=excluded.document',
                    (run['id'], json.dumps(header, ensure_ascii=False, allow_nan=False)))
+        for request in run.get('steward_requests', {}).values():
+            if request.get('automatic'):
+                db.execute('INSERT OR IGNORE INTO run_requests (id,run_id,fingerprint) VALUES (?,?,?)',
+                           (request['id'], run['id'], 'automatic'))
 
     def scheduling_list(self):
         """No definition, record values or attempt archives needed for scheduling."""
@@ -322,11 +355,14 @@ class Store:
             for row in db.execute('SELECT document FROM runs'):
                 run = json.loads(row[0])
                 if run.get('identity_read_only'):continue
-                pending = any(n['status'] == 'pending' for n in run.get('notifications', []))
-                if run.get('_storage') == 2:
-                    pending = any(json.loads(r[0])['status'] == 'pending' for r in db.execute(
-                        "SELECT document FROM timeline_parts WHERE run_id=? AND section='notifications'", (run['id'],)))
-                if run['status'] == 'running' or pending or (run['status'] == 'paused' and run.get('settings', {}).get('termination_signal')):
+                pending = any(json.loads(r[0])['status'] == 'pending' for r in db.execute(
+                    "SELECT document FROM timeline_parts WHERE run_id=? AND section='notifications'", (run['id'],)))
+                steward_pending = run.get('steward') and run['status'] != 'running' and db.execute(
+                    "SELECT 1 FROM timeline_parts WHERE run_id=? AND section='tasks' "
+                    "AND json_extract(document,'$.origin.steward') IS NOT NULL "
+                    "AND json_extract(document,'$.status') IN ('planned','ready','executing','decision','retrying') LIMIT 1",
+                    (run['id'],)).fetchone()
+                if run['status'] == 'running' or pending or steward_pending or (run['status'] == 'paused' and run.get('settings', {}).get('termination_signal')):
                     result.append({'id': run['id'], 'status': run['status']})
             return result
 
@@ -344,14 +380,10 @@ class Store:
                 if _db is None:
                     db.rollback()
                 return
-            if run.get('schema_version') == 2 and {k: (v['spec'], v.get('execution_id')) for k, v in run['tasks'].items()} != {k: (v['spec'], v.get('execution_id')) for k, v in before['tasks'].items()}:
+            if {k: (v['spec'], v.get('execution_id')) for k, v in run['tasks'].items()} != {k: (v['spec'], v.get('execution_id')) for k, v in before['tasks'].items()}:
                 from loop_anything.runtime.timeline_plan import validate_task_dependencies
                 validate_task_dependencies(run)
-            def business(value):
-                return dict(value, agent_sessions=[{k: v for k, v in session.items() if k != 'observed'}
-                                                   for session in value.get('agent_sessions', [])])
-            # Read observations belong to the caller identity, not the business revision.
-            if business(run) != business(before):run['revision'] += 1
+            run['revision'] += 1
             self._save(db, run)
             if _db is None:
                 db.commit()

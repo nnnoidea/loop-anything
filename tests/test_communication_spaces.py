@@ -77,8 +77,8 @@ class SharedSpaceTests(unittest.TestCase):
         sid,g=self.create();bad=self.nas/'groups'/'bad';bad.mkdir();(bad/'group.json').write_text('broken')
         rows=discover(self.a)
         self.assertEqual(len(rows[0]['groups']),1);self.assertEqual(len(rows[0]['errors']),1)
-        text=join_instructions(self.a,g['id'])['instructions']
-        self.assertIn(sid,text);self.assertIn(g['id'],text);self.assertIn('groups/'+g['relative_path'],text)
+        invitation=join_instructions(self.a,g['id']);text=invitation['instructions']
+        self.assertEqual(invitation['team_link'],(self.nas/'groups'/g['relative_path']).resolve().as_uri())
         self.assertNotIn(str(self.root),text)
         self.assertNotIn('implementation',text)
         self.a.config('leave',group_id=g['id'])
@@ -91,8 +91,10 @@ class SharedSpaceTests(unittest.TestCase):
         self.assertIn('error',discover(self.a)[0])
         self.a.config('space',space_id=sid,path=str(renamed))
         group=self.a.settings()['groups'][g['id']]
-        self.assertEqual(group['path'],str((renamed/'groups'/g['relative_path']).resolve()))
+        self.assertEqual(group['path'],str((renamed/'groups'/g['relative_path']/'agents').resolve()))
         self.assertTrue(group['enabled'])
+        from loop_anything.runtime.team_transport import core
+        self.assertEqual(core.join(join_instructions(self.a,g['id'])['team_link'])['id'],g['id'])
         self.assertEqual(len(self.a.settings()['spaces']),1)
         self.assertTrue(discover(self.a)[0]['groups'][0]['joined'])
 
@@ -105,3 +107,23 @@ class SharedSpaceTests(unittest.TestCase):
         self.assertNotIn('shared_spaces',call(self.a.store,'communication_workspace',{}))
         self.assertNotIn('spaces',call(self.a.store,'communication_status',{}))
         self.assertEqual(self.a.store.list(),[])
+
+    def test_new_space_group_accepts_standalone_dispatch_without_recreation(self):
+        from test_dispatch_transport import Client
+        from loop_anything.runtime.team_transport import core
+        sid,group=self.create()
+        link=join_instructions(self.a,group['id'])['team_link']
+        team_root=Path(group['path']).parent
+        self.assertEqual(core.join(link)['id'],group['id'])
+        self.assertEqual(core.join(link,create=True)['id'],group['id'])
+        self.assertFalse((team_root/'group.json').exists())
+        self.a.config('agent',agent_id='papers',task_confirmed=True,agent={
+            'name':'Papers','description':'Find papers','groups':[group['id']],
+            'implementation':{'kind':'agent','command':[sys.executable,'-c','pass']}})
+        client=Client(self.root/'sender');joined=client.configure(link)
+        self.assertEqual(joined['team']['id'],group['id'])
+        request=client.submit({'agent_id':'papers','message':'Read this paper'})['request']
+        self.a.last_scan=0;self.a.scan()
+        self.assertEqual(next(r for r in self.a.requests() if r['id']==request['id'])['group_id'],group['id'])
+        reloaded=service(Store(self.a.store.filename))
+        self.assertEqual(reloaded.settings()['groups'][group['id']]['namespace'],'agents')

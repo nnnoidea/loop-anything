@@ -212,27 +212,6 @@ def validate_guide(loop_definition):
             raise Invalid('guide.parameters entries accept label and description text only')
 
 
-def current_definition(definition):
-    """Read old package checks through the one current assertion contract."""
-    result = copy.deepcopy(definition)
-    result.pop('attention_node', None)  # Old implicit recovery is not an opt-in.
-    result.get('seed', {}).pop('policy', None)
-    for plan in result.get('plans', {}).values():
-        for step in plan.get('steps', {}).values():
-            step.pop('policy', None)
-    for node in result.get('nodes', {}).values():
-        for check in node.pop('completion_checks', []):
-            if set(check) != {'left', 'right'} or not all(isinstance(v, str) for v in check.values()):
-                raise Invalid('Legacy completion check requires left/right field paths')
-            node.setdefault('assertions', []).append({
-                'message': check['left'] + ' must equal ' + check['right'],
-                'test': {'op': 'eq', 'args': [{'path': check['left']}, {'path': check['right']}]}})
-        node.pop('context_record_types', None)
-    return result
-
-
 def validate(loop_definition, implementations):
-    if not isinstance(loop_definition, dict) or loop_definition.get('schema_version') != 2:
-        return {'valid': False, 'errors': ['Historical loop_definitions are read-only; author a Timeline-based Loop'], 'warnings': []}
     from loop_anything.runtime.timeline_model import validate_v2
     return validate_v2(loop_definition, implementations)

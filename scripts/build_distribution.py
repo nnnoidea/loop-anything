@@ -32,13 +32,13 @@ with tempfile.TemporaryDirectory() as folder:
                          '**English** | [简体中文](README.zh-CN.md)\n\n'
                          'Ask your Agent to follow the [installation and upgrade guide](docs/installation.md) (Chinese) to configure the platform and Skills.\n\n'
                          'For everyday use, see the [user guide](docs/user-guide.md) (Chinese). For building and running Loops, use the English [platform Skill](skills/loop-anything-platform/SKILL.md).\n\n'
-                         '**For the installation agent:** before installing, ask whether this machine needs the server, the client, or both. Follow an existing explicit choice without asking again. The server stores Loops/Runs, advances workflows, and provides the web interface; the client operates the server and can execute work, receive tasks, and run personal schedules. Use `python3 install.py --role server` or `--role client`; for both, install server once. Receiving and personal jobs require an explicit start.\n')
+                         '**For the installation agent:** install Loop Anything with `python3 install.py`: local workspace, task tools, and team connections in one application. No role selection is needed. Configure addresses and the personal default with `loop-anything spaces`; automatic selection uses recorded addresses, preferring team when both exist. Spaces determine where work belongs; execution machines are configured separately. Receiving and schedules require an explicit start.\n')
         archive.writestr(prefix + 'README.zh-CN.md',
                          '# Loop Anything 安装包\n\n'
                          '[English](README.md) | **简体中文**\n\n'
                          '请让你的 Agent 按[安装与升级说明](docs/installation.md)完成平台和 Skill 配置。\n\n'
                          '日常使用见[使用手册](docs/user-guide.md)，构建与运行见[平台 Skill](skills/loop-anything-platform/SKILL.md)。\n\n'
-                         '**给安装 Agent：** 安装前先询问本机需要服务端、客户端，还是兼任两者；已有明确选择时直接沿用，不重复询问。服务端保存 Loop/Run、推进流程并提供网页；客户端操作服务端，也可执行、接单和运行个人调度。使用 `python3 install.py --role server` 或 `--role client`；兼任只需安装一次 server。接单和个人任务需要明确启动。\n')
+                         '**给安装 Agent：** 执行 `python3 install.py` 安装 Loop Anything，一次具备本地工作台、任务工具和团队连接能力，无需选择安装角色。用 `loop-anything spaces` 配置地址与个人默认，自动按已记录地址选择，两个都有时优先团队。空间决定工作归属，执行机器单独配置。接单和定时任务需要明确启动。\n')
         for name in ('install.py', 'pyproject.toml'):
             archive.write(root / name, prefix + name)
         for directory in ('loop_anything', 'skills'):

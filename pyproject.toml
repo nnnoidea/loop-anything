@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "loop-anything"
-version = "0.6.11"
+version = "0.6.16"
 description = "Your agent builds it. The engine keeps it running."
 requires-python = ">=3.9"
 dependencies = []
@@ -17,7 +17,7 @@ loop_anything = ["web/*", "_vendor/*.txt", "_vendor/*/*.txt"]
 
 [tool.setuptools.data-files]
 "share/loop-anything/skills/loop-anything-local" = ["skills/loop-anything-local/SKILL.md"]
-"share/loop-anything/skills/loop-anything-platform" = ["skills/loop-anything-platform/SKILL.md", "skills/loop-anything-platform/connection.json"]
+"share/loop-anything/skills/loop-anything-platform" = ["skills/loop-anything-platform/SKILL.md"]
 "share/loop-anything/skills/loop-anything-platform/references" = ["skills/loop-anything-platform/references/*.md"]
 "share/loop-anything/skills/loop-anything-platform/scripts" = ["skills/loop-anything-platform/scripts/*.py"]
 
