@@ -12,12 +12,13 @@ from loop_anything.runtime.model import Conflict, Invalid, validate
 from loop_anything.paths import platform_skill_directory
 
 
-def serve(store, engine, port, initial_run=None, protection=None, open_browser=False, host='127.0.0.1', mailbox=None, public_url=None):
+def serve(store, engine, port, initial_run=None, protection=None, open_browser=False, host='127.0.0.1', mailbox=None, public_url=None, local_tasks_root=None):
     from loop_anything.interfaces.platform_tools import PlatformTools
     from loop_anything.interfaces.schedules import ScheduleControls
     platform_tools = PlatformTools(store)
     space=getattr(engine,'space','local')
-    schedules = ScheduleControls(store.filename, local=space=='local')
+    schedules = ScheduleControls(store.filename, local=space=='local',
+                                 registry_root=local_tasks_root, read_only=bool(local_tasks_root))
     from loop_anything.runtime.tool_client import module
     personal_spaces=module('spaces')
     root = Path(__file__).resolve().parents[1] / 'web'

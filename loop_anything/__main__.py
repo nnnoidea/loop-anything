@@ -60,6 +60,7 @@ def main():
     start.add_argument('--port', type=int, default=DEFAULT_PORT)
     start.add_argument('--demo', action='store_true', help='Register simulated example implementations')
     start.add_argument('--team-dir',help='NAS request/receipt mailbox; --db independently selects server storage')
+    start.add_argument('--local-tasks-root',help='Show an existing standalone task registry in the web workspace as read-only summaries')
     start.add_argument('--no-web',action='store_true',help='Run the NAS service without an HTTP listener or webpage')
     start.add_argument('--public-url',help='Reachable HTTP URL for callbacks; NAS is used by default with --team-dir')
     for name in ('validate', 'publish'):
@@ -202,7 +203,9 @@ def main():
             if team_dir:
                 locks.enter_context(lock_database(team_dir/'.mailbox',resource='NAS mailbox'))
             locks.enter_context(lock_database(args.db))
-        store = Store(args.db,journal_mode='DELETE' if team_dir else None)
+        # NAS is only the mailbox when --db points elsewhere; keep local SQLite WAL.
+        database_on_nas = bool(team_dir and Path(args.db).expanduser().resolve().is_relative_to(team_dir))
+        store = Store(args.db,journal_mode='DELETE' if database_on_nas else None)
         store.hosting_team=bool(team_dir)
         if args.command == 'tool':
             from loop_anything.interfaces.platform_tools import PlatformTools
@@ -268,7 +271,7 @@ def main():
                     finally:host.close()
                 else:
                     from loop_anything.interfaces.server import serve
-                    serve(store, engine, args.port, initial_run=initial_run, protection=protection, open_browser=args.open, host=args.host,mailbox=mailbox,public_url=getattr(engine,'platform_url',None))
+                    serve(store, engine, args.port, initial_run=initial_run, protection=protection, open_browser=args.open, host=args.host,mailbox=mailbox,public_url=getattr(engine,'platform_url',None),local_tasks_root=args.local_tasks_root)
         except KeyboardInterrupt:
             pass
         finally:

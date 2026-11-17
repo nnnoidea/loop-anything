@@ -21,6 +21,7 @@ function parseRoute(hash){
   const parts=hash.replace(/^#/,'').split('/');
   if(parts[0]==='settings')return {type:'settings',tab:Object.hasOwn(settingsLabels,parts[1])?parts[1]:'general'};
   if(parts[0]==='communication')return {type:'communication',tab:['agents','requests'].includes(parts[1])?parts[1]:'agents'};
+  if(parts[0]==='local_tasks')return {type:'schedules'}; // previous shared page link
   if(parts[0]==='work'){
     if(parts[1]==='timelines'&&parts[2])return {type:'timeline',id:decodeURIComponent(parts[2])};
     const type={timelines:'timelines',runs:'run-list',monitors:'monitors',schedules:'schedules'}[parts[1]];

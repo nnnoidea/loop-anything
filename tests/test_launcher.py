@@ -9,6 +9,7 @@ from loop_anything.packaging.launcher import register, BEGIN
 
 
 class LauncherTests(unittest.TestCase):
+    @unittest.skipUnless(Path('/bin/zsh').is_file(), '/bin/zsh is unavailable on this host')
     def test_zsh_fresh_terminal_and_upgrade_with_spaces_and_unicode(self):
         with tempfile.TemporaryDirectory() as root:
             home=Path(root)/'user';home.mkdir()

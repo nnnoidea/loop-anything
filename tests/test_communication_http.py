@@ -62,7 +62,7 @@ class CommunicationHTTPTests(unittest.TestCase):
                     with socket.socket() as s:s.bind(('127.0.0.1',0));port=s.getsockname()[1]
                     log=(root/(name+'.log')).open('w+');logs.append(log)
                     process=subprocess.Popen([sys.executable,'-m','loop_anything','--db',str(root/(name+'.db')),'serve','--port',str(port),'--allow-sleep'],
-                        stdout=log,stderr=log,env=dict(os.environ,PATH=''))
+                        stdout=log,stderr=log,env=dict(os.environ,PATH='',LOOP_ANYTHING_IDENTITY_DIR=str(root/'identity')))
                     servers.append(process);url='http://127.0.0.1:'+str(port);urls.append(url)
                     for _ in range(100):
                         try:
@@ -102,7 +102,7 @@ class CommunicationHTTPTests(unittest.TestCase):
                 # The client carries origin metadata even without cc-connect on either side.
                 client=Path(__file__).resolve().parents[1]/'skills/loop-anything-dispatch/scripts/dispatch.py'
                 response=subprocess.run([sys.executable,str(client),'submit','--platform-url',urls[1],'--arguments',json.dumps({'location':'local','agent_id':'papers','message':'works without notification bridge'})],
-                    env=dict(os.environ,PATH='',CC_PROJECT='entrance',CC_SESSION_KEY='feishu:oc_isolated:root:om_isolated'),capture_output=True,text=True,timeout=10)
+                    env=dict(os.environ,PATH='',LOOP_ANYTHING_IDENTITY_DIR=str(root/'identity'),CC_PROJECT='entrance',CC_SESSION_KEY='feishu:oc_isolated:root:om_isolated'),capture_output=True,text=True,timeout=10)
                 self.assertEqual(response.returncode,0,response.stderr);accepted=json.loads(response.stdout);self.assertTrue(accepted['ok'])
                 rid=accepted['request']['id']
                 for _ in range(150):

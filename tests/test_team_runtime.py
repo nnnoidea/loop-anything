@@ -27,7 +27,7 @@ from test_timeline_runtime import task_spec
 class TeamRuntimeTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name)
-        self.env=patch.dict(os.environ,LOOP_ANYTHING_IDENTITY_DIR=str(self.root/'identity'))
+        self.env=patch.dict(os.environ,LOOP_ANYTHING_IDENTITY_DIR=str(self.root/'identity'),LOOP_ANYTHING_SPACES=str(self.root/'spaces.json'))
         self.env.start()
 
     def tearDown(self):self.env.stop();self.tmp.cleanup()
@@ -101,6 +101,13 @@ class TeamRuntimeTests(unittest.TestCase):
         self.assertEqual(restored.agent_team['id'],gid)
         self.assertFalse(engine.communication.settings()['groups'][gid]['enabled'])
         self.assertIsNone(engine.communication.settings()['default_team'])
+
+    def test_mailbox_restart_preserves_an_existing_named_agent_default_team(self):
+        store,engine,box,_=self.setup_service()
+        existing=engine.communication.config('team',link=str(self.root/'existing-agents'),create=True)['team']
+        self.assertEqual(engine.communication.settings()['default_team'],existing['id'])
+        ToolMailbox(store,box.root,engine)
+        self.assertEqual(engine.communication.settings()['default_team'],existing['id'])
 
     def test_unified_client_operates_service_and_runs_local_work_only_when_started(self):
         store,engine,box,_=self.setup_service()
@@ -296,7 +303,7 @@ assert r.get('ok'),r
         finally:
             process.terminate();out,err=process.communicate(timeout=10)
         self.assertEqual(process.returncode,0,out+err)
-        with Store(database).connection() as db:self.assertEqual(db.execute('PRAGMA journal_mode').fetchone()[0],'delete')
+        with Store(database).connection() as db:self.assertEqual(db.execute('PRAGMA journal_mode').fetchone()[0],'wal')
 
     def test_bad_mailbox_entry_does_not_block_valid_work(self):
         store,engine,box,client=self.setup_service()

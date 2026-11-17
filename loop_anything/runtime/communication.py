@@ -159,7 +159,8 @@ class Communication:
             config['groups'][team['id']]=dict(old,**team)
             config['groups'][team['id']]['enabled']=old.get('enabled',True)
             preferred=config.get('default_team')
-            if config['groups'].get(preferred,{}).get('transport')!='feishu_base':preferred=team['id']
+            if preferred not in config['groups'] or not config['groups'][preferred].get('enabled',True):
+                preferred=team['id']
             config['default_team']=dispatch_core.default_team(config['groups'],preferred)
             if config!=before:
                 config['revision']+=1

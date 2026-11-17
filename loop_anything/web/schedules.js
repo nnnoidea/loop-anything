@@ -5,6 +5,7 @@ const activeScheduleStates=['waiting','checking','running'];
 const scheduleTime=value=>value ? new Date(value*1000).toLocaleString('zh-CN',{hour12:false}) : '—';
 const pendingSchedules=new Set();
 let scheduleSnapshot=null, scheduleReading=false;
+let scheduleReadOnly=false;
 
 function scheduleTrigger(definition){
   const repeats=!definition.at && (definition.repeat ?? !definition.conditional);
@@ -30,7 +31,7 @@ function scheduleCard(task, open){
     ${updated?`<p class="small muted">下次启动使用新配置 · ${esc(definition.name)} · ${esc(definition.receiver?'接单端，请通过 CLI 启动':scheduleTrigger(definition))}</p>`:''}
     ${runtime.error?`<p class="notice">${esc(runtime.error)}</p>`:''}
     ${occupied && !active?'<p class="small muted">上次执行待核实。请通过 CLI 查看进程状态。</p>':''}
-    <div class="toolbar"><button ${active?'':'class="primary"'} data-schedule-id="${esc(id)}" data-schedule-action="${active?'stop':'start'}" ${blocked?'data-schedule-blocked':''} ${blocked || pendingSchedules.has(id)?'disabled':''}>${active?'停止':'启动'}</button></div>
+    ${scheduleReadOnly?'':`<div class="toolbar"><button ${active?'':'class="primary"'} data-schedule-id="${esc(id)}" data-schedule-action="${active?'stop':'start'}" ${blocked?'data-schedule-blocked':''} ${blocked || pendingSchedules.has(id)?'disabled':''}>${active?'停止':'启动'}</button></div>`}
     ${result?`<details data-schedule-result="${esc(id)}" ${open?'open':''}><summary>最近结果 · ${scheduleTime(result.at)}</summary>
       ${result.returncode!=null?`<p>退出码 ${esc(result.returncode)}</p>`:''}
       ${result.native_session?`<p class="small mono">Session ${esc(result.native_session.id)}</p>`:''}
@@ -52,6 +53,7 @@ async function refreshSchedules(){
     $('schedules-status').hidden=true;
     if(JSON.stringify(data)===JSON.stringify(scheduleSnapshot))return;
     scheduleSnapshot=data;
+    scheduleReadOnly=!!data.read_only;
     $('schedules-host').textContent=data.machine;
     $('schedules-directory').textContent=data.directory;
     const list=$('schedules-list');
@@ -70,6 +72,7 @@ async function refreshSchedules(){
 
 $('schedules-list').addEventListener('click',event=>{
   const button=event.target.closest('[data-schedule-action]');
+  if(scheduleReadOnly)return;
   if(!button || pendingSchedules.has(button.dataset.scheduleId))return;
   const task=scheduleSnapshot?.tasks.find(item=>item.id===button.dataset.scheduleId);
   if(!task)return;
