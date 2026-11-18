@@ -174,6 +174,23 @@ class RunLibraryTests(unittest.TestCase):
         manage_loop(self.store,key=caller,delete=True)
         manage_loop(self.store,key=self.key,delete=True)
 
+    def test_loop_deletion_checks_legacy_bare_implementations(self):
+        draft=seeded_draft(self.tools,{'name':'Legacy caller'})
+        draft=self.tools.call('set_loop',{'draft_id':draft['draft_id'],'revision':draft['revision'],
+            'handbook':'Inspect old versions.'})
+        caller=self.tools.call('publish_loop',{'draft_id':draft['draft_id'],'revision':draft['revision']})['key']
+        def legacy(candidate):
+            with self.store.connection() as db:
+                db.execute('UPDATE loop_definitions SET implementations=? WHERE key=?',
+                           (json.dumps({'initialize':candidate}),caller))
+                db.commit()
+        legacy({'kind':'command','command':['unused']})
+        manage_loop(self.store,key=self.key,delete=True)
+        self.key=self.tools.call('publish_loop',{'draft_id':self.draft['draft_id'],
+            'revision':self.draft['revision']})['key']
+        legacy({'kind':'loop','loop':{'key':self.key}})
+        with self.assertRaises(Conflict):manage_loop(self.store,key=self.key,delete=True)
+
     def test_delete_waits_for_remote_receipt_application_even_after_worker_flag_clears(self):
         ident=self.create();self.end(ident)
         with self.store.connection() as db:

@@ -223,8 +223,15 @@ def manage_loop(store, key=None, draft_id=None, revision=None, archived=None, de
                     raise Conflict('An observation still needs this Loop version to finish')
                 from loop_anything.runtime.implementations import options
                 def calls(implementations):
-                    return any(candidate.get('kind')=='loop' and candidate['loop']['key']==key
-                               for entry in implementations.values() for candidate in options(entry).values())
+                    for entry in implementations.values():
+                        # Older installed versions stored one candidate directly.
+                        # Keep their Loop calls protected without requiring an
+                        # obsolete version to pass current authoring validation.
+                        candidates = [entry] if isinstance(entry, dict) and 'kind' in entry else options(entry).values()
+                        if any(candidate.get('kind') == 'loop' and candidate['loop']['key'] == key
+                               for candidate in candidates):
+                            return True
+                    return False
                 for other in db.execute('SELECT key,implementations FROM loop_definitions'):
                     if other['key']!=key and calls(json.loads(other['implementations'])):raise Conflict('Another Loop calls this version')
                 for other in db.execute('SELECT document FROM loop_drafts'):
