@@ -4,7 +4,7 @@ Compose platform mechanisms for the user's workflow and reuse existing implement
 
 ## Start from an existing Skill or incomplete rules
 
-For an existing operating Skill, suggest a [steward-managed Run](steward.md). The steward reads the full Loop handbook and decides subsequent work from saved results. Business nodes return to it on completion by default. Mark fixed transitions with node progression=rules and declare their routes/dependencies. Separate long execution/waits into script, external, event or timer nodes. A first version can keep situational progression in the handbook; stable decisions can later become deterministic rules. Loop construction remains with the user's Agent and package files.
+When building a Loop, encode known branches as rules. Where the user leaves the next step open or it depends on judgment, declare a [decision route](flow-agent.md) for that case and describe the question, goal and constraints in the Loop handbook. If this route covers the remaining cases, make its condition mutually exclusive with the fixed branches. The Run evaluates the routes as authored.
 
 ## Three instruction layers and on-demand reading
 
@@ -22,7 +22,7 @@ Use [author Skill file bindings](build-reference.md#author-skill-files-and-refer
 
 Read by role: building agents use platform construction guidance, handbook, and affected node references; flow agents read the complete handbook plus relevant references; node agents use shared business rules and their current node reference, consulting platform operations when needed. Script nodes need an execution contract, not an extra agent to read it. Neither preload every reference nor prohibit further reading when relevant.
 
-Skills hold reusable methods/rules. Read current goals, constraints, state and results from Run settings, Tasks and records. Steward-managed Runs use the assigned server Agent for default progression. Explicit event routes may request a steward decision for selected events.
+Skills hold reusable methods/rules. Read current goals, constraints, state and results from Run settings, Tasks and records. Explicit event routes may request a routing Agent decision for selected events.
 
 Propose separation based on the goal. Do not force splitting, extra nodes, or a fixed directory template when material is already clear. Evaluate usefulness by whether an agent can find required references and complete representative work. Needing a reference beyond the main file is not itself a defect.
 

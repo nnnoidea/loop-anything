@@ -113,7 +113,6 @@ class TimelineRuntime:
 
     def resolve_inputs(self, run, tasks):
         values, sources, missing = {}, {}, []
-        predecessors = set(tasks['spec'].get('after', []))
         for task_id in tasks['spec'].get('after', []):
             before = run['tasks'].get(task_id)
             if not before or before['status'] not in ('completed', 'skipped'):
@@ -125,7 +124,6 @@ class TimelineRuntime:
                     from loop_anything.runtime.model import record_refs
                     refs = record_refs(source)
                     records = [record_version(run, rid, revision) for rid, revision in refs]
-                    predecessors.update(rec['tasks'] for rec in records if rec and rec.get('tasks'))
                     absent = [ref for ref, rec in zip(refs, records) if rec is None]
                     if absent:
                         missing.extend({'input': name, 'record': rid, 'revision': revision or 1, 'reason': 'missing_record'} for rid, revision in absent)
@@ -145,8 +143,6 @@ class TimelineRuntime:
                 values[name], sources[name] = copy.deepcopy(value), provenance
             except (KeyError, IndexError, TypeError, ValueError) as exc:
                 missing.append({'input': name, 'reason': 'invalid_input', 'detail': str(exc)})
-        from loop_anything.runtime.steward import progression_waits
-        missing.extend(progression_waits(run, tasks, predecessors))
         ident, implementation = selected(run, tasks)
         if not missing and implementation is None:
             missing.append({'reason': 'missing_implementation', 'node': tasks['spec']['node']})
@@ -213,8 +209,6 @@ class TimelineRuntime:
                 continue
             deps[tasks['id']] = []
             for item in tasks['wait_reasons']:
-                if item.get('reason') == 'steward_decision':
-                    continue  # Waiting for a management decision is normal scheduling, not bad input.
                 if item.get('reason') == 'missing_implementation':
                     diagnostics.append({'kind': 'missing_implementation', 'tasks': tasks['id'], **item})
                     continue
@@ -262,16 +256,14 @@ class TimelineRuntime:
         with self.store.edit(run_id) as run:
             from loop_anything.runtime.timelines import advance_continuations
             advance_continuations(self.store, run, self)
-            from loop_anything.runtime.steward import management_task
             if run['loop_definition'].get('rules'):
                 raise Invalid('This Run uses retired Engine rules. Publish a plans-based Loop; existing data is not migrated automatically.')
             if run['status'] == 'running' or (run['status'] == 'paused' and run['settings'].get('termination_signal')):
                 reason, _ = end_condition(run) if not run.get('superseded_by') else (None, None)
                 if reason:
                     self.end_run(run, reason)
-            managing = run.get('steward') and any(management_task(t) and t['status'] in PENDING for t in run['tasks'].values())
-            if run['status'] == 'running' or managing:
-                if run['status'] == 'running' and not run.get('superseded_by'):self.apply_retries(run)
+            if run['status'] == 'running':
+                if not run.get('superseded_by'):self.apply_retries(run)
                 # Observe/consume existing tasks before admitting new tasks.
                 for e in run['executions']:
                     if run['status'] != 'running':break
@@ -303,16 +295,12 @@ class TimelineRuntime:
                 def occupies_slot(w):
                     return w['status'] in {'executing', 'decision'} or (w['status'] == 'waiting' and
                         (selected(run, w)[1] or {}).get('kind') in ('external', 'loop'))
-                active = sum(occupies_slot(w) for w in run['tasks'].values() if not management_task(w))
-                management_active = any(occupies_slot(w) for w in run['tasks'].values() if management_task(w))
+                active = sum(occupies_slot(w) for w in run['tasks'].values())
                 candidates = sorted(run['tasks'].values(), key=lambda task: scope_for(run, task) is not None)
                 for tasks in candidates:
                     if run.get('superseded_by'):break
-                    if management_task(tasks) and run.get('steward',{}).get('session_id'):continue
                     if tasks['status'] not in PENDING:
                         continue
-                    if run['status'] != 'running' and not management_task(tasks):continue
-                    if run.get('steward') and tasks['id']==run['loop_definition'].get('seed',{}).get('id') and (selected(run,tasks)[1] or {}).get('kind') == 'agent':continue
                     values, sources, missing = self.resolve_inputs(run, tasks)
                     tasks['wait_reasons'] = missing
                     if missing:
@@ -342,13 +330,14 @@ class TimelineRuntime:
                         tasks.update(status='fault', budget_error=str(exc))
                         Store.log(run, 'budget_exhausted', tasks['id'])
                         continue
-                    if management_task(tasks) and management_active:
-                        continue
-                    if not management_task(tasks) and implementation['kind'] not in ('event', 'approval', 'timer') and active >= run['settings']['max_parallel']:
+                    if implementation['kind'] not in ('event', 'approval', 'timer') and active >= run['settings']['max_parallel']:
                         continue
                     e = self.new_execution(run, tasks, implementation, values, sources)
-                    from loop_anything.runtime.flow_agent import NODE as FLOW_AGENT
-                    if implementation['kind'] == 'agent' and (e['node'] != FLOW_AGENT or implementation.get('command') or implementation.get('dispatch')):
+                    # A called Run has no inline starter. Leave its manual entry
+                    # claimable, just like a decision with no automatic executor.
+                    manual_entry = run.get('parent_call') and tasks['origin'].get('entry')
+                    if implementation['kind'] == 'agent' and (implementation.get('command') or implementation.get('dispatch') or
+                            not (manual_entry or tasks['origin'].get('flow_agent'))):
                         acquire_in_run(run, 'background', e['token'], e['id'])
                     if implementation['kind']=='loop':
                         e['status']='waiting'
@@ -367,9 +356,7 @@ class TimelineRuntime:
                     if e['status'] in ('decision', 'approval', 'waiting'):
                         e['started_at'] = time.time()
                     tasks['status'] = e['status']
-                    if management_task(tasks):
-                        management_active = True
-                    elif e['status'] in ('executing', 'decision') or implementation['kind']=='loop':
+                    if e['status'] in ('executing', 'decision') or implementation['kind']=='loop':
                         active += 1
                     Store.log(run, 'dispatched', tasks['id'] + ' → ' + e['node'], e['id'], {'sources': sources, 'origin': tasks['origin']})
                 if not run.get('superseded_by'):self.diagnose(run)
@@ -381,10 +368,6 @@ class TimelineRuntime:
                         task.pop('agent_failures', None)
                 if run.get('attention_error') or any(t['kind'] in ('unexpected', 'request') for t in tasks['items']):
                     fallback = run['settings'].get('fallback_node')
-                    if run.get('steward'):
-                        from loop_anything.runtime.steward import attention
-                        attention(run, tasks['items'])
-                        fallback = None
                     pending = any(w['origin'].get('fallback') and w['status'] in PENDING | IN_FLIGHT | {'retrying'} for w in run['tasks'].values())
                     if fallback and not pending:
                         node = node_for(run, fallback)
@@ -435,7 +418,6 @@ class TimelineRuntime:
             if e.get('retry', {}).get('status') == 'pending':
                 e['retry']['status'] = 'superseded'
         for tasks in run['tasks'].values():
-            if tasks.get('origin', {}).get('steward'):continue
             if tasks['status'] not in END:
                 tasks['status'] = 'cancelled'
                 if tasks.get('execution_id'):
@@ -471,8 +453,7 @@ class TimelineRuntime:
         return e
 
     def check_owner(self, run, e, token):
-        management = run['tasks'][e['task_id']].get('origin', {}).get('steward')
-        if (run['status'] in ('completed', 'terminated') and not management) or e['status'] not in IN_FLIGHT or e['token'] != token:
+        if run['status'] in ('completed', 'terminated') or e['status'] not in IN_FLIGHT or e['token'] != token:
             raise Conflict('Execution no longer owns this tasks')
         tasks = run['tasks'][e['task_id']]
         if e['implementation']['kind'] == 'agent':
@@ -500,9 +481,6 @@ class TimelineRuntime:
         if run.get('superseded_by') and any(envelope.get(k) for k in ('tasks','operations','settings')):
             raise Conflict('An original execution may deliver results but cannot arrange new work')
         validate_result(run['loop_definition'], e['node'], outputs)
-        if tasks.get('origin', {}).get('steward'):
-            from loop_anything.runtime.steward import completed
-            completed(self.store, run, tasks, outputs)
         context = {'outputs': outputs, 'inputs': e['inputs'], 'parameters': e['parameters'],
                    'settings': dict(run['settings'], **envelope.get('settings', {})),
                    'completed': completed_counts(run,run['executions'],lambda e:e['node'])}
@@ -603,8 +581,7 @@ class TimelineRuntime:
             Store.log(run, 'stale_monitor_report', 'Late monitor report recorded without changing task state', e['id'],
                       {'report_id': report['report_id'], 'event': report['event'], 'state': e.get('lifecycle_state'), 'detail': copy.deepcopy(report)})
             return receipt
-        management = run['tasks'][e['task_id']].get('origin', {}).get('steward')
-        if (run['status'] in ('completed', 'terminated') and not management) or e['status'] in END or e['status'] == 'fault':
+        if run['status'] in ('completed', 'terminated') or e['status'] in END or e['status'] == 'fault':
             raise Conflict('Execution has ended; cannot report another transition')
         kind = e['implementation']['kind']
         external_id = report.get('external_id', e.get('external_id'))
@@ -677,11 +654,14 @@ class TimelineRuntime:
                 materialize_retained(run)
             for spec, origin in routed_tasks:
                 add_task(run, spec, origin)
-                if run.get('steward'):
-                    from loop_anything.runtime.steward import attach_decision
-                    attach_decision(run, run['tasks'][spec['id']])
             for firing in route_firings:
-                Store.log(run, 'route_fired', 'Flow decision requested' if firing.get('flow_agent') else 'Event expanded plan: ' + firing['plan'], e['id'],
+                if firing['status']=='skipped':
+                    message='Route skipped: ' + firing['route_id']
+                elif firing.get('flow_agent'):
+                    message='Flow decision requested'
+                else:
+                    message='Event expanded plan: ' + firing['plan']
+                Store.log(run, 'route_' + firing['status'], message, e['id'],
                           dict(firing, task_id=task['id'], report_id=report['report_id'], event=event))
         detail = {'from': state, 'event': event, 'to': target, 'source': source, 'accepted': matched,
                   'report_id': report['report_id'], 'detail': copy.deepcopy(report.get('detail', {})),
@@ -824,7 +804,7 @@ class TimelineRuntime:
                     current = self.engine.execution(current_run, e['id'])
                     if not owner_for(current_run, e['token']):
                         return 'finished'
-                    if (current_run['status'] == 'terminated' and not current_run['tasks'][current['task_id']].get('origin', {}).get('steward')) or current.get('token') != e['token']:
+                    if current_run['status'] == 'terminated' or current.get('token') != e['token']:
                         return 'revoked'
                 session.check = session_state
             if implementation.get('executor'):
@@ -1048,7 +1028,6 @@ class TimelineRuntime:
                     if e.get('retry', {}).get('status') == 'pending':
                         e['retry']['status'] = 'superseded'
                 for tasks in run['tasks'].values():
-                    if tasks.get('origin', {}).get('steward'):continue
                     if tasks['status'] not in END:
                         tasks['status'] = 'cancelled'
                         if tasks['execution_id']:

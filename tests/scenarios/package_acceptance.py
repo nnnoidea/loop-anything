@@ -44,8 +44,6 @@ def main():
             return json.load(response)
     session = register(api)
     bp = definition()
-    for node in bp['nodes'].values():
-        node['progression'] = 'rules'
     implementations = {n: {'options': {'default': {'kind': 'command', 'command': ['python3', 'scripts/action.py', n], 'simulation': True}}, 'default': 'default'} for n in bp['nodes']}
     reports = []
     for count in (0, 1, 2):
@@ -67,7 +65,6 @@ def main():
             assert run['status'] == 'running'
             report.update(run_id=run['id'],status=run['status'],created_with_missing_implementations=True)
         else:
-            finish_turn(api, turn if turn.get('token') else claim(api, session, turn['run_id']))
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
                 run = api('runs/' + run['id'])

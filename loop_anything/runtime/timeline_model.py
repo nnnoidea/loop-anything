@@ -67,8 +67,8 @@ def validate_v2(bp, implementations):
         validate_fallback(bp, implementations, bp.get('fallback_node'))
         location = ['global_agent_node']
         validate_global_agent(bp, implementations, bp.get('global_agent_node'))
-        if 'flow_agent' in bp:
-            raise Invalid('Loop.flow_agent is not supported; the actual session calling start_run owns the Run')
+        from loop_anything.runtime.flow_agent import validate as validate_flow
+        validate_flow(bp.get('flow_agent'))
         if '$flow_agent.decision' in bp.get('records', {}):
             raise Invalid('$flow_agent.decision is reserved for built-in decision results')
         location = ['implementations']
@@ -104,10 +104,6 @@ def validate_v2(bp, implementations):
             check_schema(schema)
         for name, node in nodes.items():
             location = ['nodes', name]
-            if node.get('progression') not in (None, 'steward', 'rules'):
-                raise Invalid('Node progression must be steward or rules')
-            if node.get('progression') == 'steward' and node.get('routes'):
-                raise Invalid('Steward progression owns the node completion; select rules to use explicit routes')
             if 'completion_checks' in node:
                 raise Invalid('Use assertions with eq for node completion checks')
             if 'terminal' in node:

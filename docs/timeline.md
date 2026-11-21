@@ -2,7 +2,7 @@
 
 ## 状态保存与状态转移
 
-Timeline 保存当前状态、安排、结果和历史；通用状态机读取当前生命周期状态、事件及规则，计算下一状态与相关动作。它本身不保存运行状态。状态变化、正式结果、命中的 routes 和记录仍由平台在同一事务内提交，再由调度器执行已保存的安排。
+Timeline 保存目标、限制、业务进度和正式结果。Run 保存任务安排和执行状态。节点报告事件时，状态机按生命周期规则计算下一状态，平台在同一事务中写入结果和命中路由产生的任务，再由调度器执行。
 
 生命周期与报告仍使用统一机制。业务状态及正式结果由 Timeline 持有，Run 保留执行过程与来源；读取按实际运行结构校验，不按存储格式编号拒绝数据，也不增加旧格式转换分支。外部等待仍包含 external_id、观察时间与观察错误；check_error 会暂停观察，恢复监控继续使用原外部任务。同 Task 重试、报告去重和依赖调度行为保持不变。规则可以用于训练、渲染、审批等不同场景，业务适配器负责外部接入。
 
@@ -10,7 +10,7 @@ Timeline 保存当前状态、安排、结果和历史；通用状态机读取�
 
 Timeline 独立保存目标、限制、Loop 定义的业务状态和正式结果。Run 使用某个 Loop 版本推进它，保存具体执行过程。切换 Run／Loop 后，业务 Agent 仍按目标、限制和当前状态工作，不执行额外交接流程。用户有效要求直接维护，不归档聊天原话。
 
-`read_work_timeline(timeline_id)` 返回状态汇总、运行及等待、结果索引和分页历史；`read_business_state` 读取完整业务记录及历史版本。Run 内 `read_timeline` 返回同一业务状态入口，`read_record` 可读同一 Timeline 的已有正式结果。
+`read_work_timeline(timeline_id)` 返回业务状态汇总、关联 Run、结果索引和分页进展记录；`read_business_state` 读取完整业务记录及历史版本。Run 内 `read_timeline` 返回同一业务状态入口，`read_record` 可读同一 Timeline 的已有正式结果。
 
 业务状态由 Loop 定义、解释和校验。可选的 `state.types` 提供 summary 等展示信息；平台不按 schema、current/append 模式或节点类型白名单阻止状态写入，也不在接续时判定新旧 Loop 业务契约是否兼容。
 
@@ -18,7 +18,7 @@ Timeline 独立保存目标、限制、Loop 定义的业务状态和正式结果
 
 实验用 build_plan.work_key 取得 Timeline 内稳定安排；同键同内容复用原安排，不重复提交。add_task.after_work 使用工作键和步骤名关联已有实验。外部执行由事务外的 Engine 完成。
 
-新 Run 绑定已有 Timeline 后，平台保留在途执行的原身份与已安排任务的定义和已知输入版本；原执行可完成当前 Run 仍等待的状态／结果报告，新安排由当前 Run 负责。原管理进程仍活跃或停止状态未确认时，不替换该管理任务。优化 Loop 后的业务节点不需要判断自己是否接续。具体契约见[持续工作说明](../skills/loop-anything-platform/references/work.md)。
+新 Run 绑定已有 Timeline 后，平台保留在途执行的原身份与已安排任务的定义和已知输入版本；原执行可完成当前 Run 仍等待的状态／结果报告，新安排由当前 Run 负责。接续前，平台核对仍在执行的入口或路由 Agent 的进程状态。优化 Loop 后的业务节点不需要判断自己是否接续。具体契约见[持续工作说明](../skills/loop-anything-platform/references/work.md)。
 
 ## 组成与职责
 
@@ -38,11 +38,11 @@ Loop 的节点是能力模板；一个节点可在同一 Run 中对应多项任�
 
 ## 初始化与 Agent 操作
 
-常用入口是用户自己的 Agent 与用户讨论后调用 `start_run`，原子创建 Run 并取得操作权，再完成入口任务。入口保存初始状态，不在每轮重新创建。
+用户的 Agent 可以在对话中调用 `start_run`，获得 Run 和 Timeline 的标识。带固定入口的 Loop 由平台调度；需要启动 Agent 亲自完成的入口会返回该任务的临时操作身份。无入口的顶层 Run 由启动 Agent 根据手册安排首批任务；作为子 Loop 时可由父节点提前声明 `loop.seed`。
 
 同一 Run 的 Agent 按具体 Task 的支线归属操作，各范围可以同时思考，提交时校验执行身份、作用范围和任务状态；同 Task 只保留一个有效执行者。普通 Agent 可规划自己支线的后续工作；全局 Agent 可处理整个 Run。正常脚本和外部事件仍按自己的契约执行、写回；不同 Run 不互斥。
 
-- `read_timeline`：当前目标、设置、候选摘要和任务问题。
+- `read_timeline`：目标、限制、业务状态与进度。执行状态、当前设置和任务问题从 `read_run(view="snapshot")` 或 `next_tasks` 查看。
 - `read_task`：指定任务的输入、来源、当前实现、输出契约和节点 Skill。
 - `report_task(event=completed)`：使用实际执行身份和稳定 report_id 一次提交完整正式结果。
 - `add_task`：从已声明节点创建单项任务，自动分配输出记录身份。
@@ -106,7 +106,7 @@ HTTP 写请求携带 `X-Loop-Anything: workspace`。持有 Agent 操作权时，
 
 `nodes.<id>.routes` 声明 `{id,event,plan,values}`，可加 each、when、steps 和 round。只有接受的生命周期事件才触发；Agent 或上游只报告业务结果，平台映射到 plan 参数、生成任务并保留来源。timer 到期和匹配的外部 event 节点也通过 completed 触发。用户仍可通过 Timeline 工具追加未预定义工作。
 
-报告转移、结果写入和所有规则生成的任务原子生效。校验失败无部分 Task；重复 report_id 返回原 routes 回执，过期报告不展开。任务归属源 Task，沿用候选参数、预算和依赖校验。history 的 route_fired 和 Task.origin 可追踪规则与批次。规则不读取任意 Run 内部状态，也不解释自然语言。
+报告转移、结果写入和所有规则生成的任务原子生效。校验失败无部分 Task；重复 report_id 返回原 routes 回执，过期报告不展开。任务归属源 Task，沿用候选参数、预算和依赖校验。Run 历史以 `route_fired` 和 `route_skipped` 分别记录命中与跳过，生成任务的 `origin` 可追溯到来源。规则不读取任意 Run 内部状态，也不解释自然语言。
 
 完整配置与上下文见 [构建契约](../skills/loop-anything-platform/references/build-reference.md#event-triggered-task-generation)。
 
@@ -118,7 +118,7 @@ Loop 的可选 `fallback_node` 指向一个真实、可见的非入口节点。�
 
 兜底任务使用正常 Task 派发、Hooks、Agent 操作权和 report_task(event=completed)。origin 保留进入原因。其他全局 Agent 可协助处理问题；兜底 Task 自身仍只有一个有效执行者，全局身份与其他支线可同时存在。处理或明确等待相关事项后，仍需完成兜底节点自身的输出契约，再 finish。
 
-`start_run.fallback_node` 可覆盖 Loop 默认，空字符串明确关闭；运行中用 `change_settings.change.fallback_node` 设置节点 ID 或 null。关闭会取消尚未派发的自动兜底任务，已派发调用保留原操作权和实现。未启用时保留问题，不隐式选择其他 Agent。
+构建时可用 `set_loop.fallback_node` 指定运行异常处理节点。正常业务中的语义判断在节点的显式 `flow_agent` 路由中安排。运行中用 `change_settings.change.fallback_node` 设置节点 ID 或 null。关闭会取消尚未派发的自动兜底任务，已派发调用保留原操作权和实现。未启用时保留问题，不隐式选择其他 Agent。
 
 ## Hooks 与终态
 
@@ -158,7 +158,7 @@ Task 的 `parent_id` 指向所属的父 Task，顶层为 null；归属固定，�
 
 支线令牌只能新增或修改该子树内的任务。公共汇总应由共同上层创建，并通过 inputs/after 等待各支线结果。支线可读其他结果但不能修改别人的任务或借新任务输出覆盖其他支线记录。批次幂等 key 在支线范围内区分，兄弟支线使用相同 key 不互相覆盖。
 
-入口、兜底和明确配置的 global_agent_node 具有全局操作资格。全局资格不意味着常驻；范围取得与释放使用同一套机制。Agent finish 可将就绪后续任务交给 Engine；它只释放自己的操作权。失败及进程恢复也按对应操作者处理。
+入口任务、运行异常兜底任务、由显式路由触发的决策任务和明确配置的 global_agent_node 具有全局操作资格。全局资格不意味着常驻；范围取得与释放使用同一套机制。Agent finish 可将就绪后续任务交给 Engine；它只释放自己的操作权。失败及进程恢复也按对应操作者处理。
 
 通知发送可由本 Run 的 settings.notification_command 覆盖 Loop 的 `$notifications`。它是通用 argv 数组，由 start_run 或全局 change_settings 设置；空数组沿用 Loop 默认。首次发送时固定发送实现，重试保留原目标；没有配置过发送实现的失败可补配后重试。通知载荷不包含内部执行 token/发送命令。已配置发送实现时，Engine 进入完成终态生成一次完成通知；用户主动 terminate 不生成成功通知。
 

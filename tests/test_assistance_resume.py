@@ -117,17 +117,13 @@ class AssistanceResumeTests(unittest.TestCase):
                     else:case.implementations['init']={'options': {'default': implementation}, 'default': 'default'}
                     if builtin:
                         decision_implementation=case.implementations['init']['options']['default']
+                        case.bp['flow_agent']=decision_implementation
                         case.bp['nodes']['init']['routes']=[{'id':'decide','event':'completed','flow_agent':True}]
                         initial={'settings':{'objective':'Use help in a flow decision'},'outputs':{'a':'initial','b':'initial'}}
                         case.implementations['init']={'options': {'default': {'kind':'command','command':[sys.executable,'-c','print('+repr(json.dumps({'event':'completed','envelope':initial}))+')']}}, 'default': 'default'}
                     key=source.publish(case.bp,case.implementations)['key']
                     if remote:tool(0,'communication_config',{'operation':'bind_loop','loop_key':key,'group_id':gid})
                     rid=source.create(key,'wait and resume')['id']
-                    if builtin:
-                        from loop_anything.runtime.steward import materialize
-                        with source.edit(rid) as managed:
-                            managed['steward']={'agent_id':'test-steward','name':'Test steward','generation':1,'implementation':decision_implementation}
-                            materialize(managed)
                     paused_admission=False
                     deadline=time.monotonic()+40
                     while time.monotonic()<deadline:

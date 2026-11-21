@@ -151,8 +151,6 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.send(platform_tools.call('list_runs',query))
             elif len(parts) == 3 and parts[:2] == ['api', 'runs']:
                 current = store.get(parts[2])
-                from loop_anything.runtime.steward import expose_requests
-                expose_requests(current)
                 from loop_anything.interfaces.agent_tasks import task_list
                 current['agent_tasks'] = task_list(current, engine.timeline_runtime)
                 for owner in current['agent_sessions']:
@@ -217,7 +215,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.send({'snapshot': run, 'execution_id': execution['id'], 'token': execution.get('token'),
                            'settings_revision': execution['settings_revision'], 'output_contract': node_for(run, execution['node'])['outputs']})
             else:
-                filename = {name: name for name in ('spaces.js', 'workbench.css', 'monitoring.js', 'monitoring.css', 'work.js', 'steward.js', 'schedules.js', 'communication.js', 'communication.css', 'terminal.js', 'terminal.css', 'xterm.js', 'xterm-fit.js', 'xterm.css', 'app.js', 'notifications.js', 'lifecycle.js', 'loop_graph.js', 'flow_bridge.js', 'settings.js', 'forms.js', 'workspace.js', 'authoring.js', 'workspace.css', 'launch.js', 'task_history.js', 'style.css', 'graph.css', 'editor.js', 'editor.css', 'packages.js', 'library.js', 'library.css', 'navigation.js', 'run_library.js')}.get('/'.join(parts))
+                filename = {name: name for name in ('spaces.js', 'workbench.css', 'monitoring.js', 'monitoring.css', 'work.js', 'schedules.js', 'communication.js', 'communication.css', 'terminal.js', 'terminal.css', 'xterm.js', 'xterm-fit.js', 'xterm.css', 'app.js', 'notifications.js', 'lifecycle.js', 'loop_graph.js', 'flow_bridge.js', 'settings.js', 'forms.js', 'workspace.js', 'authoring.js', 'workspace.css', 'launch.js', 'task_history.js', 'style.css', 'graph.css', 'editor.js', 'editor.css', 'packages.js', 'library.js', 'library.css', 'navigation.js', 'run_library.js')}.get('/'.join(parts))
                 if parts == ['']:
                     filename = 'index.html'
                 if not filename:
@@ -349,9 +347,8 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             elif len(parts) == 4 and parts[:2] == ['api', 'runs']:
                 run_id, action = parts[2:]
                 if action == 'request':
-                    result = platform_tools.call('submit_run_request', {
-                        'request_id': body['request_id'], 'run_id': run_id, 'operation': 'message',
-                        'message': body['text'], **{k: body[k] for k in ('created_by', 'chat_context', 'conversation_id', 'notification_route') if k in body}})
+                    from loop_anything.interfaces.agent_tasks import user_request
+                    result = user_request(store,run_id,body['text'])
                 elif action == 'agent':
                     from loop_anything.interfaces.agent_tasks import RunTools
                     if body.get('operation') == 'release_stopped':

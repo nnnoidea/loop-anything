@@ -40,13 +40,12 @@ def main():
     session = register(api)
     for factory, name in ((research, 'research'), (trip, 'trip')):
         bp, implementations = factory()
-        for node in bp['nodes'].values():
-            node['progression'] = 'rules'
         result = api('publish', {'loop_definition': bp, 'implementations': implementations})
         inputs = dict(bp['defaults'], **({'slow_duration': 14} if name == 'research' else {}))
         turn = start(api, session, result['key'], name+' · 平台验收', inputs=inputs)
         id = turn['run_id']
         seed = bp['seed']['id']
+        if not turn.get('token'):turn.update(claim(api,session,id))
         info = operate(api, turn, 'read_task', task_id=seed)
         initial = respond(name, 'initialize', {'task_id':seed,'inputs':info['inputs'],
                           'input_sources':info['sources'],'timeline':api('runs/'+id)})
@@ -73,7 +72,6 @@ def main():
                     'proposal_id': e['inputs']['proposal']['id'], 'proposal_record': e['parameters']['proposal_record']}}}})
 
             old = pending('approval')
-            tool(api,'submit_run_request',run_id=id,request_id='revise-'+id,operation='message',message='Revise this simulated trip')
             owner = claim(api, session, id)
             def operator(tool, arguments=None):
                 result = api('runs/' + id + '/agent', {'token': owner['token'], 'tool': tool, 'arguments': arguments or {}})

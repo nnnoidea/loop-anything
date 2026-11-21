@@ -111,8 +111,8 @@ def main():
     run.add_argument('--authorization', default='', help='User authorization in natural language')
     for cmd in (create, run):
         cmd.add_argument('--created-by', default='', help='Human display name for Run grouping')
-        cmd.add_argument('--session-id', required=True, help='Current registered server Agent session')
-        cmd.add_argument('--session-token', required=True, help='Token returned by register_work_session')
+        cmd.add_argument('--session-id', help='Current registered server Agent session')
+        cmd.add_argument('--session-token', help='Token returned by register_work_session')
         cmd.add_argument('--timeline-id', help='Independent Timeline to continue')
         cmd.add_argument('--continue-run-id', help='Interrupted Run whose progress should be resumed')
         cmd.add_argument('--request-id', required=True, help='Stable startup request ID; reuse on retry')
@@ -229,7 +229,7 @@ def main():
             result = PlatformTools(store).call('start_run', {
                 'key': args.key, 'title': args.title, 'inputs': read(args.inputs) if args.inputs else {},
                 'constraints': args.authorization, 'created_by': args.created_by,
-                'request_id': args.request_id, 'session_id': args.session_id, 'session_token': args.session_token, **({'timeline_id':args.timeline_id} if args.timeline_id else {}), **({'continue_run_id':args.continue_run_id} if args.continue_run_id else {}),
+                'request_id': args.request_id, **({'session_id':args.session_id,'session_token':args.session_token} if args.session_id or args.session_token else {}), **({'timeline_id':args.timeline_id} if args.timeline_id else {}), **({'continue_run_id':args.continue_run_id} if args.continue_run_id else {}),
                 **({'bindings': read(args.bindings)} if args.bindings else {})})
             print(json.dumps(result, ensure_ascii=False))
             return
@@ -241,7 +241,7 @@ def main():
                 store.publish(loop_definition, implementations)
         initial_run = None
         if args.command == 'run':
-            initial_run = {'key': args.key, 'title': args.title, 'created_by':args.created_by, 'inputs': read(args.inputs) if args.inputs else {}, 'constraints': args.authorization, 'request_id': args.request_id, 'session_id': args.session_id, 'session_token': args.session_token, **({'timeline_id':args.timeline_id} if args.timeline_id else {}), **({'continue_run_id':args.continue_run_id} if args.continue_run_id else {}), **({'bindings': read(args.bindings)} if args.bindings else {})}
+            initial_run = {'key': args.key, 'title': args.title, 'created_by':args.created_by, 'inputs': read(args.inputs) if args.inputs else {}, 'constraints': args.authorization, 'request_id': args.request_id, **({'session_id':args.session_id,'session_token':args.session_token} if args.session_id or args.session_token else {}), **({'timeline_id':args.timeline_id} if args.timeline_id else {}), **({'continue_run_id':args.continue_run_id} if args.continue_run_id else {}), **({'bindings': read(args.bindings)} if args.bindings else {})}
         from loop_anything.runtime.engine import Engine
         engine = Engine(store)
         engine.space=args.space

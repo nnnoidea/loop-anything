@@ -1,6 +1,6 @@
 # Starting and operating Runs
 
-The actual server Agent calling start_run owns the Run. Register its exact session first; startup returns the current session's runtime identity. Timelines are independent; create/read/update them through the [work tools](work.md). Later requests use submit_run_request/read_run_request/reply_run_request. Managed executions retain their scoped runtime identity.
+Start a Run on a new or existing Timeline. Register a session for explicit waits. A commandless Agent entry can return a temporary entry scope; other configured execution starts in the engine. See [work tools](work.md).
 
 This is a reference for direct tool use, not a mandatory runtime procedure. If the author supplies a wrapper, follow the node Skill; wrappers still call these tools. Business requirements belong in the Loop handbook; read_task returns the node's author Skill. An awakened agent uses its existing Run and token.
 
@@ -12,7 +12,7 @@ When receiving a Loop or adapting paths, agents, and services, use [separate run
 
 read_run(view=snapshot) lists every Task with status, counts, wait reasons, errors, observer errors and original-execution references, including completed work. It derives this view from the Run without saving a second snapshot. next_tasks lists actionable work and waiting reasons. read_timeline reads business progress only. read_task.execution_state and last_transition show the current execution phase, reports, and actual transitions. Task status and execution lifecycle_state describe different layers and are not interchangeable.
 
-Use read_task for dependencies, waiting reasons, and the current execution; read_run retrieves previous parameters, implementations, lifecycles, and transition history by execution ID. A retry keeps the same Task; scheduling another round creates new Tasks. After a completion report commits results, the platform reevaluates downstream Tasks. A steward decision holds its dependent successors until the decision completes; explicit rule progression proceeds mechanically. finish only releases the agent's operation identity.
+Use read_task for dependencies, waiting reasons, and the current execution; read_run retrieves previous parameters, implementations, lifecycles, and transition history by execution ID. A retry keeps the same Task; scheduling another round creates new Tasks. After a completion report commits results, the platform reevaluates downstream Tasks. The engine evaluates declared routes against the reported event. finish only releases the agent's operation identity.
 
 ## Run lists, attribution, and management
 
@@ -49,18 +49,18 @@ Agents using different entries connect to the same platform instance and Timelin
 
 1. Read a known Run ID directly. Otherwise use list_runs by initiator, keyword, Loop, status, or dates; it defaults to recent activity. Follow next_offset; see [Run management](#run-lists-attribution-and-management). Ask the user to distinguish ambiguous candidates instead of assuming the latest is correct.
 2. Without a token, read_timeline retrieves business objectives, constraints, state, progress entries and the saved result index. read_run(view=snapshot) retrieves execution status, Run settings and the Loop handbook. Use next_tasks, read_task, read_record, and read_plans for details; read_run for full facts/history. Reading does not acquire operation rights or stop other agents.
-3. Submit the complete intent with submit_run_request(request_id, run_id, operation, message, arguments). The server steward reads current state, checks affected versions, and performs authorized changes. Read the durable receipt or reply to its question.
+3. For specific controls use submit_run_request and read its receipt. For authorized planning use acquire_run, make Run-scoped edits and finish.
 4. Platform-awakened nodes keep their prompt identity and cannot widen scope through another entry. Existing results remain; changing the objective does not automatically invalidate old Tasks.
 
 ```sh
 python3 scripts/call.py list_runs --arguments '{"query":"research","status":"running"}'
 python3 scripts/call.py read_timeline --arguments '{"run_id":"RUN_ID"}'
-# Delegate changes through submit_run_request with a stable request_id.
+python3 scripts/call.py submit_run_request --arguments '{"request_id":"PAUSE_ID","run_id":"RUN_ID","operation":"command","arguments":{"action":"pause"}}'
 ```
 
 read_timeline with read_only:true grants no writing rights; scope_task:null in this view does not imply global scope. With a valid token, read_only:false makes scope_task describe this identity's scope; terminal Runs and dispatched Tasks remain protected. Explicit invalid/expired tokens fail rather than silently becoming read-only.
 
-Persist confirmed objectives, constraints, and decisions that affect later work through change_settings, change_task/build_plan/add_task, or report_task, as appropriate. Saying "remembered" in chat is not persistence. No separate cross-entry summary or full chat copy is needed. Each delegated request saves its requester and notification origin. Explicit outlets take precedence; otherwise chat_context/conversation_id supplies the reply destination. Requests without an origin use the Run default.
+Use `update_timeline` for changes to an existing objective or constraints. Read affected work and report the implications to the user. Record business decisions and evidence in the task report or a Timeline entry. Run controls return their result directly; `read_run_request` retrieves the saved receipt.
 
 ## Execution identity and atomic writes
 
@@ -101,7 +101,7 @@ If read_task.outputs has one string port named result, a report looks like:
 {"run_id":"RUN_ID","token":"TOKEN","task_id":"TASK_ID","event":"completed","report_id":"STABLE_DELIVERY_ID","envelope":{"outputs":{"result":"Actual work result"}}}
 ```
 
-Use actual port names/types. Initialization also submits the discussed envelope.settings under settings_schema. With no output ports, submit {}. Do not invent business fields by copying examples.
+Report the outputs declared by the task. For a task with no output ports, submit an empty outputs object.
 
 ```sh
 python3 scripts/call.py finish --arguments '{"run_id":"RUN_ID","token":"TOKEN"}'
@@ -113,13 +113,13 @@ When an author Skill includes resolved_path, read SKILL.md there and resolve its
 
 ## Starting from the user's Agent
 
-Read the chosen Loop and current Timeline. Call start_run with the current session_id/session_token, stable request_id, key and title. Use timeline_id for saved work or continue_run_id after an interruption. See [persistent work](work.md).
+Read the chosen Loop and Timeline. Call start_run with a stable request_id, key and title. An existing timeline_id continues the saved work. The engine follows the routes declared when the Loop was built.
 
-The actual starter reads the Timeline and current method, then arranges work in the same session. An optional entry is an ordinary Task; script entries execute through Engine. Existing Timeline goals need no initialization. New Runs after interruption explicitly retain the Timeline and observe old in-flight jobs rather than resubmitting them.
+For a Run with no initial tasks, read the Timeline and handbook, then arrange the first steps. The engine schedules configured entries. If startup returns an entry Task and token for a manual Agent, complete that Task and finish its scope. Existing Timeline goals need no initialization. New Runs after interruption explicitly retain the Timeline and observe old in-flight jobs rather than resubmitting them.
 
 ## Branch ownership and operation scope
 
-- With a valid operation token, scope_task=Task ID grants that subtree; null grants global scope. Ordinary node agents own their branch; declared entry Tasks, fallback, and an explicitly configured global_agent_node have global scope.
+- With a valid operation token, scope_task=Task ID grants that subtree; null grants global scope. Ordinary node agents own their branch; declared entry Tasks, fallback, explicitly triggered routing decisions, and an explicitly configured global_agent_node have global scope.
 - parent_id represents Task ownership, independent of input sources and after. Tasks sharing a Node template may be separate branches. Reading a sibling's result does not grant write access.
 - add_task/build_plan attach new work to scope_task by default; global agents default to the awakening Task. Specify an in-scope parent_id to choose a parent; global agents may pass an empty string for a top-level Task. Parentage is immutable. A shared aggregation belongs to an upper-level creator, not every branch whose outputs it consumes.
 - Ordinary agents can change inputs, parameters, implementation, and dependencies of undispatched Tasks in their branch. Global settings, Run pause/end, and user-request handling need global scope. Dispatched Tasks remain protected.
@@ -146,7 +146,7 @@ An added/edited cyclic dependency rejects the entire write without partial Tasks
 
 ## Selecting node implementations
 
-read_loop.implementations contains candidates/defaults. Multiple candidates use {options:{ID:configuration},default:ID-or-null}; the compact single-candidate syntax declares one candidate named default. Do not copy a Loop to switch candidates.
+read_loop.implementations contains candidates/defaults. Multiple candidates use {options:{ID:configuration},default:ID-or-null}; a single candidate also uses an options map and a default ID. Do not copy a Loop to switch candidates.
 
 - start_run.bindings maps nodes to candidates, e.g. {"train":"cluster"}. Omitted nodes inherit Loop defaults; null leaves selection unset.
 - change_settings.change.bindings changes Run selection with current settings revision. It replaces the whole mapping; retain other desired overrides.
@@ -157,9 +157,9 @@ Dispatched executions retain their chosen configuration. No candidates/default d
 
 ## Recovery and new user requirements
 
-Unexpected business failures and new requirements go to the Run steward. The Loop handbook explains recovery policies. Node-internal retries and fixed recovery rules continue through their declared lifecycle.
+A configured fallback Agent can handle unresolved issues. The Loop handbook describes its recovery policy.
 
-For new requirements, clients submit a durable Run request. The steward reads affected Tasks and applies changes under current authorization. Changing requirements does not invalidate old Tasks or results automatically. Pause progression first when needed, cancel/edit explicitly, and check external side effects before retrying. Preserve evidence and complete the request or ask a concrete question.
+Update the Timeline and inspect affected work. Ask the user before changing tasks beyond their request.
 
 On errors, inspect current state and reconsider the decision. Do not create another batch or Run to bypass a conflict.
 
@@ -180,11 +180,11 @@ Use actual node IDs/business conditions. For dotted record IDs, use segments, e.
 
 No Tasks does not mean completion. finish only releases this identity, not the Run. After writing a termination signal, release it and let Engine apply the terminal transition. Do not create terminal nodes or extra completion-decision Tasks.
 
-set_loop.global_agent_node or change_settings.change.global_agent_node can select a normal global decision node using its existing agent implementation. Empty defaults to fallback. This eligibility does not create Tasks or start agents. The Run steward owns automatic exception handling; it can explicitly schedule a declared recovery helper when the Loop handbook calls for that method.
+set_loop.global_agent_node or change_settings.change.global_agent_node can select a normal global decision node using its existing agent implementation. Empty defaults to fallback. This eligibility does not create Tasks or start agents. The configured fallback handles unresolved issues.
 
 ## Notification destinations
 
-read_notification_channels lists configured outlets. Select the Run default through start_run.notification_route or change_settings.change.notification_route. workspace means the platform notification area. Ordinary task notices share this setting; delegated request replies use their own saved origin when supplied. Personal delivery configuration lives in the platform/Run, not the Loop definition.
+read_notification_channels lists configured outlets. Select the Run default through start_run.notification_route or change_settings.change.notification_route. workspace means the platform notification area. Ordinary task notices share this setting. Personal delivery configuration lives in the platform/Run, not the Loop definition.
 
 See [notifications.md](notifications.md) for notifications, questions, replies, and adapters. notify uses the current identity; branch agents associate their task_id. Do not add a business Task merely to send a message. Retries keep the same key/content. A question does not pause other work; schedule a wait node if its answer is required, finish current work, and release the agent instead of holding it open.
 
@@ -192,7 +192,7 @@ read_task.execution_state.wait shows actual wait times, event correlation, and d
 
 ## Agent exits and failure notifications
 
-After a platform-started business Agent exits with unresolved issues, the current Run steward receives a repair request. Failed management turns remain visible for explicit retry or replacement. An initial failure plus two retries pauses after three consecutive failures and automatically requests notification. Branch handoff retains the initial failure count; successful resolution clears it, and explicit user resume starts a fresh count.
+The engine records Agent failures. Inspect the failed task and recovery policy before retrying.
 
 Explicit pause or waiting for user input is not failure. If the old command cannot be confirmed stopped, its execution identity remains. Interactive agents likewise require confirming the old process stopped before the existing recovery entry can resume them.
 
@@ -202,7 +202,7 @@ Branch failure counts remain separate. Global fallback inherits the longest unre
 
 ## Unified event and result reporting
 
-report_task takes task_id, event, and stable report_id. Agents first read_task for the actual lifecycle, phase, and last_transition. Scripts/observers use execution_id from their context. Awakened nodes supply run_id and their prompt token; scoped tool_url supplies identity automatically. Clients submit changes through the steward. completed includes all envelope.outputs, plus state and operations for atomic progress and arrangements. Global reports may fill missing semantic settings; changing existing goals uses update_timeline. progress and similar events use detail without prematurely publishing results or scheduling work.
+report_task takes task_id, event, and stable report_id. Agents first read_task for the actual lifecycle, phase, and last_transition. Scripts/observers use execution_id from their context. Awakened nodes supply run_id and their prompt token; scoped tool_url supplies identity automatically. Clients use a temporary Run operation scope for authorized changes. completed includes all envelope.outputs, plus state and operations for atomic progress and arrangements. Global reports may fill missing semantic settings; changing existing goals uses update_timeline. progress and similar events use detail without prematurely publishing results or scheduling work.
 
 ```json
 {"task_id":"TASK_ID","report_id":"STABLE_DELIVERY_ID","event":"completed","envelope":{"outputs":{"result":"Actual result"}}}

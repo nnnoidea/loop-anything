@@ -137,13 +137,12 @@ class RoutingTests(unittest.TestCase):
             finally:ledger.close()
         with ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(reserve,['local','team']))
         self.assertEqual(len([r for r in results if r]),1)
-    def test_wake_context_binds_wait_sources_and_delegations(self):
+    def test_wake_context_binds_wait_sources_and_assistance(self):
         work=self.routing.bind_context({'platform_url':'http://127.0.0.1:1111','session_id':'session',
             'waits':[{'id':'wait','timeline_id':'timeline','sources':{'a':{'kind':'run','id':'prior-run'},'b':{'kind':'monitor','id':'monitor'}}}],
-            'run_requests':[{'id':'delegation','run_id':'requested-run'}],
             'assistance_results':[{'id':'assistance'}]})
         self.spaces.configure({'default_space':'team'})
-        for tool,args in [('claim_run',{'session_id':'session','run_id':'requested-run'}),('read_run',{'run_id':'prior-run'}),('read_monitor',{'monitor_id':'monitor'}),('read_run_request',{'request_id':'delegation'}),('read_assistance',{'request_id':'assistance'})]:
+        for tool,args in [('read_run',{'run_id':'prior-run'}),('read_monitor',{'monitor_id':'monitor'}),('read_assistance',{'request_id':'assistance'})]:
             self.assertEqual(self.ledger.choose(tool,args,work=work)['url'],'http://127.0.0.1:1111')
 
     def test_nested_cross_platform_references_cannot_escape_work(self):

@@ -21,16 +21,16 @@ class MonitoringTests(unittest.TestCase):
         self.assertEqual(self.store.list(),[])
 
     def test_run_summary_uses_current_states_and_no_execution_payloads(self):
-        receipt=self.t.start()
+        receipt=self.t.start();self.t.initialize(receipt);self.t.engine.tick(receipt['run_id'])
         with self.store.edit(receipt['run_id']) as run:
-            run['tasks'][receipt['task_id']]['status']='fault'
+            next(iter(run['tasks'].values()))['status']='fault'
         before=self.store.get(receipt['run_id'])
         data=self.tools.call('read_monitor_dashboard',{})
         self.assertEqual(data['counts']['running'],1)
         self.assertEqual(data['runs'][0]['attention_count'],1)
         self.assertEqual(data['runs'][0]['status'],'running')
         payload=json.dumps(data)
-        self.assertNotIn(receipt['token'],payload)
+        self.assertNotIn(before['executions'][0]['token'],payload)
         self.assertNotIn('implementation',payload)
         self.assertEqual(before,self.store.get(receipt['run_id']))
         self.t.engine.command(receipt['run_id'],'pause')

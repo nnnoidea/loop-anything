@@ -47,7 +47,7 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 - Author provides: Define Loop-owned state and optional Loop.state display metadata. Use read_timeline/read_business_state; completed report envelopes can atomically commit state and task operations. Use stable work_key for experiments. Register the actual session, retain startup request IDs, and follow edit notices.
 - Configuration: `create_timeline`, `start_run.timeline_id/continue_run_id`, `update_timeline`
 - Limits: No automatic task freeze or rearrangement. Routine multi-Run sharing is outside the current scope.
-- Tools: export_timeline, import_timeline, read_work_result, read_work_results, read_business_state, create_timeline, list_timelines, resolve_continuation, take_over_run, read_work_timeline, update_timeline, append_timeline, register_work_session, start_run, claim_run
+- Tools: export_timeline, import_timeline, read_work_result, read_work_results, read_business_state, create_timeline, list_timelines, resolve_continuation, read_work_timeline, update_timeline, append_timeline, register_work_session, start_run
 - Reference: [references/work.md](work.md)
 
 ## work_waits
@@ -64,7 +64,7 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 
 - Activation: operator
 - Platform handles: Hot-add observations without modifying scoring nodes. Read saved charts and effective arrangements on the Timeline.
-- Author provides: Use update_run_method from the bound management turn, or submit a Run request. Use set_loop observations for defaults. The platform step calls read_business_state or read_work_results for the records the user wants. A remote step receives the preceding step output in previous.
+- Author provides: Use update_run_method with an authorized Run operation scope. Use set_loop observations for defaults. The platform step calls read_business_state or read_work_results for the records the user wants. A remote step receives the preceding step output in previous.
 - Configuration: `read_observations`, `update_run_method`, `refresh_observation`
 - Limits: Run-local overrides follow existing work on its original platform.
 - Tools: read_observations, update_run_method, refresh_observation
@@ -80,16 +80,6 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 - Tools: read_monitor_dashboard, read_monitor_history, register_monitor, list_monitor_scripts, start_monitor, read_monitor, list_monitors, stop_monitor, restart_monitor
 - Reference: [references/work.md](work.md)
 
-## run_steward
-
-- Activation: automatic
-- Platform handles: Binds the actual starter session and persists subsequent requests; default completion returns there.
-- Author provides: Register the real current server session. Start with an independent Timeline; use claim_run in the same session.
-- Configuration: `register_work_session`, `start_run`, `claim_run`
-- Limits: No separate named steward selection. A session cannot resume concurrently with its original process.
-- Tools: register_work_session, start_run, claim_run, submit_run_request, read_run_request, reply_run_request, answer_run_request
-- Reference: [references/steward.md](steward.md)
-
 ## run_library
 
 - Activation: operator
@@ -103,8 +93,8 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 ## loop_calls
 
 - Activation: declared
-- Platform handles: Creates and links child Runs, executes their entries, durably waits in the parent node, and validates returned results. Recovery/retry reuses the same child Run.
-- Author provides: Declare kind=loop with loop.key/inputs/result for an installed Loop on the same service and input/result-envelope mappings.
+- Platform handles: Creates and links child Runs, starts their own entry or the caller-specified seed Task, durably waits in the parent node, and validates returned results. Recovery/retry reuses the same child Run.
+- Author provides: Choose an installed Loop on this service and declare loop.key, input and result mappings. For a target without an entry, supply its first Task in loop.seed.
 - Configuration: `set_implementation.loop`, `read_task.execution_state.child_run_id`, `read_run.parent_call`
 - Limits: One Task maps to one child Run; new execution requires a new call Task. Parent/child pause or terminate separately; the child uses its own completion conditions. Ancestor-recursive calls are unsupported.
 - Tools: set_implementation, list_loops, read_task, read_run, read_record, command
@@ -144,10 +134,10 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 
 - Activation: declared
 - Platform handles: Built-in flow decisions awaken on explicit event routes, reusing execution, sessions, wait/resume, and Timeline writes without extra authored flow nodes.
-- Author provides: Choose decision points from the user's goal, keep full business rules in the Loop handbook, and bind the actual starting session for execution; use progression=rules for fixed paths.
-- Configuration: `nodes.*.routes.flow_agent`, `read_task.flow_decisions`, `build_plan/edit_tasks/report_task/finish`
-- Limits: Business completion defaults to the steward; explicit rules own their events. Decisions have global Run scheduling scope with commit validation. Explicit rule and agent routes can both fire; read receipts to avoid duplicate scheduling.
-- Tools: set_loop, put_node, read_timeline, read_task, build_plan, edit_tasks, report_task, finish, test_loop
+- Author provides: At build time, declare the event and question for each decision. For remaining cases, use a condition complementary to the fixed plan routes. Keep business criteria in the handbook and configure how the Agent runs.
+- Configuration: `Loop.flow_agent`, `nodes.*.routes.flow_agent`, `read_task.flow_decisions`, `build_plan/edit_tasks/report_task/finish`
+- Limits: Configuring an executor alone does not trigger it. Without a matching route no agent is called. Decisions can arrange work across the Run. All matching routes fire. Read fired/skipped receipts and reuse tasks that the rules already created.
+- Tools: set_loop, put_node, acquire_run, read_timeline, read_task, build_plan, edit_tasks, report_task, finish, test_loop
 - Reference: [references/flow-agent.md](flow-agent.md)
 
 ## loop_configuration
@@ -467,7 +457,7 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 - Author provides: Align ownership with responsibility and finish after completion/explicit waiting. Use an explicit global node for global decisions.
 - Configuration: `Task.parent_id`, `Loop.global_agent_node`, `execution identity/finish`
 - Limits: Dependency differs from ownership; ready descendants can run before the parent agent finishes.
-- Tools: read_timeline, finish, read_task
+- Tools: read_timeline, finish, read_task, acquire_run, read_run_request
 - Reference: [references/run.md](run.md)
 
 ## run_control
@@ -540,16 +530,15 @@ An existing Skill needs situational decisions about what happens next. Get it ru
 {
   "use_when": "An existing Skill needs situational decisions about what happens next. Get it running, then gradually encode stable rules; the building agent configures explicit points from user goals.",
   "capabilities": [
-    "run_steward",
     "flow_agent",
     "event_routes",
     "scopes"
   ],
-  "prerequisites": "The Loop handbook keeps full objectives, rules, and completion conditions. set_loop accepts the loop fields below. The actual server session calling start_run owns progression and reads the Loop Skill. No extra node, port, or intermediary plan is required.",
-  "startup": {
-    "session_id": "CURRENT_REGISTERED_SESSION",
-    "session_token": "CURRENT_SESSION_TOKEN",
-    "request_id": "STABLE_START_ID"
+  "prerequisites": "The Loop handbook keeps full objectives, rules, and completion conditions. set_loop accepts the loop fields below. Complete flow_agent with the actual user CLI or dispatch. With kind only, acquire_run(run_id,task_id) claims a pending decision; it will not run automatically. No extra node, port, or intermediary plan is required.",
+  "loop": {
+    "flow_agent": {
+      "kind": "agent"
+    }
   },
   "source_routes": [
     {
@@ -559,7 +548,7 @@ An existing Skill needs situational decisions about what happens next. Get it ru
     }
   ],
   "execution": "The platform saves source Task/execution/report, event, conditions, and exact result-version references. The flow agent reads the full handbook, read_task.trigger, and source route_receipts, schedules successors, submits the full decision output, and calls finish. read_task(source_task) returns flow_decisions; read_task(decision_task)/read_record retrieve full results.",
-  "scope": "Built-in decisions have global scheduling scope in the current Run. Reads are pure; short write transactions validate execution identity and scope. One event can explicitly match both rule and agent routes; do not reschedule work already created by rules. Unspecified completion events return to the steward; progression=rules selects mechanical paths.",
+  "scope": "Built-in decisions have global scheduling scope in the current Run. Thinking does not lock Timeline; writes use the current execution scope. One event can explicitly match both rule and agent routes; do not reschedule work already created by rules. No declared route means no flow-agent call.",
   "verification": [
     "test_loop",
     "read_task",

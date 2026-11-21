@@ -6,27 +6,11 @@
 
 在平台所在机器上，由实际执行启动的 Agent 使用平台 Skill。先用 `list_loops` 和 `read_loop` 确认安装的 Loop key、作者说明和所需输入。网页的「复制启动要求」可把所选 Loop 交给这个 Agent。
 
-1. 当前会话已登记时，沿用它的 `session_id` 和 `session_token`。首次登记通过 `register_work_session` 提交当前 Agent 的原生会话标识、可恢复该会话的实际命令和 Agent 进程 PID。登记参数见[持续运行指南](../skills/loop-anything-platform/references/work.md)。
-2. 使用 `start_run` 提交下列参数。一个启动意图使用一个稳定的 `request_id`。接着已有 Timeline 做时传入它的 `timeline_id`；Loop 需要的输入按其定义传入 `inputs`。
+1. 调用 `start_run`，提供 `request_id`、Loop 的 `key`、`title` 以及目标或已有 `timeline_id`。返回 Run 和 Timeline 的标识。当前对话需要条件唤醒时，用 `register_work_session` 和 `wait_for` 登记。
+2. 用 `read_run(view="snapshot")` 查询执行，用 `read_timeline` 了解业务进度。通过 `submit_run_request` 执行明确的运行控制。需要编排时可调用 `acquire_run` 取得临时操作身份，完成后调用 `finish`。
+3. Loop 的规则、依赖和业务节点负责常规推进。需要语义判断时，在构建 Loop 时声明 `flow_agent: true` 路由。若只在固定规则未覆盖时调用 Agent，就把这些情况写成互补条件。平台执行所有命中的路由，记录触发依据和决定。
 
-```json
-{
-  "key": "已安装的 Loop key",
-  "title": "本次运行名称",
-  "request_id": "本次启动请求的唯一标识",
-  "session_id": "登记回执中的 session_id",
-  "session_token": "登记回执中的 session_token"
-}
-```
-
-```sh
-python3 /平台Skill/scripts/call.py start_run --arguments @启动参数.json
-```
-
-3. 回执中的 `run_id` 和 `timeline_id` 标识执行和任务进度。管理任务就绪时回执还包含 `task_id`、`execution_id` 和本次执行的 `token`。若返回 `waiting: true`，由原会话在就绪后使用 `claim_run` 领取管理任务。Loop 可以有自己的入口节点。
-4. 用执行令牌调用 `read_timeline` 读取目标、限制和业务进度，用 `read_run` 的 `view: "snapshot"` 查看执行状态，用 `read_task` 查看当前任务的输出要求。按需要安排任务，通过 `report_task` 提交管理任务的 `outputs.decision`，随后 `finish` 结束本次处理。Engine 继续推进已安排的工作。
-
-直接对接 HTTP 时，登记和领取通过 `POST /api/tools` 提交 `{tool, arguments}`。启动通过 `POST /api/runs` 提交上面的参数对象。本次执行的调用通过 `POST /api/runs/{run_id}/agent` 提交 `{token, tool, arguments}`。POST 请求使用 JSON 和 `X-Loop-Anything: workspace` 请求头。Skill 客户端负责把已有工作的后续调用发回原平台。
+例如，执行 `python3 scripts/call.py start_run --arguments @启动参数.json`，参数可写成 `{"key":"research@1","title":"复核第一轮实验","request_id":"research-round-1","timeline_id":"已有 Timeline 的 ID"}`。直接接入 HTTP 时，通过 `POST /api/runs` 启动，通过 `POST /api/tools` 查询和控制，POST 使用 JSON 和 `X-Loop-Anything: workspace`。Skill 客户端继续将已有工作的调用发往原平台。
 
 ## 网页与 Agent 的分工
 

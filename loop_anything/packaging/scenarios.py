@@ -123,11 +123,6 @@ def run_scenarios(document, scenarios=None):
             try:
                 run=store.create('scenario',case['name'],case.get('inputs'),bindings=case.get('bindings'),authorization='',notification_route='workspace')
                 run_id=run['id']
-                from loop_anything.runtime.steward import start_in_run
-                with store.edit(run_id) as simulated:
-                    startup = start_in_run(simulated, {'agent_id':'scenario','name':'Simulated steward',
-                        'implementation':{'kind':'agent','command':['simulated-steward']}},
-                        'scenario-start','Simulated startup',{},automatic=True)['task_id']
                 def tick():
                     if len(store.get(run_id)['tasks'])>1000:raise Invalid('Scenario exceeded 1000 tasks')
                     engine.tick(run_id)
@@ -145,29 +140,21 @@ def run_scenarios(document, scenarios=None):
                     if len(tasks)!=1:raise Invalid('Report selector must identify exactly one Task; use ref or task_id')
                     task=tasks[0]
                     attempts=[e for e in snapshot['executions'] if e['task_id']==task['id'] and ('attempt' not in step or e['attempt']==step['attempt'])]
-                    entry = not attempts and task['id']==snapshot['loop_definition'].get('seed',{}).get('id')
-                    if entry:attempts=[e for e in snapshot['executions'] if e['task_id']==startup]
                     if not attempts:raise Invalid('Selected task is not dispatched; inspect dependencies and implementation')
                     execution=attempts[-1];report=copy.deepcopy(step['report']);report.setdefault('report_id','scenario-'+str(step_index))
                     source='agent' if execution['implementation']['kind']=='agent' else 'monitor' if execution.get('external_id') else 'script'
                     try:
-                        if entry:
-                            manager=RunTools(store,run_id,execution['token'])
-                            info=manager.call('read_task',{'task_id':task['id']})
-                            arguments=dict(report,task_id=task['id'])
-                            receipt=manager.call('report_task',arguments)
+                        with store.edit(run_id) as current:
+                            e=engine.execution(current,execution['id'])
+                            if source=='agent':
+                                from loop_anything.interfaces.agent_tasks import acquire_in_run, owner_for
+                                if not owner_for(current,e['token']):
+                                    acquire_in_run(current,'background',e['token'],e['id'])
+                            receipt=engine.timeline_runtime.report_in_run(current,e,report,source)
                             if step.get('duplicate'):
-                                duplicate=manager.call('report_task',arguments)
+                                duplicate=engine.timeline_runtime.report_in_run(current,e,report,source)
                                 if not duplicate.get('duplicate'):raise Invalid('Duplicate report was not deduplicated')
                                 receipt=dict(receipt,duplicate_verified=True)
-                        else:
-                            with store.edit(run_id) as current:
-                                e=engine.execution(current,execution['id'])
-                                receipt=engine.timeline_runtime.report_in_run(current,e,report,source)
-                                if step.get('duplicate'):
-                                    duplicate=engine.timeline_runtime.report_in_run(current,e,report,source)
-                                    if not duplicate.get('duplicate'):raise Invalid('Duplicate report was not deduplicated')
-                                    receipt=dict(receipt,duplicate_verified=True)
                         if step.get('expect_error'):raise AssertionError('Expected report error: '+step['expect_error'])
                     except Invalid as exc:
                         if step.get('expect_error') and step['expect_error'] in str(exc):
@@ -175,16 +162,8 @@ def run_scenarios(document, scenarios=None):
                         raise
                     receipts.append(dict(receipt,step=step_index))
                     if receipt['accepted'] != step.get('accepted',True):raise Invalid('Report acceptance differs from expected value')
-                    if not entry and execution['implementation']['kind']=='agent' and receipt.get('completed'):
+                    if execution['implementation']['kind']=='agent' and receipt.get('completed'):
                         RunTools(store,run_id,execution['token']).call('finish',{})
-                    saved=store.get(run_id)
-                    if saved['tasks'].get(saved['loop_definition'].get('seed',{}).get('id'),{}).get('status')=='completed' and saved['tasks'][startup]['status']!='completed':
-                        tick();saved=store.get(run_id)
-                        attempt=next(e for e in saved['executions'] if e['task_id']==startup)
-                        manager=RunTools(store,run_id,attempt['token'])
-                        info=manager.call('read_task',{'task_id':startup})
-                        manager.call('report_task',{'task_id':startup,'event':'completed','report_id':'scenario-started','envelope':{'outputs':{'decision':'Simulated entry work and declared routes'}}})
-                        manager.call('finish',{})
                 tick()
                 state=scenario_state(store.get(run_id))
                 for check in case['assertions']:

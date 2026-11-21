@@ -151,12 +151,11 @@ class LoopConfigurationTests(unittest.TestCase):
         self.assertEqual(loaded['records']['result'][-1]['value'], 'receiver')
         self.assertEqual(loaded['executions'][0]['implementation']['command'], command)
 
-    def test_flow_executor_is_not_a_loop_or_recipient_setting(self):
+    def test_recipient_can_configure_the_declared_route_agent(self):
         doc = document()
         doc['loop_definition']['flow_agent'] = {'kind': 'agent', 'command': ['author-cli']}
-        with self.assertRaises(Invalid):
-            install(self.store, make_archive(doc))
-        key = install(self.store, make_archive(document()))['key']
-        saved = read(self.store, key)
-        with self.assertRaises(Invalid):
-            write(self.store, key, {'flow_agent': {'command': ['recipient-cli']}}, saved['revision'])
+        key = install(self.store, make_archive(doc))['key']
+        saved = read(self.store,key)
+        write(self.store,key,{'flow_agent':{'command':['recipient-cli']}},saved['revision'])
+        run = self.store.create(key,'Verify local route settings')
+        self.assertEqual(run['implementations']['$flow_agent']['options']['default']['command'],['recipient-cli'])

@@ -86,7 +86,7 @@ test('execution, advancement and status stay independent for script nodes with f
   for(const text of ['executor-command','运行：脚本 · worker-A','advancement-agent','推进：流程 Agent','状态：等待中'])assert.ok(html.includes(text),text);
   assert.ok(run('nodeStateHTML(item,"work",{kind:"command"})').includes('内置流程 Agent'));
   ctx.item.loop_definition.nodes.work.routes=[];
-  assert.match(run('nodeAxesHTML(item,"work",{kind:"agent"})'),/推进：启动后由管家判断/);
+  assert.match(run('nodeAxesHTML(item,"work",{kind:"agent"})'),/推进：未声明后续/);
   assert.equal(JSON.stringify({...ctx.item,loop_definition:{...ctx.item.loop_definition,nodes:{work:{routes:[{id:'judge',event:'completed',flow_agent:true}]}}}}),before);
 });
 

@@ -55,6 +55,77 @@ class LoopCallTests(unittest.TestCase):
     def child(self, task='call'):
         return self.store.get(self.base.read()['tasks'][task]['child_call']['run_id'])
 
+    def seedless_call(self):
+        blueprint = dict(self.child_bp, version='seedless')
+        seed = blueprint.pop('seed')
+        blueprint.pop('entry')
+        self.key = self.store.publish(blueprint, self.child_impl)['key']
+        config = self.config()
+        config['loop']['seed'] = seed
+        return config
+
+    def test_call_starts_seedless_child_once_and_returns_its_result(self):
+        self.start(self.seedless_call())
+        self.until(lambda: self.base.read()['tasks']['call']['status'] == 'completed')
+        self.assertEqual(self.base.read()['records']['result'][-1]['value'], 'A!')
+        self.assertEqual(self.effect.read_text(), 'x')
+        self.assertEqual(list(self.child()['tasks']), ['init'])
+        self.assertNotIn('seed', self.child()['loop_definition'])
+
+    def test_linked_empty_child_uses_the_same_run_for_startup(self):
+        config = self.seedless_call()
+        self.start(config)
+        inputs = {'request':'A'}
+        child = self.store.create(self.key,'Already linked',inputs)
+        with self.store.edit(self.base.id) as parent:
+            parent['tasks']['call']['child_call'] = {
+                'run_id':child['id'], 'key':self.key, 'inputs':digest(inputs)}
+        self.until(lambda: self.base.read()['tasks']['call']['status']=='completed')
+        self.assertEqual(self.child()['id'],child['id'])
+        self.assertEqual(len(self.store.list()),2)
+        self.assertEqual(self.effect.read_text(),'x')
+
+    def test_existing_entry_takes_precedence_over_call_seed(self):
+        config = self.config()
+        config['loop']['seed'] = dict(self.child_bp['seed'],id='another')
+        self.start(config)
+        self.until(lambda: self.base.read()['tasks']['call']['status']=='completed')
+        self.assertEqual(list(self.child()['tasks']),['init'])
+        self.assertEqual(self.effect.read_text(),'x')
+
+    def test_unattended_child_without_agent_command_can_be_claimed(self):
+        self.child_impl['init']={'options':{'default':{'kind':'agent'}},'default':'default'}
+        config = self.seedless_call()
+        self.start(config)
+        self.engine.tick(self.base.id)
+        child_id = self.child()['id']
+        self.engine.tick(child_id)
+        child = self.child()
+        self.assertEqual(child['tasks']['init']['status'],'decision')
+        tools = PlatformTools(self.store)
+        owner = tools.call('acquire_run',{'run_id':child_id,'task_id':'init'})
+        worker = RunTools(self.store,child_id,owner['token'])
+        worker.call('report_task',{'task_id':'init','event':'completed','report_id':'review',
+                    'envelope':{'outputs':{'answer':'reviewed'},'settings':{'termination_signal':'done'}}})
+        worker.call('finish',{})
+        self.until(lambda: self.base.read()['tasks']['call']['status']=='completed')
+        self.assertEqual(self.base.read()['records']['result'][-1]['value'],'reviewed')
+
+    def test_missing_initial_task_reports_error_and_retry_can_supply_it(self):
+        configured = self.seedless_call()
+        candidates = {'options': {'empty': self.config(), 'with-seed': configured}, 'default': 'empty'}
+        self.start(candidates=candidates)
+        self.until(lambda: self.base.read()['tasks']['call']['status'] == 'fault')
+        parent = self.base.read()
+        attempt = next(e for e in parent['executions'] if e['task_id']=='call')
+        self.assertIn('loop.seed', attempt['error'])
+        self.assertEqual(len(self.store.list()), 1)
+        owner = acquire(self.store,parent['id'])
+        RunTools(self.store,parent['id'],owner['token']).call('change_task',{
+            'task_id':'call','operation':'retry','implementation':'with-seed','reason':'Supply the initial task'})
+        self.until(lambda: self.base.read()['tasks']['call']['status']=='completed')
+        self.assertEqual(self.effect.read_text(),'x')
+
     def test_called_work_follows_continuation_without_second_submission(self):
         self.start();self.engine.tick(self.base.id)
         original=self.child()

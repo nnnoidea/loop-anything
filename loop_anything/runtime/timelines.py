@@ -165,13 +165,12 @@ def persist(db, run):
 
 def continue_from(store, db, run, source_id):
     """Reuse committed work; in-flight actions remain observed at their original identities."""
-    from loop_anything.runtime.steward import management_task
     from loop_anything.runtime.task_scope import process_active, owner_for
     source=store._load(db,source_id)
     if source.get('superseded_by'):raise Conflict('Run already continued by '+source['superseded_by'])
     if source.get('identity_read_only'):raise Conflict('Copied workspace cannot take over a Run')
     for task in source['tasks'].values():
-        if not (management_task(task) or task['origin'].get('entry')):continue
+        if not (task['spec']['node']=='$flow_agent' or task['origin'].get('entry')):continue
         if any(e['implementation']['kind']=='agent' and process_active(e) and (e.get('worker_active') or owner_for(source,e.get('token')) or task['status'] not in ('completed','cancelled','skipped','stale')) for e in source['executions'] if e['task_id']==task['id']):
             raise Conflict('Original Agent is active or its stop is unconfirmed')
     run['continued_from']=source_id
@@ -186,15 +185,13 @@ def continue_from(store, db, run, source_id):
     run['retained_nodes']={}
     if source.get('retained_methods'):
         run['retained_methods']=copy.deepcopy(source['retained_methods'])
-    excluded={t['id'] for t in source['tasks'].values() if management_task(t)}
     seed_id=run['loop_definition'].get('seed',{}).get('id')
-    if refreshed and seed_id in source['tasks'] and seed_id not in excluded:
+    if refreshed and seed_id in source['tasks']:
         entry=run['tasks'].pop(seed_id)
         from loop_anything.runtime.store import uid
         ident=uid('task');entry['id']=entry['spec']['id']=ident
         run['tasks'][ident]=entry;run['loop_definition']['seed']['id']=ident
     for ident,task in source['tasks'].items():
-        if task['id'] in excluded:continue
         item=copy.deepcopy(task)
         if refreshed:
             item['spec']['node']=retain_node(run,source,task['spec'],task.get('execution_id'))
@@ -228,16 +225,6 @@ def continue_from(store, db, run, source_id):
                         versions.append(next(iter(producers),1))
                 if 'record' in input_source:input_source['revision']=versions[0]
                 else:input_source['revisions']=versions
-        item['origin'].pop('steward_review',None)
-        dependencies=[]
-        for dependency in item['spec'].get('after',[]):
-            if dependency not in excluded:dependencies.append(dependency)
-            elif source['tasks'][dependency]['status'] not in ('completed','skipped'):
-                if source['tasks'][dependency]['origin'].get('entry'):
-                    if seed_id:dependencies.append(seed_id)
-                else:raise Conflict('An unfinished management dependency cannot be discarded')
-        item['spec']['after']=dependencies
-        if item.get('parent_id') and item['parent_id'] in excluded:item['parent_id']=None
         if task['status']=='completed':
             item['origin']['retained_result_refs']={p:{'record':r['id'],'revision':r['revision']} for p,r in output_records(source,task).items()}
         item['execution_id']=None
@@ -248,11 +235,6 @@ def continue_from(store, db, run, source_id):
         run['tasks'][ident]=item
     materialize_retained(run)
     # Keep observers alive but prevent the old run from dispatching or routing new work.
-    manager_ids=excluded
-    source['agent_sessions']=[o for o in source['agent_sessions'] if o.get('task_id') not in manager_ids]
-    for task in source['tasks'].values():
-        if task['id'] in manager_ids and task['status'] not in ('completed','cancelled','skipped'):
-            task['status']='cancelled'
     source['superseded_by']=run['id']
     if any(t.get('continuation_source') for t in run['tasks'].values()):source['status']='running'
     source['settings']['termination_signal']='';source['settings']['completion_rule']=None

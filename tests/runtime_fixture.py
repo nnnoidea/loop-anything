@@ -1,8 +1,4 @@
-"""Internal runtime fixtures; public startup is exercised in test_steward.
-
-Low-level lifecycle/contract tests construct an execution identity directly, without
-pretending to be a client or invoking a real steward CLI.
-"""
+"""Internal runtime fixtures for scoped execution tests."""
 from loop_anything.interfaces.agent_tasks import acquire
 
 
@@ -24,23 +20,6 @@ def update_work(store, run_id, change, revision=None):
         'timeline_id':run['timeline_id'],
         'revision':run['timeline']['revision'] if revision is None else revision,
         'change':change})
-
-
-from loop_anything.interfaces.platform_tools import PlatformTools
-
-
-class RuntimeStewardTools(PlatformTools):
-    """Exercise the existing internal decision lifecycle without spawning a caller.
-    Public current-session startup is covered by test_work_context.
-    """
-    def call(self,name,arguments):
-        if name=='assign_run_steward':
-            from loop_anything.runtime.steward import assign
-            return assign(self.store,arguments['run_id'],arguments['steward_id'],arguments['generation'])
-        if name=='start_run' and 'steward_id' in arguments and 'request_id' in arguments:
-            from loop_anything.runtime.steward import submit
-            return submit(self.store,dict(arguments,operation='start'))
-        return super().call(name,arguments)
 
 
 from contextlib import contextmanager

@@ -55,9 +55,13 @@ class ObservationTests(unittest.TestCase):
         self.addCleanup(http.shutdown)
         self.engine.platform_url='http://127.0.0.1:%d' % http.server_port
         self.turn=self.c.start()
+        self.c.initialize(self.turn)
+        self.engine.tick(self.turn['run_id'])
+        self.engine.event(self.turn['run_id'],'fixture-state','result',{'value':'fixture'})
+        self.engine.tick(self.turn['run_id'])
         self.run_id=self.turn['run_id']
         self.tid=self.turn['timeline_id']
-        self.rt=RunTools(self.store,self.run_id,self.turn['token'])
+        self.claim()
 
     def update(self,**options):
         return self.tools.call('update_run_method',dict(run_id=self.run_id,token=self.turn['token'],**options))
@@ -66,13 +70,10 @@ class ObservationTests(unittest.TestCase):
         return self.tools.call('read_observations',{'timeline_id':self.tid})
 
     def finish(self):
-        self.rt.call('report_task',{'event':'completed','task_id':self.turn['task_id'],'report_id':'done',
-                                     'envelope':{'outputs':{'decision':'arranged'}}})
         self.rt.call('finish',{})
 
-    def claim(self,key):
-        self.tools.call('submit_run_request',{'run_id':self.run_id,'request_id':key,'operation':'message','message':key})
-        self.turn=self.tools.call('claim_run',dict(self.c.session,run_id=self.run_id))
+    def claim(self):
+        self.turn.update(self.tools.call('acquire_run',{'run_id':self.run_id}))
         self.rt=RunTools(self.store,self.run_id,self.turn['token'])
 
     def drain(self):
@@ -96,7 +97,7 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual({v['view']['summary'] for v in self.views()['views']},{'A0','B0'})
         self.drain()
         self.assertEqual({v['view']['summary'] for v in self.views()['views']},{'A1','B1'})
-        self.claim('change')
+        self.claim()
         self.assertFalse(any(n['id'].startswith('observation:') for n in self.store.get(self.run_id)['notifications']))
         self.tools.call('refresh_observation',{'run_id':self.run_id,'name':'a','token':self.turn['token']})
         old=observations.collect(self.store)[0]
@@ -153,7 +154,7 @@ class ObservationTests(unittest.TestCase):
         self.engine.event(self.run_id,'old-finish','result',{'value':'old'})
         self.engine.tick(self.run_id)
         self.assertEqual(self.store.get(self.run_id)['tasks'][task]['status'],'completed')
-        self.claim('more work')
+        self.claim()
         new=self.rt.call('add_task',{'key':'two','node_id':'work','inputs':{}})['tasks'][0]['id']
         self.finish()
         self.engine.tick(self.run_id)
@@ -227,7 +228,7 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual(notice['requested_route'], 'workspace')
         self.assertIn('schedule Chart1', notice['message'])
         self.assertIn('/#work/timelines/'+self.tid, notice['message'])
-        self.claim('change')
+        self.claim()
         self.update(observations={'result':{'steps':[{'kind':'command','command':[sys.executable,'-c','raise ValueError("boom")']}]}})
         self.drain()
         self.assertEqual(self.views()['arrangements'][0]['status'], 'failed')

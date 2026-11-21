@@ -40,18 +40,16 @@ class AuthoringCapabilitiesTests(unittest.TestCase):
                      {'id':'review','event':'completed','plan':'review','each':'outputs.groups','values':{'$':'item'}}]
         self.edit('put_node',node_id='initialize',routes=self.routes)
 
-    def test_scenario_starts_from_steward_without_an_initializer(self):
+    def test_scenario_without_a_seed_creates_no_tasks(self):
         from loop_anything.packaging.scenarios import run_scenarios
         bp={'schema_version':2,'id':'method','version':'1','handbook':{'instructions':'Read progress and act'},'records':{},'nodes':{}}
         result=run_scenarios({'loop_definition':bp,'implementations':{}},[{'name':'goal-only',
-            'steps':[{'node':'$flow_agent','report':{'event':'completed','envelope':{
-                'outputs':{'decision':'No work requested yet'},'state':[{'type':'progress','id':'current','value':'Goal recorded; no experiments arranged'}]}}}],
+            'steps':[{'ticks':1}],
             'assertions':[{'message':'No artificial business tasks','test':equal('task_count',0)}]}])
         self.assertTrue(result['passed'],result)
 
     def tearDown(self):self.tmp.cleanup()
     def edit(self,name,**args):
-        if name=='put_node':args.setdefault('progression','rules')
         self.draft=self.tools.call(name,dict(draft_id=self.draft['draft_id'],revision=self.draft['revision'],**args));return self.draft
     def target(self,**args):return dict(draft_id=self.draft['draft_id'],**args)
     def report(self):

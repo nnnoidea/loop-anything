@@ -33,6 +33,8 @@ def validate_routes(bp):
             if route['id'] in ids:
                 raise Invalid('Route IDs must be unique within the node', path=here + ['id'])
             ids.add(route['id'])
+            if flow and not bp.get('flow_agent'):
+                raise Invalid('Configure the Loop flow_agent for this route', path=here)
             if not flow and (not isinstance(route['plan'], str) or route['plan'] not in bp.get('plans', {})):
                 raise Invalid('Route must name an existing plan', path=here + ['plan'])
             for field in ('values', 'steps'):
@@ -103,16 +105,12 @@ def prepare_routes(store, run, execution, report, context):
     if run.get('superseded_by'):return [], [], None
     node = run['loop_definition']['nodes'][execution['node']]
     routes = [r for r in node.get('routes', []) if r['event'] == report['event']]
-    if run.get('steward') and not node.get('builtin') and not run['tasks'][execution['task_id']]['origin'].get('entry') and report['event'] == 'completed':
-        progression = node.get('progression')
-        if progression == 'steward' or (progression is None and not routes):
-            routes = [{'id': 'return-to-steward', 'event': 'completed', 'flow_agent': True}]
     if not routes:
         return [], [], None
     shadow = copy.deepcopy(run)
     retained=run.get('retained_nodes',{}).get(execution['node'])
     source=run
-    if retained and any(r.get('plan') for r in routes):
+    if retained:
         source=original_method(store,run,retained)
     actor = owner_for(run, execution['token']) if execution['implementation']['kind'] == 'agent' else None
     for spec in attach_tasks(shadow, reported_tasks(store, shadow, execution, report.get('envelope', {})), execution['task_id'], actor):
@@ -139,6 +137,9 @@ def prepare_routes(store, run, execution, report, context):
                 if route.get('flow_agent'):
                     from loop_anything.runtime.flow_agent import prepare
                     spec, origin = prepare(run, execution, report, route, current)
+                    if retained:
+                        from loop_anything.runtime.timelines import retain_node
+                        spec['node']=retain_node(shadow,source,spec)
                     prepared.append((spec, origin))
                     firing['batches'].append({'task_ids': [spec['id']]})
                     continue
@@ -160,6 +161,7 @@ def prepare_routes(store, run, execution, report, context):
                 for spec in attach_tasks(shadow, specs, execution['task_id'], actor):
                     prepared.append((spec, origin))
                 firing['batches'].append(dict(summary, task_ids=[s['id'] for s in specs]))
+            firing['status'] = 'fired' if firing['batches'] else 'skipped'
             firings.append(firing)
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise Invalid('Route ' + route['id'] + ': ' + str(exc), path=['nodes', execution['node'], 'routes', route['id']]) from None

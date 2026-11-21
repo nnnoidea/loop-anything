@@ -107,8 +107,6 @@ def task_context(store, run, execution, platform_url, scope_task):
                 token=execution['token'], scope_task=scope_task, platform_url=platform_url,
                 execution_executor=execution['implementation'].get('executor'),
                 flow_trigger=run['tasks'][execution['task_id']].get('origin', {}).get('flow_agent'),
-                steward_request=run.get('steward_requests', {}).get(run['tasks'][execution['task_id']].get('origin', {}).get('request_id')),
-                steward=({k:run['steward'][k] for k in ('agent_id','name','generation')} if run.get('steward') else None),
                 assistance_results=[summary(r) for r in run['tasks'].get(execution['task_id'],{}).get('assistance_results',[])],
                 assistance_resume=({'previous_execution_id':execution['assistance_resume']['execution_id'],
                                     'native_session':execution['assistance_resume']['native_session'],

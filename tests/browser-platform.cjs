@@ -44,7 +44,7 @@ async function withPlatform(check) {
       description: '记录 <b>实验结果</b>', handbook: {instructions: 'Read the submitted facts.'},
       records: {text: {type: 'string'}, file: {type: 'string', format: 'file'}},
       nodes: {wait: {label: '观察进度', description: '观察用户提交的结果', instructions: 'Wait for result', inputs: {},
-        outputs: {value: {record_type: 'text'}, report: {record_type: 'file'}}, progression: 'rules'}}
+        outputs: {value: {record_type: 'text'}, report: {record_type: 'file'}}}}
     };
     const implementations = {wait: {options: {signal: {kind: 'event', event: 'measurement'}}, default: 'signal'}};
     const assets = Object.entries({
@@ -55,18 +55,12 @@ async function withPlatform(check) {
     const {key} = await api('packages/install', {base64: packed.base64});
 
     async function startRun(title) {
-      const {session_id, session_token} = await tool('register_work_session', {
-        native_session: {provider: 'custom', id: randomUUID(), cwd: root}, process_id: process.pid,
-        implementation: {kind: 'agent', command: ['unused'], resume_command: ['unused', '{{session_id}}', '{{prompt}}']}
-      });
-      const session = {session_id, session_token};
-      const turn = await api('runs', {...session, key, title, request_id: randomUUID(), objective: title});
-      const operate = (tool, args) => api('runs/' + turn.run_id + '/agent', {tool, arguments: args, token: turn.token});
+      const turn = await api('runs', {key, title, request_id: randomUUID(), objective: title});
+      const {token} = await tool('acquire_run',{run_id:turn.run_id});
+      const operate = (tool, args) => api('runs/' + turn.run_id + '/agent', {tool, arguments: args, token});
       const added = await operate('add_task', {key: 'work', node_id: 'wait', inputs: {}});
-      await operate('report_task', {task_id: turn.task_id, event: 'completed', report_id: 'ready',
-        envelope: {outputs: {decision: 'Observe the result'}}});
       await operate('finish', {});
-      return {turn, session, task: added.tasks[0].id};
+      return {turn, task: added.tasks[0].id};
     }
 
     browser = await chromium.launch({channel: 'chrome', headless: true});

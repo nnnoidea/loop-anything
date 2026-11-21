@@ -10,8 +10,6 @@ def add_task(run, spec, origin):
     """Install an explicit Task in the caller's Timeline transaction."""
     from loop_anything.runtime.store import Store
     from loop_anything.runtime.flow_agent import NODE as FLOW_AGENT
-    from loop_anything.runtime.steward import review_origin
-    origin = review_origin(run, origin)
     if spec.get('node') == FLOW_AGENT and not origin.get('flow_agent'):
         raise Invalid('Built-in flow decisions are created by explicit flow_agent routes')
     spec = copy.deepcopy(spec)

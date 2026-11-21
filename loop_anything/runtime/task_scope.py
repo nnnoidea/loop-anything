@@ -16,19 +16,14 @@ def contains(run, scope, task_id):
 
 
 def owner_for(run, token):
-    owner = next((o for o in run.get('agent_sessions', []) if o['token'] == token), None)
-    task = run.get('tasks', {}).get((owner or {}).get('task_id'), {})
-    generation = task.get('origin', {}).get('steward')
-    if generation and generation != run.get('steward', {}).get('generation'):
-        return None
-    return owner
+    return next((o for o in run.get('agent_sessions', []) if o['token'] == token), None)
 
 
 def scope_for(run, task):
     node = task['spec']['node']
     from loop_anything.runtime.flow_agent import NODE as FLOW_AGENT
     from loop_anything.runtime.timelines import logical_node
-    if (node == FLOW_AGENT or task['origin'].get('entry') or task['origin'].get('fallback') or
+    if (logical_node(run,node) == FLOW_AGENT or task['origin'].get('entry') or task['origin'].get('fallback') or
             logical_node(run, node) == (run['settings'].get('global_agent_node') or run['settings'].get('fallback_node'))):
         return None
     return task['id']

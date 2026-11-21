@@ -89,59 +89,9 @@ def register_session(store, a):
     return {'session_id':ident,'session_token':value['token']}
 
 
-def steward_for(session):
-    return dict(agent_id=session['id'],name=session['native_session']['id'],session_id=session['id'],
-                implementation=copy.deepcopy(session['implementation']))
-
-
-def claim_in_run(store, run, session):
-    from loop_anything.runtime.steward import management_task
-    from loop_anything.interfaces.agent_tasks import acquire_in_run
-    from loop_anything.runtime.timeline_runtime import TimelineRuntime
-    from loop_anything.runtime.implementations import selected
-    from loop_anything.runtime.native_sessions import bind
-    from types import SimpleNamespace
-    if run.get('superseded_by'):raise Conflict('Use the continuation Run')
-    if run.get('steward',{}).get('session_id')!=session['id']:raise Conflict('This session is not the Run owner')
-    runtime=TimelineRuntime(SimpleNamespace(store=store))
-    for task in run['tasks'].values():
-        if not management_task(task):continue
-        if task['status'] in ('executing','decision'):
-            e=next(e for e in run['executions'] if e['id']==task['execution_id'])
-            e['collaboration_caller_pid']=session.get('process_id')
-            return dict(run_id=run['id'],task_id=task['id'],execution_id=e['id'],token=e['token'],timeline_id=run['timeline_id'])
-        if task['status'] not in ('planned','ready','blocked'):continue
-        values,sources,missing=runtime.resolve_inputs(run,task)
-        if missing:continue
-        e=runtime.new_execution(run,task,selected(run,task)[1],values,sources)
-        e['status']=task['status']='decision'
-        e['collaboration_caller_pid']=session.get('process_id')
-        bind(run,e,session['native_session']['provider'],session['native_session']['id'],'starter',
-             session['native_session'].get('cwd'))
-        acquire_in_run(run,'background',e['token'],e['id'])
-        return dict(run_id=run['id'],task_id=task['id'],execution_id=e['id'],token=e['token'],timeline_id=run['timeline_id'])
-    return {'run_id':run['id'],'waiting':True,'timeline_id':run['timeline_id']}
-
-
-def transfer_waits(db, timeline_id, previous_session, current_session):
-    """Explicit takeover changes the recipient, never the observed conditions."""
-    moved=[]
-    for wait in rows(db,'wait'):
-        if wait['timeline_id']==timeline_id and wait['session_id']==previous_session and wait['state'] in ('waiting','ready'):
-            wait['previous_session_id']=previous_session
-            wait['session_id']=current_session
-            put(db,'wait',wait);moved.append(wait['id'])
-    if moved:
-        timelines.append(db,timeline_id,'wait-handoff:'+uid('handoff'),'接续会话接管已有等待；条件与来源保持不变。','action',
-                         [{'wait_ids':moved,'session_id':current_session}],actor='platform')
-    return moved
-
-
 def start_run(store, a):
-    from loop_anything.runtime import steward
-    context=steward.request_context(store,a)
     with transaction(store) as db:
-        session=session_auth(db,a['session_id'],a['session_token'])
+        session=session_auth(db,a.get('session_id'),a.get('session_token')) if 'session_id' in a or 'session_token' in a else None
         fingerprint=digest({k:v for k,v in a.items() if k!='session_token'})
         prior=db.execute('SELECT run_id,fingerprint,receipt FROM run_requests WHERE id=?',(a['request_id'],)).fetchone()
         if prior:
@@ -153,11 +103,6 @@ def start_run(store, a):
             source=timelines.get(db,timeline_id).get('active_run_id')
         if source:
             old=store._load(db,source)
-            previous_session=old.get('steward',{}).get('session_id')
-            if previous_session:
-                previous=get(db,'session',previous_session)
-                if previous['state']=='unknown' or (previous.get('wake') and previous_session!=session['id']):
-                    raise Conflict('Previous session wake is active or unconfirmed; resolve it before continuing')
             if timeline_id and timeline_id!=old['timeline_id']:raise Invalid('Continuation must retain the original Timeline')
             timeline_id=old['timeline_id']
         if timeline_id:
@@ -166,25 +111,30 @@ def start_run(store, a):
                 current=store._load(db,timeline['active_run_id'])
                 if current['status'] not in ('completed','terminated') and source!=current['id']:
                     raise Conflict('This Timeline already has a Run; explicitly continue that Run after interruption')
-        fields={k:a[k] for k in ('inputs','bindings','created_by','notification_route','notification_command') if k in a}
-        if context.get('conversation_id'):fields['conversation_id']=context['conversation_id']
+        fields={k:a[k] for k in ('inputs','bindings','created_by','notification_route','notification_command','chat_context','conversation_id') if k in a}
         run=store.create(a['key'],a['title'],authorization=a.get('constraints',''),timeline_id=timeline_id,
                          continue_run_id=source,_db=db,**fields)
         if not timeline_id and (a.get('objective') or a.get('message')):
             value=timelines.get(db,run['timeline_id'])
             timelines.update(db,value['id'],value['revision'],{'objective':a.get('objective') or a['message']})
             timelines.project(run,timelines.get(db,value['id']))
-        if source and old.get('steward',{}).get('session_id')!=session['id']:
-            transfer_waits(db,run['timeline_id'],old.get('steward',{}).get('session_id'),session['id'])
         current_timeline=timelines.get(db,run['timeline_id'])
         current_timeline['active_run_id']=run['id'];timelines.save(db,current_timeline)
         timelines.project(run,current_timeline)
-        request=steward.start_in_run(run,steward_for(session),a['request_id'],a.get('message',''),
-                                    {'inputs':run['inputs'],'timeline_id':run['timeline_id']},context=context)
-        claim=claim_in_run(store,run,session)
+        if session:run['starter_session_id']=session['id']
+        result=dict(run_id=run['id'],timeline_id=run['timeline_id'],request_id=a['request_id'],status='started')
+        if not run['tasks']:
+            result['next']='Read the Timeline and Loop handbook. Arrange the first business tasks if work should begin.'
+        # A commandless entry is actual business work performed by the starting Agent.
+        seed = run['tasks'].get(run['loop_definition'].get('seed',{}).get('id'))
+        if seed and seed['status'] == 'planned':
+            from loop_anything.runtime.implementations import selected
+            impl = selected(run,seed)[1] or {}
+            if impl.get('kind') == 'agent' and not any(impl.get(k) for k in ('command','dispatch','executor')):
+                from loop_anything.interfaces.agent_tasks import acquire_in_run
+                owner=acquire_in_run(run,'interactive',task_id=seed['id'])
+                result.update(entry_task_id=seed['id'],token=owner['token'])
         store._save(db,run)
-        result=dict(claim,request_id=a['request_id'],status='accepted',
-                    next='Read Timeline progress and the current Loop handbook; arrange the next work. Finish the management task after arranging work.')
         db.execute('INSERT INTO run_requests VALUES (?,?,?,?)',(a['request_id'],run['id'],fingerprint,json.dumps(result)))
         return result
 
@@ -458,22 +408,11 @@ class WorkRuntime:
                 if data.get('done') is True:current['status']='completed'
             put(db,'monitor',current)
 
-    def pending(self,session_id):
-        with self.store.connection() as db:
-            waits=[v for v in rows(db,'wait') if v['session_id']==session_id and v['state']=='ready']
-        requests=[]
-        from loop_anything.runtime.steward import management_task
-        for run in self.store.list():
-            if run.get('steward',{}).get('session_id')!=session_id or run.get('superseded_by'):continue
-            for task in run['tasks'].values():
-                if management_task(task) and task['status'] in ('planned','ready','blocked'):
-                    _,_,missing=self.engine.timeline_runtime.resolve_inputs(run,task)
-                    if not missing:requests.append({'run_id':run['id'],'task_id':task['id'],'timeline_id':run['timeline_id']})
-        return waits,requests
 
     def wake(self,ident):
-        waits,requests=self.pending(ident)
-        if not waits and not requests:return
+        with self.store.connection() as db:
+            waits=[v for v in rows(db,'wait') if v['session_id']==ident and v['state']=='ready']
+        if not waits:return
         with transaction(self.store) as db:
             session=get(db,'session',ident)
             if session['state'] not in ('idle','active') or session.get('wake') or alive(session.get('process_id')):return
@@ -483,9 +422,9 @@ class WorkRuntime:
             call=uid('wake')
             session.update(state='running',wake=call)
             put(db,'session',session)
-        self.engine.futures.add(self.engine.pool.submit(self.resume,session,waits,requests))
+        self.engine.futures.add(self.engine.pool.submit(self.resume,session,waits))
 
-    def resume(self,session,waits,requests):
+    def resume(self,session,waits):
         from loop_anything.runtime.native_sessions import resume_config
         from loop_anything.runtime.process_session import ProcessSession
         from loop_anything.runtime.host_runtime import run_command,CommandNotStopped
@@ -493,7 +432,7 @@ class WorkRuntime:
         ident=session['id'];call=session['wake']
         with self.store.connection() as db:
             waits=[get(db,'wait',w['id']) for w in waits if get(db,'wait',w['id'])['state']=='ready']
-        if not waits and not requests:
+        if not waits:
             with transaction(self.store) as db:
                 current=get(db,'session',ident)
                 if current.get('wake')==call:
@@ -509,17 +448,16 @@ class WorkRuntime:
                     if doc.get('pid'):current['process_id']=doc['pid']
                     put(db,'session',current)
         process=ProcessSession(call,config,changed)
-        context={'workspace_id':self.engine.communication.settings()['instance_id'],'session_id':ident,'session_token':session['token'],'waits':waits,'run_requests':requests,
+        context={'workspace_id':self.engine.communication.settings()['instance_id'],'session_id':ident,'session_token':session['token'],'waits':waits,
                  'platform_url':getattr(self.engine,'platform_url',None),
                  'platform_client':str(platform_skill_directory()/'scripts/call.py')}
-        prompt='继续当前会话。先读取关联 Timeline 的最新目标、限制和进度。用 claim_run 取得待处理 Run 的操作身份。等待已满足仅表示需要判断，不能重复启动已有工作。目标或限制修改后检查并向用户汇报，由用户决定额外调整。处理完用 acknowledge_wait 确认收到等待结果。\n'+json.dumps(context,ensure_ascii=False)
+        prompt='继续当前会话。先读取关联 Timeline 的最新目标、限制和进度。等待已满足仅表示需要判断，不能重复启动已有工作。目标或限制修改后检查并向用户汇报，由用户决定额外调整。处理完用 acknowledge_wait 确认收到等待结果。\n'+json.dumps(context,ensure_ascii=False)
         unknown=False
         try:
             result=run_command(config['command'],prompt,config.get('timeout'),config.get('cwd'),self.engine.stopping,process,context=context)
             error=None if result.returncode==0 else 'Agent exited: '+str(result.returncode)
         except Exception as exc:
             error=str(exc);unknown=isinstance(exc,CommandNotStopped)
-        _,remaining_requests=self.pending(ident)
         with transaction(self.store) as db:
             current=get(db,'session',ident)
             if current.get('wake')!=call:return
@@ -527,6 +465,6 @@ class WorkRuntime:
                            wake=call if unknown else None,error=error)
             if not unknown:current['process_id']=None
             # Require an explicit retry for unacknowledged work after a successful but incomplete turn.
-            if not error and (remaining_requests or any(get(db,'wait',w['id'])['state']=='ready' for w in waits)):
+            if not error and any(get(db,'wait',w['id'])['state']=='ready' for w in waits):
                 current.update(state='failed',error='Wake finished without acknowledging its waits; inspect before retry')
             put(db,'session',current)

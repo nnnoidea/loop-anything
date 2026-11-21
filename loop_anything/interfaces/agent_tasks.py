@@ -51,17 +51,12 @@ def acquire_in_run(run, kind, token=None, execution_id=None, task_id=None):
         raise Invalid('Run has no execution identity protocol')
     if execution_id:
         task_id = execution(run, execution_id)['task_id']
-    from loop_anything.runtime.steward import management_task
-    if run['status'] in ('completed', 'terminated') and not (kind == 'background' and management_task(run['tasks'].get(task_id, {}))):
+    if run['status'] in ('completed', 'terminated'):
         raise Conflict('Run ended')
-    if run.get('steward') and kind == 'interactive':
-        if not execution_id or management_task(run['tasks'].get(task_id, {})):
-            raise Conflict('Submit a Run request to its steward')
     if task_id is not None and task_id not in run['tasks']:
         raise Invalid('Unknown scope task')
-    from loop_anything.runtime.flow_agent import NODE as FLOW_AGENT
     scope = scope_for(run, run['tasks'][task_id]) if task_id and (kind == 'background' or
-        run['tasks'][task_id]['spec']['node'] == FLOW_AGENT or run['tasks'][task_id]['origin'].get('entry')) else task_id
+        run['tasks'][task_id]['origin'].get('flow_agent') or run['tasks'][task_id]['origin'].get('entry')) else task_id
     if not scope_available(run, task_id, token):
         raise Conflict('Another Agent is executing this Task')
     owner = dict(token=token or uid('operator'), kind=kind, execution_id=execution_id,
@@ -141,7 +136,6 @@ def run_snapshot(store, run, owner):
     """Execution overview derived from the Run; task details stay in read_task."""
     from collections import Counter
     from loop_anything.packaging.packages import resolve_skill
-    from loop_anything.runtime.steward import receipt, management_task
     from loop_anything.runtime.timelines import public_status
     executions={e['id']:e for e in run['executions']}
     tasks=[]
@@ -150,7 +144,7 @@ def run_snapshot(store, run, owner):
         node=node_for(run,task['spec']['node'])
         tasks.append({'task_id':task['id'],'node':run.get('retained_nodes',{}).get(task['spec']['node'],{}).get('node_id',task['spec']['node']),
                       'label':node.get('label',task['spec']['node']),'status':task['status'],
-                      'kind':'management' if management_task(task) else 'business',
+                      'kind':'decision' if task['spec']['node']=='$flow_agent' else 'business',
                       'execution_id':task.get('execution_id'),'lifecycle_state':attempt.get('lifecycle_state'),
                       'wait_reasons':copy.deepcopy(task.get('wait_reasons',[])),
                       'error':attempt.get('error') or task.get('budget_error'),
@@ -168,8 +162,6 @@ def run_snapshot(store, run, owner):
             'handbook':handbook,
             'implementations':{n:{'default':default_id(entry),'options':list(options(entry))} for n,entry in run['implementations'].items()},
             'work':[{'key':k,'run_id':v['run_id'],'steps':v['result']['steps']} for k,v in run.get('arrangements',{}).items()],
-            'steward':{k:run.get('steward',{}).get(k) for k in ('agent_id','name','generation')},
-            'requests':[{k:v for k,v in receipt(run,r).items() if k in ('request_id','operation','status','task_id','task_status','error')} for r in run.get('steward_requests',{}).values()],
             'read_only':owner is None,'scope_task':owner.get('scope_task') if owner else None}
 
 
@@ -397,37 +389,35 @@ def apply_task_edit(run, tool, arguments, origin, owner=None):
     return {'tasks': specs}
 
 
-def edit_tasks(store, run_id, changes, token=None, preview=False):
-    """UI edits/preview use the same contracts as Agent task tools."""
-    definitions = {d['name']: d['inputSchema'] for d in RunTools(store, run_id, token).definitions()}
+def apply_task_changes(store, run, changes, token=None):
+    definitions = {d['name']: d['inputSchema'] for d in RunTools(store, run['id'], token).definitions()}
     if not isinstance(changes, list) or not changes:
         raise Invalid('Supply task changes')
-    if type(preview) is not bool:
-        raise Invalid('preview must be boolean')
+    omitted = []
+    owner = require_owner(run, token) if token else None
+    for change in changes:
+        tool = change.get('tool')
+        if tool not in ('add_task', 'change_task', 'build_plan'):
+            raise Invalid('Unknown task edit')
+        contract(change.get('arguments'), definitions[tool], 'arguments')
+        origin = {'agent': owner.get('execution_id') or 'interactive'} if owner else {'user': True}
+        result = apply_task_edit(run, tool, change['arguments'], origin, owner)
+        omitted.extend(dict(item, plan=change['arguments']['name']) for item in result.get('omitted', []))
+    return omitted
 
-    def apply(run):
-        omitted = []
-        owner = require_owner(run, token) if token else None
-        for change in changes:
-            tool = change.get('tool')
-            if tool not in ('add_task', 'change_task', 'build_plan'):
-                raise Invalid('Unknown task edit')
-            contract(change.get('arguments'), definitions[tool], 'arguments')
-            origin = {'agent': owner.get('execution_id') or 'interactive'} if owner else {'user': True}
-            result = apply_task_edit(run, tool, change['arguments'], origin, owner)
-            omitted.extend(dict(item, plan=change['arguments']['name']) for item in result.get('omitted', []))
-        return omitted
 
+
+def edit_tasks(store, run_id, changes, token=None, preview=False):
     if preview:
         from loop_anything.runtime.timeline_plan import validate_task_dependencies
         run = store.get(run_id)
         before = copy.deepcopy(run['tasks'])
-        omitted = apply(run)
+        omitted = apply_task_changes(store,run,changes,token)
         validate_task_dependencies(run)
         return {'omitted': omitted, 'changes': [{'task_id': k, 'before': before.get(k), 'after': v}
                             for k, v in run['tasks'].items() if v != before.get(k)]}
     with store.edit(run_id) as run:
-        apply(run)
+        apply_task_changes(store,run,changes,token)
     return store.get(run_id)
 
 
@@ -456,7 +446,7 @@ class RunTools:
             ('notify', 'Queue one notification or question. Stable key deduplicates. Uses the Run default outlet unless route is supplied. Scripts need current execution_id/token and task_id; Agents need scope; runtime callers use their supplied execution identity; other thinking Agents do not block it. reply needs event/key/schema, and does not pause the Run.', {'key':text,'message':text,'route':text,'reply':obj,'task_id':text,'execution_id':text}, ['key','message'], False),
             ('send_event', 'Submit an external event or reply, independently of the notification channel. Stable event_id deduplicates; name/key identify the wait. Optional notification_id validates the question schema. Agents must own the target wait Task or global scope; user input without token is allowed.', {'event_id':text,'name':text,'payload':obj,'key':text,'notification_id':text,'task_id':text}, ['event_id','name','payload'], False),
             ('report_task', 'Report an explicit lifecycle event. Scripts/monitors use their execution_id and token; Agents use their current execution identity. Use a stable report_id for retries. completed requires envelope with all outputs. Inspect accepted=true; stale=true is a recorded late monitor report, not a new failure. Uncovered transitions are recorded as issues. finish separately releases Agent scope.', {'task_id': text, 'execution_id': text, 'report_id': text, 'event': text, 'envelope': obj, 'detail': obj, 'external_id': text, 'poll_after': {'type': 'number'}}, ['task_id', 'report_id', 'event'], False),
-            ('change_settings', 'Use read_run(view=snapshot).settings.revision (not the top-level Run revision). Write authorized Run settings, including bindings (node ID to candidate ID or null, replaces the Run selection map), completion_rule (deterministic expression) or termination_signal (reason text). Engine applies terminal transitions; finish only releases Agent ownership. Changing requirements does not invalidate tasks or results. fallback_node selects a declared fallback node; empty/null disables it. notification_command sets this Run sender argv (empty inherits the Loop sender); only a global operator may change it. Already attempted notifications keep their original sender on retry. A steward may change authorization only to the exact text supplied in its user request.', {'revision': {'type': 'integer'}, 'change': obj}, ['revision', 'change'], False),
+            ('change_settings', 'Use read_run(view=snapshot).settings.revision (not the top-level Run revision). Write authorized Run settings, including bindings (node ID to candidate ID or null, replaces the Run selection map), completion_rule (deterministic expression) or termination_signal (reason text). Engine applies terminal transitions; finish only releases Agent ownership. Changing requirements does not invalidate tasks or results. fallback_node selects a declared fallback node; empty/null disables it. notification_command sets this Run sender argv (empty inherits the Loop sender); only a global operator may change it. Already attempted notifications keep their original sender on retry.', {'revision': {'type': 'integer'}, 'change': obj}, ['revision', 'change'], False),
             ('command', 'Use existing Run controls only within user authorization. Pausing does not cancel external side effects.', {'action': {'type': 'string', 'enum': ['pause', 'resume', 'terminate', 'release_gate', 'retry_notification']}, 'hook_firing': text, 'notification_id': text}, ['action'], False),
             ('change_task', 'Choose a candidate with implementation (empty string inherits the Run default). Correct unstarted Task inputs/parameters, cancel tasks, or retry a failed Task only after checking side effects. Cannot alter an executing script.', {'task_id': text, 'operation': {'type': 'string', 'enum': ['update', 'cancel', 'retry']}, 'inputs': obj, 'parameters': obj, 'implementation': text, 'after': {'type': 'array', 'items': text}, 'reason': text}, ['task_id', 'operation', 'reason'], False),
             ('defer_task', 'Record why an item must wait for user authorization/input. This is not successful execution and must not hide tasks you can do.', {'task_id': text, 'reason': text}, ['task_id', 'reason'], False),
@@ -557,9 +547,7 @@ class RunTools:
                 tasks = run['tasks'].get(arguments['task_id'])
                 if not tasks:
                     raise Invalid('Unknown business Task')
-            from loop_anything.runtime.steward import management_task
-            own_management = management_task(run['tasks'].get(owner.get('task_id'), {}))
-            if run['status'] in ('terminated', 'completed') and name != 'finish' and not (own_management and name == 'report_task' and arguments['task_id'] == owner['task_id']):
+            if run['status'] in ('terminated', 'completed') and name != 'finish':
                 raise Conflict('Run ended')
             if name in ('build_plan', 'add_task', 'change_task'):
                 return apply_task_edit(run, name, arguments, {'agent': owner.get('execution_id') or 'interactive'}, owner)
@@ -626,8 +614,6 @@ class RunTools:
                 handed_off = attempt.get('lifecycle_state') == 'agent'
                 unresolved = [i for i in tasks['items'] if (i['kind'] != 'task' or i.get('task_id') == owner.get('task_id'))
                               and not (handed_off and i.get('task_id') == owner.get('task_id'))]
-                if own_management:
-                    unresolved = [i for i in unresolved if i.get('task_id') == owner['task_id']]
                 if unresolved and not run['settings'].get('termination_signal', '').strip():
                     raise Conflict('Run still has actionable tasks: ' + ', '.join(t['id'] for t in tasks['items']))
                 release_in_run(run, self.token)
@@ -641,8 +627,6 @@ class RunTools:
             result = copy.deepcopy(run)
             from loop_anything.runtime.timelines import public_status
             result['status']=public_status(run)
-            from loop_anything.runtime.steward import expose_requests
-            expose_requests(result)
             for item in result.get('agent_sessions', []) + result.get('executions', []) + result.get('notifications', []):
                 item.pop('token', None)
             return {'run': result}

@@ -18,9 +18,9 @@ INDEPENDENT=set('import_timeline check list read_capabilities read_cc_connect re
 # Only tools declared read-only may look up an unseen resource on a verified platform.
 READ_ONLY=set('read_observations communication_status communication_workspace export_loop export_timeline list_executors list_loops list_monitor_scripts list_monitors list_runs list_timelines next_tasks preview_plan read_assistance read_business_state read_capabilities read_cc_connect read_execution_session read_executor_call read_loop read_loop_config read_monitor read_monitor_dashboard read_monitor_history read_notification_channels read_plans read_record read_run read_run_request read_task read_timeline read_wait read_work_result read_work_results read_work_session read_work_timeline resolve_refs test_loop validate_loop validate_parameters'.split())
 RETRYABLE_HTTP=READ_ONLY | {'list','import_timeline'}
-KNOWN_TOOLS=READ_ONLY | set('update_run_method refresh_observation acknowledge_wait add_task answer_run_request append_timeline archive_loop build_plan cancel_wait change_settings change_task check claim_run command communication_config communication_execute complete configure_cc_connect confirm_executor_stopped connect_steps control_assistance control_execution_session copy_loop create_loop create_timeline defer_task delete_loop edit_tasks executor_poll executor_report finish import_timeline list native_session notify progress publish_loop put_asset put_node put_step read_asset read_context register_agent_session register_monitor register_work_session remove_node remove_step reply_run_request report_task request_assistance resolve_continuation resolve_request restart_monitor result resume_work_session send_event set_implementation set_loop set_loop_config set_notification_channels smoke_runtime source_call source_result start_collaboration start_monitor start_run stop_monitor submit_run_request take_over_run update_timeline wait_assistance wait_for'.split())
+KNOWN_TOOLS=READ_ONLY | set('acquire_run update_run_method refresh_observation acknowledge_wait add_task append_timeline archive_loop build_plan cancel_wait change_settings change_task check command communication_config communication_execute complete configure_cc_connect confirm_executor_stopped connect_steps control_assistance control_execution_session copy_loop create_loop create_timeline defer_task delete_loop edit_tasks executor_poll executor_report finish import_timeline list native_session notify progress publish_loop put_asset put_node put_step read_asset read_context register_agent_session register_monitor register_work_session remove_node remove_step report_task request_assistance resolve_continuation resolve_request restart_monitor result resume_work_session send_event set_implementation set_loop set_loop_config set_notification_channels smoke_runtime source_call source_result start_collaboration start_monitor start_run stop_monitor submit_run_request update_timeline wait_assistance wait_for'.split())
 LOOP_KEYS=set('update_run_method preview_plan validate_parameters test_loop archive_loop delete_loop smoke_runtime read_loop copy_loop read_loop_config set_loop_config start_run'.split())
-WORK_SESSIONS=set('start_run read_work_session claim_run take_over_run resolve_continuation resume_work_session wait_for cancel_wait acknowledge_wait'.split())
+WORK_SESSIONS=set('start_run read_work_session resume_work_session wait_for cancel_wait acknowledge_wait'.split())
 NEW_REQUESTS=set('import_timeline start_run start_collaboration request_assistance submit_run_request start_monitor'.split())
 FIELDS={'run_id':'run','continue_run_id':'run','parent_run_id':'run','collaboration_id':'run',
         'timeline_id':'timeline','draft_id':'draft','monitor_id':'monitor','wait_id':'wait',
@@ -37,7 +37,6 @@ def references(tool,a):
         if field=='script_id' and tool=='register_monitor' and a.get('revision')==0:continue
         add(kind,a.get(field))
     if tool in LOOP_KEYS:add('loop',a.get('key'))
-    if tool=='submit_run_request' and a.get('operation')=='update_run_method':add('loop',a.get('arguments',{}).get('key'))
     if tool in WORK_SESSIONS:add('session',a.get('session_id'))
     if tool in EXECUTOR_CALLS:add('call',a.get('id'))
     if tool not in NEW_REQUESTS:add('request',a.get('request_id'))
@@ -215,8 +214,7 @@ def bind_context(context):
         with ledger.db:
             work=ledger.create(url.rstrip('/'))
             refs=resources('',context)
-            refs+=resources('',{'requests':context.get('run_requests',[])+context.get('assistance_results',[])})
-            if isinstance(context.get('steward_request'),dict):refs+=resources('',{'request':context['steward_request']})
+            refs+=resources('',{'requests':context.get('assistance_results',[])})
             if isinstance(context.get('continued_from'),dict):refs+=resources('',context['continued_from'])
             for wait in context.get('waits',[]):
                 if isinstance(wait,dict):refs+=references('wait_for',{'sources':wait.get('sources',{})})

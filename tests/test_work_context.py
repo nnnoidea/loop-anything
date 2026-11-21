@@ -42,14 +42,9 @@ class WorkContextTests(unittest.TestCase):
         return self.tools.call('start_run',args)
 
     def initialize(self,receipt):
-        runtime=RunTools(self.store,receipt['run_id'],receipt['token'])
-        run=self.store.get(receipt['run_id'])
-        runtime.call('add_task',{'key':'work','node_id':'work','inputs':{}})
-        info=runtime.call('read_task',{'task_id':receipt['task_id']})
-        runtime.call('report_task',{'task_id':receipt['task_id'],'event':'completed','report_id':'managed',
-                     'envelope':{'outputs':{'decision':'Started'}}})
-        runtime.call('finish',{})
-        return runtime
+        self.tools.call('submit_run_request',{'request_id':'arrange-'+receipt['run_id'],'run_id':receipt['run_id'],
+                        'operation':'edit_tasks','arguments':{'changes':[{'tool':'add_task','arguments':
+                        {'key':'work','node_id':'work','inputs':{}}}]}})
 
     def test_timeline_without_run_and_edit_does_not_schedule_or_pause(self):
         t=self.tools.call('create_timeline',{'objective':'old','constraints':'limit'})['timeline']
@@ -74,11 +69,11 @@ class WorkContextTests(unittest.TestCase):
     def test_start_binds_current_session_and_deduplicates(self):
         r=self.start()
         self.assertEqual(r,self.start())
+        self.assertIn('first business tasks',r['next'])
         run=self.store.get(r['run_id'])
-        self.assertEqual(run['steward']['session_id'],self.session['session_id'])
-        self.assertEqual(run['executions'][0]['native_session']['id'],'test-native')
+        self.assertEqual(run['starter_session_id'],self.session['session_id'])
         self.engine.tick(run['id'])
-        self.assertEqual(len(self.store.get(run['id'])['executions']),1)
+        self.assertEqual(self.store.get(run['id'])['executions'],[])
         self.initialize(r)
         self.engine.tick(r['run_id'])
 
@@ -141,7 +136,7 @@ class WorkContextTests(unittest.TestCase):
         self.assertEqual(updated['tasks'][task['id']]['status'],'completed')
         self.assertEqual(updated['records'][task['spec']['outputs']['value']['id']][-1]['value'],'original result')
         self.assertTrue(all(e['implementation']['kind']=='event' for e in updated['executions'] if e['node']=='work'))
-        self.assertTrue(any(t.get('origin',{}).get('flow_agent',{}).get('task_id')==task['id'] for t in updated['tasks'].values()))
+        self.assertFalse(any(t['spec']['node']=='$flow_agent' for t in updated['tasks'].values()))
 
     def test_real_session_wake_waits_for_original_process_and_uses_exact_id(self):
         import subprocess
@@ -173,46 +168,6 @@ class WorkContextTests(unittest.TestCase):
         self.tools.call('acknowledge_wait',dict(registered,wait_id=wait['id']))
         self.assertEqual(self.tools.call('read_wait',{'wait_id':wait['id']})['wait']['state'],'handled')
 
-    def test_resumed_starter_claims_default_progression_and_completes_work(self):
-        import subprocess
-        sleeper=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'])
-        self.addCleanup(lambda: sleeper.poll() is None and sleeper.kill())
-        script=self.root/'continue_agent.py'
-        script.write_text("import sys\nsys.path.insert(0,"+repr(str(Path(__file__).resolve().parents[1]))+")\n"+"""
-import json,sys
-from loop_anything.runtime.store import Store
-from loop_anything.interfaces.platform_tools import PlatformTools
-from loop_anything.interfaces.agent_tasks import RunTools
-context=json.loads(sys.argv[-1].split('\\n',1)[1])
-store=Store(sys.argv[1]);tools=PlatformTools(store)
-for request in context['run_requests']:
-    claim=tools.call('claim_run',dict(run_id=request['run_id'],session_id=context['session_id'],session_token=context['session_token']))
-    rt=RunTools(store,claim['run_id'],claim['token'])
-    info=rt.call('read_task',{'task_id':claim['task_id']})
-    rt.call('report_task',{'task_id':claim['task_id'],'report_id':'resumed-decision','event':'completed','envelope':{'outputs':{'decision':'All work is done'}}})
-    state=rt.call('read_run',{'view':'snapshot'})
-    rt.call('change_settings',{'revision':state['settings']['revision'],'change':{'termination_signal':'Timeline task completed'}})
-    rt.call('finish',{})
-""")
-        registered=self.tools.call('register_work_session',{
-            'native_session':{'provider':'custom','id':'progression-owner','cwd':str(Path.cwd())},
-            'implementation':{'kind':'agent','command':[sys.executable,'-c','pass'],
-                'resume_command':[sys.executable,str(script),self.store.filename,'{{session_id}}','{{prompt}}']},
-            'process_id':sleeper.pid})
-        receipt=self.tools.call('start_run',dict(registered,key=self.key,title='progression',request_id='progression-start',
-                                               objective='Finish the work',constraints='Local only'))
-        self.initialize(receipt);self.engine.tick(receipt['run_id'])
-        self.engine.event(receipt['run_id'],'complete-work','result',{'value':'done'})
-        self.engine.tick(receipt['run_id'])
-        sleeper.terminate();sleeper.wait(timeout=5)
-        self.engine.work.tick()
-        for f in list(self.engine.futures):f.result(timeout=10)
-        self.engine.tick(receipt['run_id'])
-        run=self.store.get(receipt['run_id'])
-        self.assertEqual(run['status'],'completed',self.tools.call('read_work_session',registered))
-        self.assertTrue(any(r['operation']=='decide' and r['status']=='completed' for r in run['steward_requests'].values()))
-        self.assertEqual(self.tools.call('read_run_request',{'request_id':'progression-start'})['status'],'completed')
-
     def test_missing_timeline_is_checked_when_loading_that_run(self):
         import json
         receipt=self.start()
@@ -224,18 +179,15 @@ for request in context['run_requests']:
             self.assertEqual(before,db.execute('SELECT document FROM runs WHERE id=?',(receipt['run_id'],)).fetchone()[0])
 
 
-    def test_timeline_rebind_after_finished_run_blocks_parallel_start(self):
+    def test_timeline_rebind_after_finished_run(self):
         first=self.start();self.initialize(first)
         with self.store.edit(first['run_id']) as run:run['status']='completed'
         second=self.tools.call('start_run',dict(self.session,key=self.key,title='next',request_id='next',
                                                timeline_id=first['timeline_id']))
-        with self.assertRaises(Conflict):
-            self.tools.call('start_run',dict(self.session,key=self.key,title='parallel',request_id='parallel',
-                                            timeline_id=first['timeline_id']))
         timeline=self.tools.call('read_work_timeline',{'timeline_id':first['timeline_id']})['timeline']
         self.assertEqual(timeline['active_run_id'],second['run_id'])
 
-    def test_recovery_transfers_wait_recipient_without_changing_condition(self):
+    def test_continuation_keeps_wait_with_requesting_conversation(self):
         first=self.start();self.initialize(first);self.engine.tick(first['run_id'])
         wait=self.tools.call('wait_for',dict(self.session,timeline_id=first['timeline_id'],key='external-wait',
             sources={'original':{'kind':'run','id':first['run_id']}},
@@ -252,25 +204,5 @@ for request in context['run_requests']:
         moved=self.tools.call('read_wait',{'wait_id':wait['id']})['wait']
         self.assertEqual(moved['sources'],wait['sources'])
         self.assertEqual(moved['condition'],wait['condition'])
-        self.assertEqual(moved['session_id'],next_session['session_id'])
-        self.tools.call('cancel_wait',dict(next_session,wait_id=wait['id']))
-
-    def test_explicit_takeover_transfers_run_and_waits_in_one_transaction(self):
-        first=self.start();self.initialize(first)
-        wait=self.tools.call('wait_for',dict(self.session,timeline_id=first['timeline_id'],key='takeover-wait',
-            sources={'run':{'kind':'run','id':first['run_id']}},
-            condition={'op':'eq','args':[{'path':'run.status'},'completed']}))['wait']
-        second=self.tools.call('register_work_session',{
-            'native_session':{'provider':'custom','id':'takeover-owner'},
-            'implementation':{'kind':'agent','command':[sys.executable,'-c','pass'],
-                              'resume_command':[sys.executable,'-c','pass','{{session_id}}','{{prompt}}']},
-            'process_id':os.getpid()})
-        with self.store.edit(first['run_id']) as run:
-            for e in run['executions']:e.pop('collaboration_caller_pid',None)
-        with self.assertRaises(Conflict):
-            self.tools.call('take_over_run',dict(second,run_id=first['run_id'],generation=0))
-        self.assertEqual(self.tools.call('read_wait',{'wait_id':wait['id']})['wait']['session_id'],self.session['session_id'])
-        claim=self.tools.call('take_over_run',dict(second,run_id=first['run_id'],generation=1))
-        self.assertIn('token',claim)
-        self.assertEqual(self.store.get(first['run_id'])['steward']['session_id'],second['session_id'])
-        self.assertEqual(self.tools.call('read_wait',{'wait_id':wait['id']})['wait']['session_id'],second['session_id'])
+        self.assertEqual(moved['session_id'],self.session['session_id'])
+        self.tools.call('cancel_wait',dict(self.session,wait_id=wait['id']))

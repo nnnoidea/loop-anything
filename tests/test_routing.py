@@ -101,7 +101,8 @@ class RoutingTests(unittest.TestCase):
         tools2.call('finish',{});self.engine.tick(self.id)
         run=self.store.get(self.id)
         self.assertEqual(run['status'],'completed')
-        self.assertEqual(sum(h['kind']=='route_fired' for h in run['history']),3)
+        self.assertEqual(sum(h['kind']=='route_fired' for h in run['history']),2)
+        self.assertEqual(sum(h['kind']=='route_skipped' for h in run['history']),1)
         created=[t for t in run['tasks'].values() if t['origin'].get('route_id')]
         self.assertEqual(len(created),5)
         self.assertTrue(all(t['parent_id'] for t in created))

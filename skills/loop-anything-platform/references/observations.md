@@ -4,7 +4,7 @@ A Loop can declare a map of named observations with set_loop(observations=...). 
 
 ## Example: score comparison
 
-In the bound management turn, call update_run_method with the run_id, execution token and the following observations patch. For a Loop default, use the same named definition on the draft, add the script as a package asset and publish it. For a new Run-local script use a path accessible on the executing machine.
+With an authorized Run editing scope, call update_run_method with the run_id, execution token and the following observations patch. For a Loop default, use the same named definition on the draft, add the script as a package asset and publish it. For a new Run-local script use a path accessible on the executing machine.
 
 ~~~json
 {
@@ -76,4 +76,4 @@ update_run_method(run_id, token, observations={name: patch}) changes just this R
 
 Publishing a metadata-only change keeps an observation's cursor, pending work and next scheduled time. When its steps or bundled assets change, the new view can render immediately. Deliveries already triggered for that arrangement finish with their original steps and notification route, even if the original executor replies late. Only the current generation updates the view. Explicitly disabling or removing the arrangement cancels its remaining generation work. A Run's disabled fallback or global Agent node stays disabled across method updates.
 
-From outside the bound execution, submit_run_request with operation=update_run_method and the desired changes for the steward, or explicitly toggle follow_loop_updates with arguments={"follow":true}. After switching default space, continue using the saved Run/Timeline ID. Do not generate a fresh Run or resubmit external training to change a view.
+For an authorized Run-local edit, use acquire_run and call update_run_method with its token. Finish after the edit.

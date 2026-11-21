@@ -276,6 +276,9 @@ def smoke(document, root, configuration=None):
         valid = safe and same_file(file, metadata['sha256'])
         add('asset', name, valid, 'Installed asset matches manifest.' if valid else 'Asset missing, changed or symlinked.')
     candidates = [(node, ident, config) for node, entry in effective_implementations(execution_document, root).items() for ident, config in options(entry).items()]
+    if execution_document['loop_definition'].get('flow_agent'):
+        from loop_anything.runtime.flow_agent import NODE, effective
+        candidates.append((NODE,'default',effective(execution_document['loop_definition']['flow_agent'],root)))
     for name, ident, implementation in candidates:
         directory = Path(implementation.get('cwd', str(root)))
         if 'command' in implementation or 'observe' in implementation:

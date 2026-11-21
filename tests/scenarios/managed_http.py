@@ -23,13 +23,7 @@ def start(api, session, key, title, **options):
 
 
 def claim(api, session, run_id):
-    deadline = time.monotonic() + 20
-    while time.monotonic() < deadline:
-        turn = tool(api, 'claim_run', run_id=run_id, **session)
-        if turn.get('token'):
-            return turn
-        time.sleep(.1)
-    raise AssertionError('No management turn became ready for '+run_id)
+    return dict(run_id=run_id,**tool(api,'acquire_run',run_id=run_id))
 
 
 def operate(api, turn, name, **arguments):
@@ -37,7 +31,4 @@ def operate(api, turn, name, **arguments):
 
 
 def finish_turn(api, turn):
-    result = operate(api, turn, 'report_task', task_id=turn['task_id'], event='completed',
-                     report_id='managed', envelope={'outputs':{'decision':'Accepted simulation work'}})
-    assert result['accepted']
     operate(api, turn, 'finish')

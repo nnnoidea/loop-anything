@@ -1,62 +1,78 @@
-"""Explicit decision routes use the Run steward and retain native execution evidence."""
+"""Public Run startup and explicit, evidence-bearing routing decisions."""
 import sys
 import unittest
 from pathlib import Path
-
-import tests.test_steward as fixture
+from tests import test_work_context as fixture
 from loop_anything.runtime.model import Invalid
-from loop_anything.runtime.notifications import receive_event
 
 
 class BuiltinFlowTests(unittest.TestCase):
     def setUp(self):
-        self.t=fixture.StewardTests();self.t.setUp();self.addCleanup(self.t.doCleanups)
-        self.t.edit('put_node',node_id='work',progression='rules',routes=[{'id':'review','event':'completed','flow_agent':True}])
-        self.t.republish()
+        c=fixture.WorkContextTests()
+        c.setUp()
+        self.addCleanup(c.doCleanups)
+        self.c=c
+        self.draft=c.tools.call('copy_loop',{'key':c.key,'new_version':True})
 
-    def prepare(self):
-        t=self.t;request,worker=t.initialized_start();worker.call('read_timeline',{})
-        source=worker.call('add_task',{'key':'source','node_id':'work','inputs':{}})['tasks'][0]['id']
-        t.finish_start(request,worker);t.tick_without_cli()
-        return source
+    def edit(self,tool,**args):
+        self.draft=self.c.tools.call(tool,dict(draft_id=self.draft['draft_id'],revision=self.draft['revision'],**args))
 
-    def signal(self):
-        with self.t.store.edit(self.t.run_id) as run:
-            receive_event(run,'result','ready',{'result':{'score':42}},'evidence')
+    def run_route(self,implementation,when=None):
+        c=self.c
+        self.edit('set_loop',flow_agent=implementation)
+        route={'id':'review','event':'completed','flow_agent':True}
+        if when:route['when']=when
+        self.edit('put_node',node_id='work',routes=[route])
+        key=c.tools.call('publish_loop',{'draft_id':self.draft['draft_id'],'revision':self.draft['revision']})['key']
+        start=c.tools.call('start_run',{'key':key,'title':'Route evidence','request_id':'start'})
+        self.assertNotIn('starter_session_id',c.store.get(start['run_id']))
+        c.initialize(start)
+        c.engine.tick(start['run_id'])
+        c.engine.event(start['run_id'],'fact','result',{'value':'scored'})
+        c.engine.tick(start['run_id'])
+        for job in list(c.engine.futures):job.result(timeout=15)
+        return c.store.get(start['run_id'])
 
-    def test_declared_decision_has_exact_evidence_and_full_results_without_business_node(self):
-        t=self.t;source=self.prepare();self.signal();t.tick_without_cli()
-        run=t.store.get(t.run_id)
-        request=next(r for r in run['steward_requests'].values() if r['operation']=='decide')
-        worker=t.worker(request['task_id']);info=worker.call('read_task',{'task_id':request['task_id']})
-        ref=info['flow_trigger']['records']['result']
-        self.assertEqual(worker.call('read_record',{'id':ref['record'],'revision':ref['revision']})['record']['value'],{'score':42})
-        answer={'full_answer':'Evidence and reasoning. '*500}
-        t.complete(worker,request['task_id'],{'decision':answer});worker.call('finish',{})
-        t.tick_without_cli()
-        self.assertEqual(t.tools.call('read_run_request',{'request_id':request['id']})['result'],answer)
-        self.assertEqual(len([r for r in t.store.get(t.run_id)['steward_requests'].values() if r['operation']=='decide']),1)
-        authored=t.tools.call('read_loop',{'key':t.key})['loop']['loop_definition']
-        self.assertNotIn('$flow_agent',authored['nodes']);self.assertNotIn('flow_agent',authored)
-        self.assertEqual(info['flow_trigger']['task_id'],source)
+    def test_unmatched_route_creates_no_decision(self):
+        run=self.run_route({'kind':'agent'},when={'op':'eq','args':[1,2]})
+        self.assertEqual(len(run['tasks']),1)
+        self.assertFalse(any(h['kind']=='route_fired' for h in run['history']))
+        skipped = next(h for h in run['history'] if h['kind']=='route_skipped')
+        view = self.c.tools.call('read_task',{'run_id':run['id'],'task_id':skipped['detail']['task_id']})
+        self.assertEqual(view['route_receipts'][0]['status'],'skipped')
+        self.assertEqual(view['flow_decisions'],[])
 
-    def test_false_explicit_condition_does_not_fall_back_to_default_decision(self):
-        t=self.t;t.edit('put_node',node_id='work',progression='rules',routes=[{'id':'review','event':'completed','flow_agent':True,'when':{'op':'eq','args':[1,2]}}])
-        t.republish();self.prepare();self.signal();t.tick_without_cli()
-        self.assertFalse(any(r['operation']=='decide' for r in t.store.get(t.run_id)['steward_requests'].values()))
+    def test_invalid_route_requires_configured_agent(self):
+        self.edit('put_node',node_id='work',routes=[{'id':'review','event':'completed','flow_agent':True}])
+        with self.assertRaises(Invalid):
+            self.c.tools.call('publish_loop',dict(draft_id=self.draft['draft_id'],revision=self.draft['revision']))
 
-    def test_invalid_report_is_atomic_and_rule_agent_mixing_is_validated(self):
-        t=self.t
-        with self.assertRaises(Invalid):t.edit('put_node',node_id='work',routes=[{'id':'bad','event':'completed','flow_agent':True,'plan':'extra','values':{}}])
-        request,worker=t.initialized_start()
-        before=t.store.get(t.run_id)
-        with self.assertRaises(Invalid):t.complete(worker,request['task_id'],{'not_decision':'bad'})
-        after=t.store.get(t.run_id)
-        for field in ('tasks','executions','records','steward_requests'):
-            self.assertEqual(after[field],before[field])
+    def test_hot_update_preserves_route_on_inflight_task(self):
+        c=self.c
+        self.edit('set_loop',flow_agent={'kind':'agent'})
+        self.edit('put_node',node_id='work',routes=[{'id':'review','event':'completed','flow_agent':True}])
+        key=c.tools.call('publish_loop',dict(draft_id=self.draft['draft_id'],revision=self.draft['revision']))['key']
+        start=c.tools.call('start_run',dict(key=key,title='Pending decision',request_id='v1'))
+        c.initialize(start)
+        rid=start['run_id']
+        c.engine.tick(rid)
+        self.draft=c.tools.call('copy_loop',dict(key=key,new_version=True))
+        self.edit('put_node',node_id='work',routes=[])
+        self.edit('set_loop',flow_agent=None)
+        new=c.tools.call('publish_loop',dict(draft_id=self.draft['draft_id'],revision=self.draft['revision']))['key']
+        owner=c.tools.call('acquire_run',dict(run_id=rid))
+        c.tools.call('update_run_method',dict(run_id=rid,key=new,token=owner['token']))
+        from loop_anything.interfaces.agent_tasks import RunTools
+        RunTools(c.store,rid,owner['token']).call('finish',{})
+        c.engine.event(rid,'score','result',{'value':'ready'})
+        c.engine.tick(rid)
+        run=c.store.get(rid)
+        decision=next(t for t in run['tasks'].values() if t['origin'].get('flow_agent'))
+        self.assertEqual(decision['status'],'decision')
+        scope=c.tools.call('acquire_run',dict(run_id=rid,task_id=decision['id']))
+        self.assertIsNone(scope['scope_task'])
 
-    def test_real_cli_receives_trigger_and_preserves_full_result_and_native_session(self):
-        t=self.t
+    def test_real_cli_receives_evidence_and_finishes(self):
         code='''import json,sys
 from loop_anything.interfaces.agent_tasks import RunTools
 from loop_anything.runtime.store import Store
@@ -64,19 +80,20 @@ c=json.loads(sys.stdin.read().split('Run context:'+chr(10),1)[1])
 assert c['flow_trigger']['event']=='completed'
 t=RunTools(Store(sys.argv[1]),c['run_id'],c['token'])
 print(json.dumps({'type':'thread.started','thread_id':'builtin-real-cli-session'}),flush=True)
-i=t.call('read_task',{'task_id':c['task_id']});r=i['inputs']['trigger']['records']['result']
+i=t.call('read_task',{'task_id':c['task_id']});r=i['inputs']['trigger']['records']['value']
 v=t.call('read_record',{'id':r['record'],'revision':r['revision']})['record']['value']
 t.call('report_task',{'task_id':c['task_id'],'event':'completed','report_id':'cli-result','envelope':{'outputs':{'decision':{'evidence':v,'answer':'complete answer'*500}}}})
 t.call('finish',{})
 '''
-        t.tools.call('communication_config',{'operation':'agent','agent_id':'first','agent':{'implementation':{
-            'kind':'agent','agent_cli':'codex','cwd':str(Path(__file__).resolve().parents[1]),
-            'command':[sys.executable,'-u','-c',code,t.store.filename]}}})
-        source=self.prepare();self.signal();t.engine.tick(t.run_id)
-        for future in list(t.engine.futures):future.result(timeout=10)
-        run=t.store.get(t.run_id)
-        task=next(x for x in run['tasks'].values() if x['origin'].get('flow_agent',{}).get('task_id')==source)
-        execution=next(e for e in run['executions'] if e['id']==task['execution_id'])
-        self.assertEqual(execution['status'],'completed',execution.get('error'))
-        self.assertEqual(execution['native_session']['id'],'builtin-real-cli-session')
-        self.assertEqual(execution['outputs']['decision'],{'evidence':{'score':42},'answer':'complete answer'*500})
+        run=self.run_route({'kind':'agent','command':[sys.executable,'-c',code,self.c.store.filename],
+                            'agent_cli':'codex','cwd':str(Path(__file__).resolve().parents[1])})
+        decisions=[e for e in run['executions'] if e['node']=='$flow_agent']
+        self.assertEqual(len(decisions),1)
+        events = [h for h in run['history'] if h['kind']=='route_fired']
+        self.assertEqual(len(events),1)
+        self.assertEqual(events[0]['detail']['status'],'fired')
+        self.assertEqual(events[0]['detail']['batches'][0]['task_ids'],[decisions[0]['task_id']])
+        decision=decisions[0]
+        self.assertEqual(decision['status'],'completed',decision.get('error'))
+        self.assertEqual(decision['outputs']['decision']['evidence'],'scored')
+        self.assertEqual(decision['native_session']['id'],'builtin-real-cli-session')

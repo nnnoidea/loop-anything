@@ -11,6 +11,18 @@ def header(db, ident):
     return json.loads(row[0])
 
 
+def seed_child(child, config):
+    if child['tasks']:
+        return
+    from loop_anything.runtime.timeline_plan import add_task
+    if 'seed' not in config:
+        raise Invalid('子 Loop 没有入口任务，请在父 Loop 的调用节点用 loop.seed 指定第一步。')
+    try:
+        add_task(child, config['seed'], {'entry': True})
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise Invalid('无效的子 Loop 启动任务 loop.seed：' + str(exc)) from exc
+
+
 def advance(runtime, run_id):
     store=runtime.store
     # One transaction links the new Run and its caller, including across crashes/concurrent ticks.
@@ -39,6 +51,12 @@ def advance(runtime, run_id):
                             raise Invalid('This Task already called a Loop with different inputs/key; create a new Task to start different work')
                         from loop_anything.runtime.timelines import current_run_id
                         child=header(db,current_run_id(db,header(db,binding['run_id'])))
+                        if child['status']=='running' and not db.execute(
+                                "SELECT 1 FROM timeline_parts WHERE run_id=? AND section='tasks' LIMIT 1",
+                                (child['id'],)).fetchone():
+                            attempt['child_run_id']=child['id']
+                            with store.edit(child['id'],_db=db) as existing:
+                                seed_child(existing,config)
                     else:
                         if run.get('superseded_by'):continue
                         ancestor=run
@@ -54,14 +72,9 @@ def advance(runtime, run_id):
                                 authorization=run['settings'].get('constraints',''),acquire=False,_db=db,created_by=run.get('created_by',''),
                                 notification_command=run['settings'].get('notification_command'),
                                 notification_route=run['settings'].get('notification_route'))
+                            seed_child(child,config)
                             child['parent_call']={'run_id':run_id,'task_id':task['id'],'execution_id':attempt['id']}
                             if run.get('notification_conversation_id'):child['notification_conversation_id']=run['notification_conversation_id']
-                            if run.get('steward'):
-                                from loop_anything.runtime.steward import start_in_run
-                                start_in_run(child, run['steward'], child['id'] + '-startup',
-                                    'Initialize the called Loop from its inputs and parent request.',
-                                    {'inputs': values, 'parent_call': child['parent_call'],
-                                     'authorization': run['settings'].get('constraints', '')}, automatic=True)
                             Store.log(child,'called_by','Run created by a Loop node',detail=child['parent_call'])
                             store._save(db,child)
                         except BaseException:

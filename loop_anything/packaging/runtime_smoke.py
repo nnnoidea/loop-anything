@@ -77,6 +77,9 @@ def runtime_smoke(document, root, *, timeout=30, node_id=None, implementation_id
     from loop_anything.packaging.configuration import apply
     execution_document = apply(document, configuration) if configuration is not None else document
     implementations = effective_implementations(execution_document, root)
+    if execution_document['loop_definition'].get('flow_agent'):
+        from loop_anything.runtime.flow_agent import NODE, effective
+        implementations[NODE] = {'options':{'default':effective(execution_document['loop_definition']['flow_agent'],root)},'default':'default'}
     candidates = [(node, ident, config) for node, entry in implementations.items()
                   for ident, config in options(entry).items()
                   if (node_id is None or node == node_id) and (implementation_id is None or ident == implementation_id)]

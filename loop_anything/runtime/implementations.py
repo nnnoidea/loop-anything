@@ -23,8 +23,10 @@ def validate_implementation(implementation):
         raise Invalid('Invalid execution implementation', path=['kind'])
     if implementation['kind']=='loop':
         call=implementation.get('loop')
-        if not isinstance(call,dict) or set(call)-{'key','inputs','result'} or not isinstance(call.get('key'),str) or not call['key'].strip():
-            raise Invalid('Loop calls need loop.key and optional inputs/result mappings',path=['loop'])
+        if not isinstance(call,dict) or set(call)-{'key','inputs','result','seed'} or not isinstance(call.get('key'),str) or not call['key'].strip():
+            raise Invalid('Loop calls need loop.key and optional inputs, result or seed',path=['loop'])
+        if 'seed' in call and not isinstance(call['seed'],dict):
+            raise Invalid('loop.seed must be a child Task specification',path=['loop','seed'])
         if any(k in call and not isinstance(call[k],dict) for k in ('inputs','result')):
             raise Invalid('Loop inputs/result mappings must be objects',path=['loop'])
         if set(implementation)&{'command','observe','cwd','timeout','executor','dispatch','event','wait'}:

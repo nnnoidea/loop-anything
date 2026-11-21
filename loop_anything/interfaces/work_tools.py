@@ -44,13 +44,9 @@ def definitions():
         ('register_work_session','Register this exact server Agent session and actual Agent PID, with implementation and resumable native identity. Does not start a Run or launch another Agent. Retain returned session token.',
          {'native_session':O,'implementation':O,'process_id':{'type':'integer','minimum':2}},['native_session','implementation','process_id'],False),
         ('read_work_session','Inspect your session and ready waits; does not resume anything.',SESSION,list(SESSION),True),
-        ('claim_run','Continue your bound Run in the CURRENT session. Returns runtime identity for pending management work; never launches another CLI.',
-         dict(SESSION,run_id=T),[*SESSION,'run_id'],False),
-        ('take_over_run','Explicitly bind this current session to an existing Run after its previous manager stopped; preserve all business executions.',
-         dict(SESSION,run_id=T,generation=N),[*SESSION,'run_id','generation'],False),
         ('resolve_continuation','Explicitly resolve a continued Task: retry_monitor restarts only the original failed observer; retry starts new work only after confirming the original job stopped; cancel stops this wait, not the original job.',
-         dict(SESSION,run_id=T,task_id=T,operation={'enum':['retry_monitor','retry','cancel']},reason=T,confirmed_stopped={'type':'boolean'}),
-         [*SESSION,'run_id','task_id','operation','reason'],False),
+         dict(run_id=T,task_id=T,operation={'enum':['retry_monitor','retry','cancel']},reason=T,confirmed_stopped={'type':'boolean'}),
+         ['run_id','task_id','operation','reason'],False),
         ('resume_work_session','Explicitly retry a failed/unknown wake after confirming the previous process stopped. Does not acknowledge pending events.',
          dict(SESSION,confirmed_stopped={'const':True}),[*SESSION,'confirmed_stopped'],False),
         ('wait_for','Persist a wait for named Run/Task/monitor sources and a deterministic condition. source={kind:run|task|monitor,id,task_id?,max_age?}; condition reads sources by alias using path/op/args. A run source follows its Timeline current Run across continuation; a task source observes that exact Task and its committed output versions. Keeps this exact session. Finish active Run turns and exit the Agent process so it can be resumed. Does not create a Loop.',
@@ -102,14 +98,6 @@ def call(store,name,a):
         from loop_anything.runtime.business_state import read
         return read(store,collection='state' if name=='read_business_state' else 'results',**a)
     if name=='read_work_timeline':return timelines.read(store,a['timeline_id'],a.get('after',0),a.get('limit',100))
-    if name=='take_over_run':
-        from loop_anything.runtime.steward import assign
-        with work.transaction(store) as db:
-            session=work.session_auth(db,a['session_id'],a['session_token'])
-            previous=store._load(db,a['run_id'])
-            assign(store,a['run_id'],session['id'],a['generation'],session=session,_db=db)
-            work.transfer_waits(db,previous['timeline_id'],previous.get('steward',{}).get('session_id'),session['id'])
-            with store.edit(a['run_id'],_db=db) as run:return work.claim_in_run(store,run,session)
     if name=='register_work_session':return work.register_session(store,a)
     if name=='register_monitor':return {'script':work.register_monitor(store,a)}
     if name=='start_monitor':return {'monitor':work.start_monitor(store,a)}
@@ -133,14 +121,10 @@ def call(store,name,a):
                 value.update(status='running',call_id=None,next_at=0,error=None)
             work.put(db,'monitor',value);return {'monitor':value}
         if name=='read_wait':return {'wait':work.get(db,'wait',a['wait_id'])}
-        session=work.session_auth(db,a['session_id'],a['session_token'])
-        if name=='read_work_session':
-            return {'session':work.public_session(session),'waits':[v for v in work.rows(db,'wait') if v['session_id']==session['id']]}
         if name=='resolve_continuation':
             from loop_anything.interfaces.agent_tasks import change_task_in_run
             from loop_anything.runtime.task_scope import process_active
             with store.edit(a['run_id'],_db=db) as run:
-                if run.get('steward',{}).get('session_id')!=session['id']:raise Conflict('Use the Run owner session')
                 task=run['tasks'].get(a['task_id'],{})
                 ref=task.get('continuation_source')
                 if not ref:raise Invalid('Task is not awaiting an original execution')
@@ -159,8 +143,9 @@ def call(store,name,a):
                         change_task_in_run(run,{'task_id':task['id'],'operation':'retry','reason':a['reason']})
                 store.log(run,'agent_action_change',a['reason'],detail={'task_id':task['id'],'operation':a['operation'],'source':ref})
                 return {'task':task}
-        if name=='claim_run':
-            with store.edit(a['run_id'],_db=db) as run:return work.claim_in_run(store,run,session)
+        session=work.session_auth(db,a['session_id'],a['session_token'])
+        if name=='read_work_session':
+            return {'session':work.public_session(session),'waits':[v for v in work.rows(db,'wait') if v['session_id']==session['id']]}
         if name=='resume_work_session':
             if work.alive(session.get('process_id')):raise Conflict('Original session process is still alive')
             session.update(state='idle',wake=None,error=None,process_id=None)

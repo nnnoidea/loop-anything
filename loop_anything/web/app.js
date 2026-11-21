@@ -82,7 +82,6 @@ async function selectRun(id) {
 }
 function renderRun() {
   updateNavigationUI();
-  renderSteward();
   $('run-title').textContent = run.title;
   renderRunOutlet();
   $('run-key').textContent = (run.loop_definition.name || run.loop_definition.id) + ' · v' + run.loop_definition.version;

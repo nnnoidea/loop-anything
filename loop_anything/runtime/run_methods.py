@@ -25,12 +25,10 @@ def apply(store,run,key):
     run['configuration']={k:settings[k] for k in ('path','revision','config')}
     run['configuration']['package_root']=str(root)
     run.update({k:configured[k] for k in ('loop_definition','implementations')})
-    if run.get('steward'):
-        from loop_anything.runtime import steward
-        steward.materialize(run)
+    from loop_anything.runtime.flow_agent import materialize
+    materialize(run,root)
     for task in run['tasks'].values():
         node=task['spec']['node']
-        if old['loop_definition']['nodes'][node].get('builtin'):continue
         spec = old['tasks'][task['id']]['spec']
         if node not in old.get('retained_nodes', {}):
             run.setdefault('retained_methods', {})[method_ref] = method

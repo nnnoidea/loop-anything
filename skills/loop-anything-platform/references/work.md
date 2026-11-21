@@ -9,31 +9,10 @@ messages; keep effective user requirements in objective and constraints. Do not 
 
 For existing work, first read its Run/Timeline/Loop using its known resource ID. The script resolves the original platform. Pass the returned `--work WORK_ID` when registering a new session or creating associated work, so a changed default cannot split one workflow across platforms. For brand-new independent work, the first discovery/creation selects the default and returns its work_id. Managed wake-ups already carry this binding. No address copying is needed.
 
-1. Register the actual current SERVER Agent session with register_work_session.
-   Supply native_session={provider,id,cwd}, the current Agent process_id (not a
-   tool subprocess), and an Agent implementation with its exact resume_command.
-   Keep the returned session_id/session_token. Registration launches nothing.
-2. For work without a Loop, create_timeline and append_timeline are sufficient.
-   Read read_work_timeline with after/cursor to retrieve all relevant entries.
-3. start_run requires request_id, session_id/session_token, key and title.
-   It binds the caller, not a separately selected named Agent. Supply objective
-   and constraints for new work, or timeline_id for existing work.
-   Read the returned runtime identity, handbook and Timeline; arrange work in the same
-   session using read_task/report_task. No initialization report is required. Default progression returns to this
-   session; explicit rule progression still runs in Engine.
-4. Starting with an existing timeline_id uses its current work automatically.
-   The platform retains committed results and observes in-flight executions using
-   their original identities. A Loop may change its strategy or nodes while using
-   the saved business state directly. The platform does not match or validate
-   cross-Loop business schemas. Only one Run plans current work; retained
-   executions can still deliver their results. A previous management process
-   must stop before its management task is replaced.
-   Business Agents always read intent and current state; do not branch on whether
-   a Run or Loop changed. Use resolve_continuation for an explicit observer retry
-   or user-authorized cancellation/retry after checking the original execution.
-5. claim_run returns the bound current session's identity for the next management
-   task. Finish management turns with their actual output contract and finish.
-   Run normally continues until the Timeline task is complete.
+1. Call `start_run` with a stable request ID, Loop key and title. Supply objective and constraints or an existing timeline_id. The receipt identifies the Run and Timeline. If a declared entry needs the starting Agent to supply its result, the receipt also gives entry_task_id and its temporary token. Report the entry result and finish. A registered session may include its session_id and session_token to associate the conversation.
+2. The engine runs the declared entry and arranged tasks. For a method without a seed, read the Timeline and handbook, then arrange initial work using submit_run_request(operation=edit_tasks) or acquire_run for a temporary editing scope. Finish the scope when done.
+3. Read existing runs directly. Pause/resume controls operate on the same Run. A new Run can continue an existing Timeline and observe in-flight tasks at their original identities. Explicit waits notify the session that requested them.
+4. For a conditional wake, register the actual session with register_work_session, including native_session, the current Agent PID and a resumable implementation. Use wait_for with its session credentials.
 
 Run-scoped read_timeline includes the latest 50 progress entries from every contributor alongside business state and the saved result index. If entries_complete=false, use read_work_timeline pagination for earlier entries. Read relevant detail on demand; a new method does not require complete process logs. Execution arrangements belong to read_run(view=snapshot).
 
@@ -87,9 +66,9 @@ Only explicitly typed conditions are evaluated; the platform does not infer
 business decisions from prose. Unavailable/stale data is unknown, not false.
 
 Registration checks the current state, including work already completed.
-Finish active management scopes and exit the Agent process. Once safe, the
+Finish active execution scopes and exit the Agent process. Once safe, the
 platform resumes the exact native session with evidence and fresh work context.
-Read current Timeline and claim_run before changing a Run. acknowledge_wait
+Read the current Timeline and Run before acting. acknowledge_wait
 after handling its evidence; cancel_wait removes a wait without cancelling
 observed work. Reuse keys only for identical registrations.
 
@@ -97,8 +76,7 @@ The current implementation resumes CLI sessions on the server (macOS/Linux).
 It cannot inject into an arbitrary live chat. Ready events remain pending while
 the original process is alive. Missing/failed/unknown sessions are explicit;
 resume_work_session requires checking that the prior process stopped. Never
-silently replace an unavailable session. Another Agent can explicitly take over
-or recover the work from its Timeline.
+silently replace an unavailable session. Another Agent can continue the work from its Timeline.
 
 ## Monitor scripts and instances
 
@@ -153,7 +131,7 @@ to the corresponding Run rather than duplicating its execution interface.
 
 Pause/resume preserves the same Run and its progress; pausing stops new business dispatch without freezing already-started external jobs. A new Run continuation uses the same normal scheduler and report routing. Existing executions return their results through continuation receipts.
 
-Continuing the same Loop preserves saved work, runtime settings, inputs and hook firings; explicit startup overrides still apply. State display metadata never selects a continuation path. Selecting another method does not initialize the Timeline again. Existing tasks retain their complete original execution contracts, resources and declared routes; new rules are never grafted onto old task inputs. The current Agent reads all contributions and uses current Loop nodes for new work. It may explicitly replace pending planning Tasks using existing task operations, retaining in-flight experiments and established dependencies. New dispatch waits for the startup management turn; in-flight observation continues. No automatic cancellation, schema converter, or permanent Loop ownership of business state is introduced.
+Continuing the same Loop preserves saved work, runtime settings, inputs and hook firings; explicit startup overrides still apply. State display metadata never selects a continuation path. Selecting another method does not initialize the Timeline again. Existing tasks retain their complete original execution contracts, resources and declared routes; new rules are never grafted onto old task inputs. The current Agent reads all contributions and uses current Loop nodes for new work. It may explicitly replace pending planning Tasks using existing task operations, retaining in-flight experiments and established dependencies. Eligible tasks advance using the retained dependencies and event routes; in-flight observation continues. No automatic cancellation, schema converter, or permanent Loop ownership of business state is introduced.
 
 
 ## Download and import progress

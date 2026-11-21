@@ -111,15 +111,12 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(tools.call('build_plan', args),reply)
 
     def test_delete_finished_starter_and_predecessor(self):
-        # Use a Loop with no seed so the same session owns the management turn immediately.
+        # A seedless Run can be renamed, ended and referenced by a continuation.
         bp={'schema_version':2,'id':'cleanup','version':'1','records':{},'nodes':{},'handbook':{'instructions':'test'}}
         key=self.store.publish(bp,{})['key']
         turn=self.tools.call('start_run',dict(self.session,key=key,title='研'*501,request_id='old'))
         args={'run_id':turn['run_id'],'request_id':'rename','operation':'update_run','arguments':{'metadata_revision':0,'title':'新'*501}}
         self.tools.call('submit_run_request',args)
-        tools=RunTools(self.store,turn['run_id'],turn['token'])
-        tools.call('report_task',{'event':'completed','report_id':'done','task_id':turn['task_id'],'envelope':{'outputs':{'decision':'done'}}})
-        tools.call('finish',{})
         self.case.engine.command(turn['run_id'],'terminate')
         next_run=self.store.create(key,'again',timeline_id=turn['timeline_id'],continue_run_id=turn['run_id'])
         self.case.engine.command(next_run['id'],'terminate')

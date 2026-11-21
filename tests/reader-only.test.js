@@ -45,7 +45,7 @@ test('browser shows startup requirements without selecting or launching another 
   await vm.runInContext('openCreate("pkg-one")',ctx);
   assert.deepEqual(calls,['read_loop_config']);
   assert.match(field('launch-summary').innerHTML,/"n":2/);
-  assert.match(field('launch-summary').innerHTML,/当前服务器 Agent/);
+  assert.match(field('launch-summary').innerHTML,/当前 Agent/);
   field('launch-instruction').textContent='Start pkg-one in current session';
   await vm.runInContext('startConfiguredRun()',ctx);
   assert.deepEqual(copies,['Start pkg-one in current session']);

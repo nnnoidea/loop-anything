@@ -40,7 +40,7 @@ class TimelineTransferTests(unittest.TestCase):
         with self.target.connection() as db:self.assertGreater(db.execute('SELECT count(*) FROM work_entries WHERE timeline_id=?',(ident,)).fetchone()[0],205)
         bp={'schema_version':2,'id':'different-method','version':'1','handbook':{'instructions':'Read progress and reason'},'records':{},'nodes':{},'state':{'types':{'literature':{'summary':['claim']}}}}
         bp['records']={'answer':{'type':'string'}}
-        bp['nodes']={'analyze':{'instructions':'Use saved evidence','inputs':{'evidence':{'type':'string'}},'outputs':{'answer':{'record_type':'answer'}},'progression':'rules'}}
+        bp['nodes']={'analyze':{'instructions':'Use saved evidence','inputs':{'evidence':{'type':'string'}},'outputs':{'answer':{'record_type':'answer'}}}}
         script='import json,sys;r=json.load(sys.stdin);print(json.dumps({"event":"completed","envelope":{"outputs":{"answer":r["inputs"]["evidence"]+" continued"},"state":[{"type":"literature","id":"new","value":{"claim":"A fresh contribution"}}]}}))'
         impl={'analyze':{'options':{'local':{'kind':'command','command':[sys.executable,'-c',script]}},'default':'local'}}
         key=self.target.publish(bp,impl)['key'];run=self.target.create(key,'Continue here',timeline_id=ident,acquire=True)

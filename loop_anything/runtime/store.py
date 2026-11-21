@@ -197,6 +197,8 @@ class Store:
             run['configuration'] = dict({k: copy.deepcopy(configuration[k]) for k in ('path', 'revision', 'config')}, package_root=str(root))
         if inherit_conversation:run['notification_conversation_id']=conversation_id
         from loop_anything.runtime.timeline_runtime import initialize_run
+        from loop_anything.runtime.flow_agent import materialize
+        materialize(run, run.get('configuration', {}).get('package_root'))
         initialize_run(run, bindings)
         if not isinstance(authorization, str):
             raise Invalid('User authorization must be text')
@@ -296,6 +298,9 @@ class Store:
         if run['loop_definition']['id']=='platform-collaboration' and run.get('collaboration',{}).get('coordinator_implementation'):
             run['implementations']['coordinate']={'options': {'default': copy.deepcopy(run['collaboration']['coordinator_implementation'])}, 'default': 'default'}
 
+        from loop_anything.runtime.flow_agent import materialize
+        materialize(run, run.get('configuration', {}).get('package_root'))
+
     def _load(self, db, run_id):
         row = db.execute('SELECT document FROM runs WHERE id=?', (run_id,)).fetchone()
         if row is None:
@@ -305,9 +310,6 @@ class Store:
         if not isinstance(run.get('agent_sessions'),list) or not isinstance(run.get('timeline_id'),str) or not run['timeline_id']:
             raise Invalid('Run needs a Timeline reference and agent sessions')
         self.load_method(db,run)
-        if run.get('steward'):
-            from loop_anything.runtime.steward import materialize
-            materialize(run)
         from loop_anything.runtime.timelines import materialize_retained
         materialize_retained(run)
         for field, section in self.PARTS.items():
@@ -372,10 +374,6 @@ class Store:
                 db.execute('DELETE FROM timeline_parts WHERE run_id=? AND section=? AND item=?', (run['id'], section, key))
         db.execute('INSERT INTO runs VALUES (?,?) ON CONFLICT(id) DO UPDATE SET document=excluded.document',
                    (run['id'], json.dumps(header, ensure_ascii=False, allow_nan=False)))
-        for request in run.get('steward_requests', {}).values():
-            if request.get('automatic'):
-                db.execute('INSERT OR IGNORE INTO run_requests (id,run_id,fingerprint) VALUES (?,?,?)',
-                           (request['id'], run['id'], 'automatic'))
 
     def scheduling_list(self):
         """No definition, record values or attempt archives needed for scheduling."""
@@ -387,12 +385,7 @@ class Store:
                 if run.get('identity_read_only'):continue
                 pending = any(json.loads(r[0])['status'] == 'pending' for r in db.execute(
                     "SELECT document FROM timeline_parts WHERE run_id=? AND section='notifications'", (run['id'],)))
-                steward_pending = run.get('steward') and run['status'] != 'running' and db.execute(
-                    "SELECT 1 FROM timeline_parts WHERE run_id=? AND section='tasks' "
-                    "AND json_extract(document,'$.origin.steward') IS NOT NULL "
-                    "AND json_extract(document,'$.status') IN ('planned','ready','executing','decision','retrying') LIMIT 1",
-                    (run['id'],)).fetchone()
-                if run['status'] == 'running' or pending or steward_pending or (run['status'] == 'paused' and run.get('settings', {}).get('termination_signal')):
+                if run['status'] == 'running' or pending or (run['status'] == 'paused' and run.get('settings', {}).get('termination_signal')):
                     result.append({'id': run['id'], 'status': run['status']})
             return result
 

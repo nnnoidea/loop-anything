@@ -22,7 +22,23 @@ When changing another kind to loop, retain the editing contract: use `clear:["li
 - `inputs` uses existing `$`/template expansion over parent-node `inputs`, `parameters`, and `settings`. Omission passes the parent input object. Expansion happens when the execution first connects to its child Run, not repeatedly as settings change during waiting.
 - `result` is the parent completion-report envelope, mapped from child `records` (latest committed values), `settings`, `inputs`, and `run_id`. Usually provide only `outputs`; explicitly map `settings` when initializing the parent Loop. Other report fields retain their contracts. Omission means `{"outputs":{}}`; every declared output port needs a mapping.
 
-The platform creates the child Run and executes its own entry implementation. An agent entry uses its configured command; without one, it waits for an agent just like an ordinary Run. The child must reach completed through its own completion condition. A result record or agent `finish` is not Run completion.
+The platform starts the child's declared entry when it has one. For a child with no entry, specify the first business task in the parent node's `loop.seed` when building the parent. Use the same Task specification as a Loop seed. For example, a child with a `review` node that reads a dataset and returns an analysis can start with:
+
+```json
+{
+  "key": "TARGET_LOOP_KEY",
+  "inputs": {"dataset": {"$": "inputs.dataset"}},
+  "seed": {
+    "id": "first-review",
+    "node": "review",
+    "inputs": {"dataset": {"run": "dataset"}},
+    "outputs": {"analysis": {"id": "analysis"}}
+  },
+  "result": {"outputs": {"analysis": {"$": "records.analysis"}}}
+}
+```
+
+The seed runs inside the child using its node implementation. Its `run` input references read the child's mapped inputs. An Agent entry can arrange later tasks from the child handbook. Configure its execution if the call should run unattended. For a manual Agent entry, use `acquire_run` with the child Run ID and the entry Task ID. If both entry and seed are absent, the parent reports a startup error. Creation, initial scheduling and caller linkage commit together. The child returns its result when its own completion condition is met.
 
 The service scheduler durably waits for the child without a waiting script, agent, or occupied worker thread. On completion, it expands `result`, validates the parent output contract, then triggers existing lifecycle transitions, routes, and dependencies. A paused child leaves the parent waiting; termination reports failed; startup/mapping errors report process_error. Existing lifecycle handling applies.
 
