@@ -1,25 +1,32 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
 const source=fs.readFileSync('loop_anything/web/spaces.js','utf8');
-function context(){
- const elements=new Map();
- const ctx=vm.createContext({document:{createElement:()=>({}),body:{append(){}}},window:{addEventListener(){}},esc:String,$:id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id);}});
- vm.runInContext(source,ctx);return ctx;
+function fixture(config){
+  const elements=new Map(),calls=[];
+  function el(id){
+    if(!elements.has(id))elements.set(id,{value:'',innerHTML:'',querySelector:el,replaceChildren(){this.innerHTML='';}});
+    return elements.get(id);
+  }
+  const ctx=vm.createContext({window:{addEventListener(){}},esc:String,$:el,config,toast(){},
+    api:async(path,body)=>{calls.push(body);return {configuration:{...config,...body.change,revision:2}};}});
+  vm.runInContext(source+';personalSettings(config)',ctx);
+  return {el,calls};
 }
-test('automatic selection follows recorded addresses and an explicit preference wins',()=>{
- const ctx=context();
- for(const [local,team,preference,expected] of [[null,null,'auto',null],['http://127.0.0.1:8767',null,'auto','local'],[null,'https://team.example','auto','team'],['http://127.0.0.1:8767','https://team.example','auto','team'],['http://127.0.0.1:8767','https://team.example','local','local']]){
-  ctx.config={local_url:local,team_url:team,default_space:preference};
-  assert.equal(vm.runInContext('selectedSpace(config)',ctx),expected);
- }
+test('remote address and launch preference are saved independently',async()=>{
+  const {el,calls}=fixture({local_url:'http://localhost:8876',team_url:null,team_web_url:null,default_space:'local',revision:1});
+  const event=id=>({currentTarget:el(id),preventDefault(){}});
+  el('space-team-url').value='https://team.example';
+  el('spaces-form').onsubmit(event('spaces-form'));await Promise.resolve();
+  assert.deepEqual({...calls[0].change},{team_url:'https://team.example'});
+  el('space-default').value='team';
+  await el('default-platform-form').onsubmit(event('default-platform-form'));
+  assert.deepEqual({...calls[1].change},{default_space:'team'});
 });
-test('platform settings configure addresses without links that navigate between pages',()=>{
- const ctx=context();
- for(const configuration of [null,{local_url:'http://127.0.0.1:8767',team_url:'https://team.example',team_web_url:null,default_space:'auto'}]){
-  ctx.settings={configuration};
-  const html=vm.runInContext('spaceSettings=settings;renderSpaces();spaceDialog.innerHTML',ctx);
-  assert(!/<a\b|href=/.test(html));
-  assert.equal(html.includes('id="spaces-form"'),configuration!==null);
-  if(configuration){assert(html.includes('value="https://team.example"'));assert(html.includes('当前默认：团队平台'));}
- }
+test('personal controls belong only to the local settings page',()=>{
+  assert.equal(fixture(null).el('settings-personal').innerHTML,'');
+  const {el}=fixture({default_space:'auto',revision:1});
+  assert(!el('settings-personal').innerHTML.match(/href=|<dialog/));
+  assert(el('space-web-field').hidden);
+  el('space-team-url').value='nas:///team';el('space-team-url').oninput();
+  assert(!el('space-web-field').hidden);
 });

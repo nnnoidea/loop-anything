@@ -27,8 +27,9 @@ def owner_for(run, token):
 def scope_for(run, task):
     node = task['spec']['node']
     from loop_anything.runtime.flow_agent import NODE as FLOW_AGENT
+    from loop_anything.runtime.timelines import logical_node
     if (node == FLOW_AGENT or task['origin'].get('entry') or task['origin'].get('fallback') or
-            node == (run['settings'].get('global_agent_node') or run['settings'].get('fallback_node'))):
+            logical_node(run, node) == (run['settings'].get('global_agent_node') or run['settings'].get('fallback_node'))):
         return None
     return task['id']
 
@@ -40,9 +41,9 @@ def scope_available(run, scope, token=None):
                    for e in run['executions'] if e['task_id'] == scope)
 
 
-def process_active(execution):
+def process_active(execution, *, include_caller=True):
     if execution.get('worker_active'):return True
-    if execution.get('collaboration_caller_pid'):
+    if include_caller and execution.get('collaboration_caller_pid'):
         from loop_anything.runtime.collaboration import caller_active
         if caller_active(execution):return True
     if execution.get('communication_id'):

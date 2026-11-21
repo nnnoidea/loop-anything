@@ -3,6 +3,7 @@
 let activeRoute={type:'home'}, navigationSerial=0;
 const editorSessions=new Map(),runReturns=new Map(),routeScroll=new Map();
 function routeHash(route){
+  if(route.type==='settings')return '#settings/'+(route.tab||'general');
   if(route.type==='communication')return '#communication/'+(route.tab||'agents');
   if(route.type==='timelines'||route.type==='home')return '#work/timelines';
   if(route.type==='timeline')return '#work/timelines/'+encodeURIComponent(route.id);
@@ -18,7 +19,8 @@ function routeHash(route){
 }
 function parseRoute(hash){
   const parts=hash.replace(/^#/,'').split('/');
-  if(parts[0]==='communication')return {type:'communication',tab:['agents','requests','connections'].includes(parts[1])?parts[1]:'agents'};
+  if(parts[0]==='settings')return {type:'settings',tab:Object.hasOwn(settingsLabels,parts[1])?parts[1]:'general'};
+  if(parts[0]==='communication')return {type:'communication',tab:['agents','requests'].includes(parts[1])?parts[1]:'agents'};
   if(parts[0]==='work'){
     if(parts[1]==='timelines'&&parts[2])return {type:'timeline',id:decodeURIComponent(parts[2])};
     const type={timelines:'timelines',runs:'run-list',monitors:'monitors',schedules:'schedules'}[parts[1]];
@@ -75,7 +77,8 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
     if(document.fullscreenElement===editorPage&&routeHash(route)!==routeHash(previous))await document.exitFullscreen();
     if(!external)history[replace?'replaceState':'pushState'](null,'',routeHash(route));
     activeRoute=structuredClone(route);
-    if(route.type==='communication'){page='communication';await refreshRunLibrary();await renderCommunication();}
+    if(route.type==='settings'){page='settings';await renderSettings(route.tab||'general');}
+    else if(route.type==='communication'){page='communication';await renderCommunication();}
     else if(route.type==='timelines'||route.type==='home'){page='timelines';await showWorkLibrary();}
     else if(route.type==='timeline'){page='timeline';await showWorkTimeline(route.id);}
     else if(route.type==='run-list'){page='run-list';await refreshRunLibrary();}
@@ -104,10 +107,12 @@ function relatedRunsHTML(key){return relatedRunRows(key);}
 
 function updateNavigationUI(){
   $('run-list').querySelectorAll('[data-run]').forEach(b=>b.classList.toggle('chosen',page==='runs'&&b.dataset.run===selected));
+  $('settings-nav').classList.toggle('active',page==='settings');
   $('communication-nav').classList.toggle('active',page==='communication');
   const workPage=['timelines','timeline','run-list','runs','monitors','schedules'].includes(page);
-  const crumbs=workPage?[navLink({type:'timelines'},'工作台')]:page==='communication'?['Agent 通信']:[navLink({type:'catalog'},'Loop 库')];
-  if(page==='communication'){crumbs.push({agents:'Agent',requests:'协作请求',connections:'连接配置'}[activeRoute.tab||'agents']);}
+  const crumbs=workPage?[navLink({type:'timelines'},'工作台')]:page==='settings'?['设置']:page==='communication'?['Agent 通信']:[navLink({type:'catalog'},'Loop 库')];
+  if(page==='settings')crumbs.push(settingsLabels[activeRoute.tab||'general']);
+  else if(page==='communication'){crumbs.push({agents:'Agent',requests:'协作请求'}[activeRoute.tab||'agents']);}
   else if(page==='timelines'){crumbs.push('Timeline');}
   else if(page==='timeline'){crumbs.push(navLink({type:'timelines'},'Timeline'));crumbs.push(esc($('timeline-title').textContent));}
   else if(page==='run-list'){crumbs.push('运行');}

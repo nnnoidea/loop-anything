@@ -53,7 +53,7 @@ node tests/visual-browser.cjs
 node tests/web-agent-browser.cjs
 ```
 
-它使用隔离的临时数据库。普通测试使用模拟结果或本地命令，不调用真实模型。真实 Agent 场景需另外明确模型、环境和业务边界。
+三个脚本各自启动临时平台和 Chrome，分别验证 Loop 阅读与下载、Timeline 和 Run 的结果展示，以及网页委托由启动 Run 的会话处理。普通测试使用模拟结果或本地命令，不调用真实模型。真实 Agent 场景需另外明确模型、环境和业务边界。
 
 浏览器及手动多实例验收也应设置临时 `LOOP_ANYTHING_IDENTITY_DIR`，避免测试工作区登记到日常身份目录。模拟不同机器时分别使用不同身份目录；同一目录中的不同数据库模拟同机不同工作区。
 

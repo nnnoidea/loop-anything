@@ -112,8 +112,48 @@ class TimelineTransferTests(unittest.TestCase):
                 exported=json.loads(target.read_text());self.assertEqual(exported['entries'][0]['text'],self.package['entries'][0]['text'])
                 self.assertEqual(receipt['platform_url'],url)
                 self.assertEqual(self.target_tools.call('list_timelines',{})['total'],1)
+                from urllib.request import Request, urlopen
+                large_id = 9007199254740993
+                self.package['results'][0]['value'] = large_id
+                body = json.dumps(self.package).encode()
+                request = Request(url+'/api/timelines/import', data=body, headers={
+                    'X-Loop-Anything':'workspace', 'Content-Type':'application/json', 'X-Request-Id':'web-import'})
+                with urlopen(request) as response:
+                    imported = json.load(response)['timeline_id']
+                with urlopen(url+'/api/timelines/'+imported+'/file') as response:
+                    self.assertEqual(json.load(response)['results'][0]['value'], large_id)
             finally:
                 process.terminate();process.wait(timeout=10)
+
+    def test_pending_nas_export_writes_file_when_result_arrives(self):
+        import subprocess
+        from loop_anything.runtime.tool_client import module
+        from loop_anything.runtime.tool_mailbox import ToolMailbox
+        root = Path(self.temp.name)
+        destination = root / 'download.json'
+        client = Path(__file__).resolve().parents[1] / 'skills/loop-anything-platform/scripts/call.py'
+        mailbox = ToolMailbox(self.source, root / 'nas', self.case.engine)
+        url = mailbox.root.as_uri().replace('file:', 'nas:')
+        with patch.dict(os.environ, LOOP_ANYTHING_SPACES=str(root/'spaces.json'), LOOP_ANYTHING_WORK=''):
+            ledger = module('routing').Ledger()
+            try:
+                with ledger.db:
+                    work = ledger.create(url)
+                    ledger.remember(work, [('timeline', self.timeline)])
+                ledger.verify(work, self.case.engine.communication.settings()['instance_id'])
+            finally:
+                ledger.close()
+            def call(*args):
+                proc = subprocess.run([sys.executable, str(client), *args, '--request-id', 'export-once',
+                                       '--output', str(destination)], capture_output=True, text=True, check=True)
+                return json.loads(proc.stdout)
+            pending = call('export_timeline', '--arguments', json.dumps({'timeline_id': self.timeline}), '--wait', '0')
+            self.assertTrue(pending['pending'])
+            self.assertFalse(destination.exists())
+            mailbox.tick()
+            receipt = call('result')
+            self.assertEqual(Path(receipt['file']), destination.resolve())
+            self.assertEqual(json.loads(destination.read_text())['state'], self.package['state'])
 
     def test_progress_export_does_not_need_the_original_loop(self):
         with self.source.connection() as db:

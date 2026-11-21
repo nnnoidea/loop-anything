@@ -47,7 +47,7 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 - Author provides: Define Loop-owned state and optional Loop.state display metadata. Use read_timeline/read_business_state; completed report envelopes can atomically commit state and task operations. Use stable work_key for experiments. Register the actual session, retain startup request IDs, and follow edit notices.
 - Configuration: `create_timeline`, `start_run.timeline_id/continue_run_id`, `update_timeline`
 - Limits: No automatic task freeze or rearrangement. Routine multi-Run sharing is outside the current scope.
-- Tools: export_timeline, import_timeline, read_work_result, read_business_state, create_timeline, list_timelines, resolve_continuation, take_over_run, read_work_timeline, update_timeline, append_timeline, register_work_session, start_run, claim_run
+- Tools: export_timeline, import_timeline, read_work_result, read_work_results, read_business_state, create_timeline, list_timelines, resolve_continuation, take_over_run, read_work_timeline, update_timeline, append_timeline, register_work_session, start_run, claim_run
 - Reference: [references/work.md](work.md)
 
 ## work_waits
@@ -59,6 +59,16 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 - Limits: Active or unknown processes are never resumed concurrently. Failed or unavailable sessions need explicit recovery.
 - Tools: wait_for, read_wait, cancel_wait, acknowledge_wait, read_work_session, resume_work_session
 - Reference: [references/work.md](work.md)
+
+## observations
+
+- Activation: operator
+- Platform handles: Hot-add observations without modifying scoring nodes. Read saved charts and effective arrangements on the Timeline.
+- Author provides: Use update_run_method from the bound management turn, or submit a Run request. Use set_loop observations for defaults. The platform step calls read_business_state or read_work_results for the records the user wants. A remote step receives the preceding step output in previous.
+- Configuration: `read_observations`, `update_run_method`, `refresh_observation`
+- Limits: Run-local overrides follow existing work on its original platform.
+- Tools: read_observations, update_run_method, refresh_observation
+- Reference: [references/observations.md](observations.md)
 
 ## shared_monitoring
 
@@ -106,7 +116,7 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 - Platform handles: One server persists team Loops, Runs, and state machines. --db selects its storage independently of the NAS --team-dir mailbox. Clients operate it over NAS/HTTP and optionally execute work locally; the server web UI is optional.
 - Author provides: Install once with python3 install.py, without choosing a role or deployment mode. Configure team operation after installation: select server storage with --db and one NAS root with --team-dir; api/, executors/, and agents/ separate tool calls, process work, and named-agent communication. The service connects agents/ automatically without publishing agents. Platform and dispatch Skills accept the same root link using each machine’s mount path. Operations-only use still supports portable Skills without the runtime.
 - Configuration: `serve --team-dir`, `serve --no-web`, `client tool`, `call.py --url`, `call.py result`
-- Limits: Only one service opens the database, using DELETE journaling; a separate mailbox lock prevents different databases from consuming one directory. The server database is selected independently of the NAS mailbox. Server workspace data must be preserved when moving machines; NAS messages alone are not a backup. NAS must support locking/durable writes. Timeout does not cancel requests; a processing crash returns outcome_unknown without automatic replay. Validate real NAS behavior in deployment.
+- Limits: Only one service opens the database, using DELETE journaling; a separate mailbox lock prevents different databases from consuming one directory. The server database is selected independently of the NAS mailbox. Platform data must be preserved when moving machines; NAS messages alone are not a backup. NAS must support locking/durable writes. Timeout does not cancel requests; a processing crash returns outcome_unknown without automatic replay. Validate real NAS behavior in deployment.
 - Tools: list_loops, list_runs, read_capabilities
 - Reference: [references/team-runtime.md](team-runtime.md)
 
@@ -163,10 +173,10 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 ## machine_identity
 
 - Activation: automatic
-- Platform handles: Generates and persists a full machine UUID on demand, separate from workspace identity. communication_status.self and awakening contexts expose both directly.
+- Platform handles: Generates and persists a full machine UUID on demand, separate from platform identity. communication_status.self and awakening contexts expose both directly.
 - Author provides: Read self and address directory members using instance_id plus agent_id; do not infer identity from MAC, hostname, or session.
 - Configuration: `communication_status.self`, `context.self`, `communication_config(operation=identity)`
-- Limits: Identity belongs to the connected platform user environment. instance_id is the transport address of the workspace. Moving/renaming preserves identity; copies need an explicitly new workspace identity without historical takeover. Do not copy identity storage with a business database to another machine.
+- Limits: Identity belongs to the connected platform user environment. instance_id is the transport address of the platform. Moving/renaming preserves identity; copies need an explicitly new platform identity without historical takeover. Do not copy identity storage with a business database to another machine.
 - Tools: communication_status, communication_workspace, communication_config
 - Reference: [references/communication.md](communication.md)
 
@@ -306,7 +316,7 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 - Platform handles: Provides Loop structure, dependencies, execution state, results, input provenance, history, parameter editing tools, previews, and file-result display.
 - Author provides: Provide meaningful node names, schema title/description, explicit file outputs, and business results.
 - Configuration: `nodes.*.label`, `records.*.title`, `records.*.description`, `records.*.format`
-- Limits: The workspace supports runtime operations; there is no separate sanitized team-only dashboard. Displaying a file does not prove artifact validity.
+- Limits: The platform supports runtime operations; there is no separate sanitized team-only dashboard. Displaying a file does not prove artifact validity.
 - Tools: read_run, read_loop
 - Reference: [references/build-reference.md](build-reference.md)
 
@@ -333,7 +343,7 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 ## host_service
 
 - Activation: configured
-- Platform handles: Keeps the workspace service running on its installed host, with supported keep-awake controls and macOS background hosting.
+- Platform handles: Keeps the platform service running on its installed host, with supported keep-awake controls and macOS background hosting.
 - Author provides: Choose/install the host, database, port, and credentials; configure the host to suit runtime needs. For an optional HTTP connectivity test use GET /api/health; plain HTTP needs no certificate checks, and testing an HTTPS proxy with curl -k skips caller-side verification.
 - Configuration: `service CLI`, `platform keep-awake setting`, `GET /api/health`
 - Limits: Remote compute, credentials, training environments, and cross-machine deployment belong to installation/business integration.
@@ -493,7 +503,7 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 ## packages
 
 - Activation: operator
-- Platform handles: Packages definitions/candidates/author assets, checks capability requirements, installs versions, and preserves workspace history.
+- Platform handles: Packages definitions/candidates/author assets, checks capability requirements, installs versions, and preserves platform history.
 - Author provides: Include actual files/dependencies/requirements and target-environment configuration.
 - Configuration: `Loop.requires`, `package assets`, `export_loop`
 - Limits: The platform does not supply missing business dependencies; installation does not launch a business Run.
@@ -675,7 +685,7 @@ A current node or ordinary conversation needs temporary help locally or in an ex
   ],
   "configuration": [
     "communication_status discovers exposed local agents/allowed groups. Disambiguate with agent_id and instance_id as needed.",
-    "request_assistance returns a durable ID readable by trusted workspaces. Local requests need no NAS. A built-in Run tracks standalone collaboration; further requests use collaboration_id and follow-ups continue that Run.",
+    "request_assistance returns a durable ID readable by trusted platforms. Local requests need no NAS. A built-in Run tracks standalone collaboration; further requests use collaboration_id and follow-ups continue that Run.",
     "Managed nodes register native sessions/resume configuration, then wait_assistance and finish. Reply/deadline resumes the same CLI session and Task on the original machine with new credentials/results. Inability to resume blocks explicitly, without a new session.",
     "Helpers use scoped read_context for associated context and complete for results, without write authority over the original node."
   ],

@@ -18,7 +18,7 @@ Loop declarations may select only default (this Run's outlet) or workspace, not 
 
 ## Proactive messages and questions
 
-`notify` takes run_id, stable key, message, and optional task_id/route/reply. Agents supply their token; branch agents specify a task_id in their scope. Scripts supply context token, task_id, and execution_id. Authorized trusted-workspace user agents may call directly; managed nodes retain their own scope.
+`notify` takes run_id, stable key, message, and optional task_id/route/reply. Agents supply their token; branch agents specify a task_id in their scope. Scripts supply context token, task_id, and execution_id. Authorized user agents on the trusted platform may call directly; managed nodes retain their own scope.
 
 ```json
 {"run_id":"RUN_ID","token":"TOKEN","task_id":"TASK_ID","key":"TASK_ID:progress-1","message":"Stage results recorded","route":"default"}

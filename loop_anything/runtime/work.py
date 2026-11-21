@@ -8,7 +8,7 @@ from contextlib import contextmanager
 
 from loop_anything.runtime.model import Invalid, Conflict, digest, contract
 from loop_anything.runtime.store import uid
-from loop_anything.runtime import timelines
+from loop_anything.runtime import events, observations, timelines
 
 
 def initialize(db):
@@ -193,7 +193,7 @@ def validate_script(script):
     if not isinstance(script,dict) or set(script)-{'command','cwd','timeout','description','parameter_schema','metrics'}:
         raise Invalid('Monitor script accepts command, cwd, timeout, description, parameter_schema and metrics')
     metrics=script.get('metrics',[])
-    if not isinstance(metrics,list) or len(metrics)>12:raise Invalid('metrics must be an array of at most 12 items')
+    if not isinstance(metrics,list):raise Invalid('metrics must be an array')
     keys=set()
     for metric in metrics:
         if not isinstance(metric,dict) or set(metric)-{'key','label','unit'} or not isinstance(metric.get('key'),str) or not metric['key']:
@@ -237,27 +237,97 @@ def start_monitor(store,a):
         return value
 
 
+def result_columns(condition, alias, field):
+    """Return the result names read by this condition, or None for the entire mapping."""
+    names=set()
+    for expr in expression_paths(condition):
+        if not expr or expr == [alias] or expr == [alias,field]:
+            return None
+        if expr[:2] == [alias,field]:
+            names.add(expr[2])
+    return names
+
+
+def expression_paths(expr):
+    if isinstance(expr,dict):
+        if 'path' in expr:
+            path=expr['path']
+            yield path.split('.') if isinstance(path,str) and path else list(path)
+        for arg in expr.get('args',[]):
+            yield from expression_paths(arg)
+
+
+def retain_wait_sources(db,run,timeline):
+    """Keep only deleted observations still needed by registered waits, in the deletion transaction."""
+    for row in db.execute("SELECT document FROM work_objects WHERE kind='wait' AND json_extract(document,'$.state')='waiting'").fetchall():
+        wait=json.loads(row[0])
+        changed=False
+        for alias,source in wait['sources'].items():
+            kind=source['kind']
+            if kind=='task' and source['id']==run['id']:
+                task=run['tasks'].get(source.get('task_id'))
+                if not task:continue
+                state={'status':task['status'],'revision':task['revision']}
+                field='outputs'
+                records=timelines.output_records(run,task)
+            elif kind=='run':
+                old=wait.get('retained_sources',{}).get(alias)
+                if source['id']!=run['id']:
+                    if timeline['active_run_id']!=run['id']:continue
+                    if old:
+                        if old['timeline_id']!=timeline['id']:continue
+                    elif not db.execute("SELECT 1 FROM runs WHERE id=? AND json_extract(document,'$.timeline_id')=?",
+                                        (source['id'],timeline['id'])).fetchone():continue
+                if old and timeline['active_run_id']!=run['id']:continue
+                state={'id':run['id'],'timeline_id':timeline['id'],'status':run['status'],'revision':run['revision']}
+                field='records'
+                records={key:versions[-1] for key,versions in run['records'].items() if versions}
+            else:
+                continue
+            needed=result_columns(wait['condition'],alias,field)
+            refs={key:[r['id'],r['revision']] for key,r in records.items() if needed is None or key in needed}
+            wait.setdefault('retained_sources',{})[alias]={'timeline_id':timeline['id'],'state':state,'refs':refs}
+            changed=True
+        if changed:put(db,'wait',wait)
+
+
 def observe(store, source):
+    with store.connection() as db:
+        db.execute('BEGIN')
+        return observe_in_db(store,db,source)
+
+
+def observe_in_db(store,db,source,retained=None):
     kind=source['kind']
+    if retained:
+        ident=timelines.get(db,retained['timeline_id'])['active_run_id'] if kind=='run' else None
+        if not ident:
+            field='records' if kind=='run' else 'outputs'
+            values={}
+            for key,(rid,revision) in retained['refs'].items():
+                row=db.execute('SELECT document FROM work_results WHERE timeline_id=? AND id=? AND revision=?',
+                               (retained['timeline_id'],rid,revision)).fetchone()
+                values[key]=json.loads(row[0])['value']
+            return dict(retained['state'],**{field:values})
+        source=dict(source,id=ident)
     if kind=='monitor':
-        with store.connection() as db:value=get(db,'monitor',source['id'])
+        value=get(db,'monitor',source['id'])
         sample=value.get('sample')
         if not sample or value.get('error'):raise Invalid(value.get('error') or 'No monitor sample yet')
         if (value['status']!='completed' or 'max_age' in source) and time.time()-sample['at']>source.get('max_age',value['interval']*2+value['script']['script'].get('timeout',60)):
             raise Invalid('Monitor sample is stale')
         return dict(sample,status=value['status'])
-    with store.connection() as db:
-        db.execute('BEGIN')
-        run=store._load(db,source['id'])
-        if kind=='run':
-            run=store._load(db,timelines.current_run_id(db,run))
-            return {'id':run['id'],'timeline_id':run['timeline_id'],'status':run['status'],'revision':run['revision'],
-                    'records':{k:v[-1]['value'] for k,v in run['records'].items() if v}}
-        if kind=='task':
-            task=run['tasks'].get(source.get('task_id'))
-            if task is None:raise Invalid('Unknown observed Task')
-            return dict(status=task['status'],revision=task['revision'],
-                        outputs={port:record['value'] for port,record in timelines.output_records(run,task).items()})
+    run=store._load(db,source['id'])
+    if kind=='run':
+        current_id=timelines.current_run_id(db,run)
+        if run['id']!=current_id:run=store._load(db,current_id)
+        return {'id':run['id'],'timeline_id':run['timeline_id'],'status':run['status'],'revision':run['revision'],
+                'records':{k:v[-1]['value'] for k,v in run['records'].items() if v}}
+    if kind=='task':
+        task=run['tasks'].get(source.get('task_id'))
+        if task is None:raise Invalid('Unknown observed Task')
+        return dict(status=task['status'],revision=task['revision'],
+                    outputs={port:record['value'] for port,record in timelines.output_records(run,task).items()})
     raise Invalid('Wait source must be run, task or monitor')
 
 
@@ -286,22 +356,38 @@ def register_wait(store,a):
         return value
 
 
-def poll_wait(store, ident):
+def poll_wait(store, ident, *, changes_only=False):
     from loop_anything.runtime.checks import evaluate
-    with store.connection() as db:value=get(db,'wait',ident)
-    if value['state']!='waiting':return value
-    try:
-        evidence={k:observe(store,s) for k,s in value['sources'].items()}
-        result=evaluate(value['condition'],evidence)
-        if type(result) is not bool:raise Invalid('Wait condition must return boolean')
-        error=None
-    except (Invalid,KeyError,IndexError,TypeError,ValueError) as exc:
-        result=False;error=str(exc);evidence={}
     with transaction(store) as db:
         current=get(db,'wait',ident)
         if current['state']!='waiting':return current
-        current.update(error=error,next_at=time.time()+1)
+        high=events.position(db)
+        due=current.get('next_at')
+        if changes_only and 'cursor' in current and (due is None or due>time.time()):
+            if high==current['cursor']:return current
+            if not events.wait_changed(db,current,current['cursor']):
+                current['cursor']=high
+                put(db,'wait',current)
+                return current
+        deadlines=[]
+        for source in current['sources'].values():
+            if source['kind']!='monitor':continue
+            try:monitor=get(db,'monitor',source['id'])
+            except Invalid:continue
+            if monitor.get('sample') and (monitor['status']!='completed' or 'max_age' in source):
+                expiry=monitor['sample']['at']+source.get('max_age',2*monitor['interval']+monitor['script']['script'].get('timeout',60))
+                if expiry>time.time():deadlines.append(expiry)
+        try:
+            evidence={alias:observe_in_db(store,db,source,current.get('retained_sources',{}).get(alias))
+                      for alias,source in current['sources'].items()}
+            result=evaluate(current['condition'],evidence)
+            if type(result) is not bool:raise Invalid('Wait condition must return boolean')
+            error=None
+        except (Invalid,KeyError,IndexError,TypeError,ValueError) as exc:
+            result=False;error=str(exc);evidence={}
+        current.update(error=error,next_at=min(deadlines,default=None),cursor=high)
         if result:
+            current.pop('retained_sources',None)
             current.update(state='ready',evidence=evidence,triggered_at=time.time())
             timelines.append(db,current['timeline_id'],ident+':ready','等待条件已满足','action',
                              [{'wait_id':ident,'evidence':evidence}],actor='platform')
@@ -313,6 +399,7 @@ class WorkRuntime:
     def __init__(self,engine):
         self.engine=engine;self.store=engine.store
         with transaction(self.store) as db:
+            observations.recover(db)
             for kind in ('monitor','session'):
                 for value in rows(db,kind):
                     if value.get('call_id') or value.get('wake'):
@@ -323,6 +410,7 @@ class WorkRuntime:
     def tick(self):
         with self.store.connection() as db:
             monitors=rows(db,'monitor');waits=rows(db,'wait');sessions=rows(db,'session')
+            high=events.position(db)
         for item in monitors:
             if item['status']=='running' and not item.get('call_id') and item['next_at']<=time.time():
                 with transaction(self.store) as db:
@@ -331,7 +419,12 @@ class WorkRuntime:
                     current['call_id']=uid('monitor-call');put(db,'monitor',current)
                 self.engine.futures.add(self.engine.pool.submit(self.monitor,current))
         for item in waits:
-            if item['state']=='waiting' and item['next_at']<=time.time():poll_wait(self.store,item['id'])
+            if item['state']=='waiting' and (item.get('cursor')!=high or
+                    (item.get('next_at') is not None and item['next_at']<=time.time())):
+                poll_wait(self.store,item['id'],changes_only=True)
+        observations.release_receipts(self.engine)
+        for job in observations.collect(self.store):
+            self.engine.futures.add(self.engine.pool.submit(observations.execute,self.engine,job))
         for session in sessions:
             self.wake(session['id'])
 

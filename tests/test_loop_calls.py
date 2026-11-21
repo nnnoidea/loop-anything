@@ -24,7 +24,7 @@ class LoopCallTests(unittest.TestCase):
             'handbook':{'instructions':'Return the given request and finish.'},'records':{'text':{'type':'string'}},
             'nodes':{'init':fixture.node({'request':{'type':'string'}},{'answer':'text'})},
             'seed':fixture.task_spec('init','init',{'request':{'run':'request'}},{'answer':'answer'}),'rules':[]}
-        code='import json,sys;from pathlib import Path;c=json.load(sys.stdin);p=Path('+repr(str(self.effect))+');p.write_text(p.read_text()+"x" if p.exists() else "x");print(json.dumps({"event":"completed","envelope":{"settings":{"objective":"Child work","termination_signal":"Child finished"},"outputs":{"answer":c["inputs"]["request"]+"!"}}}))'
+        code='import json,sys;from pathlib import Path;c=json.load(sys.stdin);p=Path('+repr(str(self.effect))+');f=p.open("a");f.write("x");f.close();print(json.dumps({"event":"completed","envelope":{"settings":{"objective":"Child work","termination_signal":"Child finished"},"outputs":{"answer":c["inputs"]["request"]+"!"}}}))'
         self.child_impl={'init':{'options': {'default': {'kind':'command','command':[sys.executable,'-c',code]}}, 'default': 'default'}}
         self.key=self.store.publish(self.child_bp,self.child_impl)['key']
 

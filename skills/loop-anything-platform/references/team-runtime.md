@@ -1,6 +1,6 @@
 # Team platform operation
 
-Install Loop Anything with `python3 install.py`. There is one installation path; do not ask the user to select a server/client role or a deployment mode. Installation includes the local workspace, task tools and team connections. Configure addresses/defaults with `spaces` afterwards.
+Install Loop Anything with `python3 install.py`. There is one installation path; do not ask the user to select a server/client role or a deployment mode. Installation includes the local platform, task tools and team connections. Configure addresses/defaults with `spaces` afterwards.
 
 The default selects recorded addresses, preferring team when both exist unless the user chooses otherwise. A space owns work and records; execution machines are configured separately. A team task can run on a member’s machine. Server/client remain internal responsibilities in the same application.
 
@@ -18,7 +18,7 @@ The three Skills organize instructions by capability: platform work, dispatch, a
 
 ## Host the team platform after installation
 
-Use the runtime commands below to configure team hosting. On macOS, stop the automatically installed local background platform before running the same workspace in the foreground. These are runtime settings, not alternative installers.
+Use the runtime commands below to configure team hosting. On macOS, stop the automatically installed local background platform before running the same platform in the foreground. These are runtime settings, not alternative installers.
 
 ## Connect to the team service
 
@@ -78,9 +78,9 @@ Assistance still uses `wait_assistance` + `finish`, resuming the exact native se
 
 ## Persistence boundaries
 
-Only the server opens its database; clients use NAS/API. The service locks both the database and its NAS mailbox before opening the workspace. A second database cannot consume the same mailbox concurrently; the mailbox's workspace identity also prevents attaching unrelated server data. NAS carries routing metadata, requests, receipts, progress, and transport chunks, not a workspace replica. Team services retain SQLite DELETE journaling, including when the selected database is local.
+Only the server opens its database; clients use NAS/API. The service locks both the database and its NAS mailbox before opening the platform database. A second database cannot consume the same mailbox concurrently; the mailbox's platform identity also prevents attaching unrelated server data. NAS carries routing metadata, requests, receipts, progress, and transport chunks, not a copy of the platform data. Team services retain SQLite DELETE journaling, including when the selected database is local.
 
-NAS must implement file locking, atomic replacement, and durable writes correctly for the mailbox. Local temporary-directory tests do not establish real NAS semantics. Validate two-machine exclusion and result visibility on the actual cluster. Changing service machines requires preserving/restoring the server workspace (database plus packages/configuration/results), then attaching its existing mailbox; mailbox messages alone cannot reconstruct Run history. Stop the old service before relocating its data. Existing databases and NAS history are not automatically moved, merged, or deleted.
+NAS must implement file locking, atomic replacement, and durable writes correctly for the mailbox. Local temporary-directory tests do not establish real NAS semantics. Validate two-machine exclusion and result visibility on the actual cluster. Changing service machines requires preserving/restoring the platform data (database plus packages/configuration/results), then attaching its existing mailbox; mailbox messages alone cannot reconstruct Run history. Stop the old service before relocating its data. Existing databases and NAS history are not automatically moved, merged, or deleted.
 
 Personal registrations differ from running instances: definitions/latest results remain in the selected directory, while processes stop with the machine. Inspecting history, starting another job, or changing machines never restarts old jobs. Persistent team-service recovery and personal explicit start are distinct lifecycles.
 

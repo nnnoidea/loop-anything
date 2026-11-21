@@ -16,8 +16,8 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
     from loop_anything.interfaces.platform_tools import PlatformTools
     from loop_anything.interfaces.schedules import ScheduleControls
     platform_tools = PlatformTools(store)
-    schedules = ScheduleControls(store.filename)
     space=getattr(engine,'space','local')
+    schedules = ScheduleControls(store.filename, local=space=='local')
     from loop_anything.runtime.tool_client import module
     personal_spaces=module('spaces')
     root = Path(__file__).resolve().parents[1] / 'web'
@@ -42,7 +42,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             return True
 
         def send(self, data, status=200):
-            content = json.dumps(data, ensure_ascii=False).encode()
+            content = json.dumps(data, ensure_ascii=False, separators=(',', ':')).encode()
             self.send_response(status)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
             self.send_header('Cache-Control', 'no-store')
@@ -64,6 +64,10 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
         def get(self):
             parts = urlsplit(self.path).path.strip('/').split('/')
             query = {k:v[-1] for k,v in parse_qs(urlsplit(self.path).query,keep_blank_values=True).items()}
+            if len(parts)==4 and parts[:2]==['api','timelines'] and parts[3]=='file':
+                exported = platform_tools.call('export_timeline', {'timeline_id': parts[2]})
+                self.send(exported['document'])
+                return
             if parts == ['api','spaces']:
                 if not self.personal_settings_allowed():
                     self.send({'space':space,'configuration':None});return
@@ -107,9 +111,8 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.send(DEFAULTS)
                 return
             if parts == ['api', 'tools']:
-                from loop_anything.interfaces.platform_tools import PlatformTools
                 from loop_anything.capabilities import service_info
-                self.send({'service': service_info(), 'instructions': PlatformTools.instructions, 'tools': PlatformTools(store).definitions()})
+                self.send({'service': service_info(), 'instructions': PlatformTools.instructions, 'tools': platform_tools.definitions()})
                 return
             if parts == ['api', 'skills']:
                 from loop_anything.packaging.skill_bundle import bundle
@@ -122,8 +125,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.wfile.write(data)
                 return
             if parts == ['api','notification-channels']:
-                from loop_anything.interfaces.platform_tools import PlatformTools
-                self.send(PlatformTools(store).call('read_notification_channels',{}))
+                self.send(platform_tools.call('read_notification_channels',{}))
                 return
             if parts == ['api', 'platform']:
                 import platform
@@ -241,6 +243,15 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 if self.headers.get('X-Loop-Anything') != 'workspace':
                     raise Invalid('X-Loop-Anything header required')
                 length = int(self.headers.get('Content-Length', '0'))
+                if urlsplit(self.path).path == '/api/timelines/import':
+                    from loop_anything.runtime.timeline_transfer import MAX_BYTES
+                    if not 0 < length <= MAX_BYTES:
+                        raise Invalid('Timeline 文件大小须在 20 MiB 以内')
+                    request_id = self.headers.get('X-Request-Id', '')
+                    result = platform_tools.call('import_timeline', {
+                        'document': json.loads(self.rfile.read(length)), 'request_id': request_id})
+                    self.send({'timeline_id': result['timeline']['id']})
+                    return
                 package_route = urlsplit(self.path).path.startswith('/api/packages/') or urlsplit(self.path).path == '/api/drafts'
                 limit = 30_000_000 if package_route or urlsplit(self.path).path=='/api/tools' else 2_000_000
                 if not 0 < length <= limit:
@@ -296,8 +307,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             if parts[0]=='web' or parts[:2]==['api','conversations']:
                 raise Invalid('独立网页 Agent 对话已移除；节点 session 仅用于 Run 任务。')
             if parts == ['api', 'tools']:
-                from loop_anything.interfaces.platform_tools import PlatformTools
-                result = PlatformTools(store).respond(body['tool'],body.get('arguments',{}))
+                result = platform_tools.respond(body['tool'],body.get('arguments',{}))
                 self.send(result, 200 if result['ok'] else 409 if result['error']['code'] == 'conflict' else 400)
                 return
             if parts == ['api', 'packages', 'export']:
@@ -335,7 +345,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             elif parts == ['api', 'publish']:
                 self.send(store.publish(body['loop_definition'],body['implementations']))
             elif parts == ['api', 'runs']:
-                self.send(PlatformTools(store).call('start_run', body), 201)
+                self.send(platform_tools.call('start_run', body), 201)
             elif len(parts) == 4 and parts[:2] == ['api', 'runs']:
                 run_id, action = parts[2:]
                 if action == 'request':
@@ -358,7 +368,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                             return
                         arguments=dict(body.get('arguments',{}),run_id=run_id)
                         if 'token' in body:arguments['token']=body['token']
-                        result=PlatformTools(store).respond(body['tool'],arguments)
+                        result=platform_tools.respond(body['tool'],arguments)
                         self.send(result, 200 if result['ok'] else 409 if result['error']['code'] == 'conflict' else 400)
                         return
                 elif action == 'command':
@@ -397,7 +407,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
     engine.platform_url = public_url or engine.web_url
     if initial_run is not None:
         try:
-            created = PlatformTools(store).call('start_run', initial_run)
+            created = platform_tools.call('start_run', initial_run)
             print(json.dumps(created, ensure_ascii=False), flush=True)
         except Exception:
             server.server_close()
@@ -405,10 +415,10 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             raise
     from loop_anything.runtime.service_host import ServiceHost
     runtime=ServiceHost(engine,mailbox).start()
-    print('Loop Anything workspace: http://127.0.0.1:%s' % server.server_port, flush=True)
+    print('Loop Anything platform: http://127.0.0.1:%s' % server.server_port, flush=True)
     print('Health check: ' + engine.web_url + '/api/health', flush=True)
     if host not in ('127.0.0.1', 'localhost'):
-        print('Trusted workspace: http://<server-address>:%s' % server.server_port, flush=True)
+        print('Team platform: http://<server-address>:%s' % server.server_port, flush=True)
     print('Database: ' + str(Path(store.filename).resolve()), flush=True)
     if protection and protection.status()['error']:
         print('WARNING: sleep protection unavailable: ' + protection.status()['error'], flush=True)

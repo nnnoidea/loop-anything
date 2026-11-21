@@ -4,11 +4,11 @@
 
 ## 安装 Loop Anything
 
-1. 复用已有安装、工作区和已记录地址。连接失败先确认平台与地址，不新建 Run 或数据库来测试。
+1. 复用已有安装、平台数据和已记录地址。连接失败先确认平台与地址，不新建 Run 或数据库来测试。
 2. 获取本仓库完整源码或发布的安装 ZIP。需要 Python 3.9 以上及 pip/venv；源码安装还需要 Python 构建依赖，不从同名第三方包替代安装。
 3. 在源码或 ZIP 解压目录执行 `python3 install.py`（Windows 使用 `py -3 install.py`）。安装器创建独立环境，返回启动文件和 Python 路径，并登记 `loop-anything` 命令。升级保留已有个人地址、任务登记目录与启动配置；需要时可提供团队地址、默认空间和端口参数，默认无需填写。
 4. 打开返回的 Loop Anything 启动文件。macOS 默认使用后台服务，关闭 Agent、终端或网页不会停止平台；Windows/Linux 使用前台启动器，需保持其进程运行。默认安装记录实际本地地址。
-5. 可选：执行 `loop-anything spaces --team-url <团队地址>`，或在本地网页“平台地址与默认选择”设置配置团队地址。未手动指定默认时，只记录一个地址就使用它，两个都有时优先团队。切换不上传、合并或迁移已有工作。
+5. 可选：执行 `loop-anything spaces --team-url <团队地址>`，或在本地网页「设置 → 常规」配置团队地址。未手动指定默认时，只记录一个地址就使用它，两个都有时优先团队。切换不上传、合并或迁移已有工作。
 6. 将平台操作、派单和本机调度 Skill 导出到当前 Agent 的 Skill 目录：
 
 ```sh
@@ -44,11 +44,11 @@ loop-anything client local list
 
 空间决定工作记录的归属，执行位置由任务配置决定；团队任务可以交给本机 Agent 执行，连接团队空间本身不启动接单。
 
-NAS 工具地址与网页地址可分别配置：`spaces --team-url nas:///挂载目录/team --team-web-url https://team.example`。默认配置在个人本机 `~/.config/loop-anything/spaces.json`；网页“平台地址与默认选择”设置与 Agent/CLI 共用它。地址与默认值通过 `loop-anything spaces` 配置；升级保留个人选择。更新 Skill 不修改地址或默认值。
+NAS 工具地址与网页地址可分别配置：`spaces --team-url nas:///挂载目录/team --team-web-url https://team.example`。默认配置在个人本机 `~/.config/loop-anything/spaces.json`；网页「设置 → 常规」与 Agent/CLI 共用它。地址与默认值通过 `loop-anything spaces` 配置；升级保留个人选择。更新 Skill 不修改地址或默认值。
 
 脚本把创建或查询得到的资源绑定原平台，后续按资源 ID 自动接续；同名资源或无资源参数的后续操作使用返回的 `work_id`（`--work`），Agent 无需填写原地址。请求的 `routing_request_id` 用于原平台重试和查询，不随默认空间变化。本地不可用只报错，不转投团队。切换不上传本地数据；团队平台不提供个人配置读写。默认安装的本机任务登记目录与本地网页一致，显式 `--root` 仍可使用独立目录。
 
-未指定 `--db` 的 `loop-anything tool` 与 `client tool` 使用相同的个人空间选择。显式 `--db` 表示直接操作指定本地工作区，不与 `--space`／`--url` 混用。
+未指定 `--db` 的 `loop-anything tool` 与 `client tool` 使用相同的个人空间选择。显式 `--db` 表示直接操作指定本地数据库，不与 `--space`／`--url` 混用。
 
 ## 终端命令注册
 
@@ -70,9 +70,9 @@ NAS 工具地址与网页地址可分别配置：`spaces --team-url nas:///挂�
 python3 -m loop_anything serve --demo --open
 ```
 
-默认地址为 `http://127.0.0.1:8767`。示例展示模拟流程，不执行真实训练或预订；前台预览需要保持进程运行。已有服务占用默认端口或工作区时，请复用已有服务，或用独立的 `--db` 和 `--port` 启动预览。
+默认地址为 `http://127.0.0.1:8767`。示例展示模拟流程，不执行真实训练或预订；前台预览需要保持进程运行。已有服务占用默认端口或平台数据时，请复用已有服务，或用独立的 `--db` 和 `--port` 启动预览。
 
-## 安装位置、工作区与升级
+## 安装位置、平台数据与升级
 
 安装器默认在用户数据目录的 `app/` 下创建环境，也可用 `--prefix 绝对路径` 指定。macOS 启动文件是 `Loop Anything.command`，Windows 是 `Loop Anything.cmd`，Linux 是 `loop-anything`。
 
@@ -91,17 +91,17 @@ python3 -m loop_anything serve --demo --open
 "<平台 Python 路径>" -m loop_anything service remove
 ```
 
-安装目录也提供 `Stop Loop Anything.command`。移除服务仅取消后台托管，不删除平台、Loop 包或数据库。开发调试使用安装后的 `service stop` 停止后台平台，再手动 `serve`；不要让前台预览与后台服务争用同一工作区或端口。安装时发现占用会报错，不擅自结束其他进程。
+安装目录也提供 `Stop Loop Anything.command`。移除服务仅取消后台托管，不删除平台、Loop 包或数据库。开发调试使用安装后的 `service stop` 停止后台平台，再手动 `serve`；不要让前台预览与后台服务争用同一平台数据或端口。安装时发现占用会报错，不擅自结束其他进程。
 
 原生配置位于 `~/Library/LaunchAgents/com.loop-anything.platform.plist`，日志位于用户数据目录的 `logs/`；没有第二套平台服务配置。安装时保存 PATH 和显式配置的服务环境，不会复制全部终端环境。其他必需环境变量可按需配置到该 plist 的 EnvironmentVariables，停止后修改，再启动。
 
-指定已有工作区时，将 `--db 绝对路径` 放在 `serve` 等子命令前；平台不自动搬迁或合并数据库。平台状态 `/api/platform` 返回实际路径。换本地端口或工作区时，用 `loop-anything spaces --local-url http://127.0.0.1:PORT --local-registry /绝对路径/workspace.db.schedules` 更新个人配置；已有任务仍使用其原地址。
+指定已有平台数据时，将 `--db 绝对路径` 放在 `serve` 等子命令前；平台不自动搬迁或合并数据库。平台状态 `/api/platform` 返回实际路径。换本地端口或平台数据时，用 `loop-anything spaces --local-url http://127.0.0.1:PORT --local-registry /绝对路径/workspace.db.schedules` 更新个人配置；已有任务仍使用其原地址。
 
-升级前确认没有在途操作，再用新源码或安装包执行原安装命令。统一执行 `python3 install.py`，保留原 `--prefix`；安装器自动沿用已保存的后台服务配置，不再接收安装角色或部署模式参数。先正常停止本机调度和接单进程，升级后按需要明确启动。macOS 安装器先验证设置并备份原程序环境，再停止旧服务、更新并启动；可用性检查、安装或启动失败时恢复原环境、plist 和启动文件，只重新启动升级前正在运行的服务。如果恢复也失败，会保留备份并明确报告位置。不会以新库替代原工作区。Windows/Linux 保留原前台启动器的工作区和启动命令；显式 --port 只修改该命令的端口，不猜测自定义任务登记目录对应哪个数据库。前台平台先退出进程再升级。
+升级前确认没有在途操作，再用新源码或安装包执行原安装命令。统一执行 `python3 install.py`，保留原 `--prefix`；安装器自动沿用已保存的后台服务配置，不再接收安装角色或部署模式参数。先正常停止本机调度和接单进程，升级后按需要明确启动。macOS 安装器先验证设置并备份原程序环境，再停止旧服务、更新并启动；可用性检查、安装或启动失败时恢复原环境、plist 和启动文件，只重新启动升级前正在运行的服务。如果恢复也失败，会保留备份并明确报告位置。不会以新库替代原平台数据。Windows/Linux 保留原前台启动器的平台数据和启动命令；显式 --port 只修改该命令的端口，不猜测自定义任务登记目录对应哪个数据库。前台平台先退出进程再升级。
 
 升级后也要更新 Agent 实际加载的 Skill，保留原 `--url` 或 `--only local` 并在导出命令中加 `--replace`；已有内容不同且未指定更新时会明确报告冲突。随后重新加载 Skill；连接服务的客户端执行 `scripts/call.py check`，仅本机调度用 `client local --help` 核对入口。仅替换源码不会自动刷新 Agent 的 Skill。
 
-安装器不转换旧数据格式，也不以新建空库替代已有工作区。
+安装器不转换旧数据格式，也不以新建空库替代已有平台数据。
 
 ## 安装后运行团队平台
 
@@ -115,7 +115,7 @@ python3 -m loop_anything serve --demo --open
 python3 -m loop_anything --db /绝对路径/runs.sqlite3 serve --space team --host 0.0.0.0
 ```
 
-macOS 安装后先执行 `loop-anything service stop`，再执行 `loop-anything service install --space team --host 0.0.0.0` 配置团队服务。未指定的工作区和端口沿用已有配置。
+macOS 安装后先执行 `loop-anything service stop`，再执行 `loop-anything service install --space team --host 0.0.0.0` 配置团队服务。未指定的平台数据和端口沿用已有配置。
 
 共享访问面向可信内部环境。多机 Agent 协作见[通信说明](../skills/loop-anything-platform/references/communication.md)。
 
@@ -133,7 +133,7 @@ curl -kfsS --max-time 5 https://服务器地址/api/health
 
 ### NAS 团队平台与执行机器
 
-内部职责与完整操作见[团队运行说明](../skills/loop-anything-platform/references/team-runtime.md)。先用 `python3 install.py` 安装，再启动团队服务；前台运行时由团队已有进程托管方式维持服务。macOS 先停止自动安装的后台平台，避免同时打开同一工作区。数据库与 NAS 通信目录分别指定：
+内部职责与完整操作见[团队运行说明](../skills/loop-anything-platform/references/team-runtime.md)。先用 `python3 install.py` 安装，再启动团队服务；前台运行时由团队已有进程托管方式维持服务。macOS 先停止自动安装的后台平台，避免同时打开同一平台数据。数据库与 NAS 通信目录分别指定：
 
 ```sh
 "<安装器返回的 Python 路径>" -m loop_anything --db /srv/loop-anything/workspace.sqlite3 serve --space team --team-dir /nas/team/loop-anything
@@ -146,7 +146,7 @@ NAS 通信统一使用这个根目录，内部由平台管理：`api/` 保存平
 
 NAS 团队只使用统一根目录下的 agents/ 布局，不识别旧平铺目录。新建或重新连接统一 NAS 入口时，用于后续 NAS 派单；飞书 Base 的优先级不变。已退出的具名通信团队不会因服务重启而被自动重新启用。
 
-同一 NAS 收件箱只由一个服务处理，并绑定原工作区身份。迁移服务器时，先停止旧服务并保留／恢复完整服务端工作区（数据库及旁边的 packages、loop-configs、结果等目录），再连接原收件箱。NAS 消息不能代替数据库备份；客户端无需挂载服务端数据目录。
+同一 NAS 收件箱只由一个服务处理，并绑定原平台身份。迁移服务器时，先停止旧服务并保留／恢复完整的平台数据（数据库及旁边的 packages、loop-configs、结果等目录），再连接原收件箱。NAS 消息不能代替数据库备份；客户端无需挂载服务端数据目录。
 
 ## 安装后的命令与 Skill
 
@@ -155,4 +155,4 @@ NAS 团队只使用统一根目录下的 agents/ 布局，不识别旧平铺目�
 导出的平台 Skill 与安装后的命令共用个人空间配置和原平台绑定记录。更新 Skill 不修改默认地址，也不启动旧任务；接单和个人调度仍需明确启动。
 
 
-当前 0.6.19 使用 API revision 10。平台不为旧实现增加兼容转换或回退，也不按存储格式编号人为拒绝可用数据；读取时校验实际所需结构。安装包构建和验证使用独立临时工作区，不自动替换正在运行的用户工作区。
+当前 0.6.19 使用 API revision 10。平台不为旧实现增加兼容转换或回退，也不按存储格式编号人为拒绝可用数据；读取时校验实际所需结构。安装包构建和验证使用独立临时平台数据，不自动替换正在运行的用户平台数据。

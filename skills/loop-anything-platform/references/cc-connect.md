@@ -12,7 +12,7 @@ Notifications use official `cc-connect send` over its local Unix socket. The bri
 
 ## Local setup and Bot discovery
 
-Read local configuration, revision, and bots with read_cc_connect. Configuration is shared across this platform user's workspaces, stays local, and is not shared in Loops/NAS. Bot credentials remain in cc-connect's configuration.
+Read local configuration, revision, and bots with read_cc_connect. Configuration is shared by platforms running under the same system user, stays local, and is not shared in Loops/NAS. Bot credentials remain in cc-connect's configuration.
 
 When unset, determine the running bridge's actual config file and call configure_cc_connect:
 

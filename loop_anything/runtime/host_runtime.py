@@ -1,6 +1,7 @@
 """Small OS boundary for the platform process, locks and idle-sleep protection."""
 import ctypes
 import errno
+import json
 import os
 from pathlib import Path
 import shutil
@@ -42,9 +43,12 @@ def lock_database(filename, resource='database'):
     return lock  # Closing the descriptor releases either OS lock.
 
 
-def run_command(command, request_text, timeout, cwd=None, stop=None, session=None, context=None):
+def run_command(command, request_text, timeout, cwd=None, stop=None, session=None, context=None, *, started=None, observation_as_of=None):
     env=dict(os.environ);env.pop('LOOP_ANYTHING_WORK',None)
+    env.pop('LOOP_ANYTHING_OBSERVATION_READ',None)
     if context is not None:
+        if observation_as_of is not None:
+            env['LOOP_ANYTHING_OBSERVATION_READ']=json.dumps({'timeline_id':context['timeline_id'],'as_of':observation_as_of})
         from loop_anything.runtime.tool_client import module
         env['LOOP_ANYTHING_WORK']=module('routing').bind_context(context) or 'unavailable-work-origin'
     if session is not None:
@@ -57,6 +61,10 @@ def run_command(command, request_text, timeout, cwd=None, stop=None, session=Non
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', cwd=cwd, env=env, **options)
     except OSError as exc:
         raise CommandStartError('Cannot start command in cwd ' + str(cwd or Path.cwd()) + ': ' + str(exc)) from exc
+    if started:
+        try:started(process.pid)
+        except Exception:
+            stop_command(process);raise
     deadline = time.monotonic() + timeout if timeout is not None else None
     try:
         while True:

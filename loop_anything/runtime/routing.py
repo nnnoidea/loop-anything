@@ -68,6 +68,33 @@ def validate_routes(bp):
                 raise Invalid('Route each must read a report context array', path=here + ['each'])
 
 
+def original_method(store, run, retained):
+    origin = retained.get('method_ref', retained['source_run_id'])
+    descriptor = run.get('retained_methods', {}).get(origin)
+    if descriptor is None:
+        return store.get(origin)
+    source = dict(descriptor)
+    with store.connection() as db:
+        store.load_method(db, source)
+    return source
+
+
+def reported_tasks(store, run, execution, envelope):
+    """A late report may declare a child using its original port contract."""
+    from loop_anything.runtime.timelines import retain_node
+    specs = envelope.get('tasks', [])
+    retained = run.get('retained_nodes', {}).get(execution['node'])
+    if not specs or not retained:
+        return specs
+    source = original_method(store, run, retained)
+    specs = copy.deepcopy(specs)
+    for spec in specs:
+        if spec.get('node') in source['loop_definition']['nodes']:
+            spec['node'] = retain_node(run, source, spec)
+            spec.pop('implementation', None)
+    return specs
+
+
 def prepare_routes(store, run, execution, report, context):
     """Validate all generated tasks on a copy before any result/state is committed.
 
@@ -84,9 +111,11 @@ def prepare_routes(store, run, execution, report, context):
         return [], [], None
     shadow = copy.deepcopy(run)
     retained=run.get('retained_nodes',{}).get(execution['node'])
-    source=store.get(retained['source_run_id']) if retained and any(r.get('plan') for r in routes) else run
+    source=run
+    if retained and any(r.get('plan') for r in routes):
+        source=original_method(store,run,retained)
     actor = owner_for(run, execution['token']) if execution['implementation']['kind'] == 'agent' else None
-    for spec in attach_tasks(shadow, report.get('envelope', {}).get('tasks', []), execution['task_id'], actor):
+    for spec in attach_tasks(shadow, reported_tasks(store, shadow, execution, report.get('envelope', {})), execution['task_id'], actor):
         add_task(shadow, spec, {'execution': execution['id']})
     context = dict(context, task={'id': execution['task_id'], 'node': retained['node_id'] if retained else execution['node'],
                                 'outputs': run['tasks'][execution['task_id']]['spec']['outputs']})

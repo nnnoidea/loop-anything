@@ -44,6 +44,9 @@ class Store:
             business_state.initialize(db)
             from loop_anything.runtime.work import initialize as initialize_work
             initialize_work(db)
+            from loop_anything.runtime import events, observations
+            events.initialize(db)
+            observations.initialize(db)
             from loop_anything.runtime.run_library import initialize
             initialize(db)
             db.execute("INSERT OR REPLACE INTO platform_settings VALUES ('journal_mode',?)",(json.dumps(mode),));db.commit()
@@ -83,15 +86,26 @@ class Store:
 
     def publish(self, loop_definition, implementations):
         from loop_anything.packaging.packages import make_archive,install
-        return install(self,make_archive({'loop_definition':loop_definition,'implementations':implementations}))
+        from loop_anything.runtime.run_methods import published
+        return published(self,install(self,make_archive({'loop_definition':loop_definition,'implementations':implementations})))
 
-    def catalog(self, include_archived=True):
+    def catalog(self, include_archived=True, *, key=None):
+        filters, args = [], []
+        if key is not None:
+            filters.append('d.key=?')
+            args.append(key)
+        if not include_archived:
+            filters.append('l.archived_at IS NULL')
+        query = """SELECT d.key,d.document,d.implementations,l.archived_at,p.key AS package_key
+                   FROM loop_definitions d LEFT JOIN loop_library l ON l.key=d.key
+                   LEFT JOIN loop_packages p ON p.key=d.key"""
+        if filters:
+            query += ' WHERE '+' AND '.join(filters)
         with self.connection() as db:
-            packages = {r[0] for r in db.execute('SELECT key FROM loop_packages')}
-            archived = dict(db.execute('SELECT key, archived_at FROM loop_library'))
-            return [dict(key=r['key'], archived_at=archived.get(r['key']), loop_definition=copy.deepcopy(json.loads(r['document'])), implementations=json.loads(r['implementations']),
-                         **({'package_key': r['key']} if r['key'] in packages else {}))
-                    for r in db.execute('SELECT * FROM loop_definitions ORDER BY key') if include_archived or not archived.get(r['key'])]
+            return [dict(key=r['key'],archived_at=r['archived_at'],loop_definition=json.loads(r['document']),
+                         implementations=json.loads(r['implementations']),
+                         **({'package_key':r['package_key']} if r['package_key'] else {}))
+                    for r in db.execute(query+' ORDER BY d.key',args)]
 
     def drafts(self, include_archived=True):
         with self.connection() as db:
@@ -224,6 +238,9 @@ class Store:
                 timelines.continue_from(self, db, run, continue_run_id)
                 run['settings'].update(explicit)
                 run['inputs'].update(inputs or {})
+            if run['loop_definition'].get('observations'):
+                from loop_anything.runtime.observations import sync
+                sync(db,run)
         if _db is not None:
             attach(_db)
             self._save(_db, run)
@@ -266,14 +283,8 @@ class Store:
              'history': 'history', 'events': 'events',
              'notifications': 'notifications', 'hook_firings': 'hook_firings'}
 
-    def _load(self, db, run_id):
-        row = db.execute('SELECT document FROM runs WHERE id=?', (run_id,)).fetchone()
-        if row is None:
-            raise Invalid('Unknown Run')
-        run = json.loads(row[0])
-        run.pop('_storage', None)
-        if not isinstance(run.get('agent_sessions'),list) or not isinstance(run.get('timeline_id'),str) or not run['timeline_id']:
-            raise Invalid('Run needs a Timeline reference and agent sessions')
+    @staticmethod
+    def load_method(db,run):
         loop_definition = db.execute('SELECT document, implementations FROM loop_definitions WHERE key=?', (run['loop_key'],)).fetchone()
         run.update(loop_definition=copy.deepcopy(json.loads(loop_definition[0])), implementations=json.loads(loop_definition[1]))
         if run.get('configuration'):
@@ -284,6 +295,16 @@ class Store:
             run.update({k: configured[k] for k in ('loop_definition', 'implementations')})
         if run['loop_definition']['id']=='platform-collaboration' and run.get('collaboration',{}).get('coordinator_implementation'):
             run['implementations']['coordinate']={'options': {'default': copy.deepcopy(run['collaboration']['coordinator_implementation'])}, 'default': 'default'}
+
+    def _load(self, db, run_id):
+        row = db.execute('SELECT document FROM runs WHERE id=?', (run_id,)).fetchone()
+        if row is None:
+            raise Invalid('Unknown Run')
+        run = json.loads(row[0])
+        run.pop('_storage', None)
+        if not isinstance(run.get('agent_sessions'),list) or not isinstance(run.get('timeline_id'),str) or not run['timeline_id']:
+            raise Invalid('Run needs a Timeline reference and agent sessions')
+        self.load_method(db,run)
         if run.get('steward'):
             from loop_anything.runtime.steward import materialize
             materialize(run)
@@ -305,7 +326,7 @@ class Store:
             from loop_anything.runtime import business_state
             run['business_state']=business_state.load(db,timeline)
             run['records']=business_state.results(db,run['timeline_id'])
-            run['arrangements']=business_state.arrangements(db,run['timeline_id'])
+            run['arrangements']=business_state.arrangements(db,run['timeline_id'],run['tasks'])
         return run
 
     def _save(self, db, run):
@@ -335,6 +356,15 @@ class Store:
                 if field == 'history' and key not in old and value.get('kind') in ('committed','agent_action_change','completed','terminated'):
                     timelines.append(db,run['timeline_id'],'execution:'+run['id']+':'+key,value['message'],'action',
                                      [{'run_id':run['id'],'execution_id':value.get('execution'),'detail':value.get('detail')}],actor='platform')
+                if field=='hook_firings' and key not in old and value.get('action')=='signal':
+                    from loop_anything.runtime.events import emit
+                    emit(db,'signal',run['timeline_id'],run['id'],value['signal'],{'task_id':value['tasks'],'phase':value['phase']})
+                if field=='tasks' and old.get(key) != (position,document):
+                    previous=json.loads(old[key][1]) if key in old else {}
+                    if any(value.get(k)!=previous.get(k) for k in ('status','revision','execution_id')):
+                        from loop_anything.runtime.events import emit
+                        emit(db,'task',run['timeline_id'],run['id'],key,{'node':timelines.logical_node(run,value['spec']['node']),
+                             'status':value['status'],'previous':previous.get('status'),'revision':value.get('revision')})
                 if old.get(key) != (position, document):
                     db.execute('INSERT OR REPLACE INTO timeline_parts VALUES (?,?,?,?,?)',
                                (run['id'], section, key, position, document))

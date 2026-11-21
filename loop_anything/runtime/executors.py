@@ -264,7 +264,7 @@ class Executors:
                     payload['native_id']=session.native_id
                     payload['native_history']=session.doc.get('native_history',False)
                 from loop_anything.runtime.executor_resources import snapshot
-                resources=snapshot(self.store,metadata)
+                resources=snapshot(self.store,metadata,command=command,cwd=cwd,asset_manifest=config.get('asset_manifest',()))
                 if resources is not None:payload['resources']=resources
                 job={'id':ident,'executor':executor,'token':secrets.token_urlsafe(32),'payload':payload,
                     'state':'queued','created_at':time.time(),'metadata':metadata}

@@ -5,10 +5,10 @@ When sharing or moving a Loop, or adjusting paths, agents, and external services
 ## Templates and personal configuration
 
 - Every export includes `config.example.json`. An authored asset with that name is preserved; otherwise an empty override template is generated. Read a draft template with `read_loop_config(draft_id=...)` and edit through `put_asset`.
-- Installation creates `loop-configs/<installed-key>.json` in the service workspace. `read_loop_config` returns its exact path, content, and revision. Reinstallation preserves it. Older installations without the file use the package template or empty overrides; configuration is not a prerequisite for Run creation.
+- Installation creates `loop-configs/<installed-key>.json` in the platform data directory. `read_loop_config` returns its exact path, content, and revision. Reinstallation preserves it. Older installations without the file use the package template or empty overrides; configuration is not a prerequisite for Run creation.
 - `set_loop_config(key, revision, config)` saves the entire configuration. It validates JSON structure, candidate references, and execution fields only; it does not probe directories, programs, login, network, or permissions, or start work. Reread after conflicting edits. Users may directly edit the returned JSON path, not the installed content-addressed package snapshot.
 - New Runs read and snapshot the configuration. Existing Runs, executions, and retries retain their snapshot. Web startup displays and uses it read-only, without an editable parameter form. Explicit API/agent startup parameters still take precedence.
-- Configuration belongs to an installed version. New versions have separate configuration, avoiding automatic reuse of obsolete node mappings. Service configuration can live in a team NAS workspace; `cwd` refers to the actual execution machine.
+- Configuration belongs to an installed version. New versions have separate configuration, avoiding automatic reuse of obsolete node mappings. Service configuration can live on team NAS storage; `cwd` refers to the actual execution machine.
 - Exports and Loop copies carry the author template, not recipient overrides. Put reusable configuration needs in the template. Keep credentials in the execution environment or existing platform integrations, not templates. The platform does not guess or replace hardcoded private paths.
 
 ## Configuration example

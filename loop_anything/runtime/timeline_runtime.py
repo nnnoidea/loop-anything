@@ -12,6 +12,7 @@ from loop_anything.runtime.lifecycle import definition as lifecycle_definition, 
 from loop_anything.runtime.model import digest
 from loop_anything.runtime.timeline_model import (SEMANTIC_FIELDS, ENDING_FIELDS, check_task, settings_defaults,
                             validate_settings, validate_result, validate_fallback)
+from loop_anything.runtime.timelines import completed_counts, logical_node
 from loop_anything.runtime.model import Conflict, Invalid, contract, path
 from loop_anything.runtime.store import Store, uid
 from loop_anything.runtime.host_runtime import run_command, CommandNotStopped, CommandStartError
@@ -66,8 +67,7 @@ def end_condition(run):
         return None, None
     context = {'settings': run['settings'], 'inputs': run['inputs'],
                'records': {key: versions[-1]['value'] for key, versions in run['records'].items() if versions},
-               'completed': {node: sum(w['spec']['node'] == node and w['status'] == 'completed' for w in run['tasks'].values())
-                             for node in run['loop_definition']['nodes']},
+               'completed': completed_counts(run,run['tasks'].values(),lambda task:task['spec']['node']),
                'active_tasks': sum(w['status'] not in END for w in run['tasks'].values())}
     try:
         result = evaluate(rule, context)
@@ -162,7 +162,7 @@ class TimelineRuntime:
             if not hook.get('enabled', True) or hook['phase'] != phase:
                 continue
             target = hook['target']
-            if target.get('node') and target['node'] != tasks['spec']['node']:
+            if target.get('node') and target['node'] not in (tasks['spec']['node'],logical_node(run,tasks['spec']['node'])):
                 continue
             if target.get('tasks') and target['tasks'] != tasks['id']:
                 continue
@@ -181,6 +181,8 @@ class TimelineRuntime:
             if hook['action'] == 'pause':
                 held = True
                 Store.log(run, 'gate', 'Paused before ' + tasks['id'], detail=firing)
+            elif hook['action']=='signal':
+                firing.update(status='published',signal=hook['name'],phase=phase)
             else:
                 context={'inputs': (self.resolve_inputs(run,tasks)[0] if phase=='before' else self.engine.execution(run,tasks['execution_id']).get('inputs',{}) if tasks.get('execution_id') else {}), 'parameters':tasks['spec'].get('parameters',{}), 'settings':run['settings'], 'transition':transition or {}, 'outputs':(self.engine.execution(run,tasks['execution_id']).get('outputs',{}) if tasks.get('execution_id') else {})}
                 from loop_anything.runtime.timeline_model import expand
@@ -503,8 +505,7 @@ class TimelineRuntime:
             completed(self.store, run, tasks, outputs)
         context = {'outputs': outputs, 'inputs': e['inputs'], 'parameters': e['parameters'],
                    'settings': dict(run['settings'], **envelope.get('settings', {})),
-                   'completed': {name: sum(x['node'] == name and x['status'] == 'completed' for x in run['executions'])
-                                 for name in run['loop_definition']['nodes']}}
+                   'completed': completed_counts(run,run['executions'],lambda e:e['node'])}
         check_assertions(node, context)
         if set(envelope) - {'outputs', 'tasks', 'settings', 'state', 'operations'}:
             raise Invalid('Unknown completion envelope field')
@@ -520,9 +521,11 @@ class TimelineRuntime:
             validate_settings(candidate)
             if node.get('agent_settings_schema'):
                 contract(envelope['settings'], node['agent_settings_schema'], 'settings')
-        for planned in envelope.get('tasks', []):
+        from loop_anything.runtime.routing import reported_tasks
+        plans = reported_tasks(self.store, run, e, envelope)
+        for planned in plans:
             allowed = list(run['loop_definition']['nodes']) if e['implementation']['kind'] == 'agent' else node.get('plan_nodes', [])
-            if planned.get('node') not in allowed:
+            if planned.get('node') not in allowed and logical_node(run, planned.get('node')) not in allowed:
                 raise Invalid('This node cannot propose tasks for ' + str(planned.get('node')))
             check_task(run['loop_definition'], planned)
         # Validate every destination before applying any shared-state write.
@@ -543,7 +546,7 @@ class TimelineRuntime:
         from loop_anything.runtime.business_state import apply as apply_state
         apply_state(run,e,envelope.get('state',[]))
         actor = require_owner(run, e['token']) if e['implementation']['kind'] == 'agent' else None
-        for planned in attach_tasks(run, envelope.get('tasks', []), e['task_id'], actor):
+        for planned in attach_tasks(run, plans, e['task_id'], actor):
             add_task(run, planned, {'execution': e['id']})
         operations=envelope.get('operations',[])
         if not isinstance(operations,list):raise Invalid('operations must be task edits')
@@ -990,8 +993,9 @@ class TimelineRuntime:
             if not hook.get('id') or hook['id'] in seen:
                 raise Invalid('Hook IDs must be unique')
             seen.add(hook['id'])
-            if hook.get('action') not in ('pause', 'notify') or hook.get('phase') not in ('before', 'after', 'transition') or hook.get('frequency') not in ('once', 'always'):
+            if hook.get('action') not in ('pause', 'notify','signal') or hook.get('phase') not in ('before', 'after', 'transition') or hook.get('frequency') not in ('once', 'always'):
                 raise Invalid('Invalid hook action/phase/frequency')
+            if hook['action']=='signal' and not (isinstance(hook.get('name'),str) and hook['name'].strip()):raise Invalid('Signal hook needs a name')
             if hook['action'] == 'notify':
                 validate_notice({'message':hook.get('message') or 'Task notification','route':hook.get('route','default')})
             for field in ('event','from','to'):

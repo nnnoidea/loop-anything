@@ -91,11 +91,39 @@ class SpaceTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)['team_url'],'https://chosen.example')
 
     def test_personal_schedules_use_local_registry_even_when_team_is_default(self):
-        registry=self.root/'local.db.schedules';TaskRegistry(registry).register({'name':'Private task','every':600,'command':['unused']},'private')
-        self.spaces.configure({'local_registry':str(registry),'team_url':'https://team.example','default_space':'team'})
-        with patch('sys.stdout',new_callable=io.StringIO) as output:local_main(['list'])
-        self.assertEqual(json.loads(output.getvalue())[0]['id'],'private')
-        self.assertEqual(TaskRegistry(registry).show('private')['runtime']['status'],'registered')
+        from loop_anything.interfaces.schedules import ScheduleControls
+        local = ScheduleControls(self.root / 'local.db')
+        team = ScheduleControls(self.root / 'team.db', local=False)
+        registry = self.root / 'my-tasks'
+        self.spaces.configure({'local_registry': str(registry), 'team_url': 'https://team.example', 'default_space': 'team'})
+        definition = self.root / 'task.json'
+        definition.write_text(json.dumps({'name': 'Private task', 'every': 600, 'command': ['unused']}))
+        with patch('sys.stdout', new_callable=io.StringIO):
+            local_main(['register', str(definition), '--id', 'private'])
+            local_main(['--root', str(self.root / 'standalone'), 'register', str(definition), '--id', 'separate'])
+        with patch('sys.stdout', new_callable=io.StringIO) as output:
+            local_main(['list'])
+        self.assertEqual([item['id'] for item in json.loads(output.getvalue())], ['private'])
+        self.assertEqual([item['id'] for item in local.list()['tasks']], ['private'])
+        self.assertEqual(Path(local.list()['directory']), registry.resolve())
+        self.assertEqual(team.list()['tasks'], [])
+        self.assertEqual(TaskRegistry(registry).show('private')['runtime']['status'], 'registered')
+
+    def test_schedule_controls_reject_another_directory_with_the_same_task(self):
+        from loop_anything.interfaces.schedules import ScheduleControls
+        from loop_anything.runtime.model import Conflict
+        panel = ScheduleControls(self.root/'db')
+        self.addCleanup(panel.close)
+        for name in ('A','B'):
+            self.spaces.configure({'local_registry':str(self.root/name)})
+            panel.registry.register({'name':name,'every':60,'command':['unused']},'daily')
+            if name=='A':
+                old=panel.list()
+        body={'directory':old['directory'],'revision':old['tasks'][0]['revision'],'owner':None}
+        for action in ('start','stop'):
+            with self.assertRaisesRegex(Conflict,'directory changed'):
+                panel.control('daily',action,body)
+        self.assertEqual(panel.registry.show('daily')['runtime']['status'],'registered')
 
     def test_default_installer_includes_local_server_client_and_saves_local_registry(self):
         import install as installer

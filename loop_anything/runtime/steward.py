@@ -10,7 +10,7 @@ from loop_anything.runtime.task_scope import owner_for
 
 ACTIVE = {'planned', 'ready', 'blocked', 'held', 'executing', 'decision', 'waiting', 'retrying', 'waiting_user', 'fault', 'stale'}
 READ_ONLY = {'read_timeline', 'read_task', 'read_record', 'read_run', 'next_tasks', 'read_plans'}
-DIRECT = {'command', 'update_run'}
+DIRECT = {'command', 'update_run','refresh_observation','follow_loop_updates'}
 PROMPT = """You are the current Run steward. Own the user's request through completion or an explicit question.
 Read the complete Loop handbook and relevant node Skills, current Timeline and request record. Use read_run(view=snapshot) for running, completed and failed tasks and read_task for details; execution snapshots are separate from Timeline business progress. Business rules belong in the handbook. Reuse existing tasks and exact result versions. Persist meaningful progress, parameters, results and unresolved work in the Timeline. Read contributions from every method; process logs and scripts are optional references.
 For a start request, read the Timeline and use the current Loop handbook to advance its work. Existing goals and progress need no initialization. Arrange this method's tasks with explicit inputs; fill missing method-specific context yourself rather than requiring the previous method to supply it. Keep completed results and in-flight experiments. Inspect pending work and explicitly adjust it when the current method calls for a different next step. A declared entry Task is optional; operate it only when appropriate. Commit progress and arrangements in your completed report. Confirm actual arrangements before reporting startup complete. The Run ID is already durably bound to this request; reuse it on recovery.
@@ -274,7 +274,17 @@ def submit(store, arguments):
                 request['authorization'] = arguments['authorization']
             run.setdefault('steward_requests', {})[ident] = request
             if operation in DIRECT:
-                request.update(status='completed', result=direct(store, run, operation, request['arguments']))
+                if operation=='refresh_observation':
+                    from loop_anything.runtime.observations import refresh
+                    result=refresh(db,run,request['arguments'].get('name'))
+                elif operation=='follow_loop_updates':
+                    from loop_anything.runtime.model import contract
+                    from loop_anything.runtime.run_methods import configure
+                    contract(request['arguments'],{'type':'object','required':['follow'],'additionalProperties':False,
+                             'properties':{'follow':{'type':'boolean'}}},'arguments')
+                    result=configure(store,db,run,request['arguments'])
+                else:result=direct(store,run,operation,request['arguments'])
+                request.update(status='completed',result=result)
             else:
                 add_turn(run, request)
             Store.log(run, 'steward_request', request['message'] or operation, detail={'request_id': ident})

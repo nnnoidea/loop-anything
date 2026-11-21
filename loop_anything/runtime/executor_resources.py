@@ -1,15 +1,17 @@
 """Deliver declared package assets with process requests, using existing asset contracts."""
 import base64
+import os
 from pathlib import Path
 import tempfile
 
 from loop_anything.packaging.packages import (
-    collect_assets, decode_assets, file_hash, installed_assets, json_bytes, load_installed,
+    collect_assets, decode_assets, file_hash, installed_asset, installed_assets, json_bytes, load_installed, member_path,
 )
 from loop_anything.runtime.model import Invalid
 
 
-def snapshot(store, metadata):
+def snapshot(store, metadata, *, command=(), cwd=None, asset_manifest=()):
+    workdir = None
     if metadata.get('kind') in ('task', 'resume') and metadata.get('run_id'):
         from loop_anything.runtime.timelines import task_resources
         run=store.get(metadata['run_id'])
@@ -20,6 +22,29 @@ def snapshot(store, metadata):
         with store.connection() as db:
             original = db.execute('SELECT root FROM loop_packages WHERE key=?', (key,)).fetchone()[0]
         roots = list(dict.fromkeys([str(root), original]))
+    elif metadata.get('kind')=='observation':
+        key=metadata['loop_key']
+        document,root=load_installed(store.filename,key)
+        manifest = document['files']
+        selected = set()
+        for include in asset_manifest:
+            prefix = member_path(include)
+            matches = {name for name in manifest if name == prefix or name.startswith(prefix+'/')}
+            if not matches:
+                raise Invalid('Missing observation package resource: '+prefix)
+            selected.update(matches)
+        # Arguments resolving to package members (including the script itself) are dependencies.
+        directory = Path(os.path.normpath(cwd)) if cwd else root
+        if directory.is_relative_to(root) and directory != root and directory.is_dir():
+            workdir = member_path(directory.relative_to(root).as_posix())
+        for argument in command:
+            candidate = Path(os.path.normpath(directory / argument))
+            if candidate.is_relative_to(root):
+                name = candidate.relative_to(root).as_posix()
+                if name in manifest:
+                    selected.add(name)
+        assets = {name:installed_asset(document,root,name) for name in selected}
+        roots=[str(root)]
     elif metadata.get('kind') == 'communication':
         from loop_anything.runtime.communication import service
         row = service(store).get(metadata['request_id'])
@@ -33,7 +58,10 @@ def snapshot(store, metadata):
     files = [{'path': name, 'base64': base64.b64encode(data).decode(), 'executable': executable}
              for name, (data, executable) in sorted(assets.items())]
     content = {'key': key, 'files': files}
-    return dict(content, roots=roots, digest=file_hash(json_bytes(content)))
+    bundle = dict(content, roots=roots, digest=file_hash(json_bytes(content)))
+    if workdir:
+        bundle['workdir'] = workdir
+    return bundle
 
 
 def materialize(bundle, cache):

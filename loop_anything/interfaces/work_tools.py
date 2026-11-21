@@ -12,7 +12,11 @@ SESSION={'session_id':T,'session_token':T}
 
 
 def definitions():
+    page = {'timeline_id':T,'type':T,'id':T,'offset':N,'limit':{'type':'integer','minimum':1,'maximum':200},'as_of':N}
     entries=[
+        ('read_observations','Read the saved views and effective observation arrangements for a Timeline.',{'timeline_id':T},['timeline_id'],True),
+        ('update_run_method','Hot-apply an installed version or opt in/out of published updates. Patch named observations; null disables, inherit restores Loop defaults. Existing tasks keep their method.',{'run_id':T,'token':T,'key':T,'follow':{'type':'boolean'},'observations':O,'inherit':{'type':'array','items':T}},['run_id','token'],False),
+        ('refresh_observation','Generate the current view now, without sending a notification. Confirm a stopped process only when explicitly recovering an interrupted attempt.',{'run_id':T,'token':T,'name':T,'confirmed_stopped':{'type':'boolean'}},['run_id','token','name'],False),
         ('read_monitor_dashboard','Read-only monitoring overview: actual Run states, external monitor samples and pending waits. Never starts or polls scripts. Run summaries exclude execution archives and credentials.',
          {'offset':N,'limit':{'type':'integer','minimum':1,'maximum':100}},[],True),
         ('read_monitor_history','Read up to 240 retained checks for one monitor, including failed checks as gaps.',
@@ -28,9 +32,10 @@ def definitions():
         ('read_work_timeline','Read current intent, Loop-defined business state, saved results, related Run links and paged history. Execution state is available through read_run(view=snapshot). No handoff or original chat transcript is required.',
          {'timeline_id':T,'after':N,'limit':{'type':'integer','minimum':1,'maximum':200}},['timeline_id'],True),
         ('read_work_result','Read an exact saved result through its Timeline, including imported results; no original Run or Loop is required. Omit revision for the latest saved version.',
-         {'timeline_id':T,'id':T,'revision':{'type':'integer','minimum':1}},['timeline_id','id'],True),
+         {'timeline_id':T,'id':T,'revision':{'type':'integer','minimum':1},'as_of':N},['timeline_id','id'],True),
+        ('read_work_results','Read a filtered page of formal result versions in commit order. Use the observation results cutoff for a pinned read.',page,['timeline_id'],True),
         ('read_business_state','Read Loop-defined current or historical business records through a Timeline; omitted type/id lists current records with explicit pagination.',
-         {'timeline_id':T,'type':T,'id':T,'revision':N,'offset':N,'limit':{'type':'integer','minimum':1,'maximum':200}},['timeline_id'],True),
+         dict(page,revision=N),['timeline_id'],True),
         ('update_timeline','Edit objective/constraints at the read revision. Follow the returned notice: inspect the whole Timeline, especially running tasks, and report to the user. Does NOT pause, cancel, invalidate, or reschedule any work.',
          {'timeline_id':T,'revision':N,'change':O,'message':TEXT},['timeline_id','revision','change'],False),
         ('append_timeline','Append a note, progress or decision. Stable key deduplicates. References are evidence, not execution commands.',
@@ -70,6 +75,19 @@ def definitions():
 
 
 def call(store,name,a):
+    if name=='read_observations':
+        from loop_anything.runtime.observations import overview
+        with store.connection() as db:
+            db.execute('BEGIN')
+            timelines.get(db,a['timeline_id'])
+            return overview(db,a['timeline_id'])
+    if name in ('update_run_method','refresh_observation'):
+        from loop_anything.runtime import run_methods,observations
+        from loop_anything.interfaces.agent_tasks import guard_write
+        with work.transaction(store) as db,store.edit(a['run_id'],_db=db) as run:
+            if name=='update_run_method':return run_methods.configure(store,db,run,a)
+            guard_write(run,a['token'])
+            return observations.refresh(db,run,a['name'],a.get('confirmed_stopped',False))
     if name in ('read_monitor_dashboard','read_monitor_history'):
         from loop_anything.runtime import monitoring
         return monitoring.overview(store,**a) if name=='read_monitor_dashboard' else monitoring.history(store,**a)
@@ -80,9 +98,9 @@ def call(store,name,a):
     if name=='read_work_result':
         from loop_anything.runtime.business_state import read_result
         return read_result(store,**a)
-    if name=='read_business_state':
+    if name in ('read_business_state','read_work_results'):
         from loop_anything.runtime.business_state import read
-        return read(store,**a)
+        return read(store,collection='state' if name=='read_business_state' else 'results',**a)
     if name=='read_work_timeline':return timelines.read(store,a['timeline_id'],a.get('after',0),a.get('limit',100))
     if name=='take_over_run':
         from loop_anything.runtime.steward import assign
@@ -151,6 +169,7 @@ def call(store,name,a):
             value=work.get(db,'wait',a['wait_id'])
             if value['session_id']!=session['id']:raise Conflict('Wait belongs to another session')
             if name=='acknowledge_wait' and value['state'] not in ('ready','handled'):raise Conflict('Wait is not ready')
+            value.pop('retained_sources',None)
             value['state']='cancelled' if name=='cancel_wait' else 'handled'
             work.put(db,'wait',value);return {'wait':value}
     raise Invalid('Unknown work tool')

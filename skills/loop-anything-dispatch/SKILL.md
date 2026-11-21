@@ -57,7 +57,7 @@ The platform associates the request with the current Task and uses the same disp
 
 For background nodes supplied with platform_url / run_id / token, use `--platform-url`, `source:{run_id,task_id}`, and the token to register the request. Keep its Task association.
 
-An ordinary workspace or local named-agent call can use `--platform-url` with `location:"local"`; it is not published to remote teams. Loop nodes needing assistance before continuing use the platform Skill's `wait_assistance` / `finish` and restore their real original session. Installing only the dispatch Skill does not make an ordinary chat platform-managed; automatic recovery requires `start_collaboration` first.
+An ordinary platform or local named-agent call can use `--platform-url` with `location:"local"`; it is not published to remote teams. Loop nodes needing assistance before continuing use the platform Skill's `wait_assistance` / `finish` and restore their real original session. Installing only the dispatch Skill does not make an ordinary chat platform-managed; automatic recovery requires `start_collaboration` first.
 
 Base creates Agent directory, requests/results, and machine-heartbeat views with readable names, purposes, states, and replies; protocol JSON is hidden by default. Receivers publish directory and acceptance settings; edit purpose through the owning platform. Tools derive online status from heartbeat. Agents use agents/read/wait for the needed records rather than scanning or manually parsing the whole Base.
 

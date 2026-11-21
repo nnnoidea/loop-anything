@@ -115,7 +115,7 @@ document.addEventListener('click',event=>safely(async()=>{
   if(target.dataset.childPage!==undefined)await showRunChildren(target.closest('[data-run-children]'),Number(target.dataset.childPage));
   if(target.dataset.relatedKey)await refreshRelatedRuns(target.dataset.relatedKey,Number(target.dataset.relatedPage),true);
   if(target.id==='archive-run'&&run){await platformCall('submit_run_request',{request_id:randomKey(),run_id:run.id,operation:'update_run',arguments:{metadata_revision:run.metadata_revision||0,archived:!run.archived_at}});runOffset=0;await refresh();}
-  if(target.id==='delete-run'&&run&&confirm('删除这次运行的记录和结果？这不会停止外部任务，原生 Agent 会话与外部产物会保留。')){
+  if(target.id==='delete-run'&&run&&confirm('删除这次 Run 的执行详情？Timeline 的目标、进度和正式结果会保留。外部任务和原生 Agent 会话可继续运行。')){
     await platformCall('submit_run_request',{request_id:randomKey(),run_id:run.id,operation:'delete_run',arguments:{metadata_revision:run.metadata_revision||0}});run=null;selected=null;runOffset=0;await navigateTo({type:'run-list'});await refresh();
   }
   if(target.dataset.loopArchive){await platformCall('archive_loop',{key:target.dataset.loopArchive,archived:target.dataset.archived!=='true'});await loadCatalog();}

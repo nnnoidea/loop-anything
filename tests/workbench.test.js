@@ -47,8 +47,9 @@ test('Timeline detail links to the existing Run and exposes continuation only wh
 });
 test('Timeline file preview escapes content and import retries keep the same request',async()=>{
   const calls=[],routes=[],document={format:'loop-anything-timeline',timeline:{title:'<Imported>',objective:'Continue research'},state:[],results:[],entries:[]};
-  const {ctx,field}=context({randomKey:()=> 'same-request',file:{size:100,text:async()=>JSON.stringify(document)},
-    navigateTo:async r=>routes.push(r),toast:()=>{},platformCall:async(name,args)=>{calls.push({name,args});if(calls.length===1)throw new Error('temporary failure');return {timeline:{id:'local-copy'}};}});
+  const file=new Blob([JSON.stringify(document).replace('"results":[]','"results":[{"value":9007199254740993}]')]);
+  const {ctx,field}=context({randomKey:()=> 'same-request',file,
+    navigateTo:async r=>routes.push(r),toast:()=>{},fetch:async(url,options)=>{calls.push(options);if(calls.length===1)throw new Error('temporary failure');return {ok:true,json:async()=>({timeline_id:'local-copy'})};}});
   field('timeline-import-dialog').close=()=>{};
   await vm.runInContext('selectTimelineFile(file)',ctx);
   assert.match(field('timeline-import-preview').innerHTML,/&lt;Imported>/);
@@ -56,8 +57,19 @@ test('Timeline file preview escapes content and import retries keep the same req
   await vm.runInContext('importSelectedTimeline()',ctx);
   assert.equal(field('timeline-import-error').hidden,false);
   await vm.runInContext('importSelectedTimeline()',ctx);
-  assert.equal(calls[0].args.request_id,calls[1].args.request_id);
+  assert.equal(calls[0].headers['X-Request-Id'],calls[1].headers['X-Request-Id']);
+  assert.equal(calls[1].body,file);
+  assert.match(await calls[1].body.text(),/9007199254740993/);
   assert.equal(routes[0].id,'local-copy');
+});
+test('Timeline download preserves server bytes',async()=>{
+  const payload=new Blob(['{"value":9007199254740993}']);
+  let downloaded;
+  const {ctx}=context({activeRoute:{id:'t1'},fetch:async()=>({ok:true,blob:async()=>payload}),
+    URL:{createObjectURL(blob){downloaded=blob;return 'blob:test';}},toast(){},setTimeout(){}});
+  ctx.document.createElement=()=>({click(){}});
+  await vm.runInContext('downloadTimeline({})',ctx);
+  assert.equal(downloaded,payload);
 });
 test('invalid files do not enable import; delayed file reads cannot overwrite a newer choice',async()=>{
   let resolve;const {ctx,field}=context({randomKey:()=> 'key',oldFile:{size:10,text:()=>new Promise(r=>resolve=r)},badFile:{size:10,text:async()=>'{broken'}});
@@ -73,8 +85,8 @@ test('import source stays a progress notice without execution snapshots',()=>{
   assert.match(html,/Timeline/);assert.doesNotMatch(html,/#run\//);
   assert.doesNotMatch(html,/timeline-carried/);
 });
-test('imported saved results are readable through the Timeline without a source Run link',()=>{
+test('local saved results are readable through the Timeline without a source Run link',()=>{
   const {ctx}=context();
-  const html=vm.runInContext("savedResultsHTML({timeline:{import_source:{}},results:{records:[{id:'a<1',type:'score',revision:2}],complete:true}},'local')",ctx);
+  const html=vm.runInContext("savedResultsHTML({timeline:{},results:{records:[{id:'a<1',type:'score',revision:2}],complete:true}},'local')",ctx);
   assert.match(html,/已保存结果/);assert.match(html,/data-result-timeline="local"/);assert.match(html,/data-work-result="a&lt;1"/);assert.doesNotMatch(html,/#run\//);
 });

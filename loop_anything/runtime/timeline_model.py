@@ -49,6 +49,10 @@ def validate_v2(bp, implementations):
     try:
         if not isinstance(bp, dict) or not isinstance(implementations, dict):
             raise Invalid('LoopDefinition and implementations must be objects')
+        if 'observations' in bp:
+            from loop_anything.runtime.observations import validate_defaults
+            location=['observations']
+            validate_defaults(bp['observations'])
         location = ['guide']
         validate_guide(bp)
         for key in ('id', 'version'):

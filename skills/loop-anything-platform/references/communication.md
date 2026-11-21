@@ -4,7 +4,7 @@ Use the standalone loop-anything-dispatch Skill for dispatch, result lookup, and
 
 ## Which machine is connected
 
-First confirm the service supports machine_identity. On an old service with only instance_id, that value is a workspace address, not an independent machine identity. Upgrade rather than inventing a replacement.
+First confirm the service supports machine_identity. On an old service with only instance_id, that value is a platform address, not an independent machine identity. Upgrade rather than inventing a replacement.
 
 Call communication_status and read self. Awakening contexts for nodes, named helpers, and scoped agents provide the same fields:
 
@@ -12,11 +12,11 @@ Call communication_status and read self. Awakening contexts for nodes, named hel
 {"self":{"machine_id":"machine-FULL_UUID","machine_name":"Training server","workspace_id":"WORKSPACE_ID"}}
 ```
 
-self identifies the connected platform's machine/workspace, not necessarily the computer making the tool call. A remote helper's context identifies its actual execution host, not the source. Do not find MAC addresses, read databases, or guess IDs from chat memory.
+self identifies the connected platform's machine and platform, not necessarily the computer making the tool call. A remote helper's context identifies its actual execution host, not the source. Do not find MAC addresses, read databases, or guess IDs from chat memory.
 
-A missing machine UUID is generated and persisted on demand. Workspaces using the same platform user environment share machine_id but have separate addresses. The directory instance_id is the transport address of self.workspace_id. Address requests with the directory's instance_id and agent_id, not machine_id in place of instance_id.
+A missing machine UUID is generated and persisted on demand. Platforms using the same platform user environment share machine_id but have separate addresses. The directory instance_id is the transport address of self.workspace_id. Address requests with the directory's instance_id and agent_id, not machine_id in place of instance_id.
 
-communication_config(operation=identity,name=...) changes the display name without changing IDs. Restarts, upgrades, and ordinary database relocation preserve identity. identity_conflict/identity_error explains copies or host mismatches. Explicit regenerate=true for a copy establishes a new workspace identity. Copied Runs/requests remain read-only history; create new Runs instead of taking over original executions. Workspaces without the current machine identity format are rejected.
+communication_config(operation=identity,name=...) changes the display name without changing IDs. Restarts, upgrades, and ordinary database relocation preserve identity. identity_conflict/identity_error explains copies or host mismatches. Explicit regenerate=true for a copy establishes a new platform identity. Copied Runs/requests remain read-only history; create new Runs instead of taking over original executions. Platforms without the current machine identity format are rejected.
 
 ## First connection: one team link
 
@@ -38,9 +38,9 @@ Base send/receive intervals are at least 15 seconds; heartbeat-only updates at l
 
 ## Configuration by the platform owner
 
-Before registration/rejoining, communication_workspace({"registered_agents":true}) reads registrations across known local workspaces. It returns name, duties, agent_id, owning workspace/database, command program/cwd, teams, and enabled state. It does not read team networks/request history or start other workspaces. Offline/disabled does not mean unregistered. Nonempty unavailable_workspaces means some registrations could not be read; do not claim no registrations exist.
+Before registration/rejoining, communication_workspace({"registered_agents":true}) reads registrations across known local platforms. It returns name, duties, agent_id, owning platform and database, command program/cwd, teams, and enabled state. It does not read team networks/request history or start other platforms. Offline/disabled does not mean unregistered. Nonempty unavailable_workspaces means some registrations could not be read; do not claim no registrations exist.
 
-Compare names/duties against the user's goal. Show similar entries and let the user choose reuse, edit, or addition; follow an already explicit choice without asking again. The current chat need not identify itself as a named agent. Do not impose similarity thresholds or ban duplicate names. Reuse/edit in the current workspace uses the existing agent_id; a genuinely new registration omits it so the platform allocates a distinct record, even with the same display name. Other-workspace entries belong to the returned owner: dispatch to their existing team address, or connect to that workspace to edit them. Do not paste their IDs into this workspace as if updating them. Internal addressing remains workspace_id + agent_id.
+Compare names/duties against the user's goal. Show similar entries and let the user choose reuse, edit, or addition; follow an already explicit choice without asking again. The current chat need not identify itself as a named agent. Do not impose similarity thresholds or ban duplicate names. Reuse/edit in the current platform uses the existing agent_id; a genuinely new registration omits it so the platform allocates a distinct record, even with the same display name. Other-platform entries belong to the returned owner: dispatch to their existing team address, or connect to that platform to edit them. Do not paste their IDs into this platform as if updating them. Internal addressing remains workspace_id + agent_id.
 
 communication_config configures local names, capabilities, CLI argv, cwd, capacity, and exposure:
 
@@ -68,7 +68,7 @@ Use loop-anything-dispatch. These tools are equivalent entries for managed Loops
 6. control_assistance supports cancel, input, and followup. followup defaults to the exactly recorded session; only explicit resume:false starts a new one. Sending cancellation does not prove remote execution stopped.
 
 
-context_id selects a conversation default group; a one-call group_id override cannot bypass Run or execution scopes. Ordinary assistance does not require a native session ID. Trusted workspaces read/control by request_id; worker reports require their current execution identity.
+context_id selects a conversation default group; a one-call group_id override cannot bypass Run or execution scopes. Ordinary assistance does not require a native session ID. Trusted platforms read/control by request_id; worker reports require their current execution identity.
 
 Use both directory instance_id and agent_id where names/custom IDs repeat across machines. Do not guess. Helpers can read associated Loop/Task context through scoped read_context; this is read-only and grants no authority to report the original node's result. Standalone requests without a Loop return caller-provided context.
 
@@ -196,7 +196,7 @@ Check group_notification_priority. For new group requests without chat origin an
 
 Fallback applies only to absent/explicitly disabled bindings. A bound machine that is offline, fails, or has unknown delivery retains awaiting_delivery/fault rather than switching senders. Created notifications/explicit retries pin their original sender, destination, and command; binding changes affect future notifications only. Level defaults to the selected outlet unless request.notification_level overrides it. Filtered events do not move to another outlet.
 
-Explicit request.notification_route still wins. Requests without groups use Run default/workspace. Business lifecycle/notify routing is unchanged. Nested assistance retains notification receipts at the root source to prevent duplicates, while fallback targets the child's immediate requester.
+Explicit request.notification_route still wins. Requests without groups use Run default or the built-in `workspace` notification outlet. Business lifecycle/notify routing is unchanged. Nested assistance retains notification receipts at the root source to prevent duplicates, while fallback targets the child's immediate requester.
 
 
 Levels: attention (action needed), key (default milestones), detailed (progress summaries). Unavailable optional help does not always alert at attention level. Explicitly retry failed receipts with control_assistance(action:retry_notification,notification_id:...); verify unknown delivery first. Real NAS, multiple machines, models, and channels need separate deployment acceptance.
@@ -209,11 +209,11 @@ With chat origin, follow the original conversation unless an explicit outlet ove
 
 communication_status is public read-only discovery. Independent sessions need no Run/token to discover exposed members. The directory excludes CLI commands, local mount paths, and operation credentials.
 
-Trusted workspace configuration, requests, reads, cancellation, and follow-up need no request_token. Results default to compact status/full result, with logs/context on demand.
+Trusted platform configuration, requests, reads, cancellation, and follow-up need no request_token. Results default to compact status/full result, with logs/context on demand.
 
 - Run/Task token identifies an actual executor's operation scope and follows existing exit/resume lifecycle. Client Agents delegate Run changes to its steward. Standalone collaboration uses its own supplied execution identity. Explicit invalid tokens still fail.
 - Worker token allows progress/results for this accepted request only. Scoped worker entries can view only associated requests.
 
-Native CLI session IDs restore context only. Assignment matches named agent, instance, and group, not session; stale execution writes are still checked. Managed nodes must retain their awakening entry/identity rather than widen scope through public workspace entry.
+Native CLI session IDs restore context only. Assignment matches named agent, instance, and group, not session; stale execution writes are still checked. Managed nodes must retain their awakening entry/identity rather than widen scope through public platform entry.
 
 Use read_cc_connect/configure_cc_connect for bridge access. Named agents bind directly to Bots; create cc_connect={project,platform} notification outlets only for fixed destinations. See [local setup and Bot discovery](cc-connect.md#local-setup-and-bot-discovery).

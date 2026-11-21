@@ -165,7 +165,18 @@ class Receiver:
             if spec.get('resources'):
                 from loop_anything.runtime.executor_resources import materialize
                 with self.lock:resource_root=materialize(spec.pop('resources'),self.root/'resources')
-                spec['cwd']=module('platform_transport').mount_path(spec.get('cwd'),job['packet']['payload']['resources']['roots'],str(resource_root))
+                bundle = job['packet']['payload']['resources']
+                spec['cwd']=module('platform_transport').mount_path(spec.get('cwd'),bundle['roots'],str(resource_root))
+                if bundle.get('workdir'):
+                    from loop_anything.packaging.packages import member_path
+                    directory = resource_root.resolve() / member_path(bundle['workdir'])
+                    if directory.resolve() != directory:
+                        raise ValueError('Invalid cached working directory')
+                    directory.mkdir(parents=True,exist_ok=True)
+                    spec['cwd']=str(directory)
+                paths = {str(Path(root) / f['path']):str(resource_root / f['path'])
+                         for root in bundle['roots'] for f in bundle['files']}
+                spec['command'] = [paths.get(arg,arg) for arg in spec['command']]
             if team and self.nas:
                 spec['cwd']=module('platform_transport').mount_path(spec.get('cwd'),[team],str(self.nas))
             if team:

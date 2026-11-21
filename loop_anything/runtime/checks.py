@@ -20,17 +20,19 @@ def validate_expression(expr):
         validate_expression(arg)
 
 
-def evaluate(expr, context):
+def evaluate(expr, context, *, read_path=None):
     if not isinstance(expr, dict):
         return expr
     if 'path' in expr:
-        return path(context, expr['path'])
+        return read_path(expr['path']) if read_path else path(context, expr['path'])
     op = expr['op']
+    if read_path and op == 'len' and isinstance(expr['args'][0],dict) and 'path' in expr['args'][0]:
+        return read_path(expr['args'][0]['path'], size=True)
     if op == 'and':
-        return all(evaluate(a, context) is True for a in expr['args'])
+        return all(evaluate(a, context, read_path=read_path) is True for a in expr['args'])
     if op == 'or':
-        return any(evaluate(a, context) is True for a in expr['args'])
-    args = [evaluate(a, context) for a in expr['args']]
+        return any(evaluate(a, context, read_path=read_path) is True for a in expr['args'])
+    args = [evaluate(a, context, read_path=read_path) for a in expr['args']]
     if op == 'eq':
         return args[0] == args[1]
     if op == 'le':

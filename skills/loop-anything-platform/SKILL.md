@@ -7,6 +7,8 @@ metadata:
 
 # Loop Anything
 
+For a live chart, summary, event-triggered observation, or hot update of a running method, use [observation arrangements](references/observations.md).
+
 For persistent work, use [Timeline, current-session startup, waits and monitoring](references/work.md). Register the current server Agent session, then call start_run; the actual caller automatically owns the Run. Timelines also work without Loops. Use update_timeline for goal/constraint changes and follow its inspection notice; report to the user without unrequested task changes. Use wait_for to resume this session from Run/Task/monitor conditions. See [Run steward](references/steward.md).
 
 The web interface is for reading and runtime operations, not editing or separate agent conversations. An external building agent edits Loop definitions; source files can also be edited and repackaged. Recipient runtime configuration can be edited in the file returned by `read_loop_config`. Node sessions handle their current Run tasks, not Loop authoring.
@@ -53,7 +55,7 @@ For steward-managed Runs, business nodes return to the steward on completion by 
 
 The installer registers `loop-anything` in the user PATH. Use `loop-anything --help` in a new terminal; an existing installation can repair registration with its Python: `-m loop_anything register`. No platform service is needed for registration.
 
-Install Loop Anything once for a local workspace, task tools, and team connections; do not ask ordinary users to choose a server/client role. Use `loop-anything tool` and `loop-anything spaces` for everyday platform operations, and the local Skill for scheduling/receiving. A space determines where work belongs, not the execution machine. [Team operation](references/team-runtime.md) covers configuring and running the installed application for a team. The portable Skill below also works without the runtime.
+Install Loop Anything once for the local platform, task tools, and team connections; do not ask ordinary users to choose a server/client role. Use `loop-anything tool` and `loop-anything spaces` for everyday platform operations, and the local Skill for scheduling/receiving. Choose the platform for new work. Each task can run on its configured execution machine. [Team operation](references/team-runtime.md) covers configuring and running the installed application for a team. The portable Skill below also works without the runtime.
 
 Use tools and structured receipts. If the wake-up context contains `tool_url`, follow the [scoped entry](references/scoped-entry.md). Otherwise, run in this Skill directory, or use absolute script paths from elsewhere:
 

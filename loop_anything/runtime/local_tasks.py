@@ -258,6 +258,11 @@ class LocalRuntime:
         self.locks=[]
 
 
+def registry_directory(database):
+    from loop_anything.runtime.tool_client import module
+    return module('spaces').read()['local_registry'] or str(Path(database).resolve())+'.schedules'
+
+
 def main(argv):
     parser=argparse.ArgumentParser(description='Standalone personal scheduling. Register/list never start tasks.')
     parser.add_argument('--root',help='Explicit standalone registry; omitted uses the personal local platform registry, never the team default')
@@ -272,8 +277,7 @@ def main(argv):
     args=parser.parse_args(argv)
     if not args.root:
         from loop_anything.paths import default_database
-        from loop_anything.runtime.tool_client import module
-        args.root=module('spaces').read()['local_registry'] or str(default_database())+'.schedules'
+        args.root=registry_directory(default_database())
     registry=TaskRegistry(args.root)
     if args.action=='register':result=registry.register(read(Path(args.definition)),args.id)
     elif args.action=='list':result=registry.list()

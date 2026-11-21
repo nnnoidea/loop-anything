@@ -36,6 +36,7 @@ async function api(url, data) {
 function toast(message) { $('toast').textContent = message; $('toast').style.display = 'block'; clearTimeout(toast.timer); toast.timer = setTimeout(() => $('toast').style.display = 'none', 5500); }
 async function safely(fn) { try { await fn(); } catch (error) { toast(error.message); } }
 function showPage() {
+  $('settings-page').hidden=page!=='settings';
   $('monitoring-page').hidden=page!=='monitors';
   $('schedules-page').hidden=page!=='schedules';
   if($('communication-page'))$('communication-page').hidden=page!=='communication';
@@ -58,13 +59,14 @@ function showPage() {
 
 }
 async function refresh() {
+  if(page==='timeline')safely(refreshObservations);
   if(page==='monitors')refreshMonitoring();
   if(page==='schedules')refreshSchedules();
   if (loading) return;
   loading = true;
   try {
     if(page==='run-list'||page==='communication')await refreshRunLibrary();
-    $('engine-status').textContent = '空间已连接';
+    $('engine-status').textContent = '平台已连接';
     if (selected && page==='runs') { const id=selected;try{const current=await api('runs/' + id);if(page==='runs' && selected===id){run=current;renderRun();}}catch(error){if(error.status===404&&selected===id){run=null;selected=null;await navigateTo({type:'run-list'});}else throw error;} }
     const platform=await api('platform'),power=platform.keep_awake;
     if(!$('platform-version'))document.querySelector('.topbar').insertAdjacentHTML('beforeend','<small id="platform-version" class="muted"></small>');
@@ -114,7 +116,7 @@ function renderGraph() {
   $('graph-caption').textContent='循环关系来自 Loop 定义；上方运行过程保留每一项实际任务、结果与历次执行。';
 }
 function loadSettings(){
-  $('run-settings-readonly').innerHTML=`<p>目标和限制属于独立 Timeline；修改后由 Agent 检查并向用户汇报。</p>${run.timeline_id?'<button data-work-timeline="'+esc(run.timeline_id)+'">查看 Timeline 与进度</button>':''}${readerJSON('目标与限制',{目标:run.settings.objective,限制:run.settings.constraints},true)}${readerJSON('完整运行配置',run.settings)}`;
+  $('run-settings-readonly').innerHTML=`${['running','paused'].includes(run.status)&&!run.superseded_by?'<label><input type="checkbox" id="follow-loop-updates" '+(run.follow_loop_updates?'checked':'')+'> 跟随此 Loop 后续发布的版本</label>':''}<p>目标和限制属于独立 Timeline；修改后由 Agent 检查并向用户汇报。</p>${run.timeline_id?'<button data-work-timeline="'+esc(run.timeline_id)+'">查看 Timeline 与进度</button>':''}${readerJSON('目标与限制',{目标:run.settings.objective,限制:run.settings.constraints},true)}${readerJSON('完整运行配置',run.settings)}`;
 }
 function renderInspect() {
   const signature = pretty([run.id,filterNode,activeTab,run.executions,run.history,run.settings.revision,run.tasks,run.records,run.agent_sessions,run.task_dependencies]);
@@ -181,3 +183,14 @@ window.addEventListener('DOMContentLoaded',()=>safely(async()=>{
   await navigateTo(parseRoute(location.hash),{replace:true});
   await refresh();setInterval(refresh,1500);
 }));
+
+document.addEventListener('change',event=>{
+  if(event.target.id!=='follow-loop-updates'||!run)return;
+  const checkbox=event.target,follow=checkbox.checked,id=run.id;
+  checkbox.disabled=true;
+  safely(async()=>{
+    try{await platformCall('submit_run_request',{operation:'follow_loop_updates',request_id:randomKey(),run_id:id,arguments:{follow}});}
+    catch(error){checkbox.checked=!follow;throw error;}
+    finally{checkbox.disabled=false;await refresh();}
+  });
+});

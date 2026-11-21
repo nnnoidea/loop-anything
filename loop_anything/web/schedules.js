@@ -78,7 +78,7 @@ $('schedules-list').addEventListener('click',event=>{
     pendingSchedules.add(task.id);
     button.disabled=true;
     try{
-      await api(`schedules/${encodeURIComponent(task.id)}/${action}`,{revision:task.revision,owner:task.runtime.owner ?? null});
+      await api(`schedules/${encodeURIComponent(task.id)}/${action}`,{directory:scheduleSnapshot.directory,revision:task.revision,owner:task.runtime.owner ?? null});
       toast(action==='start'?'定时任务已启动':'停止请求已提交');
     }catch(error){
       if(error.status===409)throw new Error('任务状态已变化，请查看刷新后的状态。');

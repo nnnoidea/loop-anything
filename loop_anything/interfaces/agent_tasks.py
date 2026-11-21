@@ -123,7 +123,9 @@ def gated(run, tasks):
         if not hook.get('enabled', True) or hook['action'] != 'pause' or hook['phase'] != 'before':
             continue
         target = hook['target']
-        if target.get('node', tasks['spec']['node']) != tasks['spec']['node'] or target.get('tasks', tasks['id']) != tasks['id']:
+        from loop_anything.runtime.timelines import logical_node
+        node = tasks['spec']['node']
+        if target.get('node', node) not in (node, logical_node(run, node)) or target.get('tasks', tasks['id']) != tasks['id']:
             continue
         firings = [f for f in run['hook_firings'] if f['hook'] == hook['id']]
         current = next((f for f in firings if f['tasks'] == tasks['id']), None)
@@ -154,11 +156,16 @@ def run_snapshot(store, run, owner):
                       'error':attempt.get('error') or task.get('budget_error'),
                       'observation_error':attempt.get('observation_error'),
                       'continuation_source':copy.deepcopy(task.get('continuation_source'))})
+    handbook = run['loop_definition'].get('handbook', {})
+    try:
+        handbook = resolve_skill(store.filename, run['loop_key'], handbook)
+    except (Invalid, OSError) as exc:
+        handbook = dict(handbook, error=str(exc))
     return {'run_id':run['id'],'timeline_id':run['timeline_id'],'revision':run['revision'],
             'status':public_status(run),'continued_from':run.get('continued_from'),
             'tasks':tasks,'counts':dict(Counter(t['status'] for t in tasks)),
             'settings':copy.deepcopy(run['settings']),
-            'handbook':resolve_skill(store.filename,run['loop_key'],run['loop_definition'].get('handbook',{})),
+            'handbook':handbook,
             'implementations':{n:{'default':default_id(entry),'options':list(options(entry))} for n,entry in run['implementations'].items()},
             'work':[{'key':k,'run_id':v['run_id'],'steps':v['result']['steps']} for k,v in run.get('arrangements',{}).items()],
             'steward':{k:run.get('steward',{}).get(k) for k in ('agent_id','name','generation')},

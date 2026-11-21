@@ -4,7 +4,7 @@ import socket
 import threading
 import traceback
 
-from loop_anything.runtime.local_tasks import LocalRuntime, TaskRegistry, schedule_summary
+from loop_anything.runtime.local_tasks import LocalRuntime, TaskRegistry, registry_directory, schedule_summary
 from loop_anything.runtime.model import Conflict, Invalid
 
 
@@ -12,15 +12,22 @@ ACTIVE_STATES = ('waiting', 'checking', 'running')
 
 
 class ScheduleControls:
-    def __init__(self, database):
-        self.registry = TaskRegistry(str(Path(database).resolve()) + '.schedules')
+    def __init__(self, database, local=True):
+        self.database = Path(database).resolve()
+        self.local = local
         self.active = {}
         self.lock = threading.Lock()
         self.closed = False
 
+    @property
+    def registry(self):
+        directory = registry_directory(self.database) if self.local else str(self.database) + '.schedules'
+        return TaskRegistry(directory)
+
     def list(self):
+        registry = self.registry
         tasks = []
-        for item in self.registry.list():
+        for item in registry.list():
             definition = item['definition']
             state = item['runtime']
             active_schedule = state.get('schedule') if state['status'] in ACTIVE_STATES else None
@@ -34,7 +41,7 @@ class ScheduleControls:
             tasks.append({'id': item['id'], 'revision': item['revision'], 'definition': schedule_summary(definition),
                           'runtime': runtime, 'execution': {'state': execution['state']} if execution else None})
         tasks.sort(key=lambda item: (item['definition']['name'].casefold(), item['id']))
-        return {'directory': str(self.registry.root), 'machine': socket.gethostname(), 'tasks': tasks}
+        return {'directory': str(registry.root), 'machine': socket.gethostname(), 'tasks': tasks}
 
     def control(self, ident, action, body):
         if action not in ('start', 'stop'):
@@ -42,7 +49,10 @@ class ScheduleControls:
         with self.lock:
             if self.closed:
                 raise Conflict('Platform is stopping')
-            item = self.registry.show(ident)
+            registry = self.registry
+            if body.get('directory') != str(registry.root):
+                raise Conflict('Schedule directory changed; refresh the page')
+            item = registry.show(ident)
             state = item['runtime']
             definition = (state.get('schedule') or item['definition']) if action == 'stop' and state['status'] in ACTIVE_STATES else item['definition']
             if definition.get('receiver'):
@@ -53,30 +63,31 @@ class ScheduleControls:
             if action == 'stop':
                 if not owner or state['status'] not in ACTIVE_STATES:
                     raise Conflict('This schedule has no active execution to stop')
-                return self.registry.stop(ident, expected_owner=owner)
+                return registry.stop(ident, expected_owner=owner)
             if type(body.get('revision')) is not int or body['revision'] != item['revision']:
                 raise Conflict('Schedule definition changed; refresh the page')
-            if ident in self.active:
+            key = (registry.root, ident)
+            if key in self.active:
                 raise Conflict('This schedule is still active')
-            runtime = LocalRuntime(self.registry, [ident], jobs=1, expected={ident: (item['revision'], owner)})
-            thread = threading.Thread(target=self.run, args=(ident, runtime), name='web-schedule-' + ident)
-            self.active[ident] = (runtime, thread)
+            runtime = LocalRuntime(registry, [ident], jobs=1, expected={ident: (item['revision'], owner)})
+            thread = threading.Thread(target=self.run, args=(key, runtime), name='web-schedule-' + ident)
+            self.active[key] = (runtime, thread)
             try:
                 thread.start()
             except BaseException:
-                self.active.pop(ident)
+                self.active.pop(key)
                 runtime.close()
                 raise
         return {'id': ident, 'started': True}
 
-    def run(self, ident, runtime):
+    def run(self, key, runtime):
         try:
             runtime.run()
         except Exception:
             traceback.print_exc()
         finally:
             with self.lock:
-                self.active.pop(ident, None)
+                self.active.pop(key, None)
 
     def close(self):
         with self.lock:

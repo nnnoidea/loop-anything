@@ -45,8 +45,8 @@ def main():
         return module('spaces').main(sys.argv[2:])
     if len(sys.argv)>1 and sys.argv[1]=='client':
         return client_main(sys.argv[2:])
-    parser = argparse.ArgumentParser(description='Loop Anything — local and team workspaces, Loops, and task tools')
-    parser.add_argument('--db', help='Workspace database (defaults to the user data directory); use an absolute path for an existing workspace')
+    parser = argparse.ArgumentParser(description='Loop Anything — local and team platforms, Loops, and task tools')
+    parser.add_argument('--db', help='Platform database (defaults to the user data directory); use an absolute path for existing platform data')
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('spaces',add_help=False,help='Configure personal local/team addresses and default space')
     commands.add_parser('client', help='NAS/HTTP calls and local scheduling/receiving tools')
@@ -120,9 +120,9 @@ def main():
     run.add_argument('--port', type=int, default=DEFAULT_PORT)
     for cmd in (start, run):
         cmd.add_argument('--host', default='127.0.0.1', help='Bind address; use 0.0.0.0 in the trusted internal network')
-        cmd.add_argument('--space',choices=['local','team'],default='local',help='Local private workspace or shared team platform')
+        cmd.add_argument('--space',choices=['local','team'],default='local',help='Local private platform or shared team platform')
         cmd.add_argument('--allow-sleep', action='store_true', help='Initial sleep preference; a saved webpage choice takes precedence')
-        cmd.add_argument('--open', action='store_true', help='Open the workspace in the default browser')
+        cmd.add_argument('--open', action='store_true', help='Open the platform page in the default browser')
     register = commands.add_parser('register', help='Register this installation in your user PATH; safe to repeat after moving/upgrading it')
     register.add_argument('--launcher', type=Path, help='Optional installed launcher path')
     args = parser.parse_args(sys.argv[1:] or ['serve', '--open'])
@@ -140,7 +140,7 @@ def main():
         raise Invalid('Local space only listens on loopback. Use --space team for a shared service.')
     explicit_db = args.db is not None
     if args.command=='tool':
-        if explicit_db and (args.url or args.space or args.work or args.request_id):parser.error('--db explicitly selects a local workspace; do not combine it with --url or --space')
+        if explicit_db and (args.url or args.space or args.work or args.request_id):parser.error('--db explicitly selects a local platform; do not combine it with --url or --space')
         if not explicit_db:
             return client_main(['tool',args.name,'--arguments',args.arguments,*(['--url',args.url] if args.url is not None else []),*(['--space',args.space] if args.space else []),*(['--output',args.output] if args.output else []),*(['--work',args.work] if args.work else []),*(['--request-id',args.request_id] if args.request_id else []),'--wait',str(args.wait)])
     args.db = args.db or str(default_database())
@@ -193,7 +193,7 @@ def main():
     if team_dir:
         team_dir.mkdir(parents=True,exist_ok=True)
     elif (Path(args.db).resolve().parent/'team.json').exists():
-        parser.error('This is a shared team workspace. Start its service with --team-dir; use the NAS/HTTP Skill client for operations instead of --db.')
+        parser.error('This is a shared team platform. Start its service with --team-dir; use the NAS/HTTP Skill client for operations instead of --db.')
     with ExitStack() as locks:
         # Claim the service before opening its database, including on NAS.
         if args.command in ('serve','run'):Path(args.db).expanduser().resolve().parent.mkdir(parents=True,exist_ok=True)

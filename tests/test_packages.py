@@ -61,6 +61,21 @@ class PackageTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_missing_handbook_leaves_run_snapshot_readable(self):
+        from loop_anything.interfaces.platform_tools import PlatformTools
+        from loop_anything.packaging.packages import resolve_skill
+        doc = document()
+        handbook = {'path': 'skills/guide.md'}
+        doc['loop_definition']['handbook'] = handbook
+        files = dict(assets(), **{'skills/guide.md': (b'guide', False)})
+        key = install(self.store, make_archive(doc, files))['key']
+        run = self.store.create(key, 'read progress')
+        Path(resolve_skill(self.store.filename, key, handbook)['resolved_path']).unlink()
+        snapshot = PlatformTools(self.store).call('read_run', {'run_id': run['id'], 'view': 'snapshot'})
+        self.assertEqual({task['task_id'] for task in snapshot['tasks']}, set(run['tasks']))
+        self.assertEqual(snapshot['handbook']['path'], handbook['path'])
+        self.assertTrue(snapshot['handbook']['error'])
+
     def test_same_format_supports_zero_partial_and_complete_implementations(self):
         keys = []
         for count in (0, 1, 2):

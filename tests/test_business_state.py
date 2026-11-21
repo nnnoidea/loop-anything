@@ -79,15 +79,36 @@ class BusinessStateTests(unittest.TestCase):
         self.assertEqual(run['business_state']['records'],[]);self.assertEqual(run['records'],{})
         self.assertEqual(len(run['tasks']),1);self.assertEqual(run['arrangements'],{})
 
-    def test_duplicate_decision_keeps_state_and_work_once(self):
+    def submit_experiment(self):
         e=self.base.start();tools=RunTools(self.store,self.base.id,e['token']);info=tools.call('read_task',{'task_id':e['task_id']})
         args={'task_id':e['task_id'],'report_id':'decision','event':'completed',
               'envelope':{'settings':{'objective':'Compare'},'outputs':{'a':'A','b':'B'},'state':[self.question()],
                           'operations':[{'tool':'build_plan','arguments':{'name':'experiment','key':'one','work_key':'experiment:one','values':{}}}]}}
         self.assertTrue(tools.call('report_task',copy.deepcopy(args))['accepted'])
+        return tools, args
+
+    def test_duplicate_decision_keeps_state_and_work_once(self):
+        tools, args = self.submit_experiment()
         self.assertTrue(tools.call('report_task',copy.deepcopy(args))['duplicate'])
         run=self.store.get(self.base.id);self.assertEqual(run['business_state']['records'][0]['revision'],1);self.assertEqual(len(run['arrangements']),1)
         self.assertEqual(len(run['tasks']),2)
+
+    def test_delete_ended_run_keeps_its_timeline_progress(self):
+        from loop_anything.runtime.run_library import delete_run
+        self.submit_experiment()
+        run = self.store.get(self.base.id)
+        tools = PlatformTools(self.store)
+        args = {'timeline_id': run['timeline_id']}
+        before = tools.call('export_timeline', args)['document']
+        self.engine.command(run['id'], 'terminate')
+        delete_run(self.store, run['id'], run.get('metadata_revision', 0))
+        after = tools.call('export_timeline', args)['document']
+        self.assertEqual(after['results'], before['results'])
+        self.assertEqual(after['state'], before['state'])
+        self.assertEqual(tools.call('read_work_timeline', args)['runs'], [])
+        new = self.store.create(run['loop_key'], 'Continue', **args)
+        self.assertEqual(new['business_state']['records'][0]['value'], self.question()['value'])
+        self.assertEqual(new['arrangements'], {})
 
     def test_loop_business_schema_changes_do_not_block_continuation(self):
         old=self.first()
@@ -137,3 +158,24 @@ class BusinessStateTests(unittest.TestCase):
         self.assertEqual(business_state.read(self.store,old['timeline_id'],type='judgment',id='j1',revision=1)['records'][0]['value'],'bounded conclusion')
 
         self.assertEqual(business_state.read(self.store,old['timeline_id'],type='judgment',id='j1')['records'][0]['value'],'revised conclusion')
+
+    def test_filtered_page_reads_only_returned_bodies_and_pins_revisions(self):
+        import json
+        run=self.first()
+        tid=run['timeline_id']
+        with self.store.edit(run['id']) as current:
+            business_state.apply(current,current['executions'][0],
+                [{'type':'metric','id':str(i),'value':'probe-body-'+str(i)} for i in range(5)])
+        with self.store.connection() as db:
+            cutoff=db.execute('SELECT max(rowid) FROM work_state').fetchone()[0]
+        with self.store.edit(run['id']) as current:
+            business_state.apply(current,current['executions'][0],[{'type':'metric','id':'2','value':'updated'}])
+        real_loads=json.loads
+        with patch.object(business_state.json,'loads',wraps=real_loads) as decode:
+            page=business_state.read(self.store,tid,type='metric',offset=2,limit=1,as_of=cutoff)
+            loaded=[c.args[0] for c in decode.call_args_list if 'probe-body-' in c.args[0]]
+        self.assertEqual((page['records'][0]['value'],page['total'],page['next_offset']),('probe-body-2',5,3))
+        self.assertEqual(len(loaded),1)
+        self.assertEqual(business_state.read(self.store,tid,type='metric',id='2')['records'][0]['value'],'updated')
+        empty=business_state.read(self.store,tid,type='metric',offset=11)
+        self.assertEqual((empty['records'],empty['total'],empty['next_offset']),([],5,None))

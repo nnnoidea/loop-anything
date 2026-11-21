@@ -2,49 +2,35 @@
 
 安装平台、安装 Skill 和连接检查见 [README 安装说明](../README.md#安装平台)。通过 `set_implementation` 直接绑定用户提供的 Agent 命令。团队共享部署、NAS/HTTP 客户端（含本机接单执行）见[团队运行说明](../skills/loop-anything-platform/references/team-runtime.md)，无需每个终端再建服务数据库。
 
-用户自己的 Agent 在讨论后创建并初始化 Run；后台在节点有 Agent 任务时按命令唤醒；用户显式启用的兜底节点可以承接未覆盖状态，使用它自己的 Agent 候选。
-入口节点仍有初始化任务，由当前用户 Agent 完成，结果在界面和执行记录中保留。
+## 用当前 Agent 启动 Run
 
-## 用户自己的 Agent 创建 Run
+在平台所在机器上，由实际执行启动的 Agent 使用平台 Skill。先用 `list_loops` 和 `read_loop` 确认安装的 Loop key、作者说明和所需输入。网页的「复制启动要求」可把所选 Loop 交给这个 Agent。
 
-通过 list_loops/read_loop 取得所选 Loop 的 key、作者说明和入口要求。
-使用当前服务地址，POST `/api/runs`，携带 `X-Loop-Anything: workspace` 和 JSON：
+1. 当前会话已登记时，沿用它的 `session_id` 和 `session_token`。首次登记通过 `register_work_session` 提交当前 Agent 的原生会话标识、可恢复该会话的实际命令和 Agent 进程 PID。登记参数见[持续运行指南](../skills/loop-anything-platform/references/work.md)。
+2. 使用 `start_run` 提交下列参数。一个启动意图使用一个稳定的 `request_id`。接着已有 Timeline 做时传入它的 `timeline_id`；Loop 需要的输入按其定义传入 `inputs`。
 
 ```json
 {
-  "key": "实际安装的 Loop key",
+  "key": "已安装的 Loop key",
   "title": "本次运行名称",
-  "inputs": {"request": "已经讨论确定的要求"},
-  "authorization": "用户允许的自主操作范围",
-  "acquire": true
+  "request_id": "本次启动请求的唯一标识",
+  "session_id": "登记回执中的 session_id",
+  "session_token": "登记回执中的 session_token"
 }
 ```
 
-平台在同一次持久化提交中创建 Run 并取得 Agent 操作权；Engine 看不到“已创建但尚未持权”的中间状态。
-返回对象中的 `id`、`agent_sessions[0].token` 和 `loop_definition.seed.id` 分别是 Run、操作令牌和入口任务。
-用户 Agent 对 `/api/runs/{id}/agent` 发送 `{token,tool,arguments}`，按顺序：
-
-1. `read_task` 读取入口任务的完整要求和输出契约。
-2. `report_task(event=completed)` 提交已讨论好的初始 settings 和入口输出，不重复询问用户。
-3. 使用 `read_plans/build_plan` 安排本次需要的 Task；继续处理当前可处理任务与问题。
-4. 完成本次任务、处理本范围异常后 `finish`，后续已安排任务可以交给 Engine。
-
-创建后初始化未完成时，入口显示未完成；完成后显示其真实结果，不伪造完成状态。
-持权不阻塞正常脚本。若已构建的脚本输入就绪，它仍可执行。
-不传 acquire（或传 false）的旧创建入口仍可由 Engine 唤醒初始化 Agent，适用于表单或无人值守启动。
-
-通过安装到 Agent 的平台 Skill 调用同一组操作：
-
 ```sh
 python3 /平台Skill/scripts/call.py start_run --arguments @启动参数.json
-python3 /平台Skill/scripts/call.py read_task --arguments '{"run_id":"RUN_ID","token":"TOKEN","task_id":"ENTRY_TASK_ID"}'
 ```
 
-`start_run` 返回 run_id、token、entry_task_id；已有平台服务负责推进和显示。完整 Skill 包含脚本和连接文件，无需查找平台源码或安装环境。
+3. 回执中的 `run_id` 和 `timeline_id` 标识执行和任务进度。管理任务就绪时回执还包含 `task_id`、`execution_id` 和本次执行的 `token`。若返回 `waiting: true`，由原会话在就绪后使用 `claim_run` 领取管理任务。Loop 可以有自己的入口节点。
+4. 用执行令牌调用 `read_timeline` 读取目标、限制和业务进度，用 `read_run` 的 `view: "snapshot"` 查看执行状态，用 `read_task` 查看当前任务的输出要求。按需要安排任务，通过 `report_task` 提交管理任务的 `outputs.decision`，随后 `finish` 结束本次处理。Engine 继续推进已安排的工作。
+
+直接对接 HTTP 时，登记和领取通过 `POST /api/tools` 提交 `{tool, arguments}`。启动通过 `POST /api/runs` 提交上面的参数对象。本次执行的调用通过 `POST /api/runs/{run_id}/agent` 提交 `{token, tool, arguments}`。POST 请求使用 JSON 和 `X-Loop-Anything: workspace` 请求头。Skill 客户端负责把已有工作的后续调用发回原平台。
 
 ## 网页与 Agent 的分工
 
-网页只读展示 Loop、规则、包文件和运行事实，并提供启动、暂停、恢复、重试、询问回复等操作。Loop 构建与修改使用外部 Agent 或源文件。独立网页聊天、网页命令配置和提示词编辑已移除。
+网页只读展示 Loop、规则、包文件和运行事实，可复制启动要求，并提交暂停、恢复、重试或询问回复等运行请求。Loop 构建与修改使用外部 Agent 或源文件。独立网页聊天、网页命令配置和提示词编辑已移除。
 
 节点终端及原 session 属于对应 Run 任务，可查看、交互并恢复任务上下文，不作为修改 Loop 定义的入口。接收方运行配置文件由 `read_loop_config` 提供路径，手动或工具修改都只影响之后创建的 Run。
 
@@ -78,7 +64,7 @@ python3 /平台Skill/scripts/call.py read_task --arguments '{"run_id":"RUN_ID","
 
 ## 实时输出与交互终端
 
-后台 Agent 每次执行自动保存实时输出。在 Run 任务详情中选择执行尝试，打开输出或终端；关闭页面继续执行，重开读取历史。查看和输入均使用工作台编辑权限。
+后台 Agent 每次执行自动保存实时输出。在 Run 任务详情中选择执行尝试，打开输出或终端；关闭页面继续执行，重开读取历史。
 
 候选设置 `terminal: true` 可在 macOS/Linux 启动交互 PTY，例如 `command: ["codex", "{{prompt}}"]`。`{{prompt}}` 作为一个参数传入完整任务上下文；`{{prompt_file}}` 则提供权限为 0600 的提示词文件路径，供支持文件输入的程序读取。普通命令继续一次性 stdin 提示词，交互命令保留 stdin 给用户输入；所有其他 argv 保持不变。
 

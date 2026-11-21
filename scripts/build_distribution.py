@@ -32,7 +32,7 @@ with tempfile.TemporaryDirectory() as folder:
                          '**English** | [简体中文](README.zh-CN.md)\n\n'
                          'Ask your Agent to follow the [installation and upgrade guide](docs/installation.md) (Chinese) to configure the platform and Skills.\n\n'
                          'For everyday use, see the [user guide](docs/user-guide.md) (Chinese). For building and running Loops, use the English [platform Skill](skills/loop-anything-platform/SKILL.md).\n\n'
-                         '**For the installation agent:** install Loop Anything with `python3 install.py`: local workspace, task tools, and team connections in one application. No role selection is needed. Configure addresses and the personal default with `loop-anything spaces`; automatic selection uses recorded addresses, preferring team when both exist. Spaces determine where work belongs; execution machines are configured separately. Receiving and schedules require an explicit start.\n')
+                         '**For the installation agent:** install Loop Anything with `python3 install.py`: local platform, task tools, and team connections in one application. No role selection is needed. Configure addresses and the personal default with `loop-anything spaces`; automatic selection uses recorded addresses, preferring team when both exist. Spaces determine where work belongs; execution machines are configured separately. Receiving and schedules require an explicit start.\n')
         archive.writestr(prefix + 'README.zh-CN.md',
                          '# Loop Anything 安装包\n\n'
                          '[English](README.md) | **简体中文**\n\n'

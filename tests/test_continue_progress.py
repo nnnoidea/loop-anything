@@ -109,6 +109,32 @@ class ContinueProgressTests(unittest.TestCase):
         self.assertEqual(view['routes'][0]['plan'],'follow')
         self.assertNotIn('return-to-steward',[r['route_id'] for r in view['route_receipts']])
 
+    def test_retained_plan_uses_original_method_after_source_cleanup(self):
+        from loop_anything.runtime.run_library import delete_run
+        c=fixture.RuntimeTests();c.setUp();self.addCleanup(c.tearDown)
+        c.bp['plans']={'follow':{'parameters':{'type':'object'},'steps':{'measure':{
+            'node':'produce','inputs':{'source':{'literal':'original'}}}}}}
+        c.bp['nodes']['wait']['routes']=[{'id':'after-wait','event':'completed','plan':'follow','values':{}}]
+        e=c.start()
+        c.submit(e,{'settings':{'objective':'keep plan'},'outputs':{'a':'A','b':'B'},
+                    'tasks':[task_spec('external','wait',outputs={'text':'result'})]})
+        old=c.store.get(c.id)
+        bp=copy.deepcopy(c.bp);bp['version']='changed'
+        bp['plans']['follow']['steps']['measure']['inputs']['source']={'literal':'changed'}
+        key=c.store.publish(bp,c.implementations)['key']
+        c.engine.command(c.id,'terminate')
+        current=c.store.create(key,'continue',timeline_id=old['timeline_id'],continue_run_id=c.id)
+        delete_run(c.store,c.id,0)
+        c.id=current['id'];c.engine.tick(c.id)
+        entry=next(e for e in c.store.get(c.id)['executions'] if e['task_id']==current['loop_definition']['seed']['id'])
+        RunTools(c.store,c.id,entry['token']).call('change_task',{'task_id':'external','operation':'retry','reason':'resume observation'})
+        c.submit(entry,{'settings':{'objective':'keep plan'},'outputs':{'a':'A','b':'B'}})
+        c.engine.tick(c.id)
+        c.engine.event(c.id,'received','signal',{'text':'finished'})
+        c.engine.tick(c.id);c.engine.tick(c.id)
+        follow=next(e for e in c.store.get(c.id)['executions'] if e['inputs'].get('source')=='original')
+        self.assertEqual(follow['inputs'],{'source':'original'})
+
     def test_changed_method_keeps_inflight_optional_entry(self):
         c=fixture.RuntimeTests();c.setUp();self.addCleanup(c.tearDown)
         c.bp['entry']='wait';c.bp['seed']=task_spec('external-entry','wait',outputs={'text':'observed'})

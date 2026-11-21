@@ -390,6 +390,21 @@ def decode_assets(items):
     return assets
 
 
+def installed_asset(document, root, name):
+    """Read and verify one declared file, without walking the rest of the package."""
+    relative = member_path(name)
+    spec = document['files'].get(relative)
+    if spec is None:
+        raise Invalid('Unknown package file: '+relative)
+    path = Path(root).resolve() / relative
+    if path.resolve() != path or not path.is_file() or path.stat().st_size > MAX_BYTES:
+        raise Invalid('Installed package file is unavailable: '+relative)
+    content = path.read_bytes()
+    if file_hash(content) != spec['sha256']:
+        raise Invalid('Installed package file changed: '+relative)
+    return content, spec['executable']
+
+
 def installed_assets(document, root):
     report = smoke(document, root)
     if any(c['kind'] in ('asset', 'manifest') and c['status'] == 'fail' for c in report['checks']):

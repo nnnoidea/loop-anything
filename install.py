@@ -1,4 +1,4 @@
-"""Install Loop Anything: local workspace, team connections, and task tools in one application."""
+"""Install Loop Anything: local platform, team connections, and task tools in one application."""
 import argparse
 from pathlib import Path
 import shlex

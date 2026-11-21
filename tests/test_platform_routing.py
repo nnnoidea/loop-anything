@@ -36,6 +36,48 @@ class RoutingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'another work'):self.ledger.choose('wait_for',{'timeline_id':'timeline-one','session_id':'team-session'},work=local['id'])
         with self.assertRaisesRegex(ValueError,'Ambiguous'):self.ledger.choose('wait_for',{'timeline_id':'timeline-one','session_id':'team-session'})
         with self.assertRaisesRegex(ValueError,'Unknown routing contract'):self.ledger.choose('future_tool',{},space='team')
+    def test_read_original_task_from_a_new_clients_continuation_snapshot(self):
+        local = self.ledger.choose('list_runs', {})
+        self.ledger.verify(local['id'], 'local-workspace')
+        self.spaces.configure({'default_space': 'team'})
+        ref = {'run_id': 'original', 'task_id': 'training'}
+        with patch.dict(os.environ, LOOP_ANYTHING_WORK=local['id']):
+            self.assertEqual(self.ledger.choose('read_task', ref)['url'], local['url'])
+            with self.assertRaisesRegex(ValueError, 'Unknown original'):
+                self.ledger.choose('change_task', ref)
+        self.ledger.finish(local['id'], 'read_run', {'run_id': 'current'}, {
+            'ok': True, 'tasks': [{'continuation_source': ref}]})
+        self.assertEqual(self.ledger.choose('read_task', ref)['url'], local['url'])
+        team = self.ledger.choose('list_runs', {})
+        self.ledger.verify(team['id'], 'team-workspace')
+        with self.assertRaisesRegex(ValueError, 'another work platform'):
+            self.ledger.choose('read_task', ref, work=team['id'])
+
+    def test_bound_reads_can_query_resources_before_discovery(self):
+        local=self.ledger.choose('list_runs',{})
+        self.ledger.verify(local['id'],'original-platform')
+        self.spaces.configure({'default_space':'team'})
+        for tool, args in [('read_monitor',{'monitor_id':'m'}),('read_work_result',{'timeline_id':'t','id':'score'}),
+                           ('list_timelines',{'loop_id':'research'}),('next_tasks',{'run_id':'r'})]:
+            with self.subTest(tool=tool):
+                self.assertEqual(self.ledger.choose(tool,args,work=local['id'])['url'],local['url'])
+                with self.assertRaisesRegex(ValueError,'Unknown original'):
+                    self.ledger.choose(tool,args)
+        with self.assertRaisesRegex(ValueError,'Unknown original'):
+            self.ledger.choose('stop_monitor',{'monitor_id':'m'},work=local['id'])
+
+    def test_unique_common_verified_platform_is_sufficient(self):
+        local=self.ledger.choose('list_loops',{})
+        team=self.ledger.choose('list_loops',{},space='team')
+        for work,identity in ((local,'local-id'),(team,'team-id')):
+            self.ledger.verify(work['id'],identity)
+            with self.ledger.db:self.ledger.remember(work['id'],[('loop','shared-key')])
+        with self.ledger.db:self.ledger.remember(local['id'],[('timeline','t'),('session','s')])
+        self.spaces.configure({'default_space':'team'})
+        self.assertEqual(self.ledger.choose('start_run',{'key':'shared-key','timeline_id':'t','session_id':'s'})['url'],local['url'])
+        with self.assertRaisesRegex(ValueError,'Ambiguous'):
+            self.ledger.choose('read_loop',{'key':'shared-key'})
+
     def test_request_reserved_before_send_and_http_unknown_is_not_replayed(self):
         first=self.ledger.choose('create_timeline',{'title':'one'},request_id='retry')
         self.spaces.configure({'default_space':'team','local_url':'http://127.0.0.1:3333'})
@@ -48,8 +90,21 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(self.ledger.choose('result',{},request_id='retry')['id'],first['id'])
         self.ledger.verify(first['id'],'workspace-one')
         with self.assertRaisesRegex(ValueError,'different platform'):self.ledger.verify(first['id'],'workspace-two')
+    def test_readonly_http_retry_remains_bound_after_lost_response(self):
+        first=self.ledger.choose('create_timeline',{},request_id='created')
+        self.ledger.verify(first['id'],'platform')
+        self.ledger.finish(first['id'],'create_timeline',{}, {'ok':True,'timeline':{'id':'tl'}},'created')
+        args={'timeline_id':'tl'}
+        route=self.ledger.choose('export_timeline',args,request_id='download')
+        self.assertIsNone(self.ledger.begin('download'))
+        self.ledger.finish(route['id'],'export_timeline',args,{'ok':False,'transport_error':True},'download')
+        self.spaces.configure({'default_space':'team'})
+        self.assertEqual(self.ledger.choose('export_timeline',args,request_id='download')['url'],first['url'])
+        self.assertIsNone(self.ledger.begin('download'))
+
     def test_all_platform_tools_have_an_explicit_routing_contract(self):
         from loop_anything.interfaces.platform_tools import PlatformTools
+        self.assertEqual(self.routing.READ_ONLY,{d['name'] for d in PlatformTools(None).definitions() if d['annotations']['readOnlyHint']})
         for definition in PlatformTools(None).definitions():
             self.assertIn(definition['name'],self.routing.KNOWN_TOOLS)
             local={'node_id','implementation_id','execution_id','task_id','parent_id','report_id','external_id','event_id','reply_id','notification_id','conversation_id','instance_id','process_id'}
@@ -189,6 +244,21 @@ class RoutingHTTPTests(unittest.TestCase):
                 self.assertTrue(response['outcome_unknown'])
                 listed=invoke('list_timelines',flags=['--work',t['work_id']])
                 self.assertEqual(sum(v['title']=='committed-once' for v in listed['timelines']),1)
+
+                # A server-committed Timeline import is idempotent on its original platform.
+                exported = invoke('export_timeline', {'timeline_id': t['timeline']['id']})
+                args = {'request_id': 'same-import', 'document': exported['document']}
+                before = listed['total']
+                argv = ['call', 'import_timeline', '--work', t['work_id'], '--request-id', 'lost-import',
+                        '--arguments', json.dumps(args)]
+                with patch.dict(os.environ, env), patch.object(sys, 'argv', argv), patch.object(client, 'fetch', side_effect=lose_response), patch('sys.stdout', new_callable=io.StringIO), patch('sys.stderr', new_callable=io.StringIO):
+                    with self.assertRaises(SystemExit) as lost:
+                        client.main()
+                    self.assertEqual(lost.exception.code, 2)
+                retried = invoke('retry', flags=['--request-id', 'lost-import'])
+                self.assertTrue(retried['duplicate'])
+                self.assertEqual(retried['platform_url'], local)
+                self.assertEqual(invoke('list_timelines', flags=['--work', t['work_id']])['total'], before + 1)
 
             finally:
                 for p,stream in processes:

@@ -69,22 +69,19 @@ def update(db, ident, revision, change, message=''):
 
 
 def list_timelines(store, loop_id=None, unbound=False, limit=20, offset=0):
-    """Classify by the latest retained Run; read summaries without loading Run archives."""
+    """Classify by the current method, retaining its label after the Run is deleted."""
     if type(limit) is not int or not 1 <= limit <= 100 or type(offset) is not int or offset < 0:
         raise Invalid('limit must be 1..100 and offset must be nonnegative')
     if type(unbound) is not bool or loop_id is not None and (not isinstance(loop_id,str) or not loop_id):
         raise Invalid('Supply a Loop ID or unbound=true')
     if unbound and loop_id is not None:raise Invalid('Loop and temporary-work filters are mutually exclusive')
-    catalog = """WITH latest_runs AS (
-        SELECT json_extract(r.document,'$.timeline_id') AS timeline_id,l.document AS loop,
-            row_number() OVER (PARTITION BY json_extract(r.document,'$.timeline_id')
-                ORDER BY json_extract(r.document,'$.created_at') DESC,r.id DESC) AS position
-        FROM runs r JOIN loop_definitions l ON l.key=json_extract(r.document,'$.loop_key')
-    ), classified AS (
+    catalog = """WITH classified AS (
         SELECT w.id,w.document,json_extract(w.document,'$.created_at') AS created_at,
-            json_extract(r.loop,'$.id') AS loop_id,
-            coalesce(nullif(json_extract(r.loop,'$.name'),''),json_extract(r.loop,'$.id')) AS loop_name
-        FROM work_timelines w LEFT JOIN latest_runs r ON r.timeline_id=w.id AND r.position=1
+            coalesce(json_extract(l.document,'$.id'),json_extract(w.document,'$.loop_id')) AS loop_id,
+            coalesce(nullif(json_extract(l.document,'$.name'),''),json_extract(l.document,'$.id'),
+                     json_extract(w.document,'$.loop_name')) AS loop_name
+        FROM work_timelines w LEFT JOIN runs r ON r.id=json_extract(w.document,'$.active_run_id')
+        LEFT JOIN loop_definitions l ON l.key=json_extract(r.document,'$.loop_key')
     ) """
     where=' WHERE loop_id IS NULL' if unbound else ' WHERE loop_id=?' if loop_id is not None else ''
     args=[loop_id] if loop_id is not None else []
@@ -116,12 +113,14 @@ def read(store, ident, after=0, limit=100):
         for row in db.execute('SELECT id,document FROM runs WHERE json_extract(document,\'$.timeline_id\')=?',(ident,)):
             run=json.loads(row[1]);run['status']=public_status(run);runs.append({k:run.get(k) for k in ('id','title','status','continued_from','superseded_by')})
         from loop_anything.runtime import business_state
-        state=business_state.load(db,value)
         current=db.execute("SELECT l.document FROM runs r JOIN loop_definitions l ON l.key=json_extract(r.document,'$.loop_key') WHERE r.id=?",(value.get('active_run_id'),)).fetchone()
         definition=(json.loads(current[0]).get('state') if current else None) or value.get('state_definition')
-        result_rows=db.execute('SELECT document FROM work_results WHERE timeline_id=? ORDER BY rowid DESC LIMIT 51',(ident,)).fetchall()
-        return dict(timeline=value,entries=entries,runs=runs,business_state=business_state.overview(state,definition),
-                    results={'records':[{k:r.get(k) for k in ('id','type','revision','source_run_id','at')} for r in (json.loads(r[0]) for r in result_rows[:50])],
+        result_rows=db.execute("""SELECT id,revision,json_extract(document,'$.type') AS type,
+                json_extract(document,'$.source_run_id') AS source_run_id,json_extract(document,'$.at') AS at
+                FROM work_results WHERE timeline_id=? ORDER BY rowid DESC LIMIT 51""",(ident,)).fetchall()
+        from loop_anything.runtime.observations import overview as view_overview
+        return dict(timeline=value,observations=view_overview(db,ident),entries=entries,runs=runs,business_state=business_state.timeline_overview(db,ident,definition),
+                    results={'records':[dict(r) for r in result_rows[:50]],
                              'complete':len(result_rows)<=50},
                     cursor=entries[-1]['sequence'] if entries else after,has_more=len(rows)>limit)
 
@@ -130,10 +129,12 @@ def attach(db, run, ident=None):
     value=get(db,ident) if ident else create(db,run['settings'].get('objective',''),
         run['settings'].get('constraints',''),run['title'])
     from loop_anything.runtime import business_state
+    definition=run['loop_definition']
+    value.update(loop_id=definition['id'],loop_name=definition.get('name') or definition['id'])
     run['timeline_id']=value['id']
     run['records']=business_state.results(db,value['id'])
     run['business_state']=business_state.load(db,value)
-    run['arrangements']=business_state.arrangements(db,value['id'])
+    run['arrangements']=business_state.arrangements(db,value['id']) if value.get('active_run_id') else {}
     for destination in run['tasks'].get(run['loop_definition'].get('seed',{}).get('id'),{}).get('spec',{}).get('outputs',{}).values():
         if destination['id'] in run['records']:destination['expected_revision']=run['records'][destination['id']][-1]['revision']
     save(db,value)
@@ -183,6 +184,8 @@ def continue_from(store, db, run, source_id):
     seed=copy.deepcopy(run['tasks'])
     run['tasks']=seed if refreshed else {}
     run['retained_nodes']={}
+    if source.get('retained_methods'):
+        run['retained_methods']=copy.deepcopy(source['retained_methods'])
     excluded={t['id'] for t in source['tasks'].values() if management_task(t)}
     seed_id=run['loop_definition'].get('seed',{}).get('id')
     if refreshed and seed_id in source['tasks'] and seed_id not in excluded:
@@ -259,12 +262,36 @@ def continue_from(store, db, run, source_id):
            [{'run_id':run['id'],'source_run_id':source_id}],actor='platform')
 
 
+def detach_source(db,source):
+    """Keep method inputs for retained plan routes. Only outstanding execution observations need the actual Run."""
+    for row in db.execute("SELECT id,document FROM runs WHERE json_extract(document,'$.timeline_id')=? AND id!=?",
+                          (source['timeline_id'],source['id'])).fetchall():
+        header=json.loads(row['document'])
+        if db.execute("""SELECT 1 FROM timeline_parts WHERE run_id=? AND section='tasks'
+                AND json_extract(document,'$.continuation_source.run_id')=?
+                AND json_extract(document,'$.status')='waiting' LIMIT 1""",(row['id'],source['id'])).fetchone():
+            raise Conflict('A continuation is still observing this Run')
+        # Ended/cancelled proxies no longer observe the source. A future explicit
+        # retry belongs to the successor and must not resurrect the deleted link.
+        db.execute("""UPDATE timeline_parts SET document=json_remove(document,'$.continuation_source')
+                      WHERE run_id=? AND section='tasks' AND json_extract(document,'$.continuation_source.run_id')=?""",
+                   (row['id'],source['id']))
+        nodes=header.get('retained_nodes',{}).values()
+        if any(n['source_run_id']==source['id'] and any(r.get('plan') for r in n['node'].get('routes',[])) for n in nodes):
+            method={k:source[k] for k in ('id','loop_key','configuration') if k in source}
+            coordinator=source.get('collaboration',{}).get('coordinator_implementation')
+            if coordinator:method['collaboration']={'coordinator_implementation':coordinator}
+            method['settings']={'bindings':source['settings'].get('bindings',{})}
+            header.setdefault('retained_methods',{})[source['id']]=method
+            db.execute('UPDATE runs SET document=? WHERE id=?',(json.dumps(header,ensure_ascii=False),row['id']))
+
+
 def advance_continuations(store, run, runtime):
     # Complete the proxy through the normal report path, so routes and the bound
     # Agent receive the result exactly once without executing the original job.
     for task in list(run['tasks'].values()):
         ref=task.get('continuation_source')
-        if not ref:continue
+        if not ref or task['status']!='waiting':continue
         source=store.get(ref['run_id']);old=source['tasks'][ref['task_id']]
         attempt=next((e for e in source['executions'] if e['id']==old.get('execution_id')), {})
         if old['status']=='completed':
@@ -294,7 +321,7 @@ def retain_node(run, source, spec, execution_id=None):
         materialize_retained(run)
         return original
     _,implementation=selected(source,{'spec':spec,'execution_id':execution_id})
-    name='$retained:'+digest([source['id'],original,implementation])[:24]
+    name='$retained:'+digest([source.get('method_ref',source['id']),original,implementation])[:24]
     node=copy.deepcopy(source['loop_definition']['nodes'][original])
     output_types={p:v['record_type'] for p,v in node['outputs'].items()}
     schemas={}
@@ -303,7 +330,8 @@ def retain_node(run, source, spec, execution_id=None):
         schemas[new_type]=source['loop_definition']['records'][old_type]
         destination['record_type']=new_type
     run.setdefault('retained_nodes',{})[name]={'node':node,'schemas':schemas,'implementation':implementation,
-        'loop_key':source['loop_key'],'source_run_id':source['id'],'node_id':original,'output_types':output_types,
+        'loop_key':source['loop_key'],'source_run_id':source['id'],
+        **({'method_ref':source['method_ref']} if 'method_ref' in source else {}),'node_id':original,'output_types':output_types,
         'handbook':copy.deepcopy(source['loop_definition'].get('handbook',{}))}
     materialize_retained(run)
     return name
@@ -339,6 +367,20 @@ def task_resources(run,node_id):
     """Existing tasks use their original installed package; new tasks use this Loop."""
     retained=run.get('retained_nodes',{}).get(node_id)
     return (retained['loop_key'],retained['handbook']) if retained else (run['loop_key'],run['loop_definition'].get('handbook',{}))
+
+
+def logical_node(run,node):
+    return run.get('retained_nodes',{}).get(node,{}).get('node_id',node)
+
+
+def completed_counts(run,items,node_of):
+    counts=dict.fromkeys(run['loop_definition']['nodes'],0)
+    for item in items:
+        if item['status']=='completed':
+            node=node_of(item)
+            for ident in {node,logical_node(run,node)}:
+                counts[ident]=counts.get(ident,0)+1
+    return counts
 
 
 def public_status(run):

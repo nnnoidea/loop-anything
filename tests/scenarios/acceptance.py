@@ -7,6 +7,8 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from managed_http import register, start, claim, operate, finish_turn, tool
+from loop_anything.examples.simulated_tasks import respond
 from loop_anything.examples.loops import research, trip
 
 
@@ -35,12 +37,23 @@ def main():
         raise AssertionError('Timeout: ' + id)
 
     report = {'url': args.url, 'at': time.time(), 'simulated': 'All Task and Agent responses; not the Engine', 'runs': {}}
+    session = register(api)
     for factory, name in ((research, 'research'), (trip, 'trip')):
         bp, implementations = factory()
+        for node in bp['nodes'].values():
+            node['progression'] = 'rules'
         result = api('publish', {'loop_definition': bp, 'implementations': implementations})
         inputs = dict(bp['defaults'], **({'slow_duration': 14} if name == 'research' else {}))
-        run = api('runs', {'key': result['key'], 'title': name + ' · 平台验收', 'inputs': inputs})
-        id = run['id']
+        turn = start(api, session, result['key'], name+' · 平台验收', inputs=inputs)
+        id = turn['run_id']
+        seed = bp['seed']['id']
+        info = operate(api, turn, 'read_task', task_id=seed)
+        initial = respond(name, 'initialize', {'task_id':seed,'inputs':info['inputs'],
+                          'input_sources':info['sources'],'timeline':api('runs/'+id)})
+        tool(api, 'update_timeline', timeline_id=turn['timeline_id'],revision=1,
+             change={field:initial['settings'][field] for field in ('objective','constraints')})
+        operate(api, turn, 'report_task', task_id=seed,report_id='seed',event='completed',envelope=initial)
+        finish_turn(api, turn)
         report['runs'][name] = {'id': id, 'checks': []}
         checks = report['runs'][name]['checks']
         if name == 'research':
@@ -60,7 +73,8 @@ def main():
                     'proposal_id': e['inputs']['proposal']['id'], 'proposal_record': e['parameters']['proposal_record']}}}})
 
             old = pending('approval')
-            owner = api('runs/' + id + '/agent', {'operation': 'acquire'})
+            tool(api,'submit_run_request',run_id=id,request_id='revise-'+id,operation='message',message='Revise this simulated trip')
+            owner = claim(api, session, id)
             def operator(tool, arguments=None):
                 result = api('runs/' + id + '/agent', {'token': owner['token'], 'tool': tool, 'arguments': arguments or {}})
                 assert result['ok']
@@ -70,7 +84,8 @@ def main():
             for task in old_run['tasks'].values():
                 if task['id'] == old['task_id'] or any(v.get('record') == decision_record for v in task['spec']['inputs'].values()):
                     operator('change_task', {'task_id': task['id'], 'operation': 'cancel', 'reason': 'User explicitly replaces old approval and downstream route'})
-            operator('change_settings', {'revision': 1, 'change': {'constraints': {'destination': '北京', 'budget': 2200}}})
+            progress=operator('read_timeline')['timeline']
+            tool(api,'update_timeline',timeline_id=progress['id'],revision=progress['revision'],change={'constraints':'目的地北京，预算2200，预订须确认'})
             try:
                 approve(old)
                 raise AssertionError('Stale approval accepted')
@@ -85,13 +100,14 @@ def main():
                 'values': {'proposal_record': info['task']['spec']['outputs']['proposal']['id']}})
             operator('report_task', {'event':'completed','report_id':'complete','task_id': replan_id, 'envelope': {'outputs': {'proposal': {'id': 'user-' + replan_id, 'destination': '北京', 'amount': 2200,
                     'reason': 'Simulated user Agent implementing the explicit changed requirements'}}}})
-            operator('finish')
+            settings=operator('read_run',{'view':'snapshot'})['settings']
+            hooks = [{'id': 'acceptance-gate', 'target': {'node': 'book'}, 'action': 'pause', 'phase': 'before', 'frequency': 'once'},
+                     {'id': 'acceptance-notice', 'target': {'node': 'book'}, 'action': 'notify', 'route': 'workspace', 'phase': 'after', 'frequency': 'always', 'message': '差旅预订结果已写入'}]
+            operator('change_settings',{'revision':settings['revision'],'change':{'hooks':hooks}})
+            finish_turn(api,owner)
             until(id, lambda r: any(e['node'] == 'approve' and e['id'] != old['id'] and e['status'] == 'approval' for e in r['executions']))
             current = pending('approval')
             assert current['inputs']['proposal']['destination'] == '北京'
-            hooks = [{'id': 'acceptance-gate', 'target': {'node': 'book'}, 'action': 'pause', 'phase': 'before', 'frequency': 'once'},
-                     {'id': 'acceptance-notice', 'target': {'node': 'book'}, 'action': 'notify', 'route': 'workspace', 'phase': 'after', 'frequency': 'always', 'message': '差旅预订结果已写入'}]
-            api('runs/' + id + '/settings', {'revision': 2, 'change': {'hooks': hooks}})
             approve(current)
             run = until(id, lambda r: any(w['status'] == 'held' for w in r['tasks'].values()))
             assert not any(e['node'] == 'book' for e in run['executions'])

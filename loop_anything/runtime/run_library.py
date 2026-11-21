@@ -95,8 +95,8 @@ def update_run(store, run_id, metadata_revision, title=None, created_by=None, ar
 
 
 def update_run_in_run(store, run, metadata_revision, title=None, created_by=None, archived=None):
-    if title is not None and (not isinstance(title,str) or not title.strip() or len(title)>500):
-        raise Invalid('title must be nonempty text of at most 500 characters')
+    if title is not None and (not isinstance(title,str) or not title.strip()):
+        raise Invalid('title must be nonempty text')
     if created_by is not None:created_by=user_name(created_by)
     if archived is not None and type(archived) is not bool:raise Invalid('archived must be boolean')
     if type(metadata_revision) is not int or metadata_revision!=run.get('metadata_revision',0):
@@ -112,14 +112,16 @@ def update_run_in_run(store, run, metadata_revision, title=None, created_by=None
     return result
 
 def delete_run(store, run_id, metadata_revision, _db=None):
-    from loop_anything.runtime.task_scope import process_active
+    from loop_anything.runtime.task_scope import process_active, owner_for
     from contextlib import nullcontext
     with (nullcontext(_db) if _db is not None else store.connection()) as db:
         if not db.in_transaction:db.execute('BEGIN IMMEDIATE')
         run=store._load(db,run_id)
         if type(metadata_revision) is not int or metadata_revision!=run.get('metadata_revision',0):
             raise Conflict('Run metadata changed; reload before deleting')
-        if run['status'] not in ('completed','terminated') or any(process_active(e) for e in run['executions']):
+        if run['status'] not in ('completed','terminated') or any(
+                process_active(e,include_caller=e.get('status')!='completed' or owner_for(run,e.get('token')) is not None)
+                for e in run['executions']):
             raise Conflict('End this Run and its active executions before deleting it')
         if db.execute("SELECT 1 FROM runs WHERE json_extract(document,'$.parent_call.run_id')=? LIMIT 1",(run_id,)).fetchone():
             raise Conflict('Delete or retain child Runs explicitly before deleting their parent')
@@ -128,10 +130,8 @@ def delete_run(store, run_id, metadata_revision, _db=None):
             row=db.execute('SELECT document FROM runs WHERE id=?',(parent,)).fetchone()
             if row and json.loads(row[0])['status'] not in ('completed','terminated'):
                 raise Conflict('The parent Run still needs this child result')
-        if db.execute("SELECT 1 FROM runs WHERE json_extract(document,'$.continued_from')=? LIMIT 1",(run_id,)).fetchone():
-            raise Conflict('Continuation Run still references this execution history; archive instead')
-        if db.execute("SELECT 1 FROM work_state WHERE json_extract(document,'$.run_id')=? LIMIT 1",(run_id,)).fetchone() or db.execute("SELECT 1 FROM work_arrangements WHERE json_extract(document,'$.run_id')=? LIMIT 1",(run_id,)).fetchone():
-            raise Conflict('Timeline business state or work still references this Run; archive instead')
+        from loop_anything.runtime import timelines
+        timelines.detach_source(db,run)
         tables={row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if 'execution_sessions' in tables and db.execute("SELECT 1 FROM execution_sessions WHERE run_id=? AND json_extract(document,'$.state') IN ('starting','running','interrupted') LIMIT 1",(run_id,)).fetchone():
             raise Conflict('Run still has an active or unconfirmed execution session')
@@ -152,10 +152,16 @@ def delete_run(store, run_id, metadata_revision, _db=None):
                 if job['run_id']==run_id or job['request_id'] in linked_ids:
                     raise Conflict('Wait for the remote execution receipt to be applied before deleting this Run')
         if run.get('timeline_id'):
-            from loop_anything.runtime import timelines
             timeline=timelines.get(db,run['timeline_id'])
+            from loop_anything.runtime import work
+            work.retain_wait_sources(db,run,timeline)
             if timeline.get('active_run_id')==run_id:
-                timeline['active_run_id']=None;timelines.save(db,timeline)
+                definition=run['loop_definition']
+                timeline.update(active_run_id=None,loop_id=definition['id'],loop_name=definition.get('name') or definition['id'])
+                if definition.get('state'):
+                    timeline['state_definition']=definition['state']
+                timelines.save(db,timeline)
+                db.execute('DELETE FROM work_arrangements WHERE timeline_id=?',(timeline['id'],))
             timelines.append(db,timeline['id'],'deleted:'+run_id,'用户删除了此 Run 的执行记录；Timeline 保留。','action',
                              [{'run_id':run_id,'deleted':True}],actor='platform')
         db.execute('DELETE FROM timeline_parts WHERE run_id=?',(run_id,))
@@ -191,8 +197,13 @@ def manage_loop(store, key=None, draft_id=None, revision=None, archived=None, de
         if draft_id and (type(revision) is not int or revision!=row['revision']):raise Conflict('Draft changed; read it again')
         if delete:
             if key:
-                if db.execute("SELECT 1 FROM runs WHERE json_extract(document,'$.loop_key')=? LIMIT 1",(key,)).fetchone():
+                if db.execute("""SELECT 1 FROM runs WHERE json_extract(document,'$.loop_key')=? OR EXISTS
+                        (SELECT 1 FROM json_each(document,'$.retained_nodes') WHERE json_extract(value,'$.loop_key')=?)
+                        LIMIT 1""",(key,key)).fetchone():
                     raise Conflict('Runs still reference this Loop version; archive it to hide it while retaining history')
+                if db.execute("""SELECT 1 FROM observation_jobs
+                        WHERE json_extract(input,'$.observation_config.loop_key')=? LIMIT 1""",(key,)).fetchone():
+                    raise Conflict('An observation still needs this Loop version to finish')
                 from loop_anything.runtime.implementations import options
                 def calls(implementations):
                     return any(candidate.get('kind')=='loop' and candidate['loop']['key']==key
@@ -204,6 +215,7 @@ def manage_loop(store, key=None, draft_id=None, revision=None, archived=None, de
                 package=db.execute('SELECT root,digest,document FROM loop_packages WHERE key=?',(key,)).fetchone()
                 if package:root,digest,package_document=Path(package['root']),package['digest'],json.loads(package['document'])
                 db.execute('DELETE FROM loop_packages WHERE key=?',(key,))
+                db.execute('DELETE FROM published_methods WHERE key=?',(key,))
             db.execute('DELETE FROM '+table+' WHERE '+field+'=?',(ident,))
             db.execute('DELETE FROM loop_library WHERE key=?',(ident,))
         else:

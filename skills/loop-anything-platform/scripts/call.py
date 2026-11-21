@@ -105,6 +105,12 @@ def main():
         parser.error('--created-by is only for creating Runs or standalone collaboration')
     values = load_json(args.arguments)
     if not isinstance(values,dict):parser.error('Arguments must be an object')
+    snapshot=os.environ.get('LOOP_ANYTHING_OBSERVATION_READ')
+    collection={'read_business_state':'state','read_work_result':'results','read_work_results':'results'}.get(args.tool)
+    if snapshot and collection and 'as_of' not in values and not (args.url or args.space or args.work):
+        bound=json.loads(snapshot)
+        if bound['timeline_id']==values.get('timeline_id'):
+            values['as_of']=bound['as_of'][collection]
     if args.created_by is not None:values['created_by']=args.created_by
     if (args.tool in ('start_run','start_collaboration','request_assistance','submit_run_request')) and 'created_by' not in values:
         author=args.created_by if args.created_by is not None else os.environ.get('LOOP_ANYTHING_USER_NAME',profile.get('user_name',''))
@@ -133,9 +139,10 @@ def main():
         request_id=work['request_id']
         url=work['url']
         print(json.dumps({'work_id':work['id'],'routing_request_id':request_id}),file=sys.stderr,flush=True)
-        cached=ledger.db.execute('SELECT response FROM requests WHERE id=?',(request_id,)).fetchone()
-        if cached and cached[0] is not None and args.tool!='check':
-            result=json.loads(cached[0])
+        saved_tool,saved_args,cached=ledger.db.execute(
+            'SELECT tool,args,response FROM requests WHERE id=?',(request_id,)).fetchone()
+        if cached is not None and args.tool!='check':
+            result=json.loads(cached)
         elif args.tool=='check':
             result=check_connection(url)
             if result.get('ok'):ledger.verify(work['id'],result['platform'].get('workspace_id'))
@@ -150,12 +157,12 @@ def main():
                 identity=status.get('workspace_id')
             ledger.verify(work['id'],identity)
             if args.tool=='result':
-                prior=ledger.db.execute('SELECT tool,args,response FROM requests WHERE id=?',(request_id,)).fetchone()
-                if prior[2] is not None:result=json.loads(prior[2])
-                elif url.startswith('nas:'):
+                if url.startswith('nas:'):
                     result=transport.result(url,request_id)
-                    ledger.finish(work['id'],prior[0],json.loads(prior[1]),result,request_id)
-                else:result={'ok':False,'outcome_unknown':True,'error':'No confirmed HTTP receipt; inspect original work before another operation.'}
+                    ledger.finish(work['id'],saved_tool,json.loads(saved_args),result,request_id)
+                else:
+                    action='Use retry with the original request ID.' if saved_tool in routing.RETRYABLE_HTTP else 'Inspect original work before another operation.'
+                    result={'ok':False,'outcome_unknown':True,'error':'No confirmed HTTP receipt. '+action}
             else:
                 result=ledger.begin(request_id,nas=url.startswith('nas:'))
                 if result is None:
@@ -170,7 +177,7 @@ def main():
         with Path(args.output).open('xb') as output:
             output.write(base64.b64decode(result.pop('base64')))
         result['file'] = str(Path(args.output).resolve())
-    if args.output and result.get('ok') and args.tool=='export_timeline':
+    if args.output and result.get('ok') and not result.get('pending') and saved_tool=='export_timeline':
         with Path(args.output).open('x',encoding='utf-8') as output:
             json.dump(result.pop('document'),output,ensure_ascii=False,separators=(',',':'))
         result['file']=str(Path(args.output).resolve())

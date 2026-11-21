@@ -7,6 +7,7 @@ import time
 from urllib.request import Request, urlopen
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from managed_http import register, start, claim, finish_turn
 from loop_anything.examples.loops import node, tasks, TEXT, BOOL
 
 
@@ -41,7 +42,10 @@ def main():
                       headers={'Content-Type': 'application/json', 'X-Loop-Anything': 'workspace'})
         with urlopen(req, timeout=15) as response:
             return json.load(response)
+    session = register(api)
     bp = definition()
+    for node in bp['nodes'].values():
+        node['progression'] = 'rules'
     implementations = {n: {'options': {'default': {'kind': 'command', 'command': ['python3', 'scripts/action.py', n], 'simulation': True}}, 'default': 'default'} for n in bp['nodes']}
     reports = []
     for count in (0, 1, 2):
@@ -57,13 +61,13 @@ def main():
         assert check['ready'] == (count == 2)
         assert len(check['unbound_nodes']) == 2 - count
         report = {'implementations': count, 'installed': installed, 'smoke': check}
+        turn = start(api, session, installed['key'], 'Loop 包交付验收')
+        run = api('runs/'+turn['run_id'])
         if count != 2:
-            run = api('runs', {'key': installed['key'], 'title': '实现待补全的 Loop 包'})
             assert run['status'] == 'running'
-            report['run_id'], report['status'] = run['id'], run['status']
-            report['created_with_missing_implementations'] = True
+            report.update(run_id=run['id'],status=run['status'],created_with_missing_implementations=True)
         else:
-            run = api('runs', {'key': installed['key'], 'title': '完整 Loop 包 · HTTP 验收'})
+            finish_turn(api, turn if turn.get('token') else claim(api, session, turn['run_id']))
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
                 run = api('runs/' + run['id'])

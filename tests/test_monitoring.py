@@ -72,6 +72,13 @@ class MonitoringTests(unittest.TestCase):
                 'script':{'command':['unused'],'metrics':[{'key':'count'},{'key':'count'}]}})
         self.assertEqual(self.tools.call('list_monitor_scripts',{})['scripts'],[])
 
+    def test_script_can_declare_more_than_twelve_metrics(self):
+        metrics = [{'key': 'metric' + str(i)} for i in range(20)]
+        self.tools.call('register_monitor', {'script_id': 'many', 'revision': 0,
+                        'script': {'command': ['unused'], 'metrics': metrics}})
+        scripts = self.tools.call('list_monitor_scripts', {})['scripts']
+        self.assertEqual(scripts[0]['script']['metrics'], metrics)
+
     def test_run_pagination_and_archives(self):
         for i in range(3):
             r=self.store.create(self.t.key,'run '+str(i))

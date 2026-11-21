@@ -76,7 +76,7 @@ class WebSchedulesTests(unittest.TestCase):
                     def startup():
                         output = log.read_text()
                         self.assertIsNone(process.poll(), output)
-                        return re.search(r'Loop Anything workspace: (http://127\.0\.0\.1:\d+)', output)
+                        return re.search(r'Loop Anything platform: (http://127\.0\.0\.1:\d+)', output)
 
                     match = self.until(startup)
                     base = match.group(1) + '/api/schedules'
@@ -97,7 +97,7 @@ class WebSchedulesTests(unittest.TestCase):
                     self.assertEqual(task('once')['runtime']['status'], 'registered')
                     self.assertFalse(marker.exists())
 
-                    initial = {'revision': job['revision'], 'owner': None}
+                    initial = {'directory': listed['directory'], 'revision': job['revision'], 'owner': None}
                     self.assertTrue(api('/once/start', initial)['started'])
                     with self.assertRaises(HTTPError) as duplicate:
                         api('/once/start', initial)
@@ -106,7 +106,7 @@ class WebSchedulesTests(unittest.TestCase):
                     self.assertTrue(marker.exists())
                     self.assertEqual(task('once')['runtime']['last_result']['stdout'].strip(), 'done')
 
-                    api('/waiting/start', {'revision': 1, 'owner': None})
+                    api('/waiting/start', {'directory': listed['directory'], 'revision': 1, 'owner': None})
                     before = task('waiting')
                     owner = before['runtime']['owner']
                     registry.register({'name': 'Updated waiting job', 'every': 3600, 'command': command}, 'waiting')
@@ -116,9 +116,9 @@ class WebSchedulesTests(unittest.TestCase):
                     self.assertEqual(updated['runtime']['next_at'], before['runtime']['next_at'])
                     self.assertNotIn('command', updated['runtime']['schedule'])
                     with self.assertRaises(HTTPError) as stale:
-                        api('/waiting/stop', {'owner': 'earlier-execution'})
+                        api('/waiting/stop', {'directory': listed['directory'], 'owner': 'earlier-execution'})
                     self.assertEqual(stale.exception.code, 409)
-                    self.assertTrue(api('/waiting/stop', {'owner': owner})['stop_requested'])
+                    self.assertTrue(api('/waiting/stop', {'directory': listed['directory'], 'owner': owner})['stop_requested'])
                     self.until(lambda: task('waiting')['runtime']['status'] == 'stopped')
                 finally:
                     process.terminate()
