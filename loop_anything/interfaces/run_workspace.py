@@ -4,14 +4,14 @@ import json
 import re
 
 from loop_anything.interfaces.agent_tasks import task_list
+from loop_anything.interfaces.run_results import display_results
 from loop_anything.runtime.model import Invalid
 from loop_anything.runtime.timeline_plan import task_dependencies
-from loop_anything.runtime.timeline_runtime import result_readings
 from loop_anything.runtime.timelines import public_status
 
 
 HISTORY_PAGE_SIZE = 50
-TABS = {'task-history', 'activity', 'hooks', 'tasks', 'result'}
+TABS = {'task-history', 'activity', 'hooks', 'tasks'}
 ACTIVITY_KINDS = (
     'created', 'completed', 'pause', 'resume', 'terminate', 'method_updated',
     'settings', 'agent_action_change', 'monitor_retry', 'retry_applied',
@@ -106,14 +106,18 @@ def task_summary(task):
     return result
 
 
-def attempt_summary(attempt, node, allow_approval=False, show_results=False):
+def attempt_summary(attempt, node, records, allow_approval=False, include_content=False):
     result = pick(attempt, 'id', 'node', 'task_id', 'attempt', 'status', 'created_at', 'started_at',
                   'completed_at', 'worker_active', 'activity_progress', 'child_run_id', 'child_status',
                   'communication_id')
     implementation = attempt['implementation']
     result['implementation'] = pick(implementation, 'kind', 'terminal', 'event')
-    result['output_readout'] = list(result_readings(node, attempt.get('outputs')))
-    result['has_outputs'] = bool(attempt.get('outputs'))
+    readings, content = display_results(node, records, attempt.get('outputs'))
+    result['output_readout'] = readings
+    if content:
+        result['has_result_content'] = True
+        if include_content:
+            result['result_content'] = content
     if isinstance(attempt.get('wait'), dict):
         result['wait'] = pick(attempt['wait'], 'key', 'until', 'deadline')
     if attempt.get('observation_error'):
@@ -123,27 +127,12 @@ def attempt_summary(attempt, node, allow_approval=False, show_results=False):
         result['failure_summary'] = summary
     if allow_approval and attempt['status'] == 'approval' and implementation['kind'] == 'approval':
         result.update(pick(attempt, 'token'))
-    if show_results:
-        result['outputs'] = attempt.get('outputs', {})
     return result
 
 
 def output_schemas(loop, node):
     return {output['record_type']: loop['records'][output['record_type']]
             for output in node.get('outputs', {}).values()}
-
-
-def task_result_view(run, task_id):
-    task = run['tasks'].get(task_id)
-    if task is None:
-        raise Invalid('Unknown task')
-    node_id = task['spec']['node']
-    loop = run['loop_definition']
-    node = loop['nodes'][node_id]
-    return {'id': run['id'], 'tasks': {task_id: task_summary(task)},
-            'loop_definition': {'nodes': {node_id: pick(node, 'label', 'outputs')}, 'records': output_schemas(loop, node)},
-            'executions': [attempt_summary(e, node, show_results=True) for e in run['executions']
-                           if e['task_id'] == task_id]}
 
 
 def attention_summary(run, runtime):
@@ -198,7 +187,7 @@ def read_workspace(store, runtime, run_id, query):
     tab = query.get('tab', 'task-history')
     if tab not in TABS:
         raise Invalid('Unknown Run view')
-    task_id = query.get('task', '') if tab in ('task-history', 'result') else ''
+    task_id = query.get('task', '') if tab == 'task-history' else ''
     try:
         offset = int(query.get('offset', '0')) if tab == 'activity' else 0
     except ValueError as exc:
@@ -214,9 +203,6 @@ def read_workspace(store, runtime, run_id, query):
                       AND json_type(document, '$.detail.tasks')='text'
                       AND json_type(document, '$.detail.before') NOT IN ('null', 'false')""", (run_id,))] if tab == 'task-history' else []
 
-    if tab == 'result':
-        return task_result_view(run, task_id)
-
     view = pick(run, 'id', 'title', 'revision', 'status', 'timeline_id', 'loop_key', 'created_by',
                 'archived_at', 'last_activity_at', 'superseded_by', 'identity_read_only', 'follow_loop_updates')
     view['timeline'] = pick(run.get('timeline') or {}, 'active_run_id', 'title', 'objective')
@@ -226,7 +212,7 @@ def read_workspace(store, runtime, run_id, query):
                             termination_signal=bool(settings.get('termination_signal')),
                             has_notification_command=bool(settings.get('notification_command')))
     view.update(status=public_status(run), task_dependencies=task_dependencies(run),
-                workspace_view={'tab': tab, 'task': task_id, 'offset': offset},
+                workspace_view={'tab': tab, 'task': '', 'offset': offset},
                 changed_tasks=changed, history=activity_summary(history, run) if history else [], history_total=total,
                 agent_tasks=attention_summary(run, runtime), has_diagnostics=bool(run['diagnostics']),
                 controls_available=bool(run['notifications'] or any(f['status']=='held' for f in run['hook_firings'])),
@@ -240,13 +226,15 @@ def read_workspace(store, runtime, run_id, query):
     selected_execution = run['tasks'].get(task_id, {}).get('execution_id')
     waiting = next((e for e in run['executions'] if e['id'] == selected_execution and
                     e['implementation']['kind'] in ('approval', 'event') and e['status'] in ('approval', 'waiting')), None)
-    view['workspace_view']['task'] = task_id if waiting else ''
     view['loop_definition'] = dict(pick(loop, 'id', 'name', 'version'),
                                    nodes={key: pick(node, 'label', 'readout', 'outputs') for key, node in nodes.items()},
                                    records=output_schemas(loop, nodes[waiting['node']]) if waiting else {})
     view['tasks'] = {ident: task_summary(task) for ident, task in run['tasks'].items()}
-    view['executions'] = [attempt_summary(e, nodes.get(e['node'], {}), allow_approval=e['id'] == selected_execution)
+    view['executions'] = [attempt_summary(e, nodes.get(e['node'], {}), loop['records'],
+                                          allow_approval=e['id'] == selected_execution, include_content=e['task_id'] == task_id)
                           for e in run['executions']]
+    if waiting or any(e.get('result_content') for e in view['executions']):
+        view['workspace_view']['task'] = task_id
     view.update(notifications=[], events=[], hook_firings=[])
     if tab == 'hooks':
         notification_view(view, run)

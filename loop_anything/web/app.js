@@ -60,7 +60,7 @@ function runWorkspacePath(id,{tab='task-history',task='',offset=0}={}){
   return 'runs/'+encodeURIComponent(id)+'?'+query;
 }
 function visibleRunView(){
-  return {tab:activeTab,task:activeTab==='task-history'&&taskNeedsReplyData(selectedTask)?selectedTask:'',
+  return {tab:activeTab,task:activeTab==='task-history'&&taskNeedsDetail(selectedTask)?selectedTask:'',
     offset:activeTab==='activity'?runHistoryOffset:0};
 }
 function refreshRunWorkspace(){

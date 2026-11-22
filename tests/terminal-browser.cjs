@@ -63,9 +63,9 @@ print(json.dumps({'run':run['id'],'draft':draft['id']}))`;
   await page.locator('#terminal-close').click();await page.locator('[data-open-terminal]').click();await page.locator('#terminal-help').filter({hasText:'原 Agent session'}).waitFor();
   assert.equal(exited.session.output_source,'native_session');
   await page.locator('#terminal-close').click();
-  await page.locator('#task-detail [data-task-result="init"]').click();await page.locator('#task-result-content').filter({hasText:'浏览器补充要求'}).waitFor();
-  await page.locator('#task-result-dialog').screenshot({path:path.join(root,'task-result.png')});
-  await page.locator('[data-result-resume]').click();await page.locator('#resume-agent-dialog').waitFor();
+  await page.locator('#task-detail .node-result').filter({hasText:'浏览器补充要求'}).waitFor();
+  await page.locator('#task-detail .node-result').screenshot({path:path.join(root,'task-result.png')});
+  await page.locator('#task-detail [data-agent-session]').click();await page.locator('#resume-agent-dialog').waitFor();
   assert.equal(await page.locator('#resume-agent-id').inputValue(),'browser-native-123');
   await page.locator('#resume-agent-message').fill('解释这次结果');await page.locator('#resume-agent-submit').click();
   await page.waitForFunction(()=>{const b=terminalView?.term.buffer.active;return b&&Array.from({length:b.length},(_,i)=>b.getLine(i)?.translateToString()).join('\n').includes('RESTORED browser-native-123');});
@@ -89,7 +89,7 @@ with sqlite3.connect(sys.argv[1]) as db:
   await page.locator('#terminal-close').click();
   await page.evaluate(id=>navigateTo({type:'editor',id}),info.draft);await page.locator('.editor-more summary').click();await page.locator('#editor-json').click();
   const saved=JSON.parse(await page.locator('#editor-json-value').inputValue());assert(saved.implementations.init.options.default.terminal);assert.deepEqual(saved.implementations.init.options.default.command,current.executions[0].implementation.command);assert.deepEqual(saved.implementations.init.options.default.resume_command,current.executions[0].implementation.resume_command);
-  assert.deepEqual(errors,[]);console.log(JSON.stringify({passed:true,root,cases:['public read and session-checked input','live ANSI terminal','same PID after close/reload','keyboard input','tool result and finish shutdown','native-session output retention and late-input rejection','read-only config preservation','per-task result button','native session resume and immutable result','explicit interrupted-process recovery','correct failed native association with history preserved']},null,2));
+  assert.deepEqual(errors,[]);console.log(JSON.stringify({passed:true,root,cases:['public read and session-checked input','live ANSI terminal','same PID after close/reload','keyboard input','tool result and finish shutdown','native-session output retention and late-input rejection','read-only config preservation','inline per-task result','native session resume and immutable result','explicit interrupted-process recovery','correct failed native association with history preserved']},null,2));
  }catch(error){if(browser){const page=browser.contexts()[0]?.pages()[0];console.error((await page.locator('body').innerText()).slice(-1500));await page.screenshot({path:path.join(root,'failure.png'),fullPage:true});}console.error(logs.slice(-1500));throw error;}
  finally{if(browser)await browser.close();server.kill('SIGINT');await new Promise(r=>server.exitCode!==null?r():server.once('exit',r));}
 })().catch(e=>{console.error(e);process.exitCode=1});

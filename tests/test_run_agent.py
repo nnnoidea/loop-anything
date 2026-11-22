@@ -483,6 +483,34 @@ print(json.dumps({'event':'completed','envelope':{'outputs':{'result':'fabricate
         self.assertEqual(selected['history'], [])
         self.assertTrue(any(h['message'] == 'Raw output for diagnosis' for h in self.read()['history']))
 
+    def test_workspace_results_select_metrics_and_omit_execution_metadata(self):
+        from loop_anything.interfaces.run_results import display_results
+
+        node = {'outputs': {'metrics': {'record_type': 'score_outputs.metrics'}}}
+        schemas = {'score_outputs.metrics': {'type': 'object', 'properties': {
+            'action_id': {'type': 'string'}, 'result_ref': {'type': 'string'},
+            'stderr': {'type': 'string', 'title': 'Log'}
+        }}}
+        primary = {'name': 'LV1.max_f1', 'value': .67}
+        values = {'LV2.max_f1': 0, 'LV1.max_f1': .66, 'nested': {'other': .2, 'flag': False}}
+        for envelope in ({'primary': primary, 'values': values}, {'metrics': {'primary': primary, 'values': values}}):
+            result = dict(envelope, action_id='opaque-id', result_ref='/private/outputs', stderr='debug log')
+            readings, content = display_results(node, schemas, {'metrics': result})
+            self.assertEqual([(r['label'], r['value']) for r in readings],
+                             [('LV1.max_f1', .67), ('LV2.max_f1', 0), ('nested.other', .2)])
+            self.assertEqual(content, [])
+
+        node = {'outputs': {'decision': {'record_type': 'decision'}}}
+        schemas = {'decision': {'type': 'object', 'properties': {
+            'summary': {'type': 'string'}, 'internal_id': {'type': 'string'},
+            'report': {'type': 'string', 'format': 'file', 'title': '报告'}
+        }}}
+        result = {'summary': '保留这个方向', 'internal_id': 'opaque-id', 'report': 'artifacts/report.md'}
+        readings, content = display_results(node, schemas, {'decision': result})
+        self.assertEqual(readings, [])
+        self.assertEqual(content, [{'label': '摘要', 'text': '保留这个方向'},
+                                   {'label': '报告', 'file': {'port': 'decision', 'path': ['report'], 'name': 'report.md'}}])
+
 
 if __name__ == '__main__':
     unittest.main()
