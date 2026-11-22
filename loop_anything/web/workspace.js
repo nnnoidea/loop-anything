@@ -1,6 +1,6 @@
 'use strict';
 let selectedTask=null,selectedAttempt=null,taskOrder='graph',taskSearch='',taskStatus='',taskRound='',taskEdit=null,taskChanges=new Set(),taskNumbers=new Map();
-const expandedRounds=new Set(),mobileTaskGraph=window.matchMedia('(max-width:650px)');
+const expandedRounds=new Set(),mobileTaskGraph=window.matchMedia('(max-width:650px)'),inlineTaskDetail=window.matchMedia('(max-width:960px)');
 const roundStateKey=id=>'loop-anything.open-rounds.'+id;
 function restoreRounds(id){
   expandedRounds.clear();
@@ -290,7 +290,7 @@ function taskDependencyGraph(items,filtered){
     ||business.items.find(i=>['executing','waiting','waiting_user','ready','blocked'].includes(i.tasks.status));
   const cards=groups.map(node=>place(layout.positions.get(node.id),node.content)).join('');
   const legend=showTaskOrigins?'蓝色执行依赖 · 紫色任务安排 · 红色异常来源':'蓝线表示执行依赖';
-  return `<div class="graph-tools"><div class="graph-context"><span class="graph-legend">${legend}${graph.nodes.some(n=>n.card)?' · 轮次框对外连线已合并':''}</span><label class="graph-origin-toggle"><input id="graph-show-origins" type="checkbox" ${showTaskOrigins?'checked':''}> 显示安排和异常关系</label></div><div class="graph-actions">${current?`<button data-graph-current="${esc(current.tasks.id)}">定位当前</button>`:''}<button data-graph-zoom="out" aria-label="缩小依赖图">−</button><button id="graph-scale" data-graph-zoom="actual" aria-label="恢复实际大小"></button><button data-graph-zoom="in" aria-label="放大依赖图">＋</button><button data-graph-zoom="fit">${mobile?'适应宽度':'适应画布'}</button></div></div><div class="dependency-scroll" data-graph-run="${esc(run.id)}" tabindex="0" aria-label="节点图画布"><div class="process-extent"><div class="process-canvas" style="width:${layout.width}px;height:${layout.height}px">${taskGraphSVG(layout,links,mobile,true)}${cards}</div></div></div>`;
+  return `<div class="graph-tools"><div class="graph-context"><span class="graph-legend">${legend}${graph.nodes.some(n=>n.card)?' · 轮次框对外连线已合并':''}</span><label class="graph-origin-toggle"><input id="graph-show-origins" type="checkbox" ${showTaskOrigins?'checked':''}> 显示安排和异常关系</label></div><div class="graph-actions">${current?`<button data-graph-current="${esc(current.tasks.id)}">定位当前</button>`:''}<button data-graph-zoom="out" aria-label="缩小依赖图">−</button><button id="graph-scale" data-graph-zoom="actual" aria-label="恢复实际大小"></button><button data-graph-zoom="in" aria-label="放大依赖图">＋</button><button data-graph-zoom="fit">${mobile?'适应宽度':'适应画布'}</button><button data-graph-expand>全屏查看</button></div></div><div class="dependency-scroll" data-graph-run="${esc(run.id)}" tabindex="0" aria-label="节点图画布"><div class="process-extent"><div class="process-canvas" style="width:${layout.width}px;height:${layout.height}px">${taskGraphSVG(layout,links,mobile,true)}${cards}</div></div></div>`;
 }
 let graphScale=null,graphRun=null;
 function sizeTaskGraph(mode){
@@ -305,22 +305,79 @@ function sizeTaskGraph(mode){
   else if(mode==='in')graphScale=Math.min(1.5,(graphScale??natural)+.15);
   else if(mode==='out')graphScale=Math.max(mobile ? 0.6 : 0.2,(graphScale??natural)-.15);
   const scale=graphScale??natural;
-  canvas.style.transform=`scale(${scale})`;canvas.parentElement.style.width=canvas.offsetWidth*scale+'px';canvas.parentElement.style.height=canvas.offsetHeight*scale+'px';
+  canvas.style.transform=`scale(${scale})`;
+  canvas.parentElement.style.width=canvas.offsetWidth*scale+taskDetailOverlayWidth()+'px';
+  canvas.parentElement.style.height=canvas.offsetHeight*scale+'px';
   $('graph-scale').textContent=Math.round(scale*100)+'%';
 }
 function graphElement(attribute,value){
   return document.querySelector(`.process-canvas [${attribute}="${CSS.escape(value)}"]`);
 }
+function taskDetailOverlayWidth(){
+  const detail=$('task-detail');
+  return detail&&!detail.hidden&&!inlineTaskDetail.matches?detail.offsetWidth:0;
+}
 function positionGraph(target,previous){
   const scroll=target?.closest('.dependency-scroll');
   if(!scroll)return;
   const viewport=scroll.getBoundingClientRect(),bounds=target.getBoundingClientRect();
-  const offset=previous||{x:(viewport.width-bounds.width)/2,y:(viewport.height-bounds.height)/2};
+  const offset=previous||{x:(viewport.width-taskDetailOverlayWidth()-bounds.width)/2,y:(viewport.height-bounds.height)/2};
   scroll.scrollBy(bounds.left-viewport.left-offset.x,bounds.top-viewport.top-offset.y);
 }
 function locateGraphTask(id){
   positionGraph(graphElement('data-task-row',id));
 }
+function taskIsInView(id,scroll){
+  const card=id&&graphElement('data-task-row',id);
+  if(!card||!scroll)return false;
+  const bounds=card.getBoundingClientRect(),viewport=scroll.getBoundingClientRect();
+  return bounds.left>=viewport.left&&bounds.right<=viewport.right-taskDetailOverlayWidth()&&
+    bounds.top>=viewport.top&&bounds.bottom<=viewport.bottom;
+}
+let runGraphPageTop=0;
+function setRunGraphExpanded(open,restoreFocus=true){
+  const dialog=$('run-graph-dialog');
+  if(dialog.open===open)return;
+  const scroll=document.querySelector('.dependency-scroll');
+  if(open&&!scroll)return;
+  const scale=scroll&&graphScaleValue(scroll);
+  const center=scroll&&{
+    x:(scroll.scrollLeft+scroll.clientWidth/2)/scale,y:(scroll.scrollTop+scroll.clientHeight/2)/scale
+  };
+  const visibleTask=taskIsInView(selectedTask,scroll)?selectedTask:null;
+  $('run-graph-title').textContent=run?.title||'运行过程';
+  if(open){
+    runGraphPageTop=window.scrollY;
+    dialog.classList.remove('show-filters');
+    dialog.querySelector('[data-graph-filters]').setAttribute('aria-expanded','false');
+    $('run-graph-content').append($('inspect'));
+    dialog.showModal();
+  }else{
+    $('run-inspect-home').append($('inspect'));
+    dialog.close();
+  }
+  requestAnimationFrame(()=>{
+    const canvasScroll=document.querySelector('.dependency-scroll');
+    if(!canvasScroll)return;
+    sizeTaskGraph();
+    if(center){
+      const updated=graphScaleValue(canvasScroll);
+      canvasScroll.scrollTo(center.x*updated-canvasScroll.clientWidth/2,center.y*updated-canvasScroll.clientHeight/2);
+    }
+    if(visibleTask===selectedTask&&visibleTask&&!taskIsInView(visibleTask,canvasScroll))locateGraphTask(visibleTask);
+    if(!open&&restoreFocus){
+      window.scrollTo(0,runGraphPageTop);
+      canvasScroll.closest('.process-body').querySelector('[data-graph-expand]')?.focus({preventScroll:true});
+    }
+  });
+}
+function graphScaleValue(scroll){
+  const canvas=scroll.querySelector('.process-canvas');
+  return canvas.getBoundingClientRect().width/canvas.offsetWidth||1;
+}
+$('run-graph-dialog').addEventListener('cancel',event=>{
+  event.preventDefault();setRunGraphExpanded(false);
+});
 window.addEventListener('resize',()=>sizeTaskGraph());
 mobileTaskGraph.addEventListener('change',()=>{
   graphScale=null;
@@ -370,16 +427,6 @@ function taskDetails(item){
   <details><summary>原始记录</summary><pre>${esc(pretty({task:t,execution:attempt}))}</pre></details></details></section>`;
 }
 function sourceLinks(source){return (Array.isArray(source)?source:[source]).filter(Boolean).map(s=>{const e=run.executions.find(e=>e.id===s.execution);return e?`<button class="text-button" data-source-execution="${esc(e.id)}">来自 ${esc(taskLabel(run.tasks[e.task_id]))} · v${esc(s.revision)}</button>`:`<small>${esc(s.run_input?'初始输入 '+s.run_input:s.settings?'设置 '+s.settings:'直接输入')}</small>`;}).join(' ');}
-function routeAuditHTML(){return `${run.history.filter(h=>h.kind==='plan_built'&&h.detail?.omitted?.length).map(h=>`<details class="omitted-steps"><summary>未安排的步骤 · ${esc(h.detail.name)} · ${esc(taskTime(h.at))}</summary>${omittedStepsHTML(h.detail.omitted,h.detail.name)}</details>`).join('')}${run.history.filter(h=>h.kind==='route_fired'||h.kind==='route_skipped').map(h=>`<details class="omitted-steps"><summary>${h.kind==='route_skipped'?'路由已跳过':'事件触发'} · ${esc(h.detail.route_id)} → ${esc(h.detail.flow_agent?'内置流程 Agent':h.detail.plan)} · ${h.detail.batches.reduce((n,b)=>n+b.task_ids.length,0)} 项任务</summary><p>来源：<button class="text-button" data-task-focus="${esc(h.detail.task_id)}">${esc(taskLabel(run.tasks[h.detail.task_id]))}</button> · ${esc(h.detail.event)}</p>${resultView(h.detail)}</details>`).join('')}`;}
-document.addEventListener('toggle',event=>{
-  const panel=event.target;
-  if(panel.matches?.('.route-audit[open]') && panel.children.length===1 && panel.dataset.auditRun===run?.id){
-    if(run.workspace_view&&!run.workspace_view.audit){
-      panel.insertAdjacentHTML('beforeend','<p class="empty-inline" role="status">正在读取推进记录…</p>');
-      safely(refreshRunWorkspace);
-    }else panel.insertAdjacentHTML('beforeend',routeAuditHTML());
-  }
-},true);
 function renderTaskHistory(){
   if(run.superseded_by && !Object.keys(run.tasks).length)return '<p class="empty-inline">这次历史运行没有节点记录。</p>';
   const scroll=document.querySelector('.dependency-scroll'),detail=$('task-detail');
@@ -388,6 +435,7 @@ function renderTaskHistory(){
   const focused=document.activeElement;
   const focusedRound=scroll?.contains(focused)?focused.dataset.roundToggle:undefined;
   const focusedTask=scroll?.contains(focused)&&focused.matches('.task-card-main')?focused.dataset.taskFocus:undefined;
+  const focusedExpand=focused?.matches('[data-graph-expand]');
   requestAnimationFrame(()=>{
     sizeTaskGraph();
     if(position)document.querySelector('.dependency-scroll')?.scrollTo(position);
@@ -398,6 +446,7 @@ function renderTaskHistory(){
     if(detailTop)$('task-detail')?.scrollTo(0,detailTop);
     if(focusedRound!==undefined)graphElement('data-round-toggle',focusedRound)?.focus({preventScroll:true});
     if(focusedTask)graphElement('data-task-row',focusedTask)?.querySelector('.task-card-main')?.focus({preventScroll:true});
+    if(focusedExpand)document.querySelector('[data-graph-expand]')?.focus({preventScroll:true});
   });
   taskChanges=new Set(run.changed_tasks??run.history.filter(h=>h.detail?.before&&h.detail?.tasks).map(h=>h.detail.tasks));
   const all=TaskHistory.rows(run),business=all.filter(i=>!i.tasks.origin?.flow_agent);
@@ -411,13 +460,11 @@ function renderTaskHistory(){
   const visible=all.filter(i=>(!filterNode||i.tasks.spec.node===filterNode)&&(!taskStatus||i.tasks.status===taskStatus)&&
     (!taskRound||i.round===taskRound)&&(!query||[taskLabel(i.tasks),i.tasks.id,i.tasks.spec.ref,i.round].join(' ').toLowerCase().includes(query)));
   const rounds=[...new Set(all.map(i=>i.round).filter(Boolean))];
-  const auditOpen=document.querySelector('.route-audit[open]')?.dataset.auditRun===run.id;
-  const auditPending=auditOpen&&run.workspace_view&&!run.workspace_view.audit;
   const detailPending=selected&&run.workspace_view&&run.workspace_view.task!==selectedTask;
   const groups=[{round:'已开始',items:visible.filter(i=>i.started!==null)},{round:'尚未开始',items:visible.filter(i=>i.started===null&&!['completed','skipped','cancelled','stale'].includes(i.tasks.status))},{round:'未执行且已结束',items:visible.filter(i=>i.started===null&&['completed','skipped','cancelled','stale'].includes(i.tasks.status))}];
   const filtered=Boolean(filterNode||taskStatus||query);
-  return `<div class="task-heading"><div><h2>节点进度</h2><p class="muted small">${business.length} 项任务${rounds.length?' · '+rounds.length+' 轮':''}${all.length>business.length?' · '+(all.length-business.length)+' 次流程决策':''}</p></div></div><div class="process-controls"><div class="segmented">${[['graph','节点图'],['time','时间顺序']].map(([id,label])=>`<button data-task-order="${id}" class="${taskOrder===id?'selected':''}" aria-pressed="${taskOrder===id}">${label}</button>`).join('')}</div>${rounds.length?`<label class="task-round-filter"><select id="task-round" aria-label="筛选轮次"><option value="">全部轮次</option>${rounds.map(r=>'<option value="'+esc(r)+'" '+(r===taskRound?'selected':'')+'>'+esc(r)+'</option>').join('')}</select></label>`:''}<label class="task-search-label"><span class="sr-only">查找任务</span><input id="task-search" placeholder="查找任务…" type="search" value="${esc(taskSearch)}"></label><label class="task-status-label"><span class="sr-only">任务状态</span><select id="task-status"><option value="">全部状态</option>${[...new Set(all.map(i=>i.tasks.status))].map(s=>`<option value="${esc(s)}" ${taskStatus===s?'selected':''}>${esc(labels[s]||s)}</option>`).join('')}</select></label>${filterNode?'<button id="clear-task-filter">清除节点筛选</button>':''}</div>
-  <div class="process-layout ${selected?'':'process-only'}"><section class="process-body">${visible.length?(taskOrder==='graph'?taskDependencyGraph(visible,filtered):groups.filter(g=>g.items.length).map(g=>`<details class="task-group" open><summary>${g.round} · ${g.items.length}</summary><div class="process-list">${g.items.map(taskCard).join('')}</div></details>`).join('')):'<p class="empty-inline">没有符合条件的任务</p>'}</section><aside id="task-detail" class="task-detail" ${selected?`data-task="${esc(selectedTask)}"`:'hidden'}>${selected?`<button class="close-task-detail" data-close-task aria-label="关闭节点详情">×</button><div id="task-detail-body">${detailPending?'<p class="empty-inline" role="status">正在读取节点详情…</p>':taskDetails(selected)}</div>`:''}</aside></div><details class="route-audit" data-audit-run="${esc(run.id)}" ${auditOpen?'open':''}><summary>推进记录</summary>${auditOpen?(auditPending?'<p class="empty-inline" role="status">正在读取推进记录…</p>':routeAuditHTML()):''}</details>`;
+  return `<div class="task-heading"><div><h2>节点进度</h2><p class="muted small">${business.length} 项任务${rounds.length?' · '+rounds.length+' 轮':''}${all.length>business.length?' · '+(all.length-business.length)+' 次流程决策':''}</p></div></div><div class="process-controls" id="run-process-controls"><div class="segmented">${[['graph','节点图'],['time','时间顺序']].map(([id,label])=>`<button data-task-order="${id}" class="${taskOrder===id?'selected':''}" aria-pressed="${taskOrder===id}">${label}</button>`).join('')}</div>${rounds.length?`<label class="task-round-filter"><select id="task-round" aria-label="筛选轮次"><option value="">全部轮次</option>${rounds.map(r=>'<option value="'+esc(r)+'" '+(r===taskRound?'selected':'')+'>'+esc(r)+'</option>').join('')}</select></label>`:''}<label class="task-search-label"><span class="sr-only">查找任务</span><input id="task-search" placeholder="查找任务…" type="search" value="${esc(taskSearch)}"></label><label class="task-status-label"><span class="sr-only">任务状态</span><select id="task-status"><option value="">全部状态</option>${[...new Set(all.map(i=>i.tasks.status))].map(s=>`<option value="${esc(s)}" ${taskStatus===s?'selected':''}>${esc(labels[s]||s)}</option>`).join('')}</select></label>${filterNode?'<button id="clear-task-filter">清除节点筛选</button>':''}</div>
+  <div class="process-layout"><section class="process-body">${visible.length?(taskOrder==='graph'?taskDependencyGraph(visible,filtered):groups.filter(g=>g.items.length).map(g=>`<details class="task-group" open><summary>${g.round} · ${g.items.length}</summary><div class="process-list">${g.items.map(taskCard).join('')}</div></details>`).join('')):'<p class="empty-inline">没有符合条件的任务</p>'}</section><aside id="task-detail" class="task-detail" ${selected?`data-task="${esc(selectedTask)}"`:'hidden'}>${selected?`<button class="close-task-detail" data-close-task aria-label="关闭节点详情">×</button><div id="task-detail-body">${detailPending?'<p class="empty-inline" role="status">正在读取节点详情…</p>':taskDetails(selected)}</div>`:''}</aside></div>`;
 }
 const editDialog=document.createElement('dialog');editDialog.id='task-edit-dialog';editDialog.innerHTML='<div class="dialog-heading"><h2 id="task-edit-title"></h2><button class="close-dialog" aria-label="关闭">×</button></div><div id="task-edit-error" role="alert"></div><form id="task-edit-form"><div id="task-edit-fields"></div><div class="dialog-tasks"><button type="button" class="close-dialog">取消</button><button type="submit" class="primary" id="task-edit-submit">确认操作</button></div></form>';document.body.append(editDialog);
 function openTaskEdit(kind,id=null){
@@ -430,10 +477,17 @@ function openTaskEdit(kind,id=null){
   $('task-edit-fields').innerHTML=`<p>${esc(taskLabel(run.tasks[id]))}</p><p>${kind==='retry'?(monitorRetry?'继续查询原来的外部任务，不会再次提交工作。':'按当前任务的实现和参数重试。'):'取消此任务，已发生的外部操作不会撤销。'}</p><label>备注（可选）<input id="task-edit-reason"></label>`;
   editDialog.showModal();
 }
-function omittedStepsHTML(items,planName){return items.length?`<section class="omitted-summary"><h3>未安排 · 不创建任务</h3>${items.map(item=>`<p><strong>${esc(run.loop_definition.nodes[run.loop_definition.plans[item.plan||planName]?.steps[item.step]?.node]?.label||item.step)}</strong> · ${esc(({not_selected:'本次未选择',condition_false:'安排条件不满足',empty_items:'展开列表为空'})[item.reason]||item.reason)}</p>${item.when?`<details><summary>安排条件</summary><pre>${esc(pretty(item.when))}</pre></details>`:''}`).join('')}</section>`:'';}
 function collectTaskEdit(){return [{tool:'change_task',arguments:{task_id:taskEdit.id,operation:taskEdit.kind,reason:$('task-edit-reason').value.trim()||$('task-edit-title').textContent}}];}
 document.addEventListener('click',event=>safely(async()=>{
   const el=event.target.closest('button');if(!el)return;const d=el.dataset;
+  if(d.graphExpand!==undefined){setRunGraphExpanded(true);return;}
+  if(d.graphExit!==undefined){setRunGraphExpanded(false);return;}
+  if(d.graphFilters!==undefined){
+    const open=$('run-graph-dialog').classList.toggle('show-filters');
+    el.setAttribute('aria-expanded',String(open));
+    sizeTaskGraph();
+    return;
+  }
   if(d.roundToggle!==undefined){
     const round=d.roundToggle,scroll=el.closest('.dependency-scroll').getBoundingClientRect(),rect=el.getBoundingClientRect();
     const offset={x:rect.left-scroll.left,y:rect.top-scroll.top};
@@ -459,7 +513,7 @@ document.addEventListener('click',event=>safely(async()=>{
     if(!el.closest('[data-task-row]')){filterNode=null;taskRound='';taskSearch='';taskStatus='';}
     selectedTask=id;selectedAttempt=d.sourceExecution||null;syncRunTaskRoute();
     inspectSignature='';renderInspect();
-    requestAnimationFrame(()=>{locateGraphTask(id);if(window.matchMedia('(max-width:800px)').matches)$('task-detail')?.scrollIntoView({block:'start'});});
+    requestAnimationFrame(()=>{locateGraphTask(id);if(inlineTaskDetail.matches)$('task-detail')?.scrollIntoView({block:'start'});});
   }
   else if(d.graphCurrent){locateGraphTask(d.graphCurrent);graphElement('data-task-row',d.graphCurrent)?.querySelector('.task-card-main')?.focus({preventScroll:true});}
   else if(d.graphZoom)sizeTaskGraph(d.graphZoom);
@@ -471,7 +525,7 @@ document.addEventListener('click',event=>safely(async()=>{
       positionGraph(card);
       const button=card?.querySelector('.task-card-main')||document.querySelector('.dependency-scroll');
       button?.focus({preventScroll:true});
-      if(window.matchMedia('(max-width:800px)').matches)document.querySelector('.process-controls')?.scrollIntoView({block:'start'});
+      if(inlineTaskDetail.matches)document.querySelector('#run-graph-dialog[open] .graph-tools, #run-inspect-home .process-controls')?.scrollIntoView({block:'start'});
     });
   }
   else if(d.taskCancel)openTaskEdit('cancel',d.taskCancel);

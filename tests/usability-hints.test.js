@@ -2,7 +2,7 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const ctx=vm.createContext({esc:v=>String(v??'').replaceAll('"','&quot;')});
 function load(file,begin,end){const text=fs.readFileSync('loop_anything/web/'+file,'utf8');vm.runInContext(text.slice(text.indexOf(begin),text.indexOf(end,text.indexOf(begin))),ctx);}
-load('settings.js','function runIdleHint(','function renderV2Inspect(');
+load('settings.js','function runIdleHint(','function runTaskLink(');
 load('communication.js','function groupNotificationSummary(','async function editGroupNotifications(');
 const run=code=>vm.runInContext(code,ctx);
 test('Run completion hint never mistakes waiting, active ownership or a configured rule for idle',()=>{
@@ -15,6 +15,15 @@ test('Run completion hint never mistakes waiting, active ownership or a configur
   ctx.value.agent_sessions=[];ctx.value.settings.completion_rule={eq:[1,1]};assert.equal(run('runIdleHint(value)'),'');
   ctx.value.settings.completion_rule=false;assert.equal(run('runIdleHint(value)'),'');
   ctx.value.settings={};ctx.value.tasks={};assert.equal(run('runIdleHint(value)'),'');
+});
+test('pending Run issues describe recorded actions without showing Agent instructions',()=>{
+  ctx.value={status:'running',tasks:{a:{id:'a',status:'decision',execution_id:'e'},b:{id:'b',status:'blocked'}},
+    executions:[{id:'e',implementation:{kind:'agent'}}],agent_tasks:{items:[{kind:'task',task_id:'a',reason:'raw instructions'}]}};
+  assert.equal(run('runAttentionItems(value).length'),1);
+  assert.equal(run('runAttentionItems(value)[0].label'),'等待 Agent');
+  assert.doesNotMatch(run('JSON.stringify(runAttentionItems(value))'),/raw instructions/);
+  ctx.value.executions[0].worker_active=true;
+  assert.equal(run('runAttentionItems(value).length'),0);
 });
 test('missing fixed notification bindings do not claim original-chat replies are unavailable',()=>{
   assert.match(run('groupNotificationSummary({})'),/原会话通知/);

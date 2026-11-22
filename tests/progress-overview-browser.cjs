@@ -4,7 +4,7 @@ const {withPlatform,assert}=require('./browser-platform.cjs');
 const {randomUUID}=require('node:crypto');
 const path=require('node:path');
 
-withPlatform(async({url,page,tool,api})=>{
+withPlatform(async({url,page,tool,api,startRun})=>{
   const nodes={prepare:'准备数据',train:'训练模型',score:'评估输出'};
   const bp={schema_version:2,id:'iterative-review',version:'1',name:'多轮评估',handbook:{instructions:'比较各轮结果。'},records:{},
     nodes:Object.fromEntries(Object.entries(nodes).map(([key,label])=>[key,{label,instructions:label,inputs:{},outputs:{}}]))};
@@ -66,6 +66,12 @@ withPlatform(async({url,page,tool,api})=>{
   assert(historyPage.history_total>50);
   const older=await (await fetch(runURL+'?view=workspace&tab=history&offset=50')).json();
   assert(!older.history.some(e=>historyPage.history.some(other=>other.id===e.id)));
+  await api('runs/'+run.run_id+'/command',{action:'pause'});
+  await api('runs/'+run.run_id+'/command',{action:'resume'});
+  const activity=await (await fetch(runURL+'?view=workspace&tab=activity')).json();
+  assert(activity.history.some(h=>h.kind==='pause'));
+  assert(activity.history.some(h=>h.kind==='resume'));
+  assert(activity.history.every(h=>!Object.hasOwn(h,'detail')&&!['observation','dispatched','committed'].includes(h.kind)));
   const portable=(await tool('export_timeline',{timeline_id:run.timeline_id})).document;
   const copied=(await tool('import_timeline',{document:portable,request_id:randomUUID()})).timeline;
   const copy=await tool('read_work_timeline',{timeline_id:copied.id});
@@ -128,6 +134,10 @@ withPlatform(async({url,page,tool,api})=>{
   assert.equal(await page.locator('#task-detail').isVisible(),false);
   await third.click();
   assert.equal(await graph.locator('[data-task-row]').count(),3);
+  await page.getByRole('button',{name:'关键变更',exact:true}).click();
+  await page.locator('.run-activity').getByText('暂停运行',{exact:true}).waitFor();
+  assert.equal(await page.locator('#inspect pre').count(),0);
+  await page.getByRole('button',{name:'运行过程',exact:true}).click();
   await graph.locator('[data-task-row]').filter({hasText:'score-B-6'}).locator('.task-card-main').click();
   await page.locator('#task-detail summary').filter({hasText:'原始错误与证据路径'}).click();
   assert((await page.locator('#task-detail').innerText()).includes('Traceback'));
@@ -137,7 +147,7 @@ withPlatform(async({url,page,tool,api})=>{
   assert.equal(await graph.locator('[data-status="fault"]').count(),1);
   await page.locator('#task-round').selectOption('');
   await page.locator('[data-task-order="time"]').click();
-  await page.waitForFunction(()=>document.querySelectorAll('.process-list [data-task-row]').length===36);
+  await page.locator('.process-list [data-task-row]').nth(35).waitFor({state:'attached'});
   assert.equal(await page.locator('.process-list [data-task-row]').count(),36);
   await page.locator('[data-task-order="graph"]').click();
   const scored=await tool('start_run',{key,request_id:randomUUID(),title:'已保存评分',objective:'从监控读取已保存的曲线。'});
@@ -160,6 +170,20 @@ withPlatform(async({url,page,tool,api})=>{
       assert(parseInt(await page.locator('#graph-scale').innerText(),10)>=85);
       assert(await page.locator('.dependency-scroll').evaluate(el=>el.scrollWidth<=el.clientWidth+1));
     }
+    const scroll=page.locator('.dependency-scroll');
+    const original=await scroll.boundingBox();
+    await page.getByRole('button',{name:'全屏查看',exact:true}).click();
+    const full=page.locator('#run-graph-dialog[open] .dependency-scroll');
+    await full.waitFor();
+    const expanded=await full.boundingBox();
+    assert(expanded.width>original.width);
+    assert(expanded.height>original.height);
+    assert.equal(await page.locator('#run-process-controls').isVisible(),false);
+    await page.getByRole('button',{name:'筛选',exact:true}).click();
+    assert(await page.locator('#run-process-controls').isVisible());
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#run-graph-dialog').getAttribute('open'),null);
+    assert(await page.locator('#run-inspect-home .dependency-scroll').isVisible());
     await page.goto(url+'/#work/monitors');
     const savedChart=page.locator(`[data-result-monitor-run="${scored.run_id}"]`);
     await savedChart.getByText('评测结果',{exact:true}).waitFor();
@@ -175,4 +199,10 @@ withPlatform(async({url,page,tool,api})=>{
     await group.locator('.external-reading a').last().click();
     await page.locator('#task-detail').getByRole('heading',{name:'训练模型',exact:true}).waitFor();
   }
+  const waiting=await startRun('测试等待事件');
+  await page.goto(url+'/#run/'+waiting.turn.run_id);
+  await page.getByRole('button',{name:/待处理/}).click();
+  const issue=page.locator('.run-issue-list li').filter({hasText:'等待事件'});
+  await issue.getByRole('link',{name:'查看节点'}).click();
+  await page.locator('#task-detail').getByRole('button',{name:'提交事件 / 回复'}).waitFor();
 }).catch(error=>{console.error(error);process.exitCode=1;});

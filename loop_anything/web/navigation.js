@@ -96,6 +96,7 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
     const nextRun=route.type==='run'?await openRun(route):null;
     if(serial!==navigationSerial)return false;
     if(document.fullscreenElement===editorPage&&routeHash(route)!==routeHash(previous))await document.exitFullscreen();
+    if($('run-graph-dialog').open&&(route.type!=='run'||route.id!==previous.id))setRunGraphExpanded(false,false);
     if(!external)history[replace?'replaceState':'pushState'](null,'',routeHash(route));
     activeRoute=structuredClone(route);
     if(route.type==='settings'){page='settings';await renderSettings(route.tab||'general');}
@@ -121,7 +122,7 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
       selected=route.id;run=nextRun;settingsBase=null;filterNode=null;page='runs';renderRun();
     }else{page='timelines';await showWorkLibrary();}
     if(serial!==navigationSerial)return false;
-    showPage();updateNavigationUI();window.scrollTo(0,routeScroll.get(routeHash(route))||0);if(page==='runs')requestAnimationFrame(()=>{sizeTaskGraph();if(route.task&&nextRun.tasks[route.task]){locateGraphTask(route.task);if(window.matchMedia('(max-width:800px)').matches)$('task-detail')?.scrollIntoView({block:'start'});else document.querySelector('.process-controls')?.scrollIntoView({block:'start'});}});return true;
+    showPage();updateNavigationUI();window.scrollTo(0,routeScroll.get(routeHash(route))||0);if(page==='runs')requestAnimationFrame(()=>{sizeTaskGraph();if(route.task&&nextRun.tasks[route.task]){locateGraphTask(route.task);if(inlineTaskDetail.matches)$('task-detail')?.scrollIntoView({block:'start'});else document.querySelector('.process-controls')?.scrollIntoView({block:'start'});}});return true;
   }catch(error){
     if(serial!==navigationSerial)return false;
     if(external){activeRoute={type:'catalog'};history.replaceState(null,'','#loop_definitions');page='catalog';showPage();updateNavigationUI();}
@@ -159,7 +160,7 @@ function updateNavigationUI(){
     const timelineLink=run.timeline_id?navLink({type:'timeline',id:run.timeline_id},timeline?.title||timeline?.objective||run.timeline_id):'';
     crumbs.push(navLink({type:'run-list'},'运行'));crumbs.push(esc(run.title));
     const role=timelineRunLabel(run.status,currentId===run.id);
-    $('run-navigation').innerHTML=(timelineLink?`<div class="run-parent"><strong>所属 Timeline</strong>${timelineLink}<span>／ ${role}</span></div>`:'')+
+    $('run-navigation').innerHTML=(timelineLink?`<div class="run-parent"><strong>进展与结果</strong>${timelineLink}<span>／ ${role}</span></div>`:'')+
       (origin?.type==='timeline'&&origin.id===run.timeline_id?'':navLink(origin||{type:'run-list'},!origin||origin.type==='run-list'?'← 返回运行列表':'← 返回来源页面'))+navLink(asset,'Loop 定义');
 
   }

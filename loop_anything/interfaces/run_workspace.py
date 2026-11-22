@@ -10,7 +10,12 @@ from loop_anything.runtime.timelines import public_status
 
 
 HISTORY_PAGE_SIZE = 50
-TABS = {'task-history', 'history', 'decisions', 'records', 'hooks', 'tasks'}
+TABS = {'task-history', 'history', 'activity', 'decisions', 'records', 'hooks', 'tasks'}
+ACTIVITY_KINDS = (
+    'created', 'completed', 'pause', 'resume', 'terminate', 'method_updated',
+    'settings', 'agent_action_change', 'monitor_retry', 'retry_applied',
+    'waiting_user', 'agent_failure_pause', 'gate', 'release_gate', 'budget_exhausted',
+)
 
 
 def pick(doc, *keys):
@@ -19,6 +24,17 @@ def pick(doc, *keys):
 
 def history_for_panel(db, run_id, tab, task_id, task_attempts, audit, offset):
     base = "FROM timeline_parts WHERE run_id=? AND section='history'"
+    if tab == 'activity':
+        kinds = ','.join('?' for _ in ACTIVITY_KINDS)
+        base += f""" AND (json_extract(document,'$.kind') IN ({kinds}) OR
+            (json_extract(document,'$.kind')='transition' AND (
+                json_extract(document,'$.detail.to') IN ('fault','unresolved') OR
+                json_extract(document,'$.detail.event') IN ('external_rejected','failed_requires_agent','failed_retryable','process_error')
+            )))"""
+        total = db.execute('SELECT count(*) ' + base, (run_id, *ACTIVITY_KINDS)).fetchone()[0]
+        rows = db.execute('SELECT document ' + base + ' ORDER BY position DESC LIMIT ? OFFSET ?',
+                          (run_id, *ACTIVITY_KINDS, HISTORY_PAGE_SIZE, offset))
+        return [json.loads(row[0]) for row in rows], total
     if tab == 'history':
         total = db.execute('SELECT count(*) ' + base, (run_id,)).fetchone()[0]
         rows = db.execute('SELECT document ' + base + ' ORDER BY position DESC LIMIT ? OFFSET ?',
@@ -37,6 +53,30 @@ def history_for_panel(db, run_id, tab, task_id, task_attempts, audit, offset):
         return [], 0
     query = 'SELECT document ' + base + ' AND (' + ' OR '.join(conditions) + ') ORDER BY position'
     return [json.loads(row[0]) for row in db.execute(query, args)], 0
+
+
+def activity_summary(history, run):
+    executions = {e['id']: e['task_id'] for e in run['executions']}
+    summaries = []
+    for entry in history:
+        kind = entry['kind']
+        detail = entry['detail'] if isinstance(entry.get('detail'), dict) else {}
+        task_id = detail.get('tasks') or detail.get('task_id') or detail.get('task') or executions.get(entry.get('execution'))
+        if kind == 'budget_exhausted':
+            task_id = entry.get('message')
+        item = pick(entry, 'id', 'at', 'kind')
+        if isinstance(task_id, str) and task_id in run['tasks']:
+            item['task_id'] = task_id
+        if kind == 'agent_action_change':
+            item['operation'] = detail.get('operation')
+        if kind == 'transition':
+            item['event'] = detail.get('event')
+        if kind in ('agent_action_change', 'monitor_retry', 'waiting_user'):
+            message = (entry.get('message') or '').strip()
+            if message and message != 'User requested retry after checking side effects':
+                item['note'] = message[:600]
+        summaries.append(item)
+    return summaries
 
 
 def attempt_summary(attempt, node):
@@ -58,7 +98,7 @@ def read_workspace(store, runtime, run_id, query):
     task_id = query.get('task', '') if tab == 'task-history' else ''
     audit = tab == 'task-history' and query.get('audit') == 'true'
     try:
-        offset = int(query.get('offset', '0')) if tab == 'history' else 0
+        offset = int(query.get('offset', '0')) if tab in ('history', 'activity') else 0
     except ValueError as exc:
         raise Invalid('Invalid history offset') from exc
     if not 0 <= offset <= 2**31 - 1:
@@ -76,9 +116,12 @@ def read_workspace(store, runtime, run_id, query):
     view = pick(run, 'id', 'title', 'revision', 'status', 'timeline_id', 'timeline', 'loop_key', 'created_by',
                 'archived_at', 'last_activity_at', 'settings', 'superseded_by', 'identity_read_only', 'follow_loop_updates',
                 'diagnostics', 'task_dispositions')
+    if tab == 'activity':
+        history = activity_summary(history, run)
     view.update(status=public_status(run), task_dependencies=task_dependencies(run),
                 workspace_view={'tab': tab, 'task': task_id, 'audit': audit, 'offset': offset},
                 changed_tasks=changed, history=history, history_total=total, agent_tasks=task_list(run, runtime),
+                controls_available=bool(run['notifications'] or any(f['status']=='held' for f in run['hook_firings'])),
                 agent_sessions=[pick(o, 'recovery_required', 'resume_execution') for o in run['agent_sessions']],
                 simulation=any(b.get('kind') == 'mock' or b.get('simulation') for entry in run['implementations'].values()
                                for b in (entry or {}).get('options', {}).values()))

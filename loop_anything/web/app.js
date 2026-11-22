@@ -62,10 +62,8 @@ function runWorkspacePath(id,{tab='task-history',task='',audit=false,offset=0}={
   return 'runs/'+encodeURIComponent(id)+'?'+query;
 }
 function visibleRunView(){
-  const audit=document.querySelector('.route-audit[open]');
   return {tab:activeTab,task:activeTab==='task-history'?selectedTask||'':'',
-    audit:activeTab==='task-history'&&audit?.dataset.auditRun===run?.id,
-    offset:activeTab==='history'?runHistoryOffset:0};
+    audit:false,offset:activeTab==='activity'?runHistoryOffset:0};
 }
 function refreshRunWorkspace(){
   if(page!=='runs'||!selected||pendingRunNavigation)return;
@@ -149,7 +147,6 @@ function renderRun() {
     $('run-progress').innerHTML=progress;progressSignature=progress;$('run-progress').dataset.run=run.id;
     if(opened && $('run-progress').querySelector('details'))$('run-progress').querySelector('details').open=true;
   }
-  $('attention').innerHTML='';
   renderTimelineSettings();
   if (!['TEXTAREA','INPUT','SELECT'].includes(document.activeElement?.tagName) || !document.activeElement.closest('#inspect')) renderInspect();
   loadSettings();
@@ -160,31 +157,21 @@ function loadSettings(){
 function renderInspect() {
   const wanted=visibleRunView();
   const ready=!run.workspace_view||Object.keys(wanted).every(key=>run.workspace_view[key]===wanted[key]);
-  const signature = pretty([run.id,filterNode,wanted,ready,run.executions,run.history,run.history_total,run.changed_tasks,run.settings.revision,run.tasks,run.records,run.agent_sessions,run.task_dependencies,run.agent_tasks,run.notifications,run.events,run.hook_firings]);
+  const signature = pretty([run.id,filterNode,wanted,ready,run.executions,run.history,run.history_total,run.changed_tasks,run.settings.revision,run.tasks,run.records,run.agent_sessions,run.task_dependencies,run.agent_tasks,run.notifications,run.events,run.hook_firings,run.controls_available]);
   if(inspectSignature===signature)return;inspectSignature=signature;
-  document.querySelectorAll('[data-tab]').forEach(el=>el.classList.toggle('selected',el.dataset.tab===activeTab));
-  let content='';
-  if(!ready&&activeTab!=='task-history'){
-    content='<p class="empty-inline" role="status">正在读取运行记录…</p>';
-  } else if(['records','task-history','hooks','tasks'].includes(activeTab)) {
-    content=renderV2Inspect(activeTab);
-  } else if(activeTab==='history') {
-    content = run.history.slice().reverse().map(h=>`<div class="timeline-row"><time>${time(h.at)}</time><div><span class="event-type">${esc(h.kind)}</span>${esc(h.message)}${h.detail?`<details><summary>查看记录</summary><pre>${esc(pretty(h.detail))}</pre></details>`:''}</div></div>`).join('');
-    if(run.history_total>0){
-      const end=runHistoryOffset+run.history.length;
-      content+=`<div class="run-pagination"><button data-history-offset="${Math.max(0,runHistoryOffset-50)}" ${runHistoryOffset?'':'disabled'}>← 更新的记录</button><span>${runHistoryOffset+1}–${end} / ${run.history_total} 条</span><button data-history-offset="${end}" ${end<run.history_total?'':'disabled'}>更早的记录 →</button></div>`;
-    }else if(!content)content='<p class="empty-inline">暂无变更记录。</p>';
-  } else if(activeTab==='decisions') {
-    content = run.executions.filter(e=>['approval','decision','unresolved'].includes(e.status) && e.implementation.kind!=='agent').map(e=>task(e)).join('');
-    const waiting = run.executions.filter(e=>e.status==='waiting' && e.implementation.kind==='event');
-    content += waiting.map(e=>`<div class="task-card"><h2>等待 ${esc(e.implementation.event)}</h2>${waitDetails(e)}</div>`).join('');
-    if(!content) content = '<div class="empty-inline">当前无需决策。Engine 会在到达决策节点时创建任务。</div>';
-  }
-  $('inspect').innerHTML = content;
+  const issues=runAttentionItems(run);
+  $('run-task-count').textContent=issues.length||'';
+  document.querySelectorAll('.run-tabs [data-tab]').forEach(el=>{
+    const selected=el.dataset.tab===activeTab;
+    el.classList.toggle('selected',selected);
+    el.setAttribute('aria-pressed',String(selected));
+    if(el.dataset.tab==='tasks')el.hidden=!selected&&!issues.length;
+    if(el.dataset.tab==='hooks')el.hidden=!selected&&!run.controls_available;
+  });
+  $('inspect').innerHTML=!ready&&activeTab!=='task-history'
+    ?'<p class="empty-inline" role="status">正在读取…</p>'
+    :renderRunPanel(activeTab,issues);
   if(!ready)safely(refreshRunWorkspace);
-}
-function task(e) {
-  return `<div class="task-card"><h2>${esc(nodeLabel(e.node))}</h2>${waitDetails(e)}${readerJSON('输入',e.inputs,true)}${readerJSON('结果与执行记录',e)}</div>`;
 }
 
 async function details(id) {
@@ -205,7 +192,7 @@ document.addEventListener('click',event=>safely(async()=>{
   const d=button.dataset;
   if(d.run){await selectRun(d.run);return;}
   if(d.node){filterNode=d.node;activeTab='task-history';inspectSignature='';renderInspect();return;}
-  if(d.tab){activeTab=d.tab;renderInspect();if(button.classList.contains('run-issues'))$('inspect').scrollIntoView({block:'start'});return;}
+  if(d.tab){activeTab=d.tab;renderInspect();if(button.closest('#attention'))document.querySelector('.run-tabs').scrollIntoView({block:'start'});return;}
   if(d.historyOffset!==undefined){runHistoryOffset=Number(d.historyOffset);renderInspect();return;}
   if(d.exec){selectedTask=run.executions.find(e=>e.id===d.exec)?.task_id;selectedAttempt=d.exec;syncRunTaskRoute();activeTab='task-history';inspectSignature='';renderInspect();if(selectedTask)requestAnimationFrame(()=>locateGraphTask(selectedTask));return;}
   if(d.create){await openCreate(d.create);return;}
