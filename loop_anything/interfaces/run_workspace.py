@@ -44,6 +44,12 @@ def activity_summary(history, run):
         kind = entry['kind']
         detail = entry['detail'] if isinstance(entry.get('detail'), dict) else {}
         task_id = detail.get('tasks') or detail.get('task_id') or detail.get('task') or executions.get(entry.get('execution'))
+        if kind == 'waiting_user' and not detail.get('task_id') and isinstance(task_id, str):
+            prefix, _, target = task_id.partition(':')
+            if prefix == 'task':
+                task_id = target
+            elif prefix in ('fault', 'state'):
+                task_id = target.rpartition(':')[0]
         if kind == 'budget_exhausted':
             task_id = entry.get('message')
         item = pick(entry, 'id', 'at', 'kind')
@@ -163,8 +169,7 @@ def output_schemas(loop, node):
             for output in node.get('outputs', {}).values()}
 
 
-def attention_summary(run, runtime):
-    items = task_list(run, runtime)
+def attention_summary(items):
     result = {'items': [], 'waiting': []}
     for item in items['items']:
         summary = pick(item, 'id', 'task_id', 'kind', 'notification_id')
@@ -176,6 +181,22 @@ def attention_summary(run, runtime):
         result['items'].append(summary)
     result['waiting'] = [pick(item, 'id', 'status', 'notification_id') for item in items['waiting']
                          if item.get('notification_id')]
+    return result
+
+
+def user_waits(run, attention):
+    dispositions = run.get('task_dispositions', {})
+    result = {}
+    for item in attention['waiting']:
+        task_id = item.get('task_id')
+        if item.get('status') != 'waiting_user' or task_id not in run['tasks']:
+            continue
+        disposition = dispositions.get(item['id'])
+        if disposition is None and run['tasks'][task_id]['status'] == 'waiting_user':
+            disposition = dispositions.get(task_id)
+        reason = (disposition or {}).get('reason')
+        if isinstance(reason, str) and reason.strip():
+            result.setdefault(task_id, {'reason': reason.strip()[:600]})
     return result
 
 
@@ -240,16 +261,16 @@ def read_workspace(store, runtime, run_id, query):
                             completion_rule=True if settings.get('completion_rule') is not None else None,
                             termination_signal=bool(settings.get('termination_signal')),
                             has_notification_command=bool(settings.get('notification_command')))
+    attention = task_list(run, runtime)
     view.update(status=public_status(run), task_dependencies=task_dependencies(run),
                 workspace_view={'tab': tab, 'task': '', 'offset': offset},
                 changed_tasks=changed, history=activity_summary(history, run) if history else [], history_total=total,
-                agent_tasks=attention_summary(run, runtime), has_diagnostics=bool(run['diagnostics']),
+                agent_tasks=attention_summary(attention), has_diagnostics=bool(run['diagnostics']),
                 controls_available=bool(run['notifications'] or any(f['status']=='held' for f in run['hook_firings'])),
                 agent_sessions=[pick(o, 'recovery_required', 'resume_execution') for o in run['agent_sessions']],
                 simulation=any(b.get('kind') == 'mock' or b.get('simulation') for entry in run['implementations'].values()
                                for b in (entry or {}).get('options', {}).values()))
-    view['task_dispositions'] = {ident: pick(disposition, 'reason') for ident, disposition in run.get('task_dispositions', {}).items()
-                                 if run['tasks'].get(ident, {}).get('status') == 'waiting_user'}
+    view['task_dispositions'] = user_waits(run, attention)
     loop = run['loop_definition']
     nodes = loop['nodes']
     selected_execution = run['tasks'].get(task_id, {}).get('execution_id')

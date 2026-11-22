@@ -589,7 +589,8 @@ class RunTools:
                                             notification_id=arguments.get('notification_id'), operator_token=self.token)
             elif name == 'defer_task':
                 tasks = task_list(run, self.runtime, owner)
-                if not any(t['id'] == arguments['task_id'] for t in tasks['items']) or not arguments['reason'].strip():
+                item = next((t for t in tasks['items'] if t['id'] == arguments['task_id']), None)
+                if item is None or not arguments['reason'].strip():
                     raise Invalid('Choose a current task and explain the required user input')
                 run.setdefault('task_dispositions', {})[arguments['task_id']] = {'status': 'waiting_user', 'reason': arguments['reason']}
                 if arguments['task_id'].startswith('task:'):
@@ -597,7 +598,7 @@ class RunTools:
                     tasks['status'] = 'waiting_user'
                     if tasks.get('execution_id'):
                         execution(run, tasks['execution_id'])['status'] = 'waiting_user'
-                Store.log(run, 'waiting_user', arguments['reason'], detail={'task': arguments['task_id']})
+                Store.log(run, 'waiting_user', arguments['reason'], detail={'task': arguments['task_id'], 'task_id': item.get('task_id')})
             elif name == 'resolve_request':
                 require_scope(run, owner)
                 request = next((r for r in run.get('user_requests', []) if r['id'] == arguments['task_id']), None)

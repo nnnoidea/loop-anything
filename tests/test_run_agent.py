@@ -483,6 +483,36 @@ print(json.dumps({'event':'completed','envelope':{'outputs':{'result':'fabricate
         self.assertEqual(selected['history'], [])
         self.assertTrue(any(h['message'] == 'Raw output for diagnosis' for h in self.read()['history']))
 
+    def test_workspace_shows_deferred_task_reason_and_links_legacy_activity(self):
+        from loop_anything.interfaces.run_workspace import read_workspace
+
+        self.start()
+        note = '请确认第七轮预算上限。'
+        self.tools.call('defer_task', {'task_id': 'task:init', 'reason': note})
+        self.assertEqual(self.read()['history'][-1]['detail']['task_id'], 'init')
+        with self.store.edit(self.id) as run:
+            run['history'][-1]['detail'].pop('task_id')
+        for tab in ('task-history', 'tasks', 'activity'):
+            with self.subTest(tab=tab):
+                view = read_workspace(self.store, self.engine.timeline_runtime, self.id, {'tab': tab})
+                self.assertEqual(view['task_dispositions'], {'init': {'reason': note}})
+                if tab == 'activity':
+                    change = view['history'][0]
+                    self.assertEqual((change['kind'], change['task_id'], change['note']), ('waiting_user', 'init', note))
+
+    def test_workspace_shows_why_a_fault_is_waiting_for_user_input(self):
+        from loop_anything.interfaces.run_workspace import read_workspace
+
+        self.start()
+        self.complete('init', settings={'objective': 'Review'}, tasks=[task_spec('script', 'script', parameters={'fail': True})])
+        self.until(lambda run: run['tasks']['script']['status'] == 'fault')
+        issue = next(item for item in self.tools.call('next_tasks', {})['items'] if item.get('task_id') == 'script')
+        note = '请确认故障前的外部提交是否需要保留。'
+        self.tools.call('defer_task', {'task_id': issue['id'], 'reason': note})
+        view = read_workspace(self.store, self.engine.timeline_runtime, self.id, {})
+        self.assertEqual(view['tasks']['script']['status'], 'fault')
+        self.assertEqual(view['task_dispositions'], {'script': {'reason': note}})
+
     def test_workspace_uses_only_the_current_task_cancellation_reason(self):
         from loop_anything.interfaces.run_workspace import read_workspace
 

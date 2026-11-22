@@ -220,6 +220,8 @@
 
 .run-tabs{flex-wrap:wrap;column-gap:24px;row-gap:0}
 .run-tabs #run-task-count{margin-left:2px;font-variant-numeric:tabular-nums}
+.run-view-error{display:flex;align-items:center;justify-content:space-between;gap:12px;overflow-wrap:anywhere}
+.run-view-error button{flex-shrink:0}
 .run-activity,.run-issue-list{list-style:none;margin:0;padding:0 clamp(14px,2.4vw,30px)}
 .run-activity li,.run-issue-list li{display:grid;gap:6px 16px;padding:15px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
 .run-activity li{grid-template-columns:88px minmax(0,1fr)}

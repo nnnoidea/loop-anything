@@ -51,14 +51,9 @@ async function openRun(route){
   const request={target:routeHash(route),controller:new AbortController()};
   pendingRunNavigation=request;
   const notice=toast('正在打开运行详情…',0);
-  const timeout=setTimeout(()=>request.controller.abort(),25000);
   try{
-    return await api(runWorkspacePath(route.id,{task:route.task}),undefined,{signal:request.controller.signal});
-  }catch(error){
-    if(request.controller.signal.aborted)throw new Error('加载运行详情超时，请重试。');
-    throw error;
+    return await fetchRunView(runWorkspacePath(route.id,{task:route.task}),request.controller);
   }finally{
-    clearTimeout(timeout);
     if(pendingRunNavigation===request)pendingRunNavigation=null;
     dismissToast(notice);
   }
@@ -69,6 +64,7 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
   pendingRunNavigation?.controller.abort();
   pendingRunNavigation=null;
   const previous=activeRoute,serial=++navigationSerial;
+  runViewRequest?.controller.abort();
   routeScroll.set(routeHash(previous),window.scrollY);
   if(page==='communication'&&route.type==='communication'){
     if(!external)history[replace?'replaceState':'pushState'](null,'',routeHash(route));

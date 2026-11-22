@@ -24,7 +24,8 @@ $('platform-power-switch').onchange=()=>safely(async()=>{
 });
 let promptDefaults={};
 let progressSignature = '', listSignature = '', inspectSignature = '';
-let runHistoryOffset=0, runViewRequest=null;
+let runHistoryOffset=0, runViewRequest=null, runViewFailure=null;
+const runViewTimeout=25000;
 const time = t => new Date(t * 1000).toLocaleTimeString('zh-CN', {hour12:false});
 const nodeLabel = id => run?.loop_definition.nodes[id]?.label || id;
 async function api(url, data, {signal} = {}) {
@@ -63,18 +64,38 @@ function visibleRunView(){
   return {tab:activeTab,task:activeTab==='task-history'&&taskNeedsDetail(selectedTask)?selectedTask:'',
     offset:activeTab==='activity'?runHistoryOffset:0};
 }
+async function fetchRunView(path,controller){
+  let timedOut=false;
+  const timeout=setTimeout(()=>{timedOut=true;controller.abort();},runViewTimeout);
+  try{
+    return await api(path,undefined,{signal:controller.signal});
+  }catch(error){
+    if(timedOut)throw new DOMException('读取运行详情超时。','TimeoutError');
+    throw error;
+  }finally{
+    clearTimeout(timeout);
+  }
+}
 function refreshRunWorkspace(){
   if(page!=='runs'||!selected||pendingRunNavigation)return;
   const id=selected,serial=navigationSerial,path=runWorkspacePath(id,visibleRunView());
-  if(runViewRequest?.path===path&&runViewRequest.serial===serial)return runViewRequest.promise;
+  if(runViewRequest?.path===path&&runViewRequest.serial===serial&&!runViewRequest.controller.signal.aborted)return runViewRequest.promise;
   runViewRequest?.controller.abort();
   const controller=new AbortController();
   const request={path,serial,controller};
-  request.promise=api(path,undefined,{signal:controller.signal}).then(current=>{
-    if(serial===navigationSerial&&page==='runs'&&selected===id&&path===runWorkspacePath(id,visibleRunView())){
-      run=current;renderRun();
+  const current=()=>runViewRequest===request&&serial===navigationSerial&&page==='runs'&&selected===id&&path===runWorkspacePath(id,visibleRunView());
+  request.promise=fetchRunView(path,controller).then(value=>{
+    if(!current())return;
+    runViewFailure=null;
+    run=value;renderRun();
+  }).catch(async error=>{
+    if(!current()||controller.signal.aborted&&error.name!=='TimeoutError')return;
+    if(error.status===404){
+      run=null;selected=null;await navigateTo({type:'run-list'});return;
     }
-  }).catch(error=>{if(!controller.signal.aborted)throw error;})
+    runViewFailure={path,serial,message:error.message};
+    renderInspect();
+  })
     .finally(()=>{if(runViewRequest===request)runViewRequest=null;});
   runViewRequest=request;
   return request.promise;
@@ -112,7 +133,7 @@ async function refresh() {
   try {
     if(page==='run-list'||page==='communication')await refreshRunLibrary();
     $('engine-status').textContent = '平台已连接';
-    if (selected && page==='runs') { const id=selected;try{await refreshRunWorkspace();}catch(error){if(error.status===404&&selected===id&&page==='runs'){run=null;selected=null;await navigateTo({type:'run-list'});}else throw error;} }
+    if(selected&&page==='runs')await refreshRunWorkspace();
     const platform=await api('platform'),power=platform.keep_awake;
     if(!$('platform-version'))document.querySelector('.topbar').insertAdjacentHTML('beforeend','<small id="platform-version" class="muted"></small>');
     document.querySelector('.brand .version').textContent=platform.service?platform.service.version:'';
@@ -152,10 +173,16 @@ function renderRun() {
 function loadSettings(){
   $('run-settings-readonly').innerHTML=`${['running','paused'].includes(run.status)&&!run.superseded_by?'<label><input type="checkbox" id="follow-loop-updates" '+(run.follow_loop_updates?'checked':'')+'> 跟随此 Loop 后续发布的版本</label>':''}<p>目标和限制属于独立 Timeline；修改后由 Agent 检查并向用户汇报。</p>${run.timeline_id?'<button data-work-timeline="'+esc(run.timeline_id)+'">查看 Timeline 与进度</button>':''}${run.settings.objective?`<h3>目标</h3><p>${esc(run.settings.objective)}</p>`:''}${run.settings.constraints?`<h3>限制</h3><p>${esc(run.settings.constraints)}</p>`:''}`;
 }
+function runViewErrorHTML(message){
+  return `<div class="notice run-view-error" role="alert"><span>${esc(message)}</span><button data-retry-run-view>重试</button></div>`;
+}
 function renderInspect() {
   const wanted=visibleRunView();
+  const path=runWorkspacePath(run.id,wanted);
+  if(runViewRequest&&(runViewRequest.path!==path||runViewRequest.serial!==navigationSerial))runViewRequest.controller.abort();
+  const error=runViewFailure?.path===path&&runViewFailure.serial===navigationSerial?runViewFailure.message:'';
   const ready=!run.workspace_view||Object.keys(wanted).every(key=>run.workspace_view[key]===wanted[key]);
-  const signature = pretty([run.id,filterNode,wanted,ready,run.executions,run.history,run.history_total,run.changed_tasks,run.settings.revision,run.tasks,run.agent_sessions,run.task_dependencies,run.agent_tasks,run.task_dispositions,run.notifications,run.events,run.hook_firings,run.controls_available]);
+  const signature = pretty([run.id,filterNode,wanted,ready,error,run.executions,run.history,run.history_total,run.changed_tasks,run.settings.revision,run.tasks,run.agent_sessions,run.task_dependencies,run.agent_tasks,run.task_dispositions,run.notifications,run.events,run.hook_firings,run.controls_available]);
   if(inspectSignature===signature)return;inspectSignature=signature;
   const issues=runAttentionItems(run);
   $('run-task-count').textContent=issues.length||'';
@@ -166,10 +193,12 @@ function renderInspect() {
     if(el.dataset.tab==='tasks')el.hidden=!selected&&!issues.length;
     if(el.dataset.tab==='hooks')el.hidden=!selected&&!run.controls_available;
   });
-  $('inspect').innerHTML=!ready&&activeTab!=='task-history'
-    ?'<p class="empty-inline" role="status">正在读取…</p>'
-    :renderRunPanel(activeTab,issues);
-  if(!ready)safely(refreshRunWorkspace);
+  const detailError=!ready&&wanted.task?error:'';
+  const content=!ready&&activeTab!=='task-history'
+    ?(error?'':'<p class="empty-inline" role="status">正在读取…</p>')
+    :renderRunPanel(activeTab,issues,detailError);
+  $('inspect').innerHTML=(error&&!detailError?runViewErrorHTML(error):'')+content;
+  if(!ready&&!error)safely(refreshRunWorkspace);
 }
 
 document.addEventListener('click',event=>safely(async()=>{
@@ -179,6 +208,7 @@ document.addEventListener('click',event=>safely(async()=>{
   if(d.run){await selectRun(d.run);return;}
   if(d.node){filterNode=d.node;activeTab='task-history';inspectSignature='';renderInspect();return;}
   if(d.tab){activeTab=d.tab;renderInspect();if(button.closest('#attention'))document.querySelector('.run-tabs').scrollIntoView({block:'start'});return;}
+  if(d.retryRunView!==undefined){runViewFailure=null;renderInspect();await refreshRunWorkspace();return;}
   if(d.historyOffset!==undefined){runHistoryOffset=Number(d.historyOffset);renderInspect();return;}
   if(d.create){await openCreate(d.create);return;}
   if(d.validate){const c=catalog.find(x=>x.key===d.validate);const r=await api('validate',c);toast(r.valid?'验证通过 · '+r.warnings.join('；'):r.errors.join('；'));return;}

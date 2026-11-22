@@ -18,11 +18,12 @@ function runAttentionItems(value){
   const issues=new Map(),attempts=new Map(value.executions.map(e=>[e.id,e]));
   for(const t of Object.values(value.tasks)){
     const e=attempts.get(t.execution_id),status=t.status;
+    const note=value.task_dispositions?.[t.id]?.reason;
     const waitingEvent=e?.status==='waiting'&&e.implementation.kind==='event';
-    const label=e?.observation_error?'外部采集异常':status==='fault'?'节点执行失败':status==='held'?'等待放行':
+    const label=note?'等待用户处理':e?.observation_error?'外部采集异常':status==='fault'?'节点执行失败':status==='held'?'等待放行':
       status==='waiting_user'||status==='approval'?'等待用户确认':status==='stale'?'执行状态需核实':
       status==='unresolved'?'等待处理异常':status==='decision'&&!e?.worker_active?'等待 Agent':waitingEvent?'等待事件':'';
-    if(label)issues.set(t.id,{task_id:t.id,label,control:status==='held',status});
+    if(label)issues.set(t.id,{task_id:t.id,label,control:status==='held'&&!note,status,note});
   }
   for(const item of value.agent_tasks?.items||[]){
     const task=value.tasks[item.task_id],key=task?.id||item.id;
@@ -72,8 +73,8 @@ function runActivityHTML(){
   const pagination=run.history_total>50?`<div class="run-pagination"><button data-history-offset="${Math.max(0,runHistoryOffset-50)}" ${runHistoryOffset?'':'disabled'}>← 更新的记录</button><span>${runHistoryOffset+1}–${end} / ${run.history_total} 条</span><button data-history-offset="${end}" ${end<run.history_total?'':'disabled'}>更早的记录 →</button></div>`:'';
   return `<ol class="run-activity">${rows}</ol>${pagination}`;
 }
-function renderRunPanel(tab,issues){
-  if(tab==='task-history')return renderTaskHistory();
+function renderRunPanel(tab,issues,detailError){
+  if(tab==='task-history')return renderTaskHistory(detailError);
   if(tab==='tasks')return runTaskIssues(issues);
   if(tab==='activity')return runActivityHTML();
   const ended=run.identity_read_only||['completed','terminated','continued'].includes(run.status);

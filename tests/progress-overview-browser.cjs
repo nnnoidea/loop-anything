@@ -138,8 +138,32 @@ withPlatform(async({url,page,tool,api,startRun})=>{
   assert.equal(await page.locator('#task-detail').isVisible(),false);
   await third.click();
   assert.equal(await graph.locator('[data-task-row]').count(),3);
-  await page.getByRole('button',{name:'关键变更',exact:true}).click();
-  await page.locator('.run-activity').getByText('暂停运行',{exact:true}).waitFor();
+  const activityURL=runURL+'?view=workspace&tab=activity';
+  const changesTab=page.getByRole('button',{name:'关键变更',exact:true});
+  const activityEntry=page.locator('.run-activity').getByText('暂停运行',{exact:true});
+  const activityError=page.locator('#inspect .run-view-error');
+  await page.route(activityURL,route=>route.fulfill({status:502,json:{error:'暂时无法读取关键变更'}}),{times:1});
+  await changesTab.click();
+  await activityError.getByText('暂时无法读取关键变更',{exact:true}).waitFor();
+  await activityError.getByRole('button',{name:'重试',exact:true}).click();
+  await activityEntry.waitFor();
+  await page.getByRole('button',{name:'运行过程',exact:true}).click();
+  let releaseActivity;
+  const heldActivity=new Promise(resolve=>{releaseActivity=resolve;});
+  await page.route(activityURL,async route=>{await heldActivity;await route.abort().catch(()=>{});},{times:1});
+  await page.evaluate(()=>{
+    window.testOriginalSetTimeout=window.setTimeout;
+    window.setTimeout=(callback,delay,...args)=>window.testOriginalSetTimeout(callback,delay===runViewTimeout?120:delay,...args);
+  });
+  try{
+    await changesTab.click();
+    await activityError.getByText('读取运行详情超时。',{exact:true}).waitFor();
+    await activityEntry.waitFor();
+    assert.equal(await activityError.count(),0);
+  }finally{
+    releaseActivity();
+    await page.evaluate(()=>{window.setTimeout=window.testOriginalSetTimeout;delete window.testOriginalSetTimeout;});
+  }
   assert.equal(await page.locator('#inspect pre').count(),0);
   await page.getByRole('button',{name:'运行过程',exact:true}).click();
   await graph.locator('[data-task-row]').filter({hasText:'score-B-6'}).locator('.task-card-main').click();
@@ -255,4 +279,21 @@ withPlatform(async({url,page,tool,api,startRun})=>{
   await issue.getByRole('link',{name:'查看节点'}).click();
   await page.locator('#task-detail').getByRole('button',{name:'提交事件 / 回复'}).click();
   await page.getByRole('heading',{name:'提交等待的事件'}).waitFor();
+  await page.keyboard.press('Escape');
+
+  const {token:repairToken}=await tool('acquire_run',{run_id:run.run_id});
+  const pending=await tool('next_tasks',{run_id:run.run_id,token:repairToken});
+  const failure=pending.items.find(item=>item.task_id===failedId);
+  const reason='请确认本轮预算上限，再重试评分。';
+  await tool('defer_task',{run_id:run.run_id,token:repairToken,task_id:failure.id,reason});
+  await tool('finish',{run_id:run.run_id,token:repairToken});
+  await page.goto(url+'/#run/'+run.run_id);
+  await page.getByRole('button',{name:/待处理/}).click();
+  const deferred=page.locator('.run-issue-list li').filter({hasText:reason});
+  await deferred.getByText('等待用户处理',{exact:true}).waitFor();
+  await deferred.getByRole('link',{name:'查看节点'}).click();
+  await page.locator('#task-detail .wait-description').getByText(reason,{exact:true}).waitFor();
+  await changesTab.click();
+  const activityRow=page.locator('.run-activity li').filter({hasText:reason});
+  assert.equal(await activityRow.getByRole('link').getAttribute('href'),'#run/'+run.run_id+'/task/'+encodeURIComponent(failedId));
 }).catch(error=>{console.error(error);process.exitCode=1;});

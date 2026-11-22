@@ -96,7 +96,7 @@ test('declared input sources distinguish unbound ports, upstream outputs and int
 test('read-only node navigation keeps the overview and never calls an authoring API',async()=>{
   const inspector={scrollTop:10,focus(){}};
   context.editor={routeId:'draft-side',revision:3,loop_definition:{nodes:{work:{}}}};
-  context.editorPage={querySelector:()=>inspector};context.page='editor';context.editSelection=null;
+  context.editorPage={querySelector:()=>inspector};context.page='editor';context.editSelection=null;context.runViewRequest=null;
   context.history={pushState(){},replaceState(){}};context.structuredClone=structuredClone;
   context.window.matchMedia=()=>({matches:false});context.renderProperties=()=>{};context.updateNavigationUI=()=>{};
   context.saveEditor=()=>{throw Error('Reading must not save');};context.renderEditor=()=>{throw Error('Reading must not recreate iframe');};

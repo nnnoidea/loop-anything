@@ -42,6 +42,8 @@ function taskReadout(item,attempt=item.attempts.at(-1)){
 function taskSummary(item){
   const t=item.tasks,e=item.attempts.at(-1);
   if(t.status==='cancelled')return t.cancellation_reason||'未记录具体原因';
+  const request=run.task_dispositions?.[t.id]?.reason;
+  if(request)return request;
   if(e?.observation_error)return '采集异常，外部任务状态待确认';
   if(['fault','stale'].includes(t.status))return taskFailureText(t,e);
   const facts=taskReadout(item);
@@ -84,8 +86,10 @@ function runProgressHTML(value){
   const title=primary?taskLabel(primary.tasks):ended?'没有已完成的节点':rows.length?'已安排的节点均已结束':'尚未安排任务';
   function detail(item){
     const t=item.tasks,e=item.attempts.at(-1);
+    const request=value.task_dispositions?.[t.id]?.reason;
+    if(request)return request;
     if(e?.observation_error)return '采集异常，外部任务状态待确认';
-    if(t.status==='waiting_user')return value.task_dispositions?.[t.id]?.reason || '等待用户处理';
+    if(t.status==='waiting_user')return '等待用户处理';
     if(e?.status==='approval')return '等待用户确认';
     if(t.status==='held')return '执行前已暂停，可到通知与控制查看放行条件。';
     if(['fault','stale'].includes(t.status))return taskFailureText(t,e);
@@ -439,11 +443,13 @@ function childRunLink(attempt){
   const href=routeHash({type:'run',id:attempt.child_run_id});
   return `<p><a data-route-link href="${esc(href)}">查看子 Run</a> · ${esc(labels[attempt.child_status]||attempt.child_status||'等待中')}</p>`;
 }
-function taskDetails(item,pending){
+function taskDetails(item,pending,detailError){
   const t=item.tasks,attempt=item.attempts.find(e=>e.id===t.execution_id)||item.attempts.at(-1);
   const ended=run.identity_read_only||['completed','terminated','continued'].includes(run.status);
   const editable=!t.execution_id&&['planned','blocked','ready','held'].includes(t.status);
   const cancelled=t.status==='cancelled';
+  const request=run.task_dispositions?.[t.id]?.reason;
+  const pendingReply=pending&&needsReplyData(attempt);
   const cancellable=!cancelled&&(editable||attempt?.status==='waiting'&&['timer','event','loop'].includes(attempt.implementation.kind));
   const canRetry=['fault','stale','cancelled','waiting_user','retrying'].includes(t.status)||attempt?.observation_error;
   const result=resultAttempt(item.attempts,attempt),progress=TaskHistory.readings(run.loop_definition.nodes[t.spec.node]?.readout,attempt?.activity_progress);
@@ -457,16 +463,18 @@ function taskDetails(item,pending){
   ].filter(Boolean);
   return `<div class="task-detail-heading"><h2>${esc(taskLabel(t))}</h2>${taskBadge(item)}</div>
     ${item.round||t.spec.ref?`<p class="small muted">${esc([item.round,t.spec.ref].filter(Boolean).join(' · '))}</p>`:''}
+    ${request?`<div class="wait-description"><strong>等待用户处理</strong><p>${esc(request)}</p></div>`:''}
+    ${detailError?runViewErrorHTML(detailError):''}
     ${cancelled?`<section class="task-cancellation"><h3>取消原因</h3><p>${esc(taskSummary(item))}</p></section>`:
       `${taskError(attempt,t)}${taskWaitReasons(t)}
-       ${pending&&needsReplyData(attempt)?'<p class="small muted" role="status">正在读取等待条件…</p>':waitDetails(attempt)}
+       ${pendingReply?(detailError?'':'<p class="small muted" role="status">正在读取等待条件…</p>'):waitDetails(attempt)}
        ${t.assistance_wait?'<p class="small muted">正在等待外援回复。</p>':''}
        ${progress.length&&result!==attempt?readingsHTML(progress):''}`}
     ${childRunLink(attempt)}
-    ${taskResultHTML(result,attempt,pending&&result?.has_result_content)}
+    ${taskResultHTML(result,attempt,pending&&!detailError&&result?.has_result_content)}
     ${actions.length?`<div class="toolbar">${actions.join('')}</div>`:''}${taskFlowHTML(item)}`;
 }
-function renderTaskHistory(){
+function renderTaskHistory(detailError){
   if(run.superseded_by && !Object.keys(run.tasks).length)return '<p class="empty-inline">这次历史运行没有节点记录。</p>';
   const scroll=document.querySelector('.dependency-scroll'),detail=$('task-detail');
   const position=scroll?.dataset.graphRun===run.id?{left:scroll.scrollLeft,top:scroll.scrollTop}:null;
@@ -503,7 +511,7 @@ function renderTaskHistory(){
   const groups=[{round:'已开始',items:visible.filter(i=>i.started!==null)},{round:'尚未开始',items:visible.filter(i=>i.started===null&&!['completed','skipped','cancelled','stale'].includes(i.tasks.status))},{round:'未执行且已结束',items:visible.filter(i=>i.started===null&&['completed','skipped','cancelled','stale'].includes(i.tasks.status))}];
   const filtered=Boolean(filterNode||taskStatus||query);
   return `<div class="task-heading"><div><h2>节点进度</h2><p class="muted small">${business.length} 项任务${rounds.length?' · '+rounds.length+' 轮':''}${all.length>business.length?' · '+(all.length-business.length)+' 次流程决策':''}</p></div></div><div class="process-controls" id="run-process-controls"><div class="segmented">${[['graph','节点图'],['time','时间顺序']].map(([id,label])=>`<button data-task-order="${id}" class="${taskOrder===id?'selected':''}" aria-pressed="${taskOrder===id}">${label}</button>`).join('')}</div>${rounds.length?`<label class="task-round-filter"><select id="task-round" aria-label="筛选轮次"><option value="">全部轮次</option>${rounds.map(r=>'<option value="'+esc(r)+'" '+(r===taskRound?'selected':'')+'>'+esc(r)+'</option>').join('')}</select></label>`:''}<label class="task-search-label"><span class="sr-only">查找任务</span><input id="task-search" placeholder="查找任务…" type="search" value="${esc(taskSearch)}"></label><label class="task-status-label"><span class="sr-only">任务状态</span><select id="task-status"><option value="">全部状态</option>${[...new Set(all.map(i=>i.tasks.status))].map(s=>`<option value="${esc(s)}" ${taskStatus===s?'selected':''}>${esc(labels[s]||s)}</option>`).join('')}</select></label>${filterNode?'<button id="clear-task-filter">清除节点筛选</button>':''}</div>
-  <div class="process-layout"><section class="process-body">${visible.length?(taskOrder==='graph'?taskDependencyGraph(visible,filtered):groups.filter(g=>g.items.length).map(g=>`<details class="task-group" open><summary>${g.round} · ${g.items.length}</summary><div class="process-list">${g.items.map(taskCard).join('')}</div></details>`).join('')):'<p class="empty-inline">没有符合条件的任务</p>'}</section><aside id="task-detail" class="task-detail" ${selected?`data-task="${esc(selectedTask)}"`:'hidden'}>${selected?`<button class="close-task-detail" data-close-task aria-label="关闭节点详情">×</button><div id="task-detail-body">${taskDetails(selected,detailPending)}</div>`:''}</aside></div>`;
+  <div class="process-layout"><section class="process-body">${visible.length?(taskOrder==='graph'?taskDependencyGraph(visible,filtered):groups.filter(g=>g.items.length).map(g=>`<details class="task-group" open><summary>${g.round} · ${g.items.length}</summary><div class="process-list">${g.items.map(taskCard).join('')}</div></details>`).join('')):'<p class="empty-inline">没有符合条件的任务</p>'}</section><aside id="task-detail" class="task-detail" ${selected?`data-task="${esc(selectedTask)}"`:'hidden'}>${selected?`<button class="close-task-detail" data-close-task aria-label="关闭节点详情">×</button><div id="task-detail-body">${taskDetails(selected,detailPending,detailError)}</div>`:''}</aside></div>`;
 }
 const editDialog=document.createElement('dialog');editDialog.id='task-edit-dialog';editDialog.innerHTML='<div class="dialog-heading"><h2 id="task-edit-title"></h2><button class="close-dialog" aria-label="关闭">×</button></div><div id="task-edit-error" role="alert"></div><form id="task-edit-form"><div id="task-edit-fields"></div><div class="dialog-tasks"><button type="button" class="close-dialog">取消</button><button type="submit" class="primary" id="task-edit-submit">确认操作</button></div></form>';document.body.append(editDialog);
 function openTaskEdit(kind,id=null){

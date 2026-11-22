@@ -25,6 +25,14 @@ test('pending Run issues describe recorded actions without showing Agent instruc
   ctx.value.executions[0].worker_active=true;
   assert.equal(run('runAttentionItems(value).length'),0);
 });
+test('the pending list shows the recorded user action even for a deferred failure',()=>{
+  const note='请确认第七轮预算上限。';
+  ctx.value={status:'running',tasks:{a:{id:'a',status:'fault'}},executions:[],task_dispositions:{a:{reason:note}}};
+  const [issue]=run('runAttentionItems(value)');
+  assert.equal(issue.label,'等待用户处理');
+  assert.equal(issue.note,note);
+  assert.equal(issue.task_id,'a');
+});
 test('missing fixed notification bindings do not claim original-chat replies are unavailable',()=>{
   assert.match(run('groupNotificationSummary({})'),/原会话通知/);
   assert.doesNotMatch(run('groupNotificationSummary({})'),/通信仅保留平台记录/);
