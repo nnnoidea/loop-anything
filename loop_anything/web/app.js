@@ -145,7 +145,7 @@ document.addEventListener('click',event=>safely(async()=>{
   if(d.run){await selectRun(d.run);return;}
   if(d.node){filterNode=d.node;activeTab='task-history';inspectSignature='';renderInspect();return;}
   if(d.tab){activeTab=d.tab;renderInspect();if(button.classList.contains('run-issues'))$('inspect').scrollIntoView({block:'start'});return;}
-  if(d.exec){selectedTask=run.executions.find(e=>e.id===d.exec)?.task_id;selectedAttempt=d.exec;activeTab='task-history';inspectSignature='';renderInspect();return;}
+  if(d.exec){selectedTask=run.executions.find(e=>e.id===d.exec)?.task_id;selectedAttempt=d.exec;syncRunTaskRoute();activeTab='task-history';inspectSignature='';renderInspect();if(selectedTask)requestAnimationFrame(()=>locateGraphTask(selectedTask));return;}
   if(d.create){await openCreate(d.create);return;}
   if(d.validate){const c=catalog.find(x=>x.key===d.validate);const r=await api('validate',c);toast(r.valid?'验证通过 · '+r.warnings.join('；'):r.errors.join('；'));return;}
   const runId=run?.id;

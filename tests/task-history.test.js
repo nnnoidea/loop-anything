@@ -33,3 +33,27 @@ test('business graph folds only internal decisions into their source and preserv
   assert.deepEqual(graph.links,[{from:'a',to:'b',kind:'planning'}]);
   assert.equal(history.rows(run).length,3);
 });
+
+test('round cards collapse completed tasks and preserve all distinct external edges',()=>{
+  const items=[['previous','completed','第 1 轮'],['prepare','completed','第 2 轮'],['train','completed','第 2 轮'],
+    ['predict','waiting','第 2 轮'],['failed','fault','第 1 轮'],['cancelled','cancelled','第 2 轮']]
+    .map(([id,status,round])=>({tasks:{id,status},round,attempts:[]}));
+  const links=[['previous','prepare','dependency'],['previous','train','dependency'],['prepare','train','dependency'],
+    ['train','predict','dependency'],['failed','train','recovery']].map(([from,to,kind])=>({from,to,kind}));
+  const graph={items,links};
+  const collapsed=history.roundGraph(graph,new Set(),null,false);
+  const card=collapsed.nodes.find(node=>!node.item);
+  assert.equal(card.card.round,'第 2 轮');
+  assert.deepEqual(card.card.members.map(i=>i.tasks.id),['prepare','train']);
+  assert.deepEqual(collapsed.nodes.filter(node=>node.item).map(node=>node.id),['previous','predict','failed','cancelled']);
+  assert.deepEqual(collapsed.links,[
+    {from:'previous',to:card.id,kind:'dependency'},
+    {from:card.id,to:'predict',kind:'dependency'},
+    {from:'failed',to:card.id,kind:'recovery'},
+  ]);
+  for(const expanded of [history.roundGraph(graph,new Set(['第 2 轮']),null,false),
+    history.roundGraph(graph,new Set(),'train',false),history.roundGraph(graph,new Set(),null,true)]){
+    assert.deepEqual(expanded.nodes.map(node=>node.id),items.map(item=>item.tasks.id));
+    assert.deepEqual(expanded.links,links);
+  }
+});

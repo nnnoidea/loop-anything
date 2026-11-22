@@ -93,15 +93,15 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
       populateMeta();renderEditor();renderProperties();
     }else if(route.type==='run'){
       if(previous.type!=='run')runReturns.set(route.id,structuredClone(previous));
-      if(previous.type!=='run'||previous.id!==route.id){document.querySelector('.run-menu').open=false;taskOrder='overview';overviewGroup=null;overviewLimit=8;overviewRound='';openProgressRound=null;}
-      if(previous.id!==route.id || route.task){
-        if(route.task){openProgressRound=nextRun.tasks[route.task]?.spec.round||'';overviewGroup=nextRun.tasks[route.task]?.spec.node;if(overviewRound!==openProgressRound)overviewRound='';}
+      if(previous.type!=='run'||previous.id!==route.id){document.querySelector('.run-menu').open=false;taskOrder='graph';taskRound='';restoreRounds(route.id);}
+      if(previous.type!=='run'||previous.id!==route.id||previous.task!==route.task||route.task){
+        if(route.task){taskOrder='graph';taskRound='';}
         selectedTask=route.task || null;selectedAttempt=null;activeTab='task-history';taskStatus='';taskSearch='';inspectSignature='';
       }
       selected=route.id;run=nextRun;settingsBase=null;filterNode=null;page='runs';renderRun();
     }else{page='timelines';await showWorkLibrary();}
     if(serial!==navigationSerial)return false;
-    showPage();updateNavigationUI();window.scrollTo(0,routeScroll.get(routeHash(route))||0);if(page==='runs')requestAnimationFrame(()=>{sizeTaskGraph();if(route.task&&nextRun.tasks[route.task])$('task-detail')?.scrollIntoView({block:'start'});});return true;
+    showPage();updateNavigationUI();window.scrollTo(0,routeScroll.get(routeHash(route))||0);if(page==='runs')requestAnimationFrame(()=>{sizeTaskGraph();if(route.task&&nextRun.tasks[route.task]){locateGraphTask(route.task);if(window.matchMedia('(max-width:800px)').matches)$('task-detail')?.scrollIntoView({block:'start'});else document.querySelector('.process-controls')?.scrollIntoView({block:'start'});}});return true;
   }catch(error){
     if(serial!==navigationSerial)return false;
     if(external){activeRoute={type:'catalog'};history.replaceState(null,'','#loop_definitions');page='catalog';showPage();updateNavigationUI();}

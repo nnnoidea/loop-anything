@@ -57,6 +57,29 @@
     }
     return {items:visible,links:mapped};
   }
+  function roundGraph(graph,expanded,selected,filtered){
+    const owners=new Map();
+    for(const group of groups(graph.items)){
+      const members=group.items.filter(item=>item.tasks.status==='completed'&&!item.attempts.at(-1)?.observation_error);
+      if(members.length<2)continue;
+      const round=group.round||'';
+      const card={id:'$round:'+round,round,members,open:filtered||expanded.has(round)||members.some(i=>i.tasks.id===selected)};
+      for(const item of members)owners.set(item.tasks.id,card);
+    }
+    const nodes=[];
+    for(const item of graph.items){
+      const id=item.tasks.id,card=owners.get(id),first=card?.members[0]===item;
+      if(!card||card.open)nodes.push({id,item,card:first&&!filtered?card:null});
+      else if(first)nodes.push({id:card.id,card});
+    }
+    const endpoint=id=>owners.get(id)?.open===false?owners.get(id).id:id;
+    const links=new Map();
+    for(const link of graph.links){
+      const from=endpoint(link.from),to=endpoint(link.to);
+      if(from!==to)links.set(JSON.stringify([from,to,link.kind]),{from,to,kind:link.kind});
+    }
+    return {nodes,links:[...links.values()]};
+  }
   function readings(fields, progress={}, outputs={}) {
     const scalar=v=>Number.isFinite(v)||typeof v==='boolean'||(typeof v==='string'&&v.trim().length>0);
     if(Array.isArray(fields) && fields.length){
@@ -75,5 +98,5 @@
     metrics.push(['阶段',progress.phase]);
     return metrics.filter(([,v])=>scalar(v)).map(([label,value])=>({label,value,source:'progress'}));
   }
-  const api={rows,groups,startTime,links,businessGraph,readings};if(typeof module!=='undefined' && module.exports)module.exports=api;else root.TaskHistory=api;
+  const api={rows,groups,startTime,links,businessGraph,roundGraph,readings};if(typeof module!=='undefined' && module.exports)module.exports=api;else root.TaskHistory=api;
 })(typeof globalThis!=='undefined'?globalThis:this);

@@ -1,5 +1,24 @@
 'use strict';
-let selectedTask=null,selectedAttempt=null,taskOrder='overview',taskSearch='',taskStatus='',taskEdit=null,taskChanges=new Map(),taskNumbers=new Map();
+let selectedTask=null,selectedAttempt=null,taskOrder='graph',taskSearch='',taskStatus='',taskRound='',taskEdit=null,taskChanges=new Map(),taskNumbers=new Map();
+const expandedRounds=new Set(),mobileTaskGraph=window.matchMedia('(max-width:650px)');
+const roundStateKey=id=>'loop-anything.open-rounds.'+id;
+function restoreRounds(id){
+  expandedRounds.clear();
+  try{
+    const stored=JSON.parse(sessionStorage.getItem(roundStateKey(id))||'[]');
+    if(Array.isArray(stored))for(const round of stored)if(typeof round==='string')expandedRounds.add(round);
+  }catch{}
+}
+function rememberRounds(){
+  try{sessionStorage.setItem(roundStateKey(run.id),JSON.stringify([...expandedRounds]));}catch{}
+}
+function syncRunTaskRoute(){
+  if(page!=='runs'||activeRoute.type!=='run'||activeRoute.id!==run.id)return;
+  const route={type:'run',id:run.id,...(selectedTask?{task:selectedTask}:{})};
+  if(routeHash(route)===routeHash(activeRoute))return;
+  activeRoute=route;
+  history.replaceState(null,'',routeHash(route));
+}
 const taskTime=t=>t?new Date(t*1000).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}):'尚未开始';
 const taskLabel=t=>run.loop_definition.nodes[t.spec.node]?.label || t.spec.node;
 function flowDecisions(t){return Object.values(run.tasks).filter(d=>d.origin?.flow_agent?.task_id===t.id);}
@@ -111,52 +130,119 @@ function runProgressHTML(value){
 }
 function taskCard(item){
   const t=item.tasks,order=taskNumbers.get(t.id),attempt=item.attempts.at(-1),agent=attempt?.implementation.kind==='agent',active=attempt?.worker_active||(run.agent_sessions||[]).some(o=>o.resume_execution===attempt?.id);
-  return `<article class="process-task ${selectedTask===t.id?'picked':''}" data-status="${esc(t.status)}" data-task-focus="${esc(t.id)}" data-task-row="${esc(t.id)}"><button class="task-card-main" data-task-focus="${esc(t.id)}" aria-pressed="${selectedTask===t.id}" title="${esc(taskLabel(t)+' · '+t.id)}"><span class="task-card-top"><small class="task-number">${String(order).padStart(2,'0')}</small>${taskBadge(item)}${taskChanges.has(t.id)?'<span data-change-mark>已调整</span>':''}</span><span class="task-name">${esc(taskLabel(t))}</span><span class="task-summary">${esc(taskSummary(item))}</span><small class="task-card-time">${esc([item.round,item.started===null&&['skipped','cancelled'].includes(t.status)?'未执行':taskTime(item.started)].filter(Boolean).join(' · '))}</small></button><div class="task-card-actions"><button data-task-result="${esc(t.id)}">查看结果</button>${flowDecisionButtons(t,true)}${agent?`<button data-agent-session="${esc(attempt.id)}" ${['completed','terminated','continued'].includes(run.status)&&!active?'disabled title="Run 已结束，可查看结果与会话记录"':''}>${active?'打开会话':'恢复会话'}</button>`:''}</div></article>`;
+  return `<article class="process-task ${selectedTask===t.id?'picked':''}" data-status="${esc(t.status)}" data-task-focus="${esc(t.id)}" data-task-row="${esc(t.id)}"><button class="task-card-main" data-task-focus="${esc(t.id)}" aria-pressed="${selectedTask===t.id}" title="${esc([taskLabel(t),t.spec.ref,t.id].filter(Boolean).join(' · '))}"><span class="task-card-top">${taskOrder==='time'?`<small class="task-number">${String(order).padStart(2,'0')}</small>`:''}${taskBadge(item)}${taskChanges.has(t.id)?'<span data-change-mark>已调整</span>':''}</span><span class="task-name">${esc(taskLabel(t))}</span>${t.spec.ref?`<small class="task-card-ref">${esc(t.spec.ref)}</small>`:''}<span class="task-summary">${esc(taskSummary(item))}</span><small class="task-card-time">${esc([item.round,item.started===null&&['skipped','cancelled'].includes(t.status)?'未执行':taskTime(item.started)].filter(Boolean).join(' · '))}</small></button><div class="task-card-actions"><button data-task-result="${esc(t.id)}">查看结果</button>${flowDecisionButtons(t,true)}${agent?`<button data-agent-session="${esc(attempt.id)}" ${['completed','terminated','continued'].includes(run.status)&&!active?'disabled title="Run 已结束，可查看结果与会话记录"':''}>${active?'打开会话':'恢复会话'}</button>`:''}</div></article>`;
 }
-function taskDependencyGraph(items){
-  const graph=TaskHistory.businessGraph(run,items);items=graph.items;
-  if(!items.length)return '<p class="empty-inline">当前筛选仅包含流程决策，切换时间顺序可查看全部记录。</p>';
-  const links=graph.links,parents=id=>links.filter(e=>e.to===id).map(e=>e.from);
-  const ids=new Set(items.map(x=>x.tasks.id)),levels=new Map(),pending=new Map(items.map(x=>[x.tasks.id,x]));
-  while(pending.size){let moved=false;for(const [id,item] of pending){const deps=parents(item.tasks.id).filter(x=>ids.has(x));if(deps.every(x=>levels.has(x))){levels.set(id,deps.length?1+Math.max(...deps.map(x=>levels.get(x))):0);pending.delete(id);moved=true;}}if(!moved){for(const id of pending.keys())levels.set(id,0);break;}}
-  const columns=[],positions=new Map(),cardWidth=224,cardHeight=174,gap=28;
-  for(const item of items)(columns[levels.get(item.tasks.id)]??=[]).push(item);
-  const height=Math.max(1,...columns.map(c=>c.length))*(cardHeight+gap)+48;
-  columns.forEach((column,col)=>column.forEach((item,row)=>positions.set(item.tasks.id,{x:28+col*320,y:40+(height-80-column.length*(cardHeight+gap)+gap)/2+row*(cardHeight+gap)})));
-  // Align joins to their actual inputs, keeping stable order and room between cards.
-  for(let col=1;col<columns.length;col++){
-    const column=columns[col];let bottom=24;
-    for(const item of column){const upstream=parents(item.tasks.id).map(id=>positions.get(id)).filter(Boolean),p=positions.get(item.tasks.id);if(upstream.length)p.y=upstream.reduce((sum,p)=>sum+p.y,0)/upstream.length;p.y=Math.max(bottom,p.y);bottom=p.y+cardHeight+gap;}
-    let top=height-24-cardHeight;
-    for(const item of [...column].reverse()){const p=positions.get(item.tasks.id);p.y=Math.min(top,p.y);top=p.y-cardHeight-gap;}
-  }
-  const width=columns.length*320-40;
-  function edgePath(from,to){
-    const a=positions.get(from),b=positions.get(to);let x=a.x+cardWidth,y=a.y+cardHeight/2,path=`M${x} ${y}`;
-    const curve=(nx,ny)=>{const bend=(nx-x)/2;path+=` C${x+bend} ${y},${nx-bend} ${ny},${nx} ${ny}`;x=nx;y=ny;};
-    // Long edges cross intermediate columns through free gaps, never through cards.
-    for(let col=levels.get(from)+1;col<levels.get(to);col++){
-      const obstacles=columns[col].map(item=>positions.get(item.tasks.id)),desired=(a.y+b.y+cardHeight)/2;
-      const candidates=[desired,12,height-12,...obstacles.flatMap(p=>[p.y-12,p.y+cardHeight+12])];
-      const lane=candidates.filter(v=>v>=12&&v<=height-12&&obstacles.every(p=>v<=p.y-8||v>=p.y+cardHeight+8)).sort((a,b)=>Math.abs(a-desired)-Math.abs(b-desired))[0];
-      const left=28+col*320;curve(left-18,lane);x=left+cardWidth+18;path+=` L${x} ${lane}`;
+function roundToggle(card){
+  const round=card.round||'未标注轮次';
+  const id=`data-round-toggle="${esc(card.round)}" aria-expanded="${card.open}"`;
+  if(card.open)return `<button class="round-collapse" ${id} aria-label="收起 ${esc(round)} 已完成节点">⌃ 收起 ${esc(round)}</button>`;
+  const recent=[...card.members].reverse().find(item=>taskReadout(item).some(f=>f.source==='outputs'));
+  return `<button class="round-card" ${id}><strong>${esc(round)}</strong><span>${card.members.length} 个节点已完成</span>${recent?`<small>${esc(taskSummary(recent))}</small>`:''}<span class="round-action">展开已完成节点 <span aria-hidden="true">⌄</span></span></button>`;
+}
+function taskDependencyGraph(items,filtered){
+  const business=TaskHistory.businessGraph(run,items);
+  const {nodes,links}=TaskHistory.roundGraph(business,expandedRounds,selectedTask,filtered);
+  if(!nodes.length)return '<p class="empty-inline">流程决策可在时间顺序中查看。</p>';
+  const parents=new Map(nodes.map(node=>[node.id,[]]));
+  for(const link of links)parents.get(link.to).push(link.from);
+  const levels=new Map(),pending=new Set(parents.keys());
+  while(pending.size){
+    // A collapsed round may have both incoming and outgoing edges to another round.
+    const ready=[...pending].filter(id=>parents.get(id).every(from=>levels.has(from)));
+    for(const id of ready.length?ready:[pending.values().next().value]){
+      levels.set(id,Math.max(0,...parents.get(id).filter(from=>levels.has(from)).map(from=>levels.get(from)+1)));
+      pending.delete(id);
     }
-    curve(b.x,b.y+cardHeight/2);return path;
   }
-  const paths=links.filter(e=>positions.has(e.from)&&positions.has(e.to)).map(e=>{const active=selectedTask===e.from||selectedTask===e.to;return `<path class="${e.kind} ${active?'related':''}" data-edge-kind="${e.kind}" data-edge-from="${esc(e.from)}" data-edge-to="${esc(e.to)}" d="${edgePath(e.from,e.to)}" marker-end="url(#task-arrow-${e.kind})"><title>${esc(e.kind==='recovery'?'这些异常触发了该兜底任务':e.kind==='planning'?'此任务执行时明确安排了后续任务':'真实结果或执行先后依赖')}</title></path>`;}).join('');
-
-  return `<div class="graph-tools"><span>实际任务关系 <span class="muted">· 蓝色依赖 / 紫色安排 / 红色异常来源</span></span><div><button data-graph-zoom="out" aria-label="缩小依赖图">−</button><span id="graph-scale"></span><button data-graph-zoom="in" aria-label="放大依赖图">＋</button><button data-graph-zoom="fit">适应画布</button></div></div><div class="dependency-scroll"><div class="process-extent"><div class="process-canvas" style="width:${width}px;height:${height}px"><svg width="${width}" height="${height}" aria-hidden="true"><defs>${['dependency','planning','recovery'].map(kind=>`<marker id="task-arrow-${kind}" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7" style="fill:${kind==='recovery'?'#bd705f':kind==='planning'?'#9564cf':'#7293bb'}"/></marker>`).join('')}</defs><g class="dependency-lines">${paths}</g></svg>${items.map(item=>{const p=positions.get(item.tasks.id);return `<div style="position:absolute;left:${p.x}px;top:${p.y}px;width:${cardWidth}px">${taskCard(item)}</div>`;}).join('')}</div></div></div>`;
+  const columns=[],positions=new Map(),cardWidth=224,cardHeight=168,gap=54,margin=44,columnStep=308;
+  for(const node of nodes)(columns[levels.get(node.id)]??=[]).push(node);
+  const mobile=mobileTaskGraph.matches;
+  const height=2*margin+(mobile?nodes.length:Math.max(...columns.map(column=>column.length)))*(cardHeight+gap)-gap;
+  const width=mobile?cardWidth+2*margin:cardWidth+2*margin+(columns.length-1)*columnStep;
+  if(mobile){
+    columns.flat().forEach((node,i)=>positions.set(node.id,{x:margin,y:margin+i*(cardHeight+gap)}));
+  }else{
+    columns.forEach((column,col)=>column.forEach((node,row)=>positions.set(node.id,{x:margin+col*columnStep,y:(height-column.length*(cardHeight+gap)+gap)/2+row*(cardHeight+gap)})));
+    for(const column of columns.slice(1)){
+      let bottom=margin;
+      for(const {id} of column){
+        const upstream=parents.get(id).filter(from=>levels.get(from)<levels.get(id)).map(from=>positions.get(from));
+        const p=positions.get(id);
+        if(upstream.length)p.y=upstream.reduce((sum,prior)=>sum+prior.y,0)/upstream.length;
+        p.y=Math.max(bottom,p.y);bottom=p.y+cardHeight+gap;
+      }
+      let top=height-margin-cardHeight;
+      for(const {id} of [...column].reverse()){
+        const p=positions.get(id);p.y=Math.min(top,p.y);top=p.y-cardHeight-gap;
+      }
+    }
+  }
+  function edgePath({from,to,kind}){
+    const a=positions.get(from),b=positions.get(to),ay=a.y+cardHeight/2,by=b.y+cardHeight/2;
+    const lane={dependency:15,planning:23,recovery:31}[kind];
+    if(mobile){
+      const side=a.y<b.y?a.x:a.x+cardWidth,rail=a.y<b.y?lane:width-lane;
+      return `M${side} ${ay} C${rail} ${ay},${rail} ${ay},${rail} ${ay+(by-ay)*.18} V${by-(by-ay)*.18} C${rail} ${by},${rail} ${by},${side} ${by}`;
+    }
+    const ax=a.x+cardWidth,bx=b.x;
+    if(a.x>=b.x)return `M${ax} ${ay} H${ax+lane} V${lane} H${bx-lane} V${by} H${bx}`;
+    let x=ax,y=ay,path=`M${x} ${y}`;
+    const curve=(nx,ny)=>{const bend=(nx-x)/2;path+=` C${x+bend} ${y},${nx-bend} ${ny},${nx} ${ny}`;x=nx;y=ny;};
+    for(let col=levels.get(from)+1;col<levels.get(to);col++){
+      const obstacles=columns[col].map(node=>positions.get(node.id)),desired=(ay+by)/2;
+      const candidates=[desired,12,height-12,...obstacles.flatMap(p=>[p.y-12,p.y+cardHeight+12])];
+      const safe=candidates.filter(v=>v>=12&&v<=height-12&&obstacles.every(p=>v<=p.y-8||v>=p.y+cardHeight+8)).sort((a,b)=>Math.abs(a-desired)-Math.abs(b-desired))[0];
+      const left=margin+col*columnStep;curve(left-12,safe);x=left+cardWidth+12;path+=` L${x} ${safe}`;
+    }
+    curve(bx,by);return path;
+  }
+  const related=link=>selectedTask===link.from||selectedTask===link.to;
+  const paths=[...links].sort((a,b)=>Number(related(a))-Number(related(b))).map(link=>{
+    const {from,to,kind}=link,active=related(link);
+    return `<path class="${kind} ${active?'related':''}" data-edge-kind="${kind}" data-edge-from="${esc(from)}" data-edge-to="${esc(to)}" d="${edgePath(link)}" marker-end="url(#task-arrow-${kind})"></path>`;
+  }).join('');
+  const current=business.items.find(i=>i.tasks.status==='fault'||i.attempts.at(-1)?.observation_error)
+    ||business.items.find(i=>['executing','waiting','waiting_user','ready','blocked'].includes(i.tasks.status));
+  const cards=nodes.map(node=>{
+    const {x,y}=positions.get(node.id);
+    return `<div class="process-node" style="left:${x}px;top:${y}px;width:${cardWidth}px">${node.card?roundToggle(node.card):''}${node.item?taskCard(node.item):''}</div>`;
+  }).join('');
+  return `<div class="graph-tools"><span class="graph-legend">蓝色依赖 · 紫色安排 · 红色异常来源</span><div>${current?`<button data-graph-current="${esc(current.tasks.id)}">定位当前</button>`:''}<button data-graph-zoom="out" aria-label="缩小依赖图">−</button><button id="graph-scale" data-graph-zoom="actual" aria-label="恢复实际大小"></button><button data-graph-zoom="in" aria-label="放大依赖图">＋</button><button data-graph-zoom="fit">${mobile?'适应宽度':'适应画布'}</button></div></div><div class="dependency-scroll" data-graph-run="${esc(run.id)}" tabindex="0" aria-label="节点图画布"><div class="process-extent"><div class="process-canvas" style="width:${width}px;height:${height}px"><svg width="${width}" height="${height}" aria-hidden="true"><defs>${['dependency','planning','recovery'].map(kind=>`<marker id="task-arrow-${kind}" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7" style="fill:${kind==='recovery'?'#bd705f':kind==='planning'?'#9564cf':'#7293bb'}"/></marker>`).join('')}</defs><g class="dependency-lines${links.some(related)?' has-related':''}">${paths}</g></svg>${cards}</div></div></div>`;
 }
 let graphScale=null,graphRun=null;
 function sizeTaskGraph(mode){
   const canvas=document.querySelector('.process-canvas'),scroll=canvas?.closest('.dependency-scroll');if(!canvas || !canvas.offsetWidth || !canvas.offsetHeight || scroll.clientWidth<=24 || scroll.clientHeight<=24)return;
   if(graphRun!==run.id){graphScale=null;graphRun=run.id;}
-  const fit=Math.min(1,(scroll.clientWidth-24)/canvas.offsetWidth,(scroll.clientHeight-24)/canvas.offsetHeight);
-  graphScale=mode==='fit'?fit:mode==='in'?Math.min(1.5,(graphScale||fit)+.15):mode==='out'?Math.max(.2,(graphScale||fit)-.15):graphScale??Math.max(.85,Math.min(1,(scroll.clientWidth-24)/canvas.offsetWidth));
+  const widthFit=Math.min(1,(scroll.clientWidth-24)/canvas.offsetWidth);
+  const mobile=mobileTaskGraph.matches;
+  const natural=mobile?widthFit:1;
+  const fit=mobile?widthFit:Math.min(widthFit,(scroll.clientHeight-24)/canvas.offsetHeight);
+  if(mode==='fit')graphScale=fit;
+  else if(mode==='actual')graphScale=natural;
+  else if(mode==='in')graphScale=Math.min(1.5,(graphScale??natural)+.15);
+  else if(mode==='out')graphScale=Math.max(mobile ? 0.6 : 0.2,(graphScale??natural)-.15);
+  else graphScale??=natural;
   canvas.style.transform=`scale(${graphScale})`;canvas.parentElement.style.width=canvas.offsetWidth*graphScale+'px';canvas.parentElement.style.height=canvas.offsetHeight*graphScale+'px';
   $('graph-scale').textContent=Math.round(graphScale*100)+'%';
 }
+function graphElement(attribute,value){
+  return document.querySelector(`.process-canvas [${attribute}="${CSS.escape(value)}"]`);
+}
+function positionGraph(target,previous){
+  const scroll=target?.closest('.dependency-scroll');
+  if(!scroll)return;
+  const viewport=scroll.getBoundingClientRect(),bounds=target.getBoundingClientRect();
+  const offset=previous||{x:(viewport.width-bounds.width)/2,y:(viewport.height-bounds.height)/2};
+  scroll.scrollBy(bounds.left-viewport.left-offset.x,bounds.top-viewport.top-offset.y);
+}
+function locateGraphTask(id){
+  positionGraph(graphElement('data-task-row',id));
+}
 window.addEventListener('resize',()=>sizeTaskGraph());
+mobileTaskGraph.addEventListener('change',()=>{
+  graphScale=null;
+  if(page==='runs'&&run){inspectSignature='';renderInspect();if(selectedTask)requestAnimationFrame(()=>locateGraphTask(selectedTask));}
+});
 function taskError(attempt){
   if(!attempt?.error)return '';
   const raw=String(attempt.error);
@@ -198,58 +284,6 @@ function taskDetails(item){
   <details><summary>原始记录</summary><pre>${esc(pretty({task:t,execution:attempt}))}</pre></details></details></section>`;
 }
 function sourceLinks(source){return (Array.isArray(source)?source:[source]).filter(Boolean).map(s=>{const e=run.executions.find(e=>e.id===s.execution);return e?`<button class="text-button" data-source-execution="${esc(e.id)}">来自 ${esc(taskLabel(run.tasks[e.task_id]))} · v${esc(s.revision)}</button>`:`<small>${esc(s.run_input?'初始输入 '+s.run_input:s.settings?'设置 '+s.settings:'直接输入')}</small>`;}).join(' ');}
-let overviewGroup=null,overviewLimit=8,overviewRound='';
-function nodeOverview(items){
-  const groups=new Map();
-  for(const item of items){
-    const node=item.tasks.spec.node;
-    if(!groups.has(node))groups.set(node,[]);
-    groups.get(node).push(item);
-  }
-  const priority=t=>['fault','stale','waiting_user','approval'].includes(t.status)?0:
-    ['completed','skipped','cancelled'].includes(t.status)?2:1;
-  const button=(item,label)=>`<button class="node-record" aria-pressed="${selectedTask===item.tasks.id}" data-task-row="${esc(item.tasks.id)}" data-task-focus="${esc(item.tasks.id)}">
-    <span><strong>${esc(label)}</strong><small>${esc(taskSummary(item))}</small></span>${taskBadge(item)}</button>`;
-  const urgency=group=>group.reduce((best,item)=>Math.min(best,priority(item.tasks)),2);
-  const ordered=[...groups].sort((a,b)=>urgency(a[1])-urgency(b[1]));
-  return '<div class="node-overview">'+ordered.map(([node,group])=>{
-    if(group.length===1)return button(group[0],taskLabel(group[0].tasks));
-    const counts=new Map();
-    for(const item of group){const label=taskStatusLabel(item);counts.set(label,(counts.get(label)||0)+1);}
-    const statuses=[...counts].map(([status,n])=>n+' '+status).join(' · ');
-    const representative=[...group].sort((a,b)=>priority(a.tasks)-priority(b.tasks)||b.index-a.index)[0];
-    const note=taskSummary(representative);
-    const open=node===overviewGroup;
-    let records='';
-    if(open){
-      const sorted=[...group].sort((a,b)=>priority(a.tasks)-priority(b.tasks)||b.index-a.index);
-      records=sorted.slice(0,overviewLimit).map(i=>button(i,[i.round,i.tasks.spec.ref||'任务 '+taskNumbers.get(i.tasks.id)].filter(Boolean).join(' · '))).join('');
-      if(group.length>overviewLimit)records+='<button class="text-button" data-more-instances>查看更多执行</button>';
-    }
-    return `<button class="node-record" data-overview-group="${esc(node)}" aria-expanded="${open}"><span><strong>${esc(taskLabel(group[0].tasks))}</strong>${note?`<small>${esc(representative.tasks.spec.ref||'')} · ${esc(note)}</small>`: ''}</span>
-      <span>${esc(statuses)}　${open?'收起':'展开'}</span></button>${open?`<div class="node-instances">${records}</div>`:''}`;
-  }).join('')+'</div>';
-}
-function roundOverview(items){
-  const groups=TaskHistory.groups([...items].sort((a,b)=>(a.tasks.created_at||0)-(b.tasks.created_at||0)||a.index-b.index));
-  if(groups.length<2 || overviewRound)return nodeOverview(items);
-  const current=groups.filter(g=>g.round).at(-1);
-  function roundCard(group){
-    const id=group.round||'';
-    const open=openProgressRound===null?group===current:openProgressRound===id;
-    const done=group.items.filter(i=>i.tasks.status==='completed');
-    const faults=group.items.filter(i=>['fault','stale','waiting_user'].includes(i.tasks.status));
-    const last=[...done].sort((a,b)=>b.completed-a.completed).find(i=>taskReadout(i).some(f=>f.source==='outputs'));
-    const summary=[done.length+'/'+group.items.length+' 项完成',faults.length?faults.length+' 项需关注':'',last?[last.tasks.spec.ref||taskLabel(last.tasks),taskSummary(last)].join(' · '):''].filter(Boolean).join(' · ');
-    return `<section class="progress-round"><button data-progress-round="${esc(id)}" aria-expanded="${open}"><strong>${esc(id||'未标注轮次')}${group===current?' · 最新轮次':''}</strong><span>${esc(summary)}　${open?'⌄':'›'}</span></button>${open?nodeOverview(group.items):''}</section>`;
-  }
-  const history=groups.filter(g=>g!==current).reverse();
-  const olderRounds=history.filter(g=>g.round).length;
-  const historyLabel=olderRounds?'历史轮次 · '+olderRounds+' 轮'+(history.some(g=>!g.round)?' · 含未标注任务':''):'未标注轮次的任务';
-  const expanded=history.some(g=>openProgressRound===(g.round||'')) || document.querySelector('[data-round-history][open]')?.dataset.roundHistory===run.id;
-  return roundCard(current)+`<details class="round-history" data-round-history="${esc(run.id)}" ${expanded?'open':''}><summary>${esc(historyLabel)}</summary>${history.map(roundCard).join('')}</details>`;
-}
-let openProgressRound=null;
 function routeAuditHTML(){return `${run.history.filter(h=>h.kind==='plan_built'&&h.detail?.omitted?.length).map(h=>`<details class="omitted-steps"><summary>未安排的步骤 · ${esc(h.detail.name)} · ${esc(taskTime(h.at))}</summary>${omittedStepsHTML(h.detail.omitted,h.detail.name)}</details>`).join('')}${run.history.filter(h=>h.kind==='route_fired'||h.kind==='route_skipped').map(h=>`<details class="omitted-steps"><summary>${h.kind==='route_skipped'?'路由已跳过':'事件触发'} · ${esc(h.detail.route_id)} → ${esc(h.detail.flow_agent?'内置流程 Agent':h.detail.plan)} · ${h.detail.batches.reduce((n,b)=>n+b.task_ids.length,0)} 项任务</summary><p>来源：<button class="text-button" data-task-focus="${esc(h.detail.task_id)}">${esc(taskLabel(run.tasks[h.detail.task_id]))}</button> · ${esc(h.detail.event)}</p>${resultView(h.detail)}</details>`).join('')}`;}
 document.addEventListener('toggle',event=>{
   const panel=event.target;
@@ -257,17 +291,40 @@ document.addEventListener('toggle',event=>{
 },true);
 function renderTaskHistory(){
   if(run.superseded_by && !Object.keys(run.tasks).length)return '<p class="empty-inline">这次历史运行没有节点记录。</p>';
-  requestAnimationFrame(()=>sizeTaskGraph());
+  const scroll=document.querySelector('.dependency-scroll'),detail=$('task-detail');
+  const position=scroll?.dataset.graphRun===run.id?{left:scroll.scrollLeft,top:scroll.scrollTop}:null;
+  const detailTop=detail?.dataset.task===selectedTask?detail.scrollTop:0;
+  const focused=document.activeElement;
+  const focusedRound=scroll?.contains(focused)?focused.dataset.roundToggle:undefined;
+  const focusedTask=scroll?.contains(focused)&&focused.matches('.task-card-main')?focused.dataset.taskFocus:undefined;
+  requestAnimationFrame(()=>{
+    sizeTaskGraph();
+    if(position)document.querySelector('.dependency-scroll')?.scrollTo(position);
+    else if(!selectedTask){
+      const current=document.querySelector('[data-graph-current]');
+      if(current)locateGraphTask(current.dataset.graphCurrent);
+    }
+    if(detailTop)$('task-detail')?.scrollTo(0,detailTop);
+    if(focusedRound!==undefined)graphElement('data-round-toggle',focusedRound)?.focus({preventScroll:true});
+    if(focusedTask)graphElement('data-task-row',focusedTask)?.querySelector('.task-card-main')?.focus({preventScroll:true});
+  });
   taskChanges=new Map(run.history.filter(h=>h.detail?.before&&h.detail?.tasks).map(h=>[h.detail.tasks,h]));
-  const all=TaskHistory.rows(run),business=all.filter(i=>!i.tasks.origin?.flow_agent);taskNumbers=new Map((taskOrder==='graph'?business:all).map((item,index)=>[item.tasks.id,index+1]));if(!all.some(i=>i.tasks.id===selectedTask)){selectedTask=taskOrder==='overview'?null:all.find(i=>['executing','fault','blocked','ready'].includes(i.tasks.status))?.tasks.id||all[0]?.tasks.id;selectedAttempt=null;}
-  const items=all.filter(i=>(!filterNode||i.tasks.spec.node===filterNode)&&(!taskStatus||i.tasks.status===taskStatus)&&(!taskSearch||(taskLabel(i.tasks)+' '+i.tasks.id+' '+(i.round||'')).toLowerCase().includes(taskSearch.toLowerCase())));
+  const all=TaskHistory.rows(run),business=all.filter(i=>!i.tasks.origin?.flow_agent);
+  taskNumbers=new Map(all.map((item,index)=>[item.tasks.id,index+1]));
+  const selected=all.find(i=>i.tasks.id===selectedTask);
+  if(!selected){selectedTask=null;selectedAttempt=null;}
+  if(selected?.tasks.status==='completed'&&!expandedRounds.has(selected.round||'')){
+    expandedRounds.add(selected.round||'');rememberRounds();
+  }
+  const query=taskSearch.trim().toLowerCase();
+  const visible=all.filter(i=>(!filterNode||i.tasks.spec.node===filterNode)&&(!taskStatus||i.tasks.status===taskStatus)&&
+    (!taskRound||i.round===taskRound)&&(!query||[taskLabel(i.tasks),i.tasks.id,i.tasks.spec.ref,i.round].join(' ').toLowerCase().includes(query)));
   const rounds=[...new Set(all.map(i=>i.round).filter(Boolean))];
-  const visible=overviewRound?items.filter(i=>i.round===overviewRound):items;
   const auditOpen=document.querySelector('.route-audit[open]')?.dataset.auditRun===run.id;
   const groups=[{round:'已开始',items:visible.filter(i=>i.started!==null)},{round:'尚未开始',items:visible.filter(i=>i.started===null&&!['completed','skipped','cancelled','stale'].includes(i.tasks.status))},{round:'未执行且已结束',items:visible.filter(i=>i.started===null&&['completed','skipped','cancelled','stale'].includes(i.tasks.status))}];
-  const nodeCount=new Set(business.map(i=>i.tasks.spec.node)).size;
-  return `<div class="task-heading"><div><h2>节点进度</h2><p class="muted small">${nodeCount} 个业务节点 · ${business.length} 项任务${rounds.length?' · '+rounds.length+' 轮':''}${all.length>business.length?' · '+(all.length-business.length)+' 次流程决策':''}</p></div><div class="toolbar"></div></div><div class="process-controls"><div class="segmented">${[['overview','节点概览'],['graph','完整关系图'],['time','时间顺序']].map(([id,label])=>`<button data-task-order="${id}" class="${taskOrder===id?'selected':''}">${label}</button>`).join('')}</div>${rounds.length?`<label class="task-round-filter"><select id="overview-round" aria-label="筛选轮次"><option value="">全部轮次</option>${rounds.map(r=>'<option value="'+esc(r)+'" '+(r===overviewRound?'selected':'')+'>'+esc(r)+'</option>').join('')}</select></label>`:''}<label class="task-search-label"><span class="sr-only">查找任务</span><input id="task-search" placeholder="查找任务…" type="search" value="${esc(taskSearch)}"></label><label class="task-status-label"><span class="sr-only">任务状态</span><select id="task-status"><option value="">全部状态</option>${[...new Set(all.map(i=>i.tasks.status))].map(s=>`<option value="${esc(s)}" ${taskStatus===s?'selected':''}>${esc(labels[s]||s)}</option>`).join('')}</select></label>${filterNode?'<button id="clear-task-filter">清除节点筛选</button>':''}</div>
-  <div class="process-layout ${taskOrder==='overview'&&!selectedTask?'overview-only':''}"><section class="process-body">${visible.length?(taskOrder==='overview'?roundOverview(visible):taskOrder==='graph'?taskDependencyGraph(visible):groups.filter(g=>g.items.length).map(g=>`<details class="task-group" open><summary>${esc(g.round || '未标注轮次')} · ${g.items.length}</summary><div class="process-list">${g.items.map(taskCard).join('')}</div></details>`).join('')):'<p class="empty-inline">没有符合条件的任务</p>'}</section><aside id="task-detail" class="task-detail" ${taskOrder==='overview'&&!selectedTask?'hidden':''}>${taskDetails(all.find(i=>i.tasks.id===selectedTask))}</aside></div><details class="route-audit" data-audit-run="${esc(run.id)}" ${auditOpen?'open':''}><summary>推进记录</summary>${auditOpen?routeAuditHTML():''}</details>`;
+  const filtered=Boolean(filterNode||taskStatus||query);
+  return `<div class="task-heading"><div><h2>节点进度</h2><p class="muted small">${business.length} 项任务${rounds.length?' · '+rounds.length+' 轮':''}${all.length>business.length?' · '+(all.length-business.length)+' 次流程决策':''}</p></div></div><div class="process-controls"><div class="segmented">${[['graph','节点图'],['time','时间顺序']].map(([id,label])=>`<button data-task-order="${id}" class="${taskOrder===id?'selected':''}" aria-pressed="${taskOrder===id}">${label}</button>`).join('')}</div>${rounds.length?`<label class="task-round-filter"><select id="task-round" aria-label="筛选轮次"><option value="">全部轮次</option>${rounds.map(r=>'<option value="'+esc(r)+'" '+(r===taskRound?'selected':'')+'>'+esc(r)+'</option>').join('')}</select></label>`:''}<label class="task-search-label"><span class="sr-only">查找任务</span><input id="task-search" placeholder="查找任务…" type="search" value="${esc(taskSearch)}"></label><label class="task-status-label"><span class="sr-only">任务状态</span><select id="task-status"><option value="">全部状态</option>${[...new Set(all.map(i=>i.tasks.status))].map(s=>`<option value="${esc(s)}" ${taskStatus===s?'selected':''}>${esc(labels[s]||s)}</option>`).join('')}</select></label>${filterNode?'<button id="clear-task-filter">清除节点筛选</button>':''}</div>
+  <div class="process-layout ${selected?'':'process-only'}"><section class="process-body">${visible.length?(taskOrder==='graph'?taskDependencyGraph(visible,filtered):groups.filter(g=>g.items.length).map(g=>`<details class="task-group" open><summary>${g.round} · ${g.items.length}</summary><div class="process-list">${g.items.map(taskCard).join('')}</div></details>`).join('')):'<p class="empty-inline">没有符合条件的任务</p>'}</section><aside id="task-detail" class="task-detail" ${selected?`data-task="${esc(selectedTask)}"`:'hidden'}>${selected?`<button class="close-task-detail" data-close-task aria-label="关闭节点详情">×</button><div id="task-detail-body">${taskDetails(selected)}</div>`:''}</aside></div><details class="route-audit" data-audit-run="${esc(run.id)}" ${auditOpen?'open':''}><summary>推进记录</summary>${auditOpen?routeAuditHTML():''}</details>`;
 }
 const editDialog=document.createElement('dialog');editDialog.id='task-edit-dialog';editDialog.innerHTML='<div class="dialog-heading"><h2 id="task-edit-title"></h2><button class="close-dialog" aria-label="关闭">×</button></div><div id="task-edit-error" role="alert"></div><form id="task-edit-form"><div id="task-edit-fields"></div><div class="dialog-tasks"><button type="button" class="close-dialog">取消</button><button type="submit" class="primary" id="task-edit-submit">确认操作</button></div></form>';document.body.append(editDialog);
 function openTaskEdit(kind,id=null){
@@ -284,25 +341,54 @@ function omittedStepsHTML(items,planName){return items.length?`<section class="o
 function collectTaskEdit(){return [{tool:'change_task',arguments:{task_id:taskEdit.id,operation:taskEdit.kind,reason:$('task-edit-reason').value.trim()||$('task-edit-title').textContent}}];}
 document.addEventListener('click',event=>safely(async()=>{
   const el=event.target.closest('button');if(!el)return;const d=el.dataset;
-  if(el.hasAttribute('data-progress-round')){openProgressRound=el.getAttribute('aria-expanded')==='true'?undefined:d.progressRound;overviewGroup=null;selectedTask=null;inspectSignature='';renderInspect();return;}
-  if(d.focusGroup){
-    taskOrder='overview';activeTab='task-history';overviewGroup=d.focusGroup;overviewLimit=8;overviewRound='';openProgressRound=d.focusRound;taskStatus='';taskSearch='';filterNode=null;selectedTask=null;
+  if(d.roundToggle!==undefined){
+    const round=d.roundToggle,scroll=el.closest('.dependency-scroll').getBoundingClientRect(),rect=el.getBoundingClientRect();
+    const offset={x:rect.left-scroll.left,y:rect.top-scroll.top};
+    if(el.getAttribute('aria-expanded')==='true'){
+      expandedRounds.delete(round);
+      const task=run.tasks[selectedTask];
+      if(task?.status==='completed'&&(task.spec.round||'')===round){selectedTask=null;selectedAttempt=null;syncRunTaskRoute();}
+    }else expandedRounds.add(round);
+    rememberRounds();
     inspectSignature='';renderInspect();
-    document.querySelector('.node-record[aria-expanded="true"]')?.scrollIntoView({block:'center'});return;
+    requestAnimationFrame(()=>positionGraph(graphElement('data-round-toggle',round),offset));
+    return;
   }
-  if(d.overviewGroup){overviewGroup=overviewGroup===d.overviewGroup?null:d.overviewGroup;overviewLimit=8;inspectSignature='';renderInspect();return;}
-  if(el.hasAttribute('data-more-instances')){overviewLimit+=8;inspectSignature='';renderInspect();return;}
-  if(d.taskFocus||d.sourceExecution){selectedTask=d.taskFocus||run.executions.find(e=>e.id===d.sourceExecution)?.task_id;selectedAttempt=d.sourceExecution||null;openProgressRound=run.tasks[selectedTask]?.spec.round||'';const scroll=document.querySelector('.dependency-scroll'),position=scroll?{left:scroll.scrollLeft,top:scroll.scrollTop}:null;inspectSignature='';renderInspect();requestAnimationFrame(()=>{if(position)document.querySelector('.dependency-scroll')?.scrollTo(position);if(taskOrder==='overview' && window.matchMedia('(max-width:800px)').matches)$('task-detail')?.scrollIntoView({block:'start'});});}
+  if(d.focusGroup){
+    taskOrder='graph';activeTab='task-history';taskRound='';taskStatus='';taskSearch='';filterNode=d.focusGroup;selectedTask=null;selectedAttempt=null;
+    syncRunTaskRoute();
+    inspectSignature='';renderInspect();
+    document.querySelector('.process-controls')?.scrollIntoView({block:'start'});return;
+  }
+  if(d.taskFocus||d.sourceExecution){
+    const id=d.taskFocus||run.executions.find(e=>e.id===d.sourceExecution)?.task_id;
+    if(!run.tasks[id])return;
+    if(!el.closest('[data-task-row]')){filterNode=null;taskRound='';taskSearch='';taskStatus='';}
+    selectedTask=id;selectedAttempt=d.sourceExecution||null;syncRunTaskRoute();
+    inspectSignature='';renderInspect();
+    requestAnimationFrame(()=>{locateGraphTask(id);if(window.matchMedia('(max-width:800px)').matches)$('task-detail')?.scrollIntoView({block:'start'});});
+  }
+  else if(d.graphCurrent){locateGraphTask(d.graphCurrent);graphElement('data-task-row',d.graphCurrent)?.querySelector('.task-card-main')?.focus({preventScroll:true});}
   else if(d.graphZoom)sizeTaskGraph(d.graphZoom);
-  else if(d.taskOrder){taskOrder=d.taskOrder;if(taskOrder==='overview'){selectedTask=null;selectedAttempt=null;}inspectSignature='';renderInspect();}
+  else if(d.taskOrder){taskOrder=d.taskOrder;inspectSignature='';renderInspect();if(selectedTask)requestAnimationFrame(()=>locateGraphTask(selectedTask));}
+  else if(d.closeTask!==undefined){
+    const id=selectedTask;selectedTask=null;selectedAttempt=null;syncRunTaskRoute();inspectSignature='';renderInspect();
+    requestAnimationFrame(()=>{
+      const card=document.querySelector(`.process-body [data-task-row="${CSS.escape(id)}"]`);
+      positionGraph(card);
+      const button=card?.querySelector('.task-card-main')||document.querySelector('.dependency-scroll');
+      button?.focus({preventScroll:true});
+      if(window.matchMedia('(max-width:800px)').matches)document.querySelector('.process-controls')?.scrollIntoView({block:'start'});
+    });
+  }
   else if(d.taskCancel)openTaskEdit('cancel',d.taskCancel);
   else if(d.taskRetry)openTaskEdit('retry',d.taskRetry);
   else if(el.id==='clear-task-filter'){filterNode=null;inspectSignature='';renderInspect();}
 }));
 document.addEventListener('change',event=>{const el=event.target;
   if(el.id==='task-status'||el.id==='task-search'){taskStatus=$('task-status').value;taskSearch=$('task-search').value;inspectSignature='';renderInspect();}
-  if(el.id==='overview-round'){overviewRound=el.value;overviewGroup=null;selectedTask=null;inspectSignature='';renderInspect();}
-  if(el.id==='task-attempt'){selectedAttempt=el.value;$('task-detail').innerHTML=taskDetails(TaskHistory.rows(run).find(i=>i.tasks.id===selectedTask));}
+  if(el.id==='task-round'){taskRound=el.value;selectedTask=null;selectedAttempt=null;syncRunTaskRoute();inspectSignature='';renderInspect();}
+  if(el.id==='task-attempt'){selectedAttempt=el.value;$('task-detail-body').innerHTML=taskDetails(TaskHistory.rows(run).find(i=>i.tasks.id===selectedTask));}
 });
 document.addEventListener('submit',event=>{
   if(event.target.id!=='task-edit-form')return;event.preventDefault();
