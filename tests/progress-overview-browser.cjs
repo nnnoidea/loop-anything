@@ -207,6 +207,41 @@ withPlatform(async({url,page,tool,api,startRun})=>{
     await group.locator('.external-reading a').last().click();
     await page.locator('#task-detail').getByRole('heading',{name:'训练模型',exact:true}).waitFor();
   }
+  const cancelledRound='第 3 轮',singleRound='证据判读';
+  const cancelNote='由绑定同一数据集与 checkpoint 的 32768 token 预测、官方评分及后续判读任务接替。';
+  const cancelledTasks=[['old-score',cancelledRound,cancelNote],['old-review',singleRound,'取消任务']];
+  const requestEdit=changes=>tool('submit_run_request',{run_id:run.run_id,request_id:randomUUID(),operation:'edit_tasks',arguments:{changes}});
+  await requestEdit(cancelledTasks.map(([ref,round])=>({tool:'add_task',arguments:{ref,key:ref,node_id:'prepare',
+    inputs:{},round,after_refs:['score-B-6']}})));
+  const latest=await api('runs/'+run.run_id);
+  const [cancelledId,singleId]=cancelledTasks.map(([ref])=>Object.values(latest.tasks).find(t=>t.spec.ref===ref).id);
+  await requestEdit(cancelledTasks.map(([, , reason],i)=>({tool:'change_task',arguments:{task_id:[cancelledId,singleId][i],operation:'cancel',reason}})));
+  for(const width of [1280,390]){
+    await page.setViewportSize({width,height:850});
+    const deepLink=url+'/#run/'+run.run_id+'/task/'+encodeURIComponent(cancelledId);
+    await page.goto(deepLink);
+    const mixed=graph.locator(`[data-round-frame="${cancelledRound}"]`);
+    const cancelled=page.locator('#task-detail .task-cancellation');
+    await mixed.getByText('已完成 6 · 已取消 1',{exact:true}).waitFor();
+    await cancelled.getByRole('heading',{name:'取消原因'}).waitFor();
+    assert(await cancelled.getByText(cancelNote,{exact:true}).isVisible());
+    const cancelledCard=mixed.locator(`[data-task-row="${cancelledId}"]`);
+    assert(await cancelledCard.getByText('已取消',{exact:true}).isVisible());
+    assert(await cancelledCard.locator('.task-summary').evaluate(el=>el.clientHeight>16&&el.scrollHeight<=el.clientHeight));
+    await mixed.getByRole('button',{name:'收起 '+cancelledRound,exact:true}).click();
+    assert.equal(await page.locator('#task-detail').isVisible(),false);
+    assert.equal(new URL(page.url()).hash,'#run/'+run.run_id);
+    assert.equal(await graph.locator(`[data-round-toggle="${cancelledRound}"]`).getAttribute('aria-expanded'),'false');
+    const single=graph.locator(`[data-round-toggle="${singleRound}"]`);
+    await single.getByText('已取消 1',{exact:true}).waitFor();
+    await single.click();
+    await graph.locator(`[data-round-frame="${singleRound}"] [data-task-row="${singleId}"] .task-card-main`).click();
+    await cancelled.getByText('未记录具体原因',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'关闭节点详情'}).click();
+    await single.click();
+    await page.locator('#task-status').selectOption('cancelled');
+    assert.equal(await graph.locator('[data-task-row][data-status="cancelled"]').count(),2);
+  }
   const waiting=await startRun('测试等待事件');
   await page.goto(url+'/#run/'+waiting.turn.run_id);
   await page.getByRole('button',{name:/待处理/}).click();

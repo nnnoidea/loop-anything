@@ -61,6 +61,34 @@ def activity_summary(history, run):
     return summaries
 
 
+def cancellation_reasons(db, run):
+    pending = {task['id'] for task in run['tasks'].values() if task['status'] == 'cancelled'}
+    if not pending:
+        return {}
+    executions = {e['id']: e['task_id'] for e in run['executions']}
+    rows = db.execute("""SELECT coalesce(json_extract(document, '$.detail.tasks'),
+                                         json_extract(document, '$.detail.task_id')),
+                                json_extract(document, '$.execution'),
+                                json_extract(document, '$.detail.operation'),
+                                json_extract(document, '$.message')
+                         FROM timeline_parts WHERE run_id=? AND section='history'
+                         AND json_extract(document, '$.kind') IN ('agent_action_change', 'monitor_retry')
+                         ORDER BY position DESC""", (run['id'],))
+    reasons = {}
+    for task_id, execution_id, operation, message in rows:
+        task_id = task_id or executions.get(execution_id)
+        if not isinstance(task_id, str) or task_id not in pending:
+            continue
+        # A later task change or monitor retry supersedes any earlier cancellation.
+        pending.remove(task_id)
+        note = message.strip() if operation == 'cancel' and isinstance(message, str) else ''
+        if note and note not in ('取消任务', '取消等待'):
+            reasons[task_id] = note if len(note) <= 600 else note[:599] + '…'
+        if not pending:
+            break
+    return reasons
+
+
 def failure_summary(attempt):
     if attempt.get('observation_error'):
         return '采集异常，外部任务状态待确认。'
@@ -197,6 +225,7 @@ def read_workspace(store, runtime, run_id, query):
     with store.connection() as db:
         db.execute('BEGIN')
         run = store._load(db, run_id, include_history=False, include_arrangements=False)
+        reasons = cancellation_reasons(db, run) if tab == 'task-history' else {}
         history, total = activity_page(db, run_id, offset) if tab == 'activity' else ([], 0)
         changed = [row[0] for row in db.execute("""SELECT DISTINCT json_extract(document, '$.detail.tasks')
                       FROM timeline_parts WHERE run_id=? AND section='history'
@@ -230,6 +259,8 @@ def read_workspace(store, runtime, run_id, query):
                                    nodes={key: pick(node, 'label', 'readout', 'outputs') for key, node in nodes.items()},
                                    records=output_schemas(loop, nodes[waiting['node']]) if waiting else {})
     view['tasks'] = {ident: task_summary(task) for ident, task in run['tasks'].items()}
+    for ident, reason in reasons.items():
+        view['tasks'][ident]['cancellation_reason'] = reason
     view['executions'] = [attempt_summary(e, nodes.get(e['node'], {}), loop['records'],
                                           allow_approval=e['id'] == selected_execution, include_content=e['task_id'] == task_id)
                           for e in run['executions']]

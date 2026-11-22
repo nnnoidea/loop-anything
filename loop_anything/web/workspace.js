@@ -41,6 +41,7 @@ function taskReadout(item,attempt=item.attempts.at(-1)){
 }
 function taskSummary(item){
   const t=item.tasks,e=item.attempts.at(-1);
+  if(t.status==='cancelled')return t.cancellation_reason||'未记录具体原因';
   if(e?.observation_error)return '采集异常，外部任务状态待确认';
   if(['fault','stale'].includes(t.status))return taskFailureText(t,e);
   const facts=taskReadout(item);
@@ -128,14 +129,17 @@ function taskCard(item){
 const taskCardWidth=224,taskCardHeight=160,roundHeadingHeight=44;
 let showTaskOrigins=false;
 function roundHeading(card,filtered){
-  const title=card.round||'未标注轮次',count=card.members.length+' 个已完成节点';
+  const title=card.round||'未标注轮次';
+  const cancelled=card.members.filter(item=>item.tasks.status==='cancelled').length;
+  const completed=card.members.length-cancelled;
+  const count=[completed&&`已完成 ${completed}`,cancelled&&`已取消 ${cancelled}`].filter(Boolean).join(' · ');
   const toggle=`data-round-toggle="${esc(card.round)}" aria-expanded="${card.open}"`;
   const heading=`<strong>${esc(title)}</strong><small>${count}</small>`;
   if(card.open)return filtered
     ?`<div class="round-heading">${heading}</div>`
-    :`<button class="round-heading" ${toggle} aria-label="收起 ${esc(title)} 已完成节点">${heading}<span aria-hidden="true">收起 ⌃</span></button>`;
-  const recent=[...card.members].reverse().find(item=>taskReadout(item).some(f=>f.source==='outputs'));
-  return `<button class="round-card" ${toggle}>${heading}${recent?`<small>${esc(taskSummary(recent))}</small>`:''}<span class="round-action">展开已完成节点 <span aria-hidden="true">⌄</span></span></button>`;
+    :`<button class="round-heading" ${toggle} aria-label="收起 ${esc(title)}">${heading}<span aria-hidden="true">收起 ⌃</span></button>`;
+  const recent=card.members.findLast(item=>item.tasks.status==='completed'&&taskReadout(item).some(f=>f.source==='outputs'));
+  return `<button class="round-card" ${toggle}>${heading}${recent?`<small>${esc(taskSummary(recent))}</small>`:''}<span class="round-action">展开节点 <span aria-hidden="true">⌄</span></span></button>`;
 }
 
 function layoutTaskGraph(nodes,links,mobile,insideRound=false){
@@ -279,7 +283,7 @@ function taskDependencyGraph(items,filtered){
     return {id,width:body.width,height:body.height+roundHeadingHeight,content};
   });
   const layout=layoutTaskGraph(groups,links,mobile);
-  const current=business.items.find(i=>i.tasks.status==='fault'||i.attempts.at(-1)?.observation_error)
+  const current=business.items.find(i=>i.tasks.status==='fault'||i.tasks.status!=='cancelled'&&i.attempts.at(-1)?.observation_error)
     ||business.items.find(i=>['executing','waiting','waiting_user','ready','blocked'].includes(i.tasks.status));
   const cards=groups.map(node=>place(layout.positions.get(node.id),node.content)).join('');
   const legend=showTaskOrigins?'蓝色执行依赖 · 紫色任务安排 · 红色异常来源':'蓝线表示执行依赖';
@@ -419,7 +423,7 @@ function taskNeedsDetail(id){
   if(!task)return false;
   const attempts=run.executions.filter(e=>e.task_id===id);
   const attempt=attempts.find(e=>e.id===task.execution_id)||attempts.at(-1);
-  return needsReplyData(attempt)||Boolean(resultAttempt(attempts,attempt)?.has_result_content);
+  return (task.status!=='cancelled'&&needsReplyData(attempt))||Boolean(resultAttempt(attempts,attempt)?.has_result_content);
 }
 function taskFlowHTML(item){
   const id=item.tasks.id,edges=TaskHistory.links(run),incoming=edges.filter(e=>e.to===id),outgoing=edges.filter(e=>e.from===id);
@@ -439,7 +443,8 @@ function taskDetails(item,pending){
   const t=item.tasks,attempt=item.attempts.find(e=>e.id===t.execution_id)||item.attempts.at(-1);
   const ended=run.identity_read_only||['completed','terminated','continued'].includes(run.status);
   const editable=!t.execution_id&&['planned','blocked','ready','held'].includes(t.status);
-  const cancellable=editable||attempt?.status==='waiting'&&['timer','event','loop'].includes(attempt.implementation.kind);
+  const cancelled=t.status==='cancelled';
+  const cancellable=!cancelled&&(editable||attempt?.status==='waiting'&&['timer','event','loop'].includes(attempt.implementation.kind));
   const canRetry=['fault','stale','cancelled','waiting_user','retrying'].includes(t.status)||attempt?.observation_error;
   const result=resultAttempt(item.attempts,attempt),progress=TaskHistory.readings(run.loop_definition.nodes[t.spec.node]?.readout,attempt?.activity_progress);
   const agent=attempt?.implementation.kind==='agent';
@@ -452,10 +457,12 @@ function taskDetails(item,pending){
   ].filter(Boolean);
   return `<div class="task-detail-heading"><h2>${esc(taskLabel(t))}</h2>${taskBadge(item)}</div>
     ${item.round||t.spec.ref?`<p class="small muted">${esc([item.round,t.spec.ref].filter(Boolean).join(' · '))}</p>`:''}
-    ${taskError(attempt,t)}${taskWaitReasons(t)}
-    ${pending&&needsReplyData(attempt)?'<p class="small muted" role="status">正在读取等待条件…</p>':waitDetails(attempt)}${childRunLink(attempt)}
-    ${t.assistance_wait?'<p class="small muted">正在等待外援回复。</p>':''}
-    ${progress.length&&result!==attempt?readingsHTML(progress):''}
+    ${cancelled?`<section class="task-cancellation"><h3>取消原因</h3><p>${esc(taskSummary(item))}</p></section>`:
+      `${taskError(attempt,t)}${taskWaitReasons(t)}
+       ${pending&&needsReplyData(attempt)?'<p class="small muted" role="status">正在读取等待条件…</p>':waitDetails(attempt)}
+       ${t.assistance_wait?'<p class="small muted">正在等待外援回复。</p>':''}
+       ${progress.length&&result!==attempt?readingsHTML(progress):''}`}
+    ${childRunLink(attempt)}
     ${taskResultHTML(result,attempt,pending&&result?.has_result_content)}
     ${actions.length?`<div class="toolbar">${actions.join('')}</div>`:''}${taskFlowHTML(item)}`;
 }
@@ -485,7 +492,7 @@ function renderTaskHistory(){
   taskNumbers=new Map(all.map((item,index)=>[item.tasks.id,index+1]));
   const selected=all.find(i=>i.tasks.id===selectedTask);
   if(!selected)selectedTask=null;
-  if(selected?.tasks.status==='completed'&&!expandedRounds.has(selected.round||'')){
+  if(selected&&!selected.tasks.origin?.flow_agent&&TaskHistory.canFoldRoundTask(selected)&&!expandedRounds.has(selected.round||'')){
     expandedRounds.add(selected.round||'');rememberRounds();
   }
   const query=taskSearch.trim().toLowerCase();
@@ -525,8 +532,9 @@ document.addEventListener('click',event=>safely(async()=>{
     const offset={x:rect.left-scroll.left,y:rect.top-scroll.top};
     if(el.getAttribute('aria-expanded')==='true'){
       expandedRounds.delete(round);
-      const task=run.tasks[selectedTask];
-      if(task?.status==='completed'&&(task.spec.round||'')===round){selectedTask=null;syncRunTaskRoute();}
+      if(selectedTask&&el.closest('[data-round-frame]')?.contains(graphElement('data-task-row',selectedTask))){
+        selectedTask=null;syncRunTaskRoute();
+      }
     }else expandedRounds.add(round);
     rememberRounds();
     inspectSignature='';renderInspect();

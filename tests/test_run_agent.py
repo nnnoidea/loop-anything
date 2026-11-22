@@ -483,6 +483,31 @@ print(json.dumps({'event':'completed','envelope':{'outputs':{'result':'fabricate
         self.assertEqual(selected['history'], [])
         self.assertTrue(any(h['message'] == 'Raw output for diagnosis' for h in self.read()['history']))
 
+    def test_workspace_uses_only_the_current_task_cancellation_reason(self):
+        from loop_anything.interfaces.run_workspace import read_workspace
+
+        self.start()
+        self.complete('init', settings={'objective': 'Review'}, tasks=[
+            task_spec('replaced', 'reason', round='对照实验'), task_spec('retried', 'reason'),
+            task_spec('no-note', 'reason'), task_spec('still-planned', 'reason'),
+        ])
+        for task_id, note in [('replaced', '旧安排'), ('retried', '已失效的旧取消说明'),
+                              ('no-note', '取消任务'), ('replaced', '  已由新一轮结果接替。  ')]:
+            self.tools.call('change_task', {'task_id': task_id, 'operation': 'cancel', 'reason': note})
+        self.tools.call('change_task', {'task_id': 'retried', 'operation': 'retry', 'reason': '再次尝试'})
+        self.tools.call('finish', {})
+        self.engine.command(self.id, 'terminate')
+
+        view = read_workspace(self.store, self.engine.timeline_runtime, self.id, {})
+        tasks = view['tasks']
+        self.assertEqual(tasks['replaced']['spec']['round'], '对照实验')
+        self.assertEqual(tasks['replaced']['cancellation_reason'], '已由新一轮结果接替。')
+        for task_id in ('retried', 'no-note', 'still-planned'):
+            self.assertEqual(tasks[task_id]['status'], 'cancelled')
+            self.assertNotIn('cancellation_reason', tasks[task_id])
+        self.assertEqual(view['history'], [])
+        self.assertNotIn('旧取消说明', json.dumps(view, ensure_ascii=False))
+
     def test_workspace_results_select_metrics_and_omit_execution_metadata(self):
         from loop_anything.interfaces.run_results import display_results
 

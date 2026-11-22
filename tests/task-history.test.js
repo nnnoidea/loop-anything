@@ -34,29 +34,40 @@ test('business graph folds only internal decisions into their source and preserv
   assert.equal(history.rows(run).length,3);
 });
 
-test('round cards collapse completed tasks and preserve all distinct external edges',()=>{
+test('round cards collapse completed and cancelled tasks and preserve all distinct external edges',()=>{
   const items=[['previous','completed','第 1 轮'],['prepare','completed','第 2 轮'],['train','completed','第 2 轮'],
     ['predict','waiting','第 2 轮'],['failed','fault','第 1 轮'],['cancelled','cancelled','第 2 轮']]
     .map(([id,status,round])=>({tasks:{id,status},round,attempts:[]}));
   const links=[['previous','prepare','dependency'],['previous','train','dependency'],['prepare','train','dependency'],
-    ['train','predict','dependency'],['failed','train','recovery']].map(([from,to,kind])=>({from,to,kind}));
+    ['train','predict','dependency'],['failed','train','recovery'],['train','cancelled','dependency'],
+    ['cancelled','predict','dependency']].map(([from,to,kind])=>({from,to,kind}));
   const graph={items,links};
   const collapsed=history.roundGraph(graph,new Set(),null,false);
   const card=collapsed.nodes.find(node=>!node.item);
   assert.equal(card.card.round,'第 2 轮');
-  assert.deepEqual(card.card.members.map(i=>i.tasks.id),['prepare','train']);
-  assert.deepEqual(collapsed.nodes.filter(node=>node.item).map(node=>node.id),['previous','predict','failed','cancelled']);
+  assert.deepEqual(card.card.members.map(i=>i.tasks.id),['prepare','train','cancelled']);
+  assert.deepEqual(collapsed.nodes.filter(node=>node.item).map(node=>node.id),['previous','predict','failed']);
   assert.deepEqual(collapsed.links,[
     {from:'previous',to:card.id,kind:'dependency',tasks:links.slice(0,2)},
-    {from:card.id,to:'predict',kind:'dependency',tasks:[links[3]]},
+    {from:card.id,to:'predict',kind:'dependency',tasks:[links[3],links[6]]},
     {from:'failed',to:card.id,kind:'recovery',tasks:[links[4]]},
   ]);
   for(const expanded of [history.roundGraph(graph,new Set(['第 2 轮']),null,false),
-    history.roundGraph(graph,new Set(),'train',false),history.roundGraph(graph,new Set(),null,true)]){
+    history.roundGraph(graph,new Set(),'cancelled',false),history.roundGraph(graph,new Set(),null,true)]){
     const round=expanded.nodes.find(node=>node.card).card;
     assert.equal(round.open,true);
-    assert.deepEqual(round.members.map(item=>item.tasks.id),['prepare','train']);
-    assert.deepEqual(round.links,[links[2]]);
+    assert.deepEqual(round.members.map(item=>item.tasks.id),['prepare','train','cancelled']);
+    assert.deepEqual(round.links,[links[2],links[5]]);
     assert.deepEqual(expanded.links,collapsed.links);
   }
+});
+
+test('a lone cancellation is still foldable under its recorded round',()=>{
+  const items=[{tasks:{id:'replacement-review',status:'cancelled'},round:'结果判读',attempts:[{observation_error:true}]},
+    {tasks:{id:'score',status:'completed'},round:'对照实验',attempts:[]}];
+  const {nodes}=history.roundGraph({items,links:[]},new Set(),null,false);
+  assert.equal(nodes[0].card.round,'结果判读');
+  assert.equal(nodes[0].card.open,false);
+  assert.deepEqual(nodes[0].card.members,[items[0]]);
+  assert.equal(nodes[1].item,items[1]);
 });

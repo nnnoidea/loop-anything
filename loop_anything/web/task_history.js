@@ -57,11 +57,14 @@
     }
     return {items:visible,links:mapped};
   }
+  function canFoldRoundTask(item){
+    return item.tasks.status==='cancelled'||item.tasks.status==='completed'&&!item.attempts.at(-1)?.observation_error;
+  }
   function roundGraph(graph,expanded,selected,filtered){
     const owners=new Map();
     for(const group of groups(graph.items)){
-      const members=group.items.filter(item=>item.tasks.status==='completed'&&!item.attempts.at(-1)?.observation_error);
-      if(members.length<2)continue;
+      const members=group.items.filter(canFoldRoundTask);
+      if(!members.length||(members.length===1&&members[0].tasks.status!=='cancelled'))continue;
       const round=group.round||'';
       const card={id:'$round:'+round,round,members,links:[],open:filtered||expanded.has(round)||members.some(i=>i.tasks.id===selected)};
       for(const item of members)owners.set(item.tasks.id,card);
@@ -104,5 +107,5 @@
     metrics.push(['阶段',progress.phase]);
     return metrics.filter(([,v])=>scalar(v)).map(([label,value])=>({label,value,source:'progress'}));
   }
-  const api={rows,groups,startTime,links,businessGraph,roundGraph,readings};if(typeof module!=='undefined' && module.exports)module.exports=api;else root.TaskHistory=api;
+  const api={rows,groups,startTime,links,businessGraph,canFoldRoundTask,roundGraph,readings};if(typeof module!=='undefined' && module.exports)module.exports=api;else root.TaskHistory=api;
 })(typeof globalThis!=='undefined'?globalThis:this);
