@@ -102,13 +102,25 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(self.ledger.choose('export_timeline',args,request_id='download')['url'],first['url'])
         self.assertIsNone(self.ledger.begin('download'))
 
+    def test_run_id_list_uses_the_original_platform(self):
+        local=self.ledger.choose('list_runs',{},space='local')
+        team=self.ledger.choose('list_runs',{},space='team')
+        for work, identity, ids in [(local,'local-id',['run-a','run-b']), (team,'team-id',['run-c'])]:
+            self.ledger.verify(work['id'],identity)
+            with self.ledger.db:
+                self.ledger.remember(work['id'],[('run',ident) for ident in ids])
+        self.spaces.configure({'default_space':'team'})
+        self.assertEqual(self.ledger.choose('list_runs',{'run_ids':['run-a','run-b']})['url'],local['url'])
+        with self.assertRaisesRegex(ValueError,'conflict|platform'):
+            self.ledger.choose('list_runs',{'run_ids':['run-a','run-c']})
+
     def test_all_platform_tools_have_an_explicit_routing_contract(self):
         from loop_anything.interfaces.platform_tools import PlatformTools
         self.assertEqual(self.routing.READ_ONLY,{d['name'] for d in PlatformTools(None).definitions() if d['annotations']['readOnlyHint']})
         for definition in PlatformTools(None).definitions():
             self.assertIn(definition['name'],self.routing.KNOWN_TOOLS)
             local={'node_id','implementation_id','execution_id','task_id','parent_id','report_id','external_id','event_id','reply_id','notification_id','conversation_id','instance_id','process_id'}
-            handled=set(self.routing.FIELDS)|{'session_id','request_id','request_ids'}|local
+            handled=set(self.routing.FIELDS)|set(self.routing.LIST_FIELDS)|{'session_id','request_id'}|local
             for field in definition['inputSchema']['properties']:
                 if field.endswith('_id') or field.endswith('_ids'):
                     self.assertIn(field,handled,definition['name']+': new selector needs a routing decision')

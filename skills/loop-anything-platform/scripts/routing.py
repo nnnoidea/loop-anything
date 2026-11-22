@@ -26,6 +26,7 @@ FIELDS={'run_id':'run','continue_run_id':'run','parent_run_id':'run','collaborat
         'timeline_id':'timeline','draft_id':'draft','monitor_id':'monitor','wait_id':'wait',
         'script_id':'script','group_id':'group','agent_id':'agent','context_id':'context',
         'space_id':'space','binding_id':'binding','loop_key':'loop','loop_id':'loop_id','executor':'executor','call_id':'call'}
+LIST_FIELDS={'run_ids':'run','request_ids':'request'}
 EXECUTOR_CALLS={'read_executor_call','executor_report','confirm_executor_stopped','source_result'}
 
 
@@ -40,7 +41,8 @@ def references(tool,a):
     if tool in WORK_SESSIONS:add('session',a.get('session_id'))
     if tool in EXECUTOR_CALLS:add('call',a.get('id'))
     if tool not in NEW_REQUESTS:add('request',a.get('request_id'))
-    for ident in a.get('request_ids',[]):add('request',ident)
+    for field,kind in LIST_FIELDS.items():
+        for ident in a.get(field,[]):add(kind,ident)
     if tool=='request_assistance' and isinstance(a.get('source'),dict):add('run',a['source'].get('run_id'))
     if tool=='set_implementation':
         if isinstance(a.get('loop'),dict):add('loop',a['loop'].get('key'))
