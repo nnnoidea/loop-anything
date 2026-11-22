@@ -17,6 +17,7 @@ def initialize(db):
         CREATE TABLE IF NOT EXISTS work_results(
             timeline_id TEXT NOT NULL,id TEXT NOT NULL,revision INTEGER NOT NULL,document TEXT NOT NULL,
             PRIMARY KEY(timeline_id,id,revision));
+        CREATE INDEX IF NOT EXISTS work_results_at ON work_results(timeline_id,json_extract(document,'$.at') DESC);
         CREATE INDEX IF NOT EXISTS work_results_type ON work_results(timeline_id,json_extract(document,'$.type'));
     ''')
 
@@ -47,7 +48,7 @@ def overview(state,definition=None,limit=50):
         fields=types.get(row['type'],{}).get('summary',[])
         value=row['value']
         summary={k:copy.deepcopy(value[k]) for k in fields if isinstance(value,dict) and k in value} if fields else {'value':copy.deepcopy(value)}
-        records.append({k:copy.deepcopy(row[k]) for k in ('type','id','revision','refs','run_id','at')} | {'summary':summary})
+        records.append({k:copy.deepcopy(row.get(k)) for k in ('type','id','revision','refs','run_id','task_id','at')} | {'summary':summary})
     return {'records':records,'total':len(ordered),'complete':len(records)==len(ordered),
             'next_offset':len(records) if len(records)<len(ordered) else None}
 

@@ -49,10 +49,12 @@ class MonitoringTests(unittest.TestCase):
         self.assertIsNone(rows[-1]['data'])
         self.assertEqual(rows[-1]['error'],'timeout')
         self.assertEqual(rows[-1]['call_id'],'error')
+        projected=self.tools.call('read_monitor_history',{'monitor_id':m['id'],'metric':'count','limit':2})
+        self.assertEqual(projected['points'],[{'at':rows[-2]['at'],'value':244},{'at':rows[-1]['at'],'value':None}])
 
     def test_sampling_health_does_not_claim_external_business_failure(self):
         m=self.tools.call('start_monitor',{'request_id':'health','interval':10,
-            'script':{'command':['unused'],'metrics':[{'key':'gpu.available','label':'可用 GPU','unit':'张'}]}})['monitor']
+            'script':{'command':['unused'],'display':'bars','metrics':[{'key':'gpu.available','label':'可用 GPU','unit':'张'}]}})['monitor']
         with work.transaction(self.store) as db:
             m.update(sample={'at':time.time()-1000,'data':{'status':'running','gpu':{'available':0}}},error=None)
             work.put(db,'monitor',m)
@@ -65,6 +67,7 @@ class MonitoringTests(unittest.TestCase):
         self.assertEqual(row['data_state'],'error')
         self.assertEqual(row['status'],'running')
         self.assertEqual(row['metrics'][0]['unit'],'张')
+        self.assertEqual(row['display'],'bars')
 
     def test_metrics_are_optional_and_invalid_definitions_rejected(self):
         with self.assertRaises(Invalid):

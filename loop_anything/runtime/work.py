@@ -140,8 +140,10 @@ def start_run(store, a):
 
 
 def validate_script(script):
-    if not isinstance(script,dict) or set(script)-{'command','cwd','timeout','description','parameter_schema','metrics'}:
-        raise Invalid('Monitor script accepts command, cwd, timeout, description, parameter_schema and metrics')
+    if not isinstance(script,dict) or set(script)-{'command','cwd','timeout','description','parameter_schema','metrics','display'}:
+        raise Invalid('Monitor script accepts command, cwd, timeout, description, parameter_schema, metrics and display')
+    if 'display' in script and script['display'] not in ('stat', 'table', 'bars', 'trend'):
+        raise Invalid('Monitor display must be stat, table, bars or trend')
     metrics=script.get('metrics',[])
     if not isinstance(metrics,list):raise Invalid('metrics must be an array')
     keys=set()

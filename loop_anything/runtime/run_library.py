@@ -38,7 +38,7 @@ def initialize(db):
 def list_runs(store, query='', status='', created_by=None, loop_key='', loop_id='',
               created_from=None, created_to=None, active_from=None, active_to=None,
               sort='last_activity_at', order='desc', archived='exclude', parent_run_id=None,
-              root_only=False, kind='', limit=50, offset=0):
+              root_only=False, kind='', limit=50, offset=0, run_ids=None):
     if sort not in ('created_at', 'last_activity_at') or order not in ('asc', 'desc'):
         raise Invalid('Sort by created_at or last_activity_at, with asc or desc order')
     if archived not in ('exclude', 'include', 'only'):
@@ -51,6 +51,9 @@ def list_runs(store, query='', status='', created_by=None, loop_key='', loop_id=
     status_sql="CASE WHEN "+j('superseded_by')+" IS NOT NULL THEN 'continued' ELSE "+j('status')+" END"
     author = "coalesce("+j('created_by')+",'')"
     filters, args = [], []
+    if run_ids is not None:
+        filters.append('r.id IN (SELECT value FROM json_each(?))')
+        args.append(json.dumps(run_ids))
     for key, value in [('status', status), ('loop_key', loop_key), ('parent_call.run_id', parent_run_id)]:
         if value is not None and value != '': filters.append((status_sql if key=='status' else j(key))+'=?'); args.append(value)
     if loop_id: filters.append("json_extract(l.document,'$.id')=?"); args.append(loop_id)
@@ -74,7 +77,8 @@ def list_runs(store, query='', status='', created_by=None, loop_key='', loop_id=
     fields=['r.id AS id']+[(status_sql if k=='status' else j(k))+' AS '+k for k in ('title','status','loop_key','created_at','last_activity_at','archived_at','revision')]
     fields += [author+' AS created_by', "coalesce("+j('metadata_revision')+",0) AS metadata_revision",
                "json_extract(l.document,'$.name') AS loop_name", "json_extract(l.document,'$.id') AS loop_id",
-               j('parent_call.run_id')+' AS parent_run_id', objective+' AS objective', j('timeline_id')+' AS timeline_id',
+               j('parent_call.run_id')+' AS parent_run_id', "json_extract(w.document,'$.title') AS timeline_title",
+               "json_extract(w.document,'$.active_run_id') AS active_run_id", objective+' AS objective', j('timeline_id')+' AS timeline_id',
                "CASE WHEN "+j('collaboration')+" IS NULL THEN 'workflow' ELSE 'collaboration' END AS kind",
                "(SELECT count(*) FROM timeline_parts p WHERE p.run_id=r.id AND p.section='attempts') AS execution_count"]
     with store.connection() as db:
@@ -84,6 +88,19 @@ def list_runs(store, query='', status='', created_by=None, loop_key='', loop_id=
         loops=[dict(row) for row in db.execute("SELECT json_extract(l.document,'$.id') AS loop_id,json_extract(l.document,'$.name') AS name,max("+j('created_at')+") AS created_at"+base+where+" GROUP BY json_extract(l.document,'$.id') ORDER BY name,loop_id",args)]
         rows=[dict(row) for row in db.execute('SELECT '+','.join(fields)+base+where+' ORDER BY '+j(sort)+' '+order+',r.id '+order+' LIMIT ? OFFSET ?',args+[limit,offset])]
         for row in rows:
+            row['task_counts'] = dict(db.execute("""SELECT json_extract(document,'$.status'),count(*)
+                FROM timeline_parts WHERE run_id=? AND section='tasks' GROUP BY 1""",(row['id'],)))
+            if row['status'] in ('running','paused'):
+                issue=db.execute("""SELECT t.item AS task_id,
+                    coalesce(json_extract(r.document,'$.task_dispositions.'||json_quote(t.item)||'.reason'),
+                             json_extract(l.document,'$.nodes.'||json_quote(json_extract(t.document,'$.spec.node'))||'.label'),
+                             json_extract(t.document,'$.spec.node')) AS label
+                    FROM timeline_parts t JOIN runs r ON r.id=t.run_id
+                    LEFT JOIN loop_definitions l ON l.key=json_extract(r.document,'$.loop_key')
+                    WHERE t.run_id=? AND t.section='tasks'
+                        AND json_extract(t.document,'$.status') IN ('waiting_user','approval')
+                    ORDER BY t.position LIMIT 1""",(row['id'],)).fetchone()
+                if issue:row['user_action']=dict(issue)
             row['child_count']=db.execute("SELECT count(*) FROM runs WHERE json_extract(document,'$.parent_call.run_id')=?",(row['id'],)).fetchone()[0]
         return {'runs':rows,'total':total,'groups':groups,'loops':loops,'limit':limit,'offset':offset,
                 'next_offset':offset+len(rows) if offset+len(rows)<total else None}

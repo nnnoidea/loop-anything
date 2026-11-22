@@ -1,7 +1,7 @@
 """Read-only, compact monitoring overview. Never starts scripts or advances Runs."""
 import json
 import time
-from loop_anything.runtime.model import Invalid
+from loop_anything.runtime.model import Invalid, path
 from loop_anything.runtime import work
 
 
@@ -57,7 +57,7 @@ def overview(store, offset=0, limit=20):
                 run_id=m.get('run_id'),script_id=m['script'].get('id'),script_revision=m['script'].get('revision'),
                 status=m['status'],data_state=data_state(m,now),interval=m['interval'],
                 sample=m.get('sample'),error=m.get('error'),parameters=m.get('parameters',{}),
-                metrics=script.get('metrics',[])))
+                display=script.get('display'),metrics=script.get('metrics',[])))
         waits=[{k:w.get(k) for k in ('id','timeline_id','sources','condition','message','state','error','triggered_at')}
                for w in work.rows(db,'wait') if w['state'] in ('waiting','ready')]
         scripts=[dict(id=s['id'],revision=s['revision'],description=s['script'].get('description',''),
@@ -68,13 +68,23 @@ def overview(store, offset=0, limit=20):
                     monitors=monitors,external=external,waits=waits,scripts=scripts)
 
 
-def history(store, monitor_id, limit=120):
+def history(store, monitor_id, limit=120, metric=None):
     if type(limit) is not int or not 1<=limit<=240:raise Invalid('History limit must be 1..240')
     with store.connection() as db:
         work.get(db,'monitor',monitor_id)
         samples=[json.loads(r[0]) for r in db.execute(
             'SELECT document FROM monitor_samples WHERE monitor_id=? ORDER BY sequence DESC LIMIT ?',(monitor_id,limit))]
-        return {'monitor_id':monitor_id,'samples':list(reversed(samples)),'retention':240}
+        samples.reverse()
+        if metric is not None:
+            points = []
+            for sample in samples:
+                try:
+                    value = path(sample['data'], metric) if not sample['error'] else None
+                except (TypeError, KeyError, ValueError, IndexError):
+                    value = None
+                points.append({'at': sample['at'], 'value': value if type(value) in (float, int) else None})
+            return {'monitor_id': monitor_id, 'metric': metric, 'points': points}
+        return {'monitor_id':monitor_id,'samples':samples,'retention':240}
 
 
 def record_sample(db, monitor_id, call_id, data, error):

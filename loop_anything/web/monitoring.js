@@ -15,15 +15,134 @@ function monitorCondition(expr){
   const args=(expr.args||[]).map(monitorCondition),symbol={eq:'＝',ge:'≥',le:'≤',and:'且',or:'或',add:'＋'};
   return symbol[expr.op]?args.join(' '+symbol[expr.op]+' '):expr.op+'('+args.join(', ')+')';
 }
-function monitorCard(m){
-  const valid=m.data_state==='fresh',metrics=monitorMetrics(m);
-  const values=metrics.map(metric=>{const value=valid?monitorValue(m.sample?.data,metric.key):null;return `<div><span class="muted small">${esc(metric.label||metric.key)}</span><strong>${typeof value==='number'&&Number.isFinite(value)?esc(value):'—'} <small>${esc(metric.unit||'')}</small></strong></div>`;}).join('');
-  return `<article class="monitor-card"><div class="monitor-card-heading"><button class="monitor-detail-button" data-monitor-detail="${esc(m.id)}">${esc(m.name)}</button><span class="monitor-state ${valid?'':'monitor-warning'}">${esc(collectionNames[m.data_state])}</span></div>
-    <div class="monitor-values">${values||`<span class="muted">${valid?'已收到观测结果，查看详情':'尚无有效观测值'}</span>`}</div>
-    <p class="small muted">${m.run_id?'Run 实例 · '+monitoringRunLink(m.run_id):'常态监控'} · ${esc(monitorNames[m.status]||m.status)}</p>
-    <p class="small muted">最近成功采集：<span data-monitor-at="${m.sample?.at||''}">${esc(monitorAge(m.sample?.at))}</span> · 每 ${esc(m.interval)} 秒检查</p>
-    ${m.error?`<p class="monitor-warning small">采集失败，当前外部状态未知</p>`:''}</article>`;
+// Labels such as "queue A · total" share a row when several resources report
+// the same measures. Other label formats keep their original reading order.
+function metricMatrix(metrics) {
+  const rows = new Map(), columns = new Set();
+  for (const metric of metrics) {
+    const label = metric.label || metric.key, split = label.lastIndexOf(' · ');
+    if (split < 1) return null;
+    const name = label.slice(0, split), column = label.slice(split + 3);
+    if (!rows.has(name)) rows.set(name, new Map());
+    const row = rows.get(name);
+    if (!column || row.has(column)) return null;
+    row.set(column, metric);
+    columns.add(column);
+  }
+  if (rows.size < 2 || !Array.from(rows.values()).every(row => row.size === columns.size)) return null;
+  return {rows, columns: [...columns]};
 }
+
+const monitorViews = {auto:'默认视图',stat:'数值卡',table:'数据表',bars:'条形对比',trend:'历史趋势'};
+const monitorPreferences = new Map();
+function monitorPreference(id) {
+  if (!monitorPreferences.has(id)) {
+    let saved;
+    try { saved = JSON.parse(localStorage.getItem('monitor-view:' + id)); } catch {}
+    monitorPreferences.set(id, saved || {});
+  }
+  return monitorPreferences.get(id);
+}
+function monitorPicker(field, label, options, selected) {
+  return `<select data-monitor-choice="${field}" aria-label="${esc(label)}">${options.map(([key,name]) =>
+    `<option value="${esc(key)}"${key===selected?' selected':''}>${esc(name)}</option>`).join('')}</select>`;
+}
+function metricNumber(m, metric) {
+  const value = m.data_state === 'fresh' ? monitorValue(m.sample?.data, metric.key) : null;
+  return Number.isFinite(value) ? value : null;
+}
+function monitorBars(m, entries) {
+  const units = new Map();
+  for (const [label, metric] of entries) {
+    const unit = metric.unit || '';
+    if (!units.has(unit)) units.set(unit, []);
+    units.get(unit).push({label, value:metricNumber(m, metric)});
+  }
+  return Array.from(units, ([unit, items]) => {
+    const valid = items.map(item => item.value).filter(Number.isFinite);
+    const min = Math.min(0,...valid), max = Math.max(0,...valid);
+    // Normalize before subtraction so a signed range can span both extremes.
+    const scale = Math.max(-min,max) || 1, span = (max/scale - min/scale) || 1;
+    const zero = -min/scale/span * 100;
+    return `<div class="comparison-bars">${units.size>1?`<h4>${esc(unit||'无单位')}</h4>`:''}${
+      items.map(({label,value}) => {
+        const width = Math.abs((value ?? 0)/scale)/span * 100;
+        const left = value < 0 ? zero - width : zero;
+        return `<div class="comparison-row"><span>${esc(label)}</span><b>${value===null?'—':esc(value)+' <small>'+esc(unit)+'</small>'}</b><div class="comparison-track" aria-hidden="true"><i style="left:${left}%;width:${width}%"></i></div></div>`;
+      }).join('')
+    }</div>`;
+  }).join('');
+}
+function monitorReadings(m, preference = {}) {
+  const metrics = monitorMetrics(m);
+  if (!metrics.length) return `<p class="monitor-no-values">${m.data_state==='fresh'?'已收到观测结果，查看详情':'尚无有效观测值'}</p>`;
+  const matrix = metricMatrix(metrics);
+  const view = preference.view && preference.view !== 'auto' ? preference.view :
+    m.display || (matrix || metrics.length > 4 ? 'table' : 'stat');
+  function reading(metric) {
+    const value = metricNumber(m,metric);
+    if (value===null) return '<span class="muted">—</span>';
+    return esc(value) + (metric.unit ? ` <small>${esc(metric.unit)}</small>` : '');
+  }
+  if (view==='trend') {
+    const metric = metrics.find(item => item.key===preference.metric) || metrics[0];
+    return (metrics.length>1?monitorPicker('metric','趋势指标',metrics.map(item=>[item.key,item.label||item.key]),metric.key):'') +
+      `<div class="monitor-history" data-trend-metric="${esc(metric.key)}">正在读取趋势…</div>`;
+  }
+  if (view==='bars') {
+    if (!matrix) return monitorBars(m,metrics.map(item=>[item.label||item.key,item]));
+    const field = matrix.columns.includes(preference.column) ? preference.column : matrix.columns[0];
+    return (matrix.columns.length>1?monitorPicker('column','比较指标',matrix.columns.map(c=>[c,c]),field):'') +
+      monitorBars(m,Array.from(matrix.rows,([name,row])=>[name,row.get(field)]));
+  }
+  if (view==='stat') return '<dl class="monitor-values">' + metrics.map(metric =>
+    `<div><dt>${esc(metric.label || metric.key)}</dt><dd>${reading(metric)}</dd></div>`
+  ).join('') + '</dl>';
+  if (!matrix) return `<div class="metric-matrix"><table aria-label="${esc(m.name)}指标"><thead><tr><th scope="col">指标</th><th scope="col">当前值</th></tr></thead><tbody>${metrics.map(metric=>
+    `<tr><th scope="row">${esc(metric.label||metric.key)}</th><td>${reading(metric)}</td></tr>`).join('')}</tbody></table></div>`;
+  const {rows, columns} = matrix;
+  return `<div class="metric-matrix"><table aria-label="${esc(m.name)}指标"><thead><tr><th scope="col">对象</th>${columns.map(c => `<th scope="col">${esc(c)}</th>`).join('')}</tr></thead><tbody>${
+    Array.from(rows, ([name, row]) => `<tr><th scope="row">${esc(name)}</th>${columns.map(c => `<td>${reading(row.get(c))}</td>`).join('')}</tr>`).join('')
+  }</tbody></table></div>`;
+}
+
+function monitorCard(m){
+  const preference = monitorPreference(m.id);
+  return `<article class="monitor-card" data-monitor-id="${esc(m.id)}"><header class="monitor-card-heading"><h3><button class="monitor-detail-button" data-monitor-detail="${esc(m.id)}">${esc(m.name)}</button></h3><span class="monitor-state" data-state="${esc(m.data_state)}">${esc(collectionNames[m.data_state] || m.data_state)}</span>${monitorPicker('view','监控视图',Object.entries(monitorViews),preference.view||'auto')}</header>
+    <div class="monitor-readings">${monitorReadings(m,preference)}</div>
+    <footer class="monitor-meta"><span>${esc(monitorNames[m.status]||m.status)} · 每 ${esc(m.interval)} 秒</span><span>最近采集 <time data-monitor-at="${m.sample?.at||''}">${esc(monitorAge(m.sample?.at))}</time></span>${m.run_id?monitoringRunLink(m.run_id):''}</footer>
+    ${m.error?'<p class="monitor-warning small">采集失败，当前外部状态未知</p>':''}</article>`;
+}
+function refreshMonitorTrends() {
+  if (page!=='monitors' || monitoringTab!=='overview') return;
+  for (const chart of document.querySelectorAll('#monitoring-overview [data-trend-metric]')) {
+    const id = chart.closest('[data-monitor-id]').dataset.monitorId;
+    const m = monitoringData.monitors.find(item=>item.id===id);
+    const metric = monitorMetrics(m).find(item=>item.key===chart.dataset.trendMetric);
+    const stamp = [m.sample?.at, m.data_state, m.error && Math.floor(monitoringData.at/m.interval)].join('/');
+    if (chart.dataset.stamp===stamp) continue;
+    chart.dataset.stamp=stamp;
+    platformCall('read_monitor_history',{monitor_id:id,metric:metric.key,limit:60}).then(({points})=>{
+      if (chart.isConnected && chart.dataset.stamp===stamp)
+        chart.innerHTML = monitorPlot(points,metric) || '暂无有效历史采样';
+    }).catch(()=>{
+      if (chart.dataset.stamp===stamp) {delete chart.dataset.stamp;chart.textContent='暂时无法读取历史采样';}
+    });
+  }
+}
+document.addEventListener('change',event=>{
+  const select=event.target.closest('[data-monitor-choice]');
+  if (!select) return;
+  const card=select.closest('[data-monitor-id]'), id=card.dataset.monitorId;
+  const pref=monitorPreference(id);
+  pref[select.dataset.monitorChoice]=select.value;
+  try {localStorage.setItem('monitor-view:'+id,JSON.stringify(pref));} catch {}
+  const m=monitoringData.monitors.find(item=>item.id===id);
+  card.querySelector('.monitor-readings').innerHTML=monitorReadings(m,pref);
+  card.querySelector(`[data-monitor-choice="${select.dataset.monitorChoice}"]`)?.focus();
+  refreshMonitorTrends();
+});
+
 function renderMonitoring(){
   if(!monitoringData)return;
   const d=monitoringData;
@@ -32,9 +151,9 @@ function renderMonitoring(){
   const signature=JSON.stringify([d.counts,d.runs,d.monitors,d.external,d.waits,d.scripts,monitoringOffset]);
   $('monitoring-updated').textContent='更新于 '+new Date(d.at*1000).toLocaleTimeString('zh-CN',{hour12:false});
   document.querySelectorAll('#monitoring-page [data-monitor-at]').forEach(e=>{e.textContent=monitorAge(Number(e.dataset.monitorAt));});
-  if(signature===monitoringSignature)return;
+  if(signature===monitoringSignature){refreshMonitorTrends();return;}
   monitoringSignature=signature;
-  $('monitoring-counts').innerHTML=[['running','运行中'],['paused','已暂停'],['completed','已完成'],['terminated','已终止']].map(([key,label])=>`<span>${label} <strong>${d.counts[key]||0}</strong></span>`).join('');
+  $('monitoring-counts').innerHTML=[['running','运行中'],['paused','已暂停'],['completed','已完成'],['terminated','已终止']].map(([key,label])=>`<span data-status="${key}">${label} <strong>${d.counts[key]||0}</strong></span>`).join('');
   $('monitoring-runs').innerHTML=d.runs.length?`<div class="monitor-table-wrap"><table class="monitor-table"><thead><tr><th>Run</th><th>状态</th><th>最近进展</th></tr></thead><tbody>${d.runs.map(r=>`<tr><td>${monitoringRunLink(r.id,r.title)}${r.attention_count?`<small class="monitor-warning">有 ${r.attention_count} 项需要查看</small>`:''}</td><td>${r.superseded_by?'已接续':badge(r.status)}</td><td><span data-monitor-at="${r.last_activity_at||''}">${esc(monitorAge(r.last_activity_at))}</span></td></tr>`).join('')}</tbody></table></div>`:'<p class="monitor-empty">还没有 Run。启动后会自动显示实际运行状态。</p>';
   $('monitoring-page-number').textContent=d.total_runs?`${d.offset+1}–${d.offset+d.runs.length} / ${d.total_runs}`:'0 条';
   $('monitoring-prev').disabled=d.offset===0;$('monitoring-next').disabled=d.offset+d.runs.length>=d.total_runs;
@@ -46,6 +165,7 @@ function renderMonitoring(){
   $('monitoring-waits-title').textContent='等待条件 · '+d.waits.length;
   $('monitoring-waits').innerHTML=d.waits.map(w=>`<div class="monitor-wait"><div><strong>${esc(w.message||'等待条件满足后唤醒 Agent')}</strong> <span class="muted">${w.state==='ready'?'条件已满足，待会话处理':'等待中'}</span></div><p>${esc(monitorCondition(w.condition))}</p><p class="small">${Object.entries(w.sources).map(([name,s])=>s.kind==='monitor'?`<button class="monitor-detail-button" data-monitor-detail="${esc(s.id)}">${esc(name)} · 监控</button>`:monitoringRunLink(s.id,name)).join(' · ')} · <button data-work-timeline="${esc(w.timeline_id)}">查看 Timeline</button></p>${w.error?`<p class="monitor-warning small">当前无法判断：${esc(w.error)}</p>`:''}</div>`).join('')||'<p class="muted">当前没有待处理的条件等待。</p>';
   $('monitoring-script-list').innerHTML=d.scripts.length?`<div class="monitor-table-wrap"><table class="monitor-table"><thead><tr><th>脚本定义</th><th>版本</th><th>实例</th></tr></thead><tbody>${d.scripts.map(s=>`<tr><td>${esc(s.description||s.id)}<small>${esc(s.id)}</small></td><td>${s.revision}</td><td>${s.instances}</td></tr>`).join('')}</tbody></table></div>`:'<p class="monitor-empty">脚本库为空。这里不预置通用 GPU 或实验脚本，由用户或团队提供自己的实现。</p>';
+  refreshMonitorTrends();
 }
 async function refreshMonitoring(force=false){
   if(page!=='monitors'||monitoringBusy||(!force&&Date.now()-monitoringLast<5000))return;
@@ -59,16 +179,18 @@ async function refreshMonitoring(force=false){
   }finally{monitoringBusy=false;if(page==='monitors'&&requestedOffset!==monitoringOffset)refreshMonitoring(true);}
 }
 function monitorTrend(samples,metric){
-  const points=samples.map(s=>({at:s.at,value:!s.error?monitorValue(s.data,metric.key):null}));
+  return monitorPlot(samples.map(s=>({at:s.at,value:!s.error?monitorValue(s.data,metric.key):null})),metric);
+}
+function monitorPlot(points,metric){
   const good=points.filter(p=>typeof p.value==='number'&&Number.isFinite(p.value));
   if(!good.length)return '';
   const min=Math.min(...good.map(p=>p.value)),max=Math.max(...good.map(p=>p.value)),span=max-min||1;
   const first=points[0].at,last=points.at(-1).at;
   const tick=v=>new Intl.NumberFormat('zh-CN',{notation:'compact',maximumFractionDigits:2}).format(v);
-  const x=p=>42+(p.at-first)/(last-first||1)*470,y=p=>92-(p.value-min)/span*65;
+  const x=p=>last===first?277:42+(p.at-first)/(last-first)*470,y=p=>min===max?60:92-(p.value-min)/span*65;
   let path='',open=false;
   for(const p of points){if(typeof p.value!=='number'||!Number.isFinite(p.value)){open=false;continue;}path+=(open?' L':' M')+x(p).toFixed(1)+' '+y(p).toFixed(1);open=true;}
-  return `<figure class="monitor-trend"><figcaption>${esc(metric.label||metric.key)}${metric.unit?'（'+esc(metric.unit)+'）':''}</figcaption><svg viewBox="0 0 560 126" role="img" aria-label="${esc(metric.label||metric.key)}历史观测，采集失败处断开"><path d="M42 97H512" class="monitor-axis" fill="none"/><path d="${path}" class="monitor-series" fill="none"/>${good.map(p=>`<circle cx="${x(p)}" cy="${y(p)}" r="2" class="monitor-point"><title>${esc(new Date(p.at*1000).toLocaleString())}：${esc(p.value)}</title></circle>`).join('')}<text x="35" y="29" text-anchor="end">${esc(tick(max))}</text><text x="35" y="94" text-anchor="end">${esc(tick(min))}</text><text x="42" y="118">${esc(time(first))}</text><text x="512" y="118" text-anchor="end">${esc(time(last))}</text></svg></figure>`;
+  return `<figure class="monitor-trend"><figcaption>${esc(metric.label||metric.key)}${metric.unit?'（'+esc(metric.unit)+'）':''}</figcaption><svg viewBox="0 0 560 126" role="img" aria-label="${esc(metric.label||metric.key)}历史观测，采集失败处断开"><path d="M42 97H512" class="monitor-axis" fill="none"/><path d="${path}" class="monitor-series" fill="none"/>${good.map(p=>`<circle cx="${x(p)}" cy="${y(p)}" r="2" class="monitor-point"><title>${esc(new Date(p.at*1000).toLocaleString())}：${esc(p.value)}</title></circle>`).join('')}<text x="35" y="${min===max?63:29}" text-anchor="end">${esc(tick(max))}</text>${min===max?'':`<text x="35" y="94" text-anchor="end">${esc(tick(min))}</text>`}<text x="42" y="118">${esc(time(first))}</text><text x="512" y="118" text-anchor="end">${esc(time(last))}</text></svg></figure>`;
 }
 async function openMonitorDetail(id){
   const [value,history]=await Promise.all([platformCall('read_monitor',{monitor_id:id}),platformCall('read_monitor_history',{monitor_id:id})]);

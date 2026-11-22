@@ -116,3 +116,10 @@ test('open child lists refresh their current page without cancelling pending nav
   complete({runs:[{id:'child',title:'Updated child',status:'completed'}],total:21,next_offset:null});await refresh;
   assert.deepEqual(offsets,[20,20]);assert.match(container.innerHTML,/Updated child/);
 });
+test('Run roles follow the Timeline selection across pause, completion and continuation',()=>{
+  const ctx=context();vm.runInContext(code.slice(0,code.indexOf('async function refreshRunLibrary')),ctx);
+  const html=(id,status)=>vm.runInContext('runSummaryHTML(row)',Object.assign(ctx,{row:{id,status,title:'核对',timeline_id:'work',active_run_id:'new'}}));
+  assert.match(html('new','paused'),/当前 Run/);
+  assert.match(html('new','completed'),/最近一次 Run/);
+  assert.match(html('old','continued'),/历史 Run/);
+});

@@ -57,7 +57,7 @@ async function renderCommunication(){
     }
     return;
   }
-  communicationPage.innerHTML=`<div class="page-heading"><div><div class="eyebrow">COLLABORATION</div><h1>Agent 通信</h1><p class="muted">找到合适的 Agent，一起完成工作。</p></div><button id="communication-refresh">刷新</button></div><nav class="section-tabs" aria-label="Agent 通信页面"><a href="#communication/agents" data-route-link data-comm-tab="agents">Agent</a><a href="#communication/requests" data-route-link data-comm-tab="requests">协作请求</a></nav>
+  communicationPage.innerHTML=`<div class="page-heading"><div><h1>Agent 通信</h1></div><button id="communication-refresh">刷新</button></div><nav class="section-tabs" aria-label="Agent 通信页面"><a href="#communication/agents" data-route-link data-comm-tab="agents">Agent</a><a href="#communication/requests" data-route-link data-comm-tab="requests">协作请求</a></nav>
   ${data.transport_error?`<p role="alert" class="launch-error">通信目录暂时不可用：${esc(data.transport_error)}</p>`:''}
   ${data.identity_conflict?'<p role="alert">检测到平台身份冲突。<a href="#settings/connections" data-route-link>前往团队连接设置</a></p>':''}
   <section class="panel" data-comm-section="agents"><div class="settings-row"><h2>本机 Agent</h2><a href="#settings/agents" data-route-link>管理 Agent</a></div>${agentRows(c,false)}</section>

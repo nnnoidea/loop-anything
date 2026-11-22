@@ -34,6 +34,7 @@ withPlatform(async ({url, page, startRun, api}) => {
     }
     await page.locator('.timeline-run-link').click();
     page.once('dialog', dialog => dialog.accept());
+    await page.locator('.run-menu>summary').click();
     await page.locator('#delete-run').click();
     await page.waitForURL('**/#work/runs');
     await page.goto(url + '/#work/timelines/' + turn.timeline_id);

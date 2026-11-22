@@ -59,6 +59,20 @@ class TimelineLibraryTests(unittest.TestCase):
             db.execute('INSERT INTO runs(id,document) VALUES (?,?)',(row['id'],json.dumps(row)));db.commit()
         self.assertEqual(self.tools.call('list_timelines',{})['groups'][0]['count'],1)
 
+    def test_latest_business_progress_and_newest_first_history(self):
+        t=self.tools.call('create_timeline',{'title':'Inventory'})['timeline']['id']
+        self.tools.call('create_timeline',{'title':'Untouched'})
+        for i,kind in enumerate(['progress','decision','progress']):
+            self.tools.call('append_timeline',{'timeline_id':t,'key':str(i),'kind':kind,'text':'Update '+str(i)})
+        latest=self.tools.call('list_timelines',{'limit':1})['timelines'][0]
+        self.assertEqual((latest['id'],latest['progress']['text']),(t,'Update 2'))
+        start=self.tools.call('read_work_timeline',{'timeline_id':t,'newest_first':True,'limit':2})
+        self.assertEqual(start['progress']['text'],latest['progress']['text'])
+        self.assertEqual([e['text'] for e in start['entries']],['Update 2','Update 1'])
+        self.tools.call('append_timeline',{'timeline_id':t,'key':'new','kind':'note','text':'Later'})
+        older=self.tools.call('read_work_timeline',{'timeline_id':t,'newest_first':True,'after':start['cursor']})
+        self.assertEqual([e['text'] for e in older['entries']],['Update 0'])
+
     def test_invalid_filters_and_pagination_are_rejected(self):
         for args in ({'loop_id':'x','unbound':True},{'limit':0},{'limit':101},{'offset':-1},{'unbound':'yes'}):
             with self.subTest(args=args),self.assertRaises(Invalid):self.tools.call('list_timelines',args)

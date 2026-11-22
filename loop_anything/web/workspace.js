@@ -9,6 +9,58 @@ function flowDecisionDetails(t){
   return (trigger?`<section class="flow-decision-details"><h3>内置流程决策</h3><p>触发来源：<button class="text-button" data-task-focus="${esc(trigger.task_id)}">${esc(taskLabel(run.tasks[trigger.task_id]))}</button> · ${esc(trigger.event)}</p><details><summary>事件与证据引用</summary>${resultView(trigger)}</details></section>`:'')+(decisions.length?`<section class="flow-decision-details"><h3>后续推进 · ${decisions.length} 次决策</h3>${flowDecisionButtons(t)}<p class="small muted">打开决策可查看完整结果、执行记录与原会话。</p></section>`:'');
 }
 function taskSummary(item){if(item.tasks.status==='skipped')return '历史记录：已跳过，不再等待执行';if(item.tasks.status==='cancelled')return '已取消，不再等待执行';const e=item.attempts.at(-1);if(e?.child_run_id&&e.status==='waiting')return '子 Loop · '+(labels[e.child_status]||e.child_status||'等待中');if(e?.status==='waiting'&&['timer','event','approval'].includes(e.implementation.kind))return waitSummary(e.implementation);if(e?.observation_error)return '监控需要恢复 · 外部状态待确认';const values=Object.entries(e?.outputs || {});return values.slice(0,2).map(([k,v])=>`${k}：${typeof v==='object'?(Array.isArray(v)?v.length+' 项':'已保存'):String(v).slice(0,64)}`).join(' · ') || (e?.lifecycle_state?'当前阶段：'+lifecycleName(e.lifecycle_state):'');}
+function runProgressHTML(value){
+  if(value.superseded_by){
+    const latest=value.timeline?.active_run_id;
+    const next=latest?{type:'run',id:latest}:{type:'timeline',id:value.timeline_id};
+    const label=!latest?'查看所属 Timeline':latest===value.superseded_by?'查看接续 Run':'查看最新 Run';
+    return `<section class="progress-focus" data-tone="quiet"><div class="focus-label">历史 Run · 已接续</div>
+      <h2>这次运行已由后续 Run 接着推进</h2>
+      <a class="progress-link" href="${esc(routeHash(next))}" data-route-link>${label} →</a></section>`;
+  }
+  const rows=TaskHistory.rows(value);
+  const ended=['completed','terminated','continued'].includes(value.status);
+  const final=new Set(['completed','skipped','cancelled']);
+  const pending=rows.filter(item=>!final.has(item.tasks.status));
+  const priorities=['waiting_user','approval','fault','stale','unresolved','executing','waiting','decision','retrying','ready','blocked','planned'];
+  const rank=item=>{
+    if(item.attempts.at(-1)?.observation_error)return 2;
+    if(item.attempts.at(-1)?.status==='approval')return 1;
+    const i=priorities.indexOf(item.tasks.status);return i<0?priorities.length:i;
+  };
+  const completed=rows.filter(i=>i.tasks.status==='completed').sort((a,b)=>(b.completed||0)-(a.completed||0));
+  let focus=pending.sort((a,b)=>rank(a)-rank(b));
+  if(ended || !pending.length)focus=completed.slice(0,1);
+  const primary=focus[0];
+  const caption=value.status==='paused'?'运行已暂停':ended?'运行已结束':!pending.length?'执行进度':
+      rank(primary)<=4?'需要关注':primary.tasks.status==='waiting'?'当前等待':'当前执行';
+  const title=primary?taskLabel(primary.tasks):ended?'没有已完成的节点':rows.length?'已安排的节点均已结束':'尚未安排任务';
+  function detail(item){
+    const t=item.tasks,e=item.attempts.at(-1);
+    if(e?.observation_error)return '采集异常，外部任务状态待确认';
+    if(t.status==='waiting_user')return value.task_dispositions?.[t.id]?.reason || '等待用户处理';
+    if(e?.status==='approval')return '等待用户确认';
+    if(['fault','stale'].includes(t.status))return e?.error||t.budget_error||'打开节点查看异常原因';
+    if(e?.activity_progress && ['executing','waiting'].includes(t.status)){
+      const p=e.activity_progress;
+      const progress=[p.external_status,p.phase,p.progress].filter(v=>typeof v==='string'||typeof v==='number');
+      if(progress.length)return progress.join(' · ');
+    }
+    return t.wait_reasons?.length?waitReasonText(t.wait_reasons[0]):taskSummary(item) || labels[t.status] || t.status;
+  }
+  const link=(item,text)=>`<a class="progress-link" data-route-link href="${esc(routeHash({type:'run',id:value.id,task:item.tasks.id}))}">${esc(text)} ↗</a>`;
+  const row=item=>`<li><span>${esc(taskLabel(item.tasks))}</span>${badge(item.tasks.status)} ${link(item,'节点详情')}</li>`;
+  const more=focus.slice(1);
+  const next=!ended && primary?pending.filter(i=>i.dependencies.includes(primary.tasks.id)):[];
+  const alongside=more.filter(i=>!next.includes(i));
+
+  return `<section class="progress-focus" data-tone="${ended||value.status==='paused'?'quiet':primary&&rank(primary)<=4?'attention':'live'}">
+    <div class="focus-label">${caption}<time>${value.last_activity_at?'最近变化 '+esc(taskTime(value.last_activity_at)):''}</time></div>
+    <h2>${esc(title)}</h2>${primary?`<p>${ended||!pending.length?'最近完成 · ':''}${esc(detail(primary))}</p>${link(primary,'查看节点详情')}`:''}
+    ${next.length?`<div class="next-work">后续已安排 · ${next.map(i=>link(i,taskLabel(i.tasks))).join(' · ')}</div>`:''}
+    ${alongside.length&&alongside.length<=2?`<ul class="also-working">${alongside.map(row).join('')}</ul>`:alongside.length?`<details class="parallel-work"><summary>其他待推进节点 · ${alongside.length}</summary><ul>${alongside.map(row).join('')}</ul></details>`:''}
+    <footer>${completed.length} 个节点已完成 · 本次已安排 ${rows.length} 个</footer></section>`;
+}
 function taskCard(item){
   const t=item.tasks,order=taskNumbers.get(t.id),attempt=item.attempts.at(-1),agent=attempt?.implementation.kind==='agent',active=attempt?.worker_active||(run.agent_sessions||[]).some(o=>o.resume_execution===attempt?.id);
   return `<article class="process-task ${selectedTask===t.id?'picked':''}" data-status="${esc(t.status)}" data-task-focus="${esc(t.id)}" data-task-row="${esc(t.id)}"><button class="task-card-main" data-task-focus="${esc(t.id)}" aria-pressed="${selectedTask===t.id}" title="${esc(taskLabel(t)+' · '+t.id)}"><span class="task-card-top"><small class="task-number">${String(order).padStart(2,'0')}</small>${badge(t.status)}${taskChanges.has(t.id)?'<span data-change-mark>已调整</span>':''}</span><span class="task-name">${esc(taskLabel(t))}</span>${nodeAxesHTML(run,t.spec.node,taskImplementation(run,t,attempt),null)}<span class="task-summary">${esc(taskSummary(item)||(['fault','stale'].includes(t.status)?'查看失败详情 →':'等待结果'))}</span><small class="task-card-time">${esc([item.round,item.started===null&&['skipped','cancelled'].includes(t.status)?'未执行':taskTime(item.started)].filter(Boolean).join(' · '))}</small></button><div class="task-card-actions"><button data-task-result="${esc(t.id)}">查看结果</button>${flowDecisionButtons(t,true)}${agent?`<button data-agent-session="${esc(attempt.id)}" ${['completed','terminated','continued'].includes(run.status)&&!active?'disabled title="Run 已结束，可查看结果与会话记录"':''}>${active?'打开会话':'恢复会话'}</button>`:''}</div></article>`;
@@ -71,10 +123,12 @@ function resultWithSchema(value,schema={},attempt,port,parts=[]){
   if(value && typeof value==='object')return `<dl class="result-fields">${Object.entries(value).map(([k,v])=>`<div><dt>${esc(schema.properties?.[k]?.title || k)}</dt><dd>${resultWithSchema(v,schema.properties?.[k] || {},attempt,port,[...parts,k])}</dd></div>`).join('')}</dl>`;
   return resultView(value);
 }
+function waitReasonText(r){
+  return r.reason==='order_dependency'?`等待前置任务 ${(run.tasks[r.action]?taskLabel(run.tasks[r.action]):r.action)} 完成`:r.reason==='missing_record'?`输入 ${r.input} 等待结果 ${r.record}`:r.reason==='missing_implementation'?'尚未选用可执行的实现；请由运行 Agent 选择已有方案；补充 Loop 实现使用构建 Agent':r.reason==='invalid_parameters'?'参数不满足所选实现的要求；由运行 Agent 核对任务参数，完整契约可在节点详情查看':r.reason==='invalid_input'?`输入 ${r.input} 尚不可用`:r.reason==='retry_pending'?'等待同一任务的旧进程确认结束，再重试原任务':r.detail||r.reason;
+}
 function taskWaitReasons(task){
   if(['skipped','cancelled'].includes(task.status)||!task.wait_reasons?.length)return '';
-  const text=r=>r.reason==='order_dependency'?`等待前置任务 ${(run.tasks[r.action]?taskLabel(run.tasks[r.action]):r.action)} 完成`:r.reason==='missing_record'?`输入 ${r.input} 等待结果 ${r.record}`:r.reason==='missing_implementation'?'尚未选用可执行的实现；请由运行 Agent 选择已有方案；补充 Loop 实现使用构建 Agent':r.reason==='invalid_parameters'?'参数不满足所选实现的要求；由运行 Agent 核对任务参数，完整契约可在节点详情查看':r.reason==='invalid_input'?`输入 ${r.input} 尚不可用`:r.reason==='retry_pending'?'等待同一任务的旧进程确认结束，再重试原任务':r.detail||r.reason;
-  return `<div class="wait-reasons"><strong>当前等待原因</strong><ul>${task.wait_reasons.map(r=>`<li>${esc(text(r))}</li>`).join('')}</ul><details><summary>查看详细条件</summary>${resultView(task.wait_reasons)}</details></div>`;
+  return `<div class="wait-reasons"><strong>当前等待原因</strong><ul>${task.wait_reasons.map(r=>`<li>${esc(waitReasonText(r))}</li>`).join('')}</ul><details><summary>查看详细条件</summary>${resultView(task.wait_reasons)}</details></div>`;
 }
 function taskFlowHTML(item){
   const id=item.tasks.id,edges=TaskHistory.links(run),incoming=edges.filter(e=>e.to===id),outgoing=edges.filter(e=>e.from===id);
@@ -97,6 +151,7 @@ function taskDetails(item){
 }
 function sourceLinks(source){return (Array.isArray(source)?source:[source]).filter(Boolean).map(s=>{const e=run.executions.find(e=>e.id===s.execution);return e?`<button class="text-button" data-source-execution="${esc(e.id)}">来自 ${esc(taskLabel(run.tasks[e.task_id]))} · v${esc(s.revision)}</button>`:`<small>${esc(s.run_input?'初始输入 '+s.run_input:s.settings?'设置 '+s.settings:'直接输入')}</small>`;}).join(' ');}
 function renderTaskHistory(){
+  if(run.superseded_by && !Object.keys(run.tasks).length)return '<p class="empty-inline">这次历史运行没有节点记录。</p>';
   requestAnimationFrame(()=>sizeTaskGraph());
   taskChanges=new Map(run.history.filter(h=>h.detail?.before&&h.detail?.tasks).map(h=>[h.detail.tasks,h]));
   const all=TaskHistory.rows(run),business=all.filter(i=>!i.tasks.origin?.flow_agent);taskNumbers=new Map((taskOrder==='graph'?business:all).map((item,index)=>[item.tasks.id,index+1]));if(!all.some(i=>i.tasks.id===selectedTask)){selectedTask=all.find(i=>['executing','fault','blocked','ready'].includes(i.tasks.status))?.tasks.id||all[0]?.tasks.id;selectedAttempt=null;}

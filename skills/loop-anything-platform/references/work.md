@@ -119,9 +119,13 @@ starts a script. The webpage links to the existing Run view for task/flow detail
 No application-specific monitoring scripts are bundled or registered by default.
 
 Script definitions may optionally declare metrics=[{key,label,unit}]; keys may
-address nested fields with dots. Units are never inferred. read_monitor_history
-returns the latest 240 checks, including failure gaps; samples are retained per
-instance. Native Loop external observers keep their existing contract and link
+address nested fields with dots. Units are never inferred. Set optional `display` to
+`stat` for current values, `table` for exact comparisons, `bars` for relative
+sizes, or `trend` for changes over time. Omit it for automatic layout. Labels
+such as “Queue A · Free” and “Queue B · Free” can share a measure column.
+Viewers can override the instance view in their browser. `read_monitor_history`
+returns up to 240 recent checks. Pass `metric` to read just its timestamp/value
+points, with missing or failed readings returned as gaps. Native Loop external observers keep their existing contract and link
 to the corresponding Run rather than duplicating its execution interface.
 
 `list_timelines` returns `groups` (Loop IDs, display names and counts) and a page of `timelines`. Pass `loop_id` to select a Loop across versions, or `unbound:true` for temporary work with no retained Run. Follow `next_offset` with the same filter; `limit` defaults to 20 (maximum 100). Grouping is derived from the latest retained Run and does not bind or modify a Timeline.

@@ -21,3 +21,27 @@ test('conditions stay readable and run links reuse existing route',()=>{
 test('monitor page does not contain a second Run graph or task details',()=>{
   assert.doesNotMatch(script,/taskDependencyGraph|renderGraph|read_task|read_run|task_history/);
 });
+test('related measurements share resource rows; ambiguous labels keep every metric',()=>{
+  ctx.monitor={name:'容量',data_state:'fresh',sample:{data:{a:0,b:3,c:5,d:2}},metrics:[
+    {key:'a',label:'west · 总量',unit:'张'}, {key:'b',label:'east · 空余',unit:'张'},
+    {key:'c',label:'east · 总量',unit:'张'}, {key:'d',label:'west · 空余',unit:'张'}
+  ]};
+  const html=()=>vm.runInContext('monitorReadings(monitor)',ctx);
+  assert.match(html(),/scope="row">west<\/th><td>0 <small>张<\/small><\/td><td>2 /);
+  assert.match(html(),/scope="row">east<\/th><td>5 <small>张<\/small><\/td><td>3 /);
+  ctx.monitor.data_state='stale';
+  assert.equal(html().match(/>—<\/span>/g).length,4);
+  ctx.monitor.metrics[3].label='west · 总量';
+  assert.equal(html().match(/<dt>/g).length,4);
+});
+test('a script display is the default and each viewer can override it',()=>{
+  ctx.monitor={name:'样例',display:'bars',data_state:'fresh',sample:{data:{net:-8,memory:0}},metrics:[
+    {key:'net',unit:'MB/s'}, {key:'memory',unit:'GB'}
+  ]};
+  const html=vm.runInContext('monitorReadings(monitor)',ctx);
+  assert.equal(html.match(/class="comparison-bars"/g).length,2);
+  assert.match(html,/left:0%;width:100%/);
+  assert.match(html,/>0 <small>GB/);
+  assert.match(vm.runInContext("monitorReadings(monitor,{view:'table'})",ctx),/<td>-8 <small>MB\/s/);
+  assert.match(vm.runInContext("monitorReadings(monitor,{view:'trend',metric:'memory'})",ctx),/data-trend-metric="memory"/);
+});

@@ -14,7 +14,7 @@ function routeHash(route){
   if(route.type==='loop')return '#loop/'+encodeURIComponent(route.key)+'/'+(route.tab || 'overview');
   if(route.type==='editor')return '#edit/'+encodeURIComponent(route.id)+(route.node?'/node/'+encodeURIComponent(route.node)+(route.implementation?'/implementation/'+encodeURIComponent(route.implementation):''):'');
   if(route.type==='prepare')return '#prepare/'+encodeURIComponent(route.id);
-  if(route.type==='run')return '#run/'+encodeURIComponent(route.id);
+  if(route.type==='run')return '#run/'+encodeURIComponent(route.id)+(route.task?'/task/'+encodeURIComponent(route.task):'');
   return '#';
 }
 function parseRoute(hash){
@@ -31,7 +31,7 @@ function parseRoute(hash){
   if(parts[0]==='loop')return {type:'loop',key:decodeURIComponent(parts[1] || ''),tab:['overview','flow','prepare'].includes(parts[2])?parts[2]:'overview'};
   if(parts[0]==='prepare')return {type:'prepare',id:decodeURIComponent(parts[1] || '')};
   if(parts[0]==='edit')return {type:'editor',id:decodeURIComponent(parts[1] || ''),...(parts[2]==='node'&&parts[3]?{node:decodeURIComponent(parts[3]),...(parts[4]==='implementation'&&parts[5]?{implementation:decodeURIComponent(parts[5])}:{})}:{})};
-  if(parts[0]==='run'&&parts[1])return {type:'run',id:decodeURIComponent(parts[1])};
+  if(parts[0]==='run'&&parts[1])return {type:'run',id:decodeURIComponent(parts[1]),...(parts[2]==='task'&&parts[3]?{task:decodeURIComponent(parts[3])}:{})};
   return {type:'home'};
 }
 function rememberEditor(){
@@ -92,10 +92,14 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
       populateMeta();renderEditor();renderProperties();
     }else if(route.type==='run'){
       if(previous.type!=='run')runReturns.set(route.id,structuredClone(previous));
+      if(previous.type!=='run'||previous.id!==route.id)document.querySelector('.run-menu').open=false;
+      if(previous.id!==route.id || route.task){
+        selectedTask=route.task || null;selectedAttempt=null;activeTab='task-history';taskStatus='';taskSearch='';inspectSignature='';
+      }
       selected=route.id;run=nextRun;settingsBase=null;filterNode=null;page='runs';renderRun();
     }else{page='timelines';await showWorkLibrary();}
     if(serial!==navigationSerial)return false;
-    showPage();updateNavigationUI();window.scrollTo(0,routeScroll.get(routeHash(route))||0);if(page==='runs')requestAnimationFrame(()=>sizeTaskGraph());return true;
+    showPage();updateNavigationUI();window.scrollTo(0,routeScroll.get(routeHash(route))||0);if(page==='runs')requestAnimationFrame(()=>{sizeTaskGraph();if(route.task&&nextRun.tasks[route.task])$('task-detail')?.scrollIntoView({block:'start'});});return true;
   }catch(error){
     if(serial!==navigationSerial)return false;
     if(external){activeRoute={type:'catalog'};history.replaceState(null,'','#loop_definitions');page='catalog';showPage();updateNavigationUI();}
@@ -126,10 +130,16 @@ function updateNavigationUI(){
     if(activeRoute.implementation)crumbs.push(esc(activeRoute.implementation));
     $('editor-back').textContent=editor.returnTo?.type==='loop'?'← 返回 Loop '+(editor.returnTo.tab==='prepare'?'使用准备':'详情'):editor.returnTo?.type==='prepare'?'← 返回启动准备':'← 返回 Loop 库';
   }else if(page==='runs' && run){
-    const c=catalog.find(c=>c.key===run.loop_key);
     const asset={type:'loop',key:run.loop_key,tab:'overview'};
+    const timeline=run.timeline;
+    const currentId=timeline?.active_run_id;
+    const origin=runReturns.get(run.id);
+    const timelineLink=run.timeline_id?navLink({type:'timeline',id:run.timeline_id},timeline?.title||timeline?.objective||run.timeline_id):'';
     crumbs.push(navLink({type:'run-list'},'运行'));crumbs.push(esc(run.title));
-    $('run-navigation').innerHTML=navLink(runReturns.get(run.id) || {type:'run-list'},'← 返回来源页面')+'<span>当前是一次运行</span>'+navLink(asset,'查看实际使用的 Loop 版本');
+    const role=timelineRunLabel(run.status,currentId===run.id);
+    $('run-navigation').innerHTML=(timelineLink?`<div class="run-parent"><strong>所属 Timeline</strong>${timelineLink}<span>／ ${role}</span></div>`:'')+
+      (origin?.type==='timeline'&&origin.id===run.timeline_id?'':navLink(origin||{type:'run-list'},!origin||origin.type==='run-list'?'← 返回运行列表':'← 返回来源页面'))+navLink(asset,'Loop 定义');
+
   }
   $('breadcrumbs').innerHTML=crumbs.join('<span> / </span>');
 }

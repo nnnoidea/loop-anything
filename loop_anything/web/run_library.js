@@ -18,8 +18,14 @@ function runFilters(){
   args.root_only=args.archived==='exclude'&&!['query','status','loop_id','kind','created_by','created_from','created_to','active_from','active_to'].some(key=>Object.hasOwn(args,key));
   return args;
 }
+function timelineRunLabel(status,isCurrent=true){
+  if(!isCurrent)return '历史 Run';
+  return ['completed','terminated'].includes(status)?'最近一次 Run':'当前 Run';
+}
 function runSummaryHTML(row){
-  return `<button class="run-item" data-run="${esc(row.id)}"><span class="run-row-main"><strong>${esc(row.title)}</strong><small>${esc(row.loop_name||'Loop')}${row.parent_run_id?' · 子 Run':''}${row.archived_at?' · 已归档':''} · 启动 ${esc(runDate(row.created_at))}</small></span>${badge(row.status)}<span class="run-row-time"><small>最近活跃</small>${esc(runDate(row.last_activity_at))}</span><span class="row-arrow" aria-hidden="true">›</span></button>${row.child_count?`<details class="run-children" data-run-children="${esc(row.id)}"><summary>子 Run · ${row.child_count}</summary><div class="run-child-list"></div></details>`:''}`;
+  const counts=row.task_counts || {};
+  const countText=Object.entries(counts).map(([status,n])=>n+' '+(labels[status]||status)).join(' · ');
+  return `<button class="run-item" data-run="${esc(row.id)}"><span class="run-row-main"><strong>${esc(row.title)}</strong><small>${esc(row.loop_name||'Loop')}${row.timeline_id?' · 所属 Timeline：'+esc(row.timeline_title||row.objective||row.timeline_id):''}${row.parent_run_id?' · 子 Run':''}${row.archived_at?' · 已归档':''}</small>${row.user_action?`<span class="work-action-note">等待你处理 · ${esc(row.user_action.label)}</span>`:''}${countText?`<span class="run-count-summary">${esc(countText)}</span>`:''}</span><span class="run-row-status">${row.timeline_id?esc(timelineRunLabel(row.status,row.active_run_id===row.id)):''} ${badge(row.status)}</span><span class="run-row-time"><small>最近活跃</small>${esc(runDate(row.last_activity_at))}</span><span class="row-arrow" aria-hidden="true">›</span></button>${row.child_count?`<details class="run-children" data-run-children="${esc(row.id)}"><summary>子 Run · ${row.child_count}</summary><div class="run-child-list"></div></details>`:''}`;
 }
 function groupedRunsHTML(rows,groups=[]){
   const people=new Map();for(const row of rows){const name=row.created_by||'';if(!people.has(name))people.set(name,[]);people.get(name).push(row);}

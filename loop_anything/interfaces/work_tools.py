@@ -19,18 +19,18 @@ def definitions():
         ('refresh_observation','Generate the current view now, without sending a notification. Confirm a stopped process only when explicitly recovering an interrupted attempt.',{'run_id':T,'token':T,'name':T,'confirmed_stopped':{'type':'boolean'}},['run_id','token','name'],False),
         ('read_monitor_dashboard','Read-only monitoring overview: actual Run states, external monitor samples and pending waits. Never starts or polls scripts. Run summaries exclude execution archives and credentials.',
          {'offset':N,'limit':{'type':'integer','minimum':1,'maximum':100}},[],True),
-        ('read_monitor_history','Read up to 240 retained checks for one monitor, including failed checks as gaps.',
-         {'monitor_id':T,'limit':{'type':'integer','minimum':1,'maximum':240}},['monitor_id'],True),
+        ('read_monitor_history','Read up to 240 retained checks for one monitor. Supply metric to receive only its timestamp/value points, with gaps for failed or missing readings.',
+         {'monitor_id':T,'metric':T,'limit':{'type':'integer','minimum':1,'maximum':240}},['monitor_id'],True),
         ('create_timeline','Create work context without a Loop/Run. Only objective and constraints are fixed user semantic fields.',
          {'objective':TEXT,'constraints':TEXT,'title':TEXT},[],False),
         ('export_timeline','Download complete Timeline progress, business record history, saved results and progress entries. Never exports sessions, implementations or executable authority; external files remain references.',
          {'timeline_id':T},['timeline_id'],True),
         ('import_timeline','Import a Timeline progress document into this platform as independent work. Keep request_id stable for retries. Creates no Run or executable task. The receiving Agent reads the progress and arranges its own method.',
          {'document':O,'request_id':T},['document','request_id'],False),
-        ('list_timelines','List a page of Timelines with Loop groups and counts. Groups use Loop identity across versions; unbound=true selects temporary work without an associated Run. Follow next_offset for further pages.',
+        ('list_timelines','List Timelines by recent business progress with a compact preview and Loop group counts. Groups use Loop identity across versions; unbound=true selects temporary work without an associated Run. Follow next_offset for further pages.',
          {'loop_id':T,'unbound':{'type':'boolean'},'limit':{'type':'integer','minimum':1,'maximum':100},'offset':N},[],True),
-        ('read_work_timeline','Read current intent, Loop-defined business state, saved results, related Run links and paged history. Execution state is available through read_run(view=snapshot). No handoff or original chat transcript is required.',
-         {'timeline_id':T,'after':N,'limit':{'type':'integer','minimum':1,'maximum':200}},['timeline_id'],True),
+        ('read_work_timeline','Read current intent, Loop-defined business state, saved results, related Run links and paged history. Set newest_first=true to read newest to oldest using the returned cursor as after. Execution state is available through read_run(view=snapshot). No handoff or original chat transcript is required.',
+         {'timeline_id':T,'after':N,'newest_first':{'type':'boolean'},'limit':{'type':'integer','minimum':1,'maximum':200}},['timeline_id'],True),
         ('read_work_result','Read an exact saved result through its Timeline, including imported results; no original Run or Loop is required. Omit revision for the latest saved version.',
          {'timeline_id':T,'id':T,'revision':{'type':'integer','minimum':1},'as_of':N},['timeline_id','id'],True),
         ('read_work_results','Read a filtered page of formal result versions in commit order. Use the observation results cutoff for a pinned read.',page,['timeline_id'],True),
@@ -55,7 +55,7 @@ def definitions():
         ('cancel_wait','Cancel your wait, without cancelling observed Runs or monitors.',dict(SESSION,wait_id=T),[*SESSION,'wait_id'],False),
         ('acknowledge_wait','Acknowledge that this session has handled a ready wait; original evidence remains recorded.',
          dict(SESSION,wait_id=T),[*SESSION,'wait_id'],False),
-        ('register_monitor','Register/update a reusable script definition; revision=0 creates. Does not execute. script has command argv, optional cwd/timeout/description/parameter_schema and optional metrics=[{key,label,unit}]. Each check reads JSON {parameters,run_id,monitor_id} on stdin and writes a JSON object; done=true ends an instance.',
+        ('register_monitor','Register/update a reusable script definition; revision=0 creates. Does not execute. script has command argv, optional cwd/timeout/description/parameter_schema and optional metrics=[{key,label,unit}] and display (stat, table, bars, trend). Each check reads JSON {parameters,run_id,monitor_id} on stdin and writes a JSON object; done=true ends an instance.',
          {'script_id':T,'revision':N,'script':O},['script_id','revision','script'],False),
         ('list_monitor_scripts','List reusable monitor definitions.',{},[],True),
         ('start_monitor','Explicitly start an instance from script_id or an inline script (exactly one). Optional run_id associates an experiment-specific instance; omit for a standing monitor. Parameters isolate instances. Existing Loop observe scripts remain supported. Snapshot the script for this instance.',
@@ -97,7 +97,7 @@ def call(store,name,a):
     if name in ('read_business_state','read_work_results'):
         from loop_anything.runtime.business_state import read
         return read(store,collection='state' if name=='read_business_state' else 'results',**a)
-    if name=='read_work_timeline':return timelines.read(store,a['timeline_id'],a.get('after',0),a.get('limit',100))
+    if name=='read_work_timeline':return timelines.read(store,a['timeline_id'],a.get('after',0),a.get('limit',100),a.get('newest_first',False))
     if name=='register_work_session':return work.register_session(store,a)
     if name=='register_monitor':return {'script':work.register_monitor(store,a)}
     if name=='start_monitor':return {'monitor':work.start_monitor(store,a)}

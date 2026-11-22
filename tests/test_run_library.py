@@ -46,6 +46,17 @@ class RunLibraryTests(unittest.TestCase):
             self.assertEqual([r['id'] for r in subset['runs']],[ids[3],ids[5]])
             self.assertEqual(list_runs(self.store,query='alice')['total'],4)
 
+    def test_user_action_is_scoped_to_requested_runs(self):
+        first,other=self.create(),self.create()
+        with self.store.edit(first) as run:
+            task=next(iter(run['tasks'].values()))
+            task['status']='waiting_user'
+            run['task_dispositions']={task['id']:{'reason':'确认本轮结果'}}
+        rows=self.tools.call('list_runs',{'run_ids':[first]})['runs']
+        self.assertEqual([r['id'] for r in rows],[first])
+        self.assertEqual(rows[0]['user_action']['label'],'确认本轮结果')
+        self.assertNotIn('user_action',list_runs(self.store,run_ids=[other])['runs'][0])
+
     def test_metadata_conflicts_are_independent_of_execution_revision_and_work_after_end(self):
         ident=self.create()
         with self.store.edit(ident) as run:Store.log(run,'dispatched','Work started')

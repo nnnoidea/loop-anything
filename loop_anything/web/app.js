@@ -4,7 +4,7 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;',
 const pretty = value => JSON.stringify(value, null, 2);
 // getRandomValues also works on ordinary HTTP inside the team network.
 const randomKey = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('');
-const labels = {continued:'已接续',waiting_configuration:'等待配置',skipped:'已跳过',running:'运行中',ready:'待执行',executing:'执行中',waiting:'等待中',completed:'已完成',paused:'已暂停',terminated:'已终止',cancelled:'已取消',fault:'执行失败',retrying:'等待重试',blocked:'输入未就绪',decision:'等待 Agent',approval:'等待确认',unresolved:'转移待决策'};
+const labels = {planned:'已安排',waiting_user:'等待用户',stale:'待核实',continued:'已接续',waiting_configuration:'等待配置',skipped:'已跳过',running:'运行中',ready:'待执行',executing:'执行中',waiting:'等待中',completed:'已完成',paused:'已暂停',terminated:'已终止',cancelled:'已取消',fault:'执行失败',retrying:'等待重试',blocked:'输入未就绪',decision:'等待 Agent',approval:'等待确认',unresolved:'转移待决策'};
 const badge = status => `<span class="badge ${esc(status)}">${esc(labels[status] || status)}</span>`;
 let catalog = [], runs = [], run = null, selected = null, filterNode = null, activeTab = 'task-history', page = 'runs', settingsBase = null, pendingChange = null, loading = false;
 const drafts = {};
@@ -24,7 +24,7 @@ $('platform-power-switch').onchange=()=>safely(async()=>{
 });
 let promptDefaults={};
 function promptHistory(record){return record&&Object.hasOwn(record,'prompt_text')?`<details class="prompt-history"><summary>本次唤醒提示词</summary><p class="small muted">实际发送记录 · 平台令牌已遮蔽</p><pre>${esc(record.prompt_text)}</pre></details>`:'';}
-let listSignature = '', graphSignature = '', inspectSignature = '';
+let progressSignature = '', listSignature = '', graphSignature = '', inspectSignature = '';
 const time = t => new Date(t * 1000).toLocaleTimeString('zh-CN', {hour12:false});
 const nodeLabel = id => run?.loop_definition.nodes[id]?.label || id;
 async function api(url, data) {
@@ -60,6 +60,7 @@ function showPage() {
 }
 async function refresh() {
   if(page==='timeline')safely(refreshObservations);
+  if(page==='timelines')safely(()=>showWorkLibrary(true));
   if(page==='monitors')refreshMonitoring();
   if(page==='schedules')refreshSchedules();
   if (loading) return;
@@ -85,17 +86,21 @@ function renderRun() {
   $('run-title').textContent = run.title;
   renderRunOutlet();
   $('run-key').textContent = (run.loop_definition.name || run.loop_definition.id) + ' · v' + run.loop_definition.version;
-  $('run-status').innerHTML = badge(run.status)+(run.superseded_by?` · <a href="${esc(routeHash({type:'run',id:run.superseded_by}))}" data-route-link>查看接续 Run</a>`:'')+(run.identity_read_only?' · 只读历史副本，不接管原执行':'');
+  $('run-status').innerHTML = badge(run.status)+(run.identity_read_only?' · 只读历史副本，不接管原执行':'');
   $('run-id').textContent = run.id+' · '+(run.created_by||'未署名')+(run.archived_at?' · 已归档':'');
   if($('archive-run'))$('archive-run').textContent=run.archived_at?'取消归档':'归档';
   const simulation = Object.values(run.implementations).some(entry => Object.values(implementationOptions(entry)).some(b => b.kind === 'mock' || b.simulation));
   $('simulation-label').hidden = !simulation;
   const ended = run.identity_read_only || ['completed','terminated','continued'].includes(run.status);
   $('pause-run').textContent = run.status === 'paused' ? '▷ 恢复' : 'Ⅱ 暂停';
+  $('pause-run').hidden = $('stop-run').hidden = Boolean(run.superseded_by);
   $('pause-run').disabled = $('stop-run').disabled = ended;
-  const counts = {};
-  run.executions.forEach(e => counts[e.status] = (counts[e.status] || 0) + 1);
-  $('metrics').innerHTML = [['执行记录',run.executions.length,'total'],['已提交结果',counts.completed || 0,'committed'],['等待 / 执行中',(counts.waiting || 0) + (counts.executing || 0),'active'],['Agent 调用',run.executions.filter(e => e.implementation.kind === 'agent').length,'on demand']].map(([title,n,unit])=>`<div class="metric"><div><label>${title}</label><div><small>${unit}</small></div></div><b>${n}</b></div>`).join('');
+  const progress=runProgressHTML(run);
+  if(progressSignature!==progress){
+    const opened=$('run-progress').querySelector('details')?.open && $('run-progress').dataset.run===run.id;
+    $('run-progress').innerHTML=progress;progressSignature=progress;$('run-progress').dataset.run=run.id;
+    if(opened && $('run-progress').querySelector('details'))$('run-progress').querySelector('details').open=true;
+  }
   const tasks = run.agent_tasks?.items || [];
   $('attention').innerHTML = tasks.length ? `<div class="notice">当前 ${tasks.length} 项节点任务或异常，请在「任务与问题」查看。</div>` : '';
 

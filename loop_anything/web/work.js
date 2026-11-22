@@ -1,19 +1,47 @@
 'use strict';
 let workReadSerial=0;
-const workEntryLabels={note:'记录',progress:'进展',decision:'决定',action:'执行',change:'目标 / 限制变更'};
+const workEntryLabels={note:'记录',progress:'进展',decision:'决定',action:'执行',change:'目标 / 限制变更',view:'工作概览',state:'业务状态',result:'已保存结果'};
 const timelineGroupPages=new Map(),openTimelineGroups=new Set();
 function timelineCards(items){
-  return `<div class="timeline-cards">${items.map(t=>`<a class="timeline-card" href="${esc(routeHash({type:'timeline',id:t.id}))}" data-route-link><div class="timeline-card-top"><span class="timeline-mark" aria-hidden="true">◎</span><span class="row-arrow" aria-hidden="true">↗</span></div><h3>${esc(t.title||t.objective||t.id)}</h3><p>${esc(t.objective||'尚未记录目标')}</p><small>创建于 ${esc(runDate(t.created_at))}</small></a>`).join('')}</div>`;
+  return `<div class="progress-list">${items.map(t=>{
+    const progress=t.progress, run=t.active_run;
+    const timelineUrl=esc(routeHash({type:'timeline',id:t.id}));
+    const runLink=run?`<a class="work-run-link" href="${esc(routeHash({type:'run',id:run.id}))}" data-route-link>${timelineRunLabel(run.status)} · ${esc(run.title||run.id)} ${badge(run.status)}</a>`:'暂无当前 Run';
+    return `<article class="progress-list-row">
+      <a class="work-title-link" href="${timelineUrl}" data-route-link><small>${esc(t.loop_name||'临时工作')}</small><h3>${esc(t.title||t.objective||t.id)}</h3>
+      <p>${esc(progress?.text || (t.objective?'目标 · '+t.objective:'尚无进展记录'))}</p>
+      ${t.user_action?`<strong class="work-action-note">等待你处理 · ${esc(t.user_action.label)}</strong>`:''}</a>
+      <div class="list-meta">${runLink}<time>${esc(runDate(progress?.at||t.created_at))}</time></div></article>`;
+  }).join('')}</div>`;
 }
-async function showWorkLibrary(){
+async function workbenchPage(args){
+  const data=await platformCall('list_timelines',args);
+  const ids=data.timelines?.map(t=>t.active_run_id).filter(Boolean)||[];
+  if(ids.length){
+    const {runs}=await platformCall('list_runs',{run_ids:ids,archived:'include',limit:ids.length});
+    const byId=new Map(runs.map(r=>[r.id,r]));
+    for(const item of data.timelines){
+      const run=byId.get(item.active_run_id);
+      item.user_action=run?.user_action;
+      item.active_run=run;
+    }
+  }
+  return data;
+}
+let libraryReadAt=0,libraryMarkup='';
+async function showWorkLibrary(background=false){
+  if(background && Date.now()-libraryReadAt<10000)return;
+  libraryReadAt=Date.now();
   const serial=++workReadSerial;
-  $('timelines-list').innerHTML='<p class="empty-inline">正在读取 Timeline…</p>';
-  const data=await platformCall('list_timelines',{limit:1});
+  if(!background)$('timelines-list').innerHTML='<p class="empty-inline">正在读取 Timeline…</p>';
+  const data=await workbenchPage({limit:4});
   if(serial!==workReadSerial||page!=='timelines')return;
-  $('timelines-list').innerHTML=data.groups.length?data.groups.map(g=>{
+  const html=data.groups.length?(data.timelines.length?timelineCards(data.timelines):'')+'<h3 class="work-section-title">按 Loop 浏览</h3>'+data.groups.map(g=>{
     const key=JSON.stringify(g.loop_id);
     return `<details class="timeline-group" data-timeline-group="${esc(key)}" ${openTimelineGroups.has(key)?'open':''}><summary><span class="timeline-group-icon" aria-hidden="true">${g.loop_id===null?'◎':'◇'}</span><span class="timeline-group-name"><strong>${esc(g.name)}</strong><small>${g.loop_id===null?'没有关联 Loop 的工作':esc(g.loop_id)}</small></span><span class="timeline-group-count">${g.count} 条 Timeline</span><span class="timeline-group-chevron" aria-hidden="true">›</span></summary><div class="timeline-group-body"></div></details>`;
   }).join(''):'<div class="work-empty"><span aria-hidden="true">◎</span><h3>从一件想做的事开始</h3><p>与 Agent 讨论目标，Timeline 会保存目标、限制和后续进度。</p></div>';
+  if(background && html===libraryMarkup)return;
+  $('timelines-list').innerHTML=html;libraryMarkup=html;
   await Promise.all([...$('timelines-list').querySelectorAll('[data-timeline-group][open]')].map(group=>loadTimelineGroup(group)));
 }
 async function loadTimelineGroup(element,offset){
@@ -27,7 +55,7 @@ async function loadTimelineGroup(element,offset){
   const body=element.querySelector('.timeline-group-body');
   body.innerHTML='<p class="small muted">正在读取…</p>';
   try{
-    const data=await platformCall('list_timelines',{...(loopId===null?{unbound:true}:{loop_id:loopId}),offset,limit:12});
+    const data=await workbenchPage({...(loopId===null?{unbound:true}:{loop_id:loopId}),offset,limit:12});
     if(!element.isConnected||timelineGroupPages.get(key)?.request!==request)return;
     if(offset&&offset>=data.total)return loadTimelineGroup(element,data.total?Math.floor((data.total-1)/12)*12:0);
     element.dataset.loaded='true';
@@ -42,15 +70,41 @@ document.addEventListener('toggle',event=>{
   if(group.open){openTimelineGroups.add(group.dataset.timelineGroup);if(group.dataset.loaded!=='true')loadTimelineGroup(group);}
   else openTimelineGroups.delete(group.dataset.timelineGroup);
 },true);
-function businessStateCards(state,id){
+function sourceTaskLink(data,runId,taskId){
+  if(!runId || !taskId || !data.runs?.some(r=>r.id===runId))return '';
+  return `<a class="progress-link" href="${esc(routeHash({type:'run',id:runId,task:taskId}))}" data-route-link>查看来源节点 ↗</a>`;
+}
+function evidenceHTML(refs,id,data){
+  if(!Array.isArray(refs)||!refs.length)return '';
+  return refs.map(r=>{
+    if(r.record && r.revision)return `<button class="progress-link" data-work-result="${esc(r.record)}" data-result-revision="${esc(r.revision)}" data-result-timeline="${esc(id)}">${refs.length===1?'查看结果':'结果 · '+esc(r.record)}</button>`;
+    if(r.type && r.id && r.revision)return `<button class="progress-link" data-business-timeline="${esc(id)}" data-business-type="${esc(r.type)}" data-business-id="${esc(r.id)}" data-business-revision="${esc(r.revision)}">${esc(r.type)} · ${esc(r.id)}</button>`;
+    if(data && r.run_id && r.task_id){
+      const link=sourceTaskLink(data,r.run_id,r.task_id);if(link)return link;
+    }
+    return readerJSON('来源',r);
+  }).join('')+'<div class="business-record-detail"></div>';
+}
+function stateSummaryText(record){
+  const summary=record.summary||{};
+  const value=Object.keys(summary).length===1 && Object.hasOwn(summary,'value')?summary.value:summary;
+  if(value!==null && typeof value!=='object')return String(value);
+  const fields=Object.entries(value||{}).filter(([,v])=>v!==null && typeof v!=='object');
+  return fields.map(([k,v])=>k+' · '+v).join(' · ') || record.type+' · '+record.id;
+}
+function recentRecords(rows){
+  const rest=rows.slice(3);
+  return rows.slice(0,3).join('')+(rest.length?`<details class="work-archive"><summary>展开其余 ${rest.length} 条记录</summary>${rest.join('')}</details>`:'');
+}
+function businessStateCards(state,id,data){
   if(!state?.total)return '';
-  const cards=state.records.map(r=>`<article class="work-entry"><strong>${esc(r.type)} · ${esc(r.id)}</strong><p>${esc(Object.values(r.summary||{}).map(v=>typeof v==='string'?v:JSON.stringify(v)).join(' · ')||'已保存业务记录')}</p><button data-business-timeline="${esc(id)}" data-business-type="${esc(r.type)}" data-business-id="${esc(r.id)}">查看记录</button><div class="business-record-detail"></div></article>`).join('');
-  return `<section class="work-history"><h3>业务状态 <span>${state.total}</span></h3>${cards||'<p class="muted">尚未产生业务状态。</p>'}${state.complete?'':'<p class="small muted">当前显示前 '+state.records.length+' 条，完整记录可通过读取工具分页查询。</p>'}</section>`;
+  const cards=state.records.map(r=>`<article class="work-entry"><strong>${esc(r.type)} · ${esc(r.id)}</strong><p>${esc(stateSummaryText(r))}</p><button data-business-timeline="${esc(id)}" data-business-type="${esc(r.type)}" data-business-id="${esc(r.id)}" data-business-revision="${esc(r.revision)}">查看记录</button> ${sourceTaskLink(data,r.run_id,r.task_id)}<div class="business-record-detail"></div></article>`);
+  return `<section class="work-history"><h3>业务状态 <span>${state.total}</span></h3>${recentRecords(cards)}${state.complete?'':'<p class="small muted">当前显示前 '+state.records.length+' 条，完整记录可通过读取工具分页查询。</p>'}</section>`;
 }
 function savedResultsHTML(data,id){
   const records=data.results?.records||[];
   if(!records.length)return '';
-  return `<section class="work-history"><h3>已保存结果</h3>${records.map(r=>`<article class="work-entry"><strong>${esc(r.type||r.id)}</strong><p class="small muted">${esc(r.id)}</p><button data-work-result="${esc(r.id)}" data-result-timeline="${esc(id)}" data-result-revision="${r.revision}">查看结果</button><div class="business-record-detail"></div></article>`).join('')}${data.results.complete?'':'<p class="small muted">这里显示最近 50 份结果，下载文件包含全部记录。</p>'}</section>`;
+  return `<section class="work-history"><h3>已保存结果</h3>${recentRecords(records.map(r=>`<article class="work-entry"><strong>${esc(r.type||r.id)}</strong><p class="small muted">${esc(r.id)}</p><button data-work-result="${esc(r.id)}" data-result-timeline="${esc(id)}" data-result-revision="${r.revision}">查看结果</button> ${sourceTaskLink(data,r.source_run_id,r.task_id)}<div class="business-record-detail"></div></article>`))}${data.results.complete?'':'<p class="small muted">这里显示最近 50 份结果，下载文件包含全部记录。</p>'}</section>`;
 }
 function importSourceHTML(data){
   const source=data.timeline.import_source;
@@ -77,64 +131,116 @@ function observationFigure(series){
   return '<figure class="observation-chart"><svg viewBox="0 0 560 135" role="img" aria-label="'+esc(lines.map(s=>s.label).join('、'))+'"><path d="M46 12 V108 H536" fill="none" stroke="#b7c1ce"/><g fill="currentColor" font-size="10"><text x="2" y="22">'+number(y1)+'</text><text x="2" y="110">'+number(y0)+'</text><text x="46" y="126">'+number(x0)+'</text><text text-anchor="end" x="536" y="126">'+number(x1)+'</text></g>'+marks+'</svg><figcaption>'+
     lines.map((s,i)=>'<span style="color:'+colors[i%colors.length]+'">● '+esc(s.label)+'</span>').join(' · ')+'</figcaption></figure>';
 }
-function observationHTML(data){
+function observationHTML(data,featured){
   if(!data||(!data.views.length&&!data.arrangements.length))return '';
   const views=new Map(data.views.map(v=>[v.name,v])),plans=new Map(data.arrangements.map(a=>[a.name,a]));
-  const names=new Set([...plans.keys(),...views.keys()]);
+  const names=new Set([...(featured?[featured]:[]),...plans.keys(),...views.keys()]);
   const triggerLabels={result:'结果提交',state:'业务状态更新',task:'任务状态变化',run:'运行状态变化',current_run:'接续运行变化',run_deleted:'运行删除',monitor:'监控更新',signal:'指定事件发生'};
-  return '<section class="work-history"><h3>工作概览</h3>'+Array.from(names,name=>{
+  return '<section class="work-history">'+(featured?'':'<h3>工作概览</h3>')+Array.from(names,name=>{
     const view=views.get(name),plan=plans.get(name);
     const status={pending:'等待生成',claimed:'等待生成',preparing:'正在生成',running:'正在生成',remote:'等待执行端',failed:'生成失败',unknown:'上次执行待核实'}[plan?.status];
-    return '<article class="work-entry"><strong>'+esc(name)+'</strong>'+
+    const lead=name===featured;
+    return (lead?'<article class="progress-focus"><div class="focus-label">'+esc(name)+'<time>'+esc(runDate(view.at))+'</time></div>':'<article class="work-entry"><strong>'+esc(name)+'</strong>')+
       (status?'<p class="small">'+esc(status)+(plan.error?' · '+esc(plan.error):'')+'</p>':'')+
-      (view?'<p>'+esc(view.view.summary||'')+'</p>'+observationFigure(view.view.series||[])+(view.view.image_png?'<img class="observation-image" alt="'+esc(name)+'" src="data:image/png;base64,'+esc(view.view.image_png)+'">':'')+'<small class="muted">'+esc(runDate(view.at))+'</small>':'')+
+      (view?(view.view.summary?(lead?'<h3>':'<p>')+esc(view.view.summary)+(lead?'</h3>':'</p>'):'')+observationFigure(view.view.series||[])+(view.view.image_png?'<img class="observation-image" alt="'+esc(name)+'" src="data:image/png;base64,'+esc(view.view.image_png)+'">':'')+(lead?'':'<small class="muted">'+esc(runDate(view.at))+'</small>'):'')+
       (plan?'<details><summary>当前安排</summary><p>'+esc(plan.description||'')+'</p><p class="small muted">'+esc(plan.on?(triggerLabels[plan.on.kind]||plan.on.kind)+'时更新':plan.next_at?'定时生成':'手动生成')+
         (plan.next_at?' · 下次 '+esc(runDate(plan.next_at)):'')+'</p><button data-refresh-observation="'+esc(name)+'" data-observation-run="'+esc(plan.run_id)+'">立即生成</button></details>':'')+'</article>';
   }).join('')+'</section>';
 }
-let observationReading=false;
-async function refreshObservations(){
-  const id=activeRoute.id,root=$('timeline-observations');
-  if(!root||observationReading)return;
-  observationReading=true;
-  try{
-    const value=await platformCall('read_observations',{timeline_id:id});
-    if(root!==$('timeline-observations')||page!=='timeline'||activeRoute.id!==id)return;
-    const html=observationHTML(value);
-    if(root.observationMarkup!==html){
-      const opened=Array.from(root.querySelectorAll('details[open] button'),b=>b.dataset.refreshObservation);
-      root.innerHTML=html;root.observationMarkup=html;
-      for(const button of root.querySelectorAll('[data-refresh-observation]'))if(opened.includes(button.dataset.refreshObservation))button.closest('details').open=true;
-    }
-  }finally{observationReading=false;}
+function workEntryHTML(e,id,data){
+  return `<article class="work-entry"><div class="work-entry-meta"><strong>${esc(workEntryLabels[e.kind]||e.kind)}</strong><time>${esc(runDate(e.at))}</time></div><p>${esc(e.text)}</p>${evidenceHTML(e.refs,id,data)}</article>`;
 }
-
+function timelineSections(data,id){
+  const active=data.runs.find(r=>r.id===data.timeline.active_run_id);
+  const titles=new Set(),duplicates=new Set();
+  for(const r of data.runs){if(titles.has(r.title))duplicates.add(r.title);titles.add(r.title);}
+  const runLink=r=>`<a class="timeline-run-link" href="${esc(routeHash({type:'run',id:r.id}))}" data-route-link><span>${esc(r.title||r.id)}${r.title&&duplicates.has(r.title)?` <code>${esc(r.id)}</code>`:''}</span>${badge(r.status)} <span aria-hidden="true">›</span></a>`;
+  const others=data.runs.filter(r=>r!==active);
+  const p=data.progress;
+  const featured=p?.kind==='view' && data.observations?.views.some(v=>v.name===p.name)?p.name:null;
+  const trail=(data.business_state?.records||[]).map(r=>({
+    at:r.at,kind:'state',text:stateSummaryText(r),refs:[{type:r.type,id:r.id,revision:r.revision},...(r.refs||[])]
+  })).concat((data.recent_entries||data.entries).filter(e=>['note','progress','decision'].includes(e.kind)&&e.actor!=='platform'))
+    .sort((a,b)=>b.at-a.at).filter(e=>e.at!==p?.at || e.kind!==p?.kind).slice(0,4);
+  return {
+    'work-intent':`<div class="timeline-intent progress-intent"><p>${esc(data.timeline.objective||'尚未记录目标')}</p>${data.timeline.constraints?`<details><summary>工作限制</summary><p>${esc(data.timeline.constraints)}</p></details>`:''}</div>`,
+    'work-run-relation':active?`<div class="run-relation"><strong>${timelineRunLabel(active.status)}</strong>${runLink(active)}</div>`:
+      `<p class="empty-relation">${others.length?'暂无当前 Run':'本平台暂无关联 Run'}</p>`,
+    'work-focus':featured?'':`<section class="progress-focus"><div class="focus-label">${esc(p?workEntryLabels[p.kind]:'当前进展')}${p?.at?`<time>${esc(runDate(p.at))}</time>`:''}</div>
+      <h3>${esc(p?.text||'尚未提交业务进展')}</h3>${evidenceHTML(p?.refs,id,data)}${p?.evidence?.length?`<details class="focus-evidence"><summary>判断依据 · ${p.evidence.length}</summary>${evidenceHTML(p.evidence,id,data)}</details>`:''}${sourceTaskLink(data,p?.run_id,p?.task_id)}
+      </section>`,
+    'timeline-observations':observationHTML(data.observations,featured),
+    'work-trail':trail.length?`<section class="work-history progress-trail"><h3>近期工作脉络</h3>${trail.map(e=>workEntryHTML(e,id,data)).join('')}</section>`:'',
+    'work-state':businessStateCards(data.business_state,id,data),
+    'work-results':savedResultsHTML(data,id),
+    'work-runs':others.length?`<section class="timeline-linked"><h3>历史 Run</h3>${others.map(runLink).join('')}</section>`:'',
+    'work-source':importSourceHTML(data)
+  };
+}
+let timelinePollAt=0,timelinePolling=false;
+async function refreshObservations(force=false){
+  const id=activeRoute.id,root=$('work-focus'),serial=workReadSerial;
+  if(!root||timelinePolling||(!force&&Date.now()-timelinePollAt<5000))return;
+  timelinePolling=true;timelinePollAt=Date.now();
+  try{
+    const data=await platformCall('read_work_timeline',{timeline_id:id,newest_first:true,limit:15});
+    if(root!==$('work-focus')||page!=='timeline'||activeRoute.id!==id||serial!==workReadSerial)return;
+    $('timeline-title').textContent=data.timeline.title||'Timeline';
+    const archive=$('work-entries');
+    if(archive && data.entries.length){
+      const first=archive.latestSequence||0;
+      const recent=data.entries.filter(e=>e.sequence>first);
+      if(recent.length){
+        if(!first || (data.has_more && recent.length===data.entries.length)){
+          archive.innerHTML=data.entries.map(e=>workEntryHTML(e,id,data)).join('')+olderEntriesButton(data,id);
+        }else archive.insertAdjacentHTML('afterbegin',recent.map(e=>workEntryHTML(e,id,data)).join(''));
+        archive.latestSequence=data.entries[0].sequence;
+      }
+    }
+    for(const [key,html] of Object.entries(timelineSections(data,id))){
+      const section=$(key);
+      if(section.lastMarkup!==html){
+        const opened=[...section.querySelectorAll('details[open]')].map(el=>el.querySelector('summary')?.textContent);
+        section.innerHTML=html;section.lastMarkup=html;
+        for(const el of section.querySelectorAll('details'))if(opened.includes(el.querySelector('summary')?.textContent))el.open=true;
+      }
+    }
+  }finally{timelinePolling=false;}
+}
+function olderEntriesButton(data,id){
+  return data.has_more?`<button id="work-more" data-work-timeline="${esc(id)}" data-after="${data.cursor}">查看更早记录</button>`:'';
+}
 async function showWorkTimeline(id,after=0){
   const serial=++workReadSerial;
   if(!after){$('timeline-title').textContent='Timeline';$('timeline-content').innerHTML='<p class="empty-inline">正在读取工作进度…</p>';}
-  const data=await platformCall('read_work_timeline',{timeline_id:id,after});
+  const data=await platformCall('read_work_timeline',{timeline_id:id,after,newest_first:true,limit:15});
   if(serial!==workReadSerial||page!=='timeline'||activeRoute.id!==id)return;
   $('timeline-title').textContent=data.timeline.title||'Timeline';
-  const entries=data.entries.map(e=>`<article class="work-entry"><div class="work-entry-meta"><strong>${esc(workEntryLabels[e.kind]||e.kind)}</strong><time>${esc(runDate(e.at))}</time></div><p>${esc(e.text)}</p>${e.refs?.length?readerJSON('来源',e.refs):''}</article>`).join('');
+  const entries=data.entries.map(e=>workEntryHTML(e,id,data)).join('');
   if(!after){
-    $('timeline-content').innerHTML=`<div class="timeline-intent"><section><h3>目标</h3><p>${esc(data.timeline.objective||'尚未记录')}</p></section><section><h3>限制</h3><p>${esc(data.timeline.constraints||'尚未记录')}</p></section></div><p class="small muted timeline-edit-note">修改目标或限制，请告诉 Agent；复核结果由你决定。</p>${importSourceHTML(data)}<div id="timeline-observations">${observationHTML(data.observations)}</div><section class="timeline-linked"><h3>关联运行 <span>${data.runs.length}</span></h3>${data.runs.length?data.runs.map(r=>`<a class="timeline-run-link" href="${esc(routeHash({type:'run',id:r.id}))}" data-route-link><span>${esc(r.title)}</span>${badge(r.status)}<span class="row-arrow" aria-hidden="true">›</span></a>`).join(''):'<p class="muted">还没有关联运行，可以先记录和推进工作。</p>'}</section>${businessStateCards(data.business_state,id)}${savedResultsHTML(data,id)}<section class="work-history"><h3>工作经过</h3><div id="work-entries">${entries||'<p class="muted">还没有记录。</p>'}</div></section>`;
+    const sections=timelineSections(data,id);
+    $('timeline-content').innerHTML=Object.entries(sections).map(([key,html])=>`<div id="${key}">${html}</div>`).join('')+
+      `<details class="work-archive"><summary>全部工作记录</summary><div id="work-entries">${entries||'<p class="muted">还没有记录。</p>'}</div></details>`;
+    for(const [key,html] of Object.entries(sections))$(key).lastMarkup=html;
+    $('work-entries').latestSequence=data.entries[0]?.sequence||0;
+    timelinePollAt=Date.now();
   }else{$('work-more')?.remove();$('work-entries').insertAdjacentHTML('beforeend',entries);}
-  if(data.has_more)$('work-entries').insertAdjacentHTML('beforeend',`<button id="work-more" data-work-timeline="${esc(id)}" data-after="${data.cursor}">继续读取</button>`);
+  if(data.has_more)$('work-entries').insertAdjacentHTML('beforeend',olderEntriesButton(data,id));
 }
 document.addEventListener('click',event=>safely(async()=>{
   const button=event.target.closest('button');if(!button)return;
   if(button.dataset.refreshObservation){
     await platformCall('submit_run_request',{run_id:button.dataset.observationRun,request_id:randomKey(),
       operation:'refresh_observation',arguments:{name:button.dataset.refreshObservation}});
-    await refreshObservations();return;
+    await refreshObservations(true);return;
   }
   if(button.dataset.workResult){
     const data=await platformCall('read_work_result',{timeline_id:button.dataset.resultTimeline,id:button.dataset.workResult,revision:Number(button.dataset.resultRevision)});
-    button.parentElement.querySelector('.business-record-detail').innerHTML=readerJSON('结果与来源',data.record);
+    button.parentElement.querySelector('.business-record-detail').innerHTML=resultView(data.record.value)+readerJSON('结果与来源',data.record);
   }
   if(button.dataset.businessTimeline){
-    const data=await platformCall('read_business_state',{timeline_id:button.dataset.businessTimeline,type:button.dataset.businessType,id:button.dataset.businessId});
-    button.parentElement.querySelector('.business-record-detail').innerHTML=readerJSON('记录与来源',data.records[0]||{});
+    const data=await platformCall('read_business_state',{timeline_id:button.dataset.businessTimeline,type:button.dataset.businessType,id:button.dataset.businessId,...(button.dataset.businessRevision?{revision:Number(button.dataset.businessRevision)}:{})});
+    button.parentElement.querySelector('.business-record-detail').innerHTML=resultView(data.records[0]?.value)+readerJSON('记录与来源',data.records[0]||{})+evidenceHTML(data.records[0]?.refs,button.dataset.businessTimeline);
   }
   if(button.dataset.timelinePage!==undefined)await loadTimelineGroup(button.closest('[data-timeline-group]'),Number(button.dataset.timelinePage));
   if(button.id==='timeline-import')openTimelineImport();

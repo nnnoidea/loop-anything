@@ -14,8 +14,8 @@ def initialize(db):
         CREATE TABLE IF NOT EXISTS work_timelines(id TEXT PRIMARY KEY, document TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS work_entries(timeline_id TEXT NOT NULL, key TEXT NOT NULL,
             sequence INTEGER NOT NULL, document TEXT NOT NULL, PRIMARY KEY(timeline_id,key));
+        CREATE INDEX IF NOT EXISTS work_entry_at ON work_entries(timeline_id,json_extract(document,'$.at') DESC);
     ''')
-
 
 
 def get(db, ident):
@@ -68,6 +68,52 @@ def update(db, ident, revision, change, message=''):
     return dict(timeline=value,changed=True,notice=CHECK_NOTICE)
 
 
+# Rank references before reading their contents. Result files, observation images
+# and Run execution archives do not belong in a workbench listing.
+_ENTRY_FILTER = """ AND json_extract(document,'$.kind') IN ('progress','decision','note')
+    AND coalesce(json_extract(document,'$.actor'),'') != 'platform'"""
+# One candidate per source and Timeline, even when a long-running job has
+# thousands of historical results. Only the winning record needs its payload.
+_PROGRESS = ' UNION ALL '.join(
+    f"""SELECT t.id AS timeline_id,p.rowid AS ref,json_extract(p.document,'$.at') AS at,'{kind}' AS source
+        FROM targets t JOIN {table} p ON p.rowid=(
+            SELECT rowid FROM {table} WHERE timeline_id=t.id {condition}
+            ORDER BY json_extract(document,'$.at') DESC,rowid DESC LIMIT 1)"""
+    for kind,table,condition in [('entry','work_entries',_ENTRY_FILTER),('state','work_state',''),
+                                 ('view','observation_views',''),('result','work_results','')]
+)
+_PROGRESS_ORDER = """at DESC,CASE source WHEN 'entry' THEN 0 WHEN 'state' THEN 1 WHEN 'view' THEN 2 ELSE 3 END,ref DESC"""
+
+
+def state_preview(summary):
+    value = summary.get('value') if set(summary)=={'value'} else summary
+    if isinstance(value,dict):
+        return ' · '.join(f'{k} · {v}' for k,v in value.items() if isinstance(v,(str,int,float)) and str(v).strip())
+    return str(value) if isinstance(value,(str,int,float)) else ''
+
+
+def progress_preview(db, source, ref, definition):
+    if not source:
+        return None
+    if source == 'view':
+        row = db.execute("SELECT name,json_extract(document,'$.view.summary') FROM observation_views WHERE rowid=?", (ref,)).fetchone()
+        return dict(kind='view',name=row[0],text=row[1] or row[0])
+    if source == 'entry':
+        row = db.execute('SELECT document FROM work_entries WHERE rowid=?',(ref,)).fetchone()
+        entry = json.loads(row[0])
+        return dict(kind=entry['kind'],text=entry['text'],refs=entry.get('refs',[]))
+    if source == 'state':
+        from loop_anything.runtime.business_state import overview
+        raw = db.execute('SELECT document FROM work_state WHERE rowid=?',(ref,)).fetchone()
+        state = overview({'records':[json.loads(raw[0])]},definition)['records'][0]
+        return dict(kind=source,text=state_preview(state['summary']) or state['type']+' · '+state['id'],
+                    run_id=state['run_id'],task_id=state['task_id'],evidence=state['refs'],refs=[{k:state[k] for k in ('type','id','revision')}])
+    row = db.execute("""SELECT id,revision,
+        CASE WHEN json_type(document,'$.value') IN ('text','integer','real') THEN substr(json_extract(document,'$.value'),1,300) END,
+        json_extract(document,'$.source_run_id'),json_extract(document,'$.tasks') FROM work_results WHERE rowid=?""",(ref,)).fetchone()
+    return dict(kind='result',text=str(row[2]) if row[2] is not None else row[0],run_id=row[3],task_id=row[4],refs=[dict(record=row[0],revision=row[1])])
+
+
 def list_timelines(store, loop_id=None, unbound=False, limit=20, offset=0):
     """Classify by the current method, retaining its label after the Run is deleted."""
     if type(limit) is not int or not 1 <= limit <= 100 or type(offset) is not int or offset < 0:
@@ -79,7 +125,8 @@ def list_timelines(store, loop_id=None, unbound=False, limit=20, offset=0):
         SELECT w.id,w.document,json_extract(w.document,'$.created_at') AS created_at,
             coalesce(json_extract(l.document,'$.id'),json_extract(w.document,'$.loop_id')) AS loop_id,
             coalesce(nullif(json_extract(l.document,'$.name'),''),json_extract(l.document,'$.id'),
-                     json_extract(w.document,'$.loop_name')) AS loop_name
+                     json_extract(w.document,'$.loop_name')) AS loop_name,
+            coalesce(json_extract(l.document,'$.state'),json_extract(w.document,'$.state_definition')) AS state_definition
         FROM work_timelines w LEFT JOIN runs r ON r.id=json_extract(w.document,'$.active_run_id')
         LEFT JOIN loop_definitions l ON l.key=json_extract(r.document,'$.loop_key')
     ) """
@@ -94,32 +141,52 @@ def list_timelines(store, loop_id=None, unbound=False, limit=20, offset=0):
         for group in groups:
             if group['loop_id'] is None:group['name']='临时工作'
         total=db.execute(catalog+'SELECT count(*) FROM classified'+where,args).fetchone()[0]
-        rows=db.execute(catalog+'SELECT document,loop_id,loop_name FROM classified'+where+
-                        ' ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?',args+[limit,offset]).fetchall()
-        items=[dict(json.loads(row['document']),loop_id=row['loop_id'],loop_name=row['loop_name']) for row in rows]
+        ranked = catalog + ", targets AS (SELECT id FROM classified"+where+"), progress AS (" + _PROGRESS + f"""), latest AS (
+            SELECT *,row_number() OVER(PARTITION BY timeline_id ORDER BY {_PROGRESS_ORDER}) AS pos
+            FROM progress)
+            SELECT c.*,p.at,p.source,p.ref FROM classified c LEFT JOIN latest p ON p.timeline_id=c.id AND p.pos=1"""
+        rows=db.execute(ranked+where+' ORDER BY coalesce(p.at,c.created_at) DESC,c.id DESC LIMIT ? OFFSET ?',
+                        args+args+[limit,offset]).fetchall()
+        items=[]
+        for row in rows:
+            preview=progress_preview(db,row['source'],row['ref'],json.loads(row['state_definition'] or '{}'))
+            if preview:
+                preview['at']=row['at']
+                preview.pop('refs',None)
+                preview.pop('evidence',None)
+                preview['text']=preview['text'][:300]
+            items.append(dict(json.loads(row['document']),loop_id=row['loop_id'],loop_name=row['loop_name'],progress=preview))
         return dict(timelines=items,groups=groups,total=total,offset=offset,limit=limit,
                     next_offset=offset+len(items) if offset+len(items)<total else None)
 
 
-def read(store, ident, after=0, limit=100):
+def read(store, ident, after=0, limit=100, newest_first=False):
     if type(after) is not int or after<0 or type(limit) is not int or not 1<=limit<=200:raise Invalid('Invalid entry page')
     with store.connection() as db:
         db.execute('BEGIN')
         value=get(db,ident)
-        rows=db.execute('SELECT document FROM work_entries WHERE timeline_id=? AND sequence>? ORDER BY sequence LIMIT ?',
-                        (ident,after,limit+1)).fetchall()
+        condition = ('AND sequence < ?' if after else '') if newest_first else 'AND sequence > ?'
+        direction = 'DESC' if newest_first else 'ASC'
+        rows=db.execute(f'SELECT document FROM work_entries WHERE timeline_id=? {condition} ORDER BY sequence {direction} LIMIT ?',
+                        (ident,after,limit+1) if condition else (ident,limit+1)).fetchall()
         entries=[json.loads(r[0]) for r in rows[:limit]]
+        recent_entries=[json.loads(r[0]) for r in db.execute(
+            'SELECT document FROM work_entries WHERE timeline_id=?'+_ENTRY_FILTER+' ORDER BY sequence DESC LIMIT 5',(ident,))]
+
         runs=[]
         for row in db.execute('SELECT id,document FROM runs WHERE json_extract(document,\'$.timeline_id\')=?',(ident,)):
             run=json.loads(row[1]);run['status']=public_status(run);runs.append({k:run.get(k) for k in ('id','title','status','continued_from','superseded_by')})
         from loop_anything.runtime import business_state
         current=db.execute("SELECT l.document FROM runs r JOIN loop_definitions l ON l.key=json_extract(r.document,'$.loop_key') WHERE r.id=?",(value.get('active_run_id'),)).fetchone()
         definition=(json.loads(current[0]).get('state') if current else None) or value.get('state_definition')
+        last=db.execute("WITH targets(id) AS (VALUES (?)) SELECT * FROM ("+_PROGRESS+") ORDER BY "+_PROGRESS_ORDER+" LIMIT 1",(ident,)).fetchone()
+        progress=progress_preview(db,last['source'],last['ref'],definition) if last else None
+        if progress:progress['at']=last['at']
         result_rows=db.execute("""SELECT id,revision,json_extract(document,'$.type') AS type,
-                json_extract(document,'$.source_run_id') AS source_run_id,json_extract(document,'$.at') AS at
+                json_extract(document,'$.source_run_id') AS source_run_id,json_extract(document,'$.tasks') AS task_id,json_extract(document,'$.at') AS at
                 FROM work_results WHERE timeline_id=? ORDER BY rowid DESC LIMIT 51""",(ident,)).fetchall()
         from loop_anything.runtime.observations import overview as view_overview
-        return dict(timeline=value,observations=view_overview(db,ident),entries=entries,runs=runs,business_state=business_state.timeline_overview(db,ident,definition),
+        return dict(timeline=value,progress=progress,recent_entries=recent_entries,observations=view_overview(db,ident),entries=entries,runs=runs,business_state=business_state.timeline_overview(db,ident,definition),
                     results={'records':[dict(r) for r in result_rows[:50]],
                              'complete':len(result_rows)<=50},
                     cursor=entries[-1]['sequence'] if entries else after,has_more=len(rows)>limit)
