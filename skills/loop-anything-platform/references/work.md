@@ -123,6 +123,10 @@ address nested fields with dots. Units are never inferred. Set optional `display
 `stat` for current values, `table` for exact comparisons, `bars` for relative
 sizes, or `trend` for changes over time. Omit it for automatic layout. Labels
 such as “Queue A · Free” and “Queue B · Free” can share a measure column.
+For a changing set of measurements, omit the fixed `metrics` definition and
+return `metric_groups: [{label, metrics: [{key, label, unit}]}]` alongside the
+sample values. The table and stat views group the measurements by label.
+Keep metric keys stable across samples to preserve their trends.
 Viewers can override the instance view in their browser. `read_monitor_history`
 returns up to 240 recent checks. Pass `metric` to read just its timestamp/value
 points, with missing or failed readings returned as gaps. Native Loop external observers keep their existing contract and link

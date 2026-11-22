@@ -18,11 +18,11 @@
 <h2 class="sr-only">监控</h2><div class="monitor-body"><p id="monitoring-error" role="status" hidden></p>
 <div class="monitor-toolbar"><div class="monitor-tabs" role="tablist" aria-label="监控视图"><button id="monitor-overview-tab" role="tab" aria-selected="true" aria-controls="monitoring-overview" data-monitor-tab="overview" class="active">总览</button><button id="monitor-scripts-tab" role="tab" aria-selected="false" aria-controls="monitoring-scripts" data-monitor-tab="scripts">脚本库</button></div><div class="monitor-tools"><span class="muted" id="monitoring-updated">读取中…</span><button id="monitoring-refresh">刷新</button></div></div>
 <div id="monitoring-overview" role="tabpanel" aria-labelledby="monitor-overview-tab">
-<section class="monitor-section"><h2>常态监控</h2><div id="monitoring-standing" class="monitor-grid"></div></section>
-<section class="monitor-section"><h2>运行指标</h2><div id="monitoring-instances" class="monitor-grid"></div></section>
-<section class="monitor-section"><h2>Run 状态</h2><div id="monitoring-counts" class="monitor-counts"></div><div id="monitoring-runs" aria-live="polite">正在读取…</div><div id="monitoring-pagination" class="monitor-pagination" hidden><button id="monitoring-prev">上一页</button><span id="monitoring-page-number"></span><button id="monitoring-next">下一页</button></div></section>
-<details class="monitor-section"><summary id="monitoring-waits-title">等待条件</summary><div id="monitoring-waits"></div></details>
-</div><div id="monitoring-scripts" role="tabpanel" aria-labelledby="monitor-scripts-tab" hidden><p class="muted">脚本可留在 Loop 内，也可注册到平台复用。注册定义不会自动执行。</p><div id="monitoring-script-list"></div></div></div></section>
+<details class="monitor-section monitor-fold" data-monitor-section="standing" open><summary><h2>常态监控</h2></summary><div id="monitoring-standing" class="monitor-grid"></div></details>
+<details class="monitor-section monitor-fold" data-monitor-section="instances" open><summary><h2>运行指标</h2></summary><div id="monitoring-instances" class="monitor-grid"></div></details>
+<details class="monitor-section monitor-fold" data-monitor-section="runs" open><summary><h2>Run 状态</h2></summary><div id="monitoring-counts" class="monitor-counts"></div><div id="monitoring-runs" aria-live="polite">正在读取…</div><div id="monitoring-pagination" class="monitor-pagination" hidden><button id="monitoring-prev">上一页</button><span id="monitoring-page-number"></span><button id="monitoring-next">下一页</button></div></details>
+<details class="monitor-section monitor-fold" data-monitor-section="waits" data-default-closed><summary><h2 id="monitoring-waits-title">等待条件</h2></summary><div id="monitoring-waits"></div></details>
+</div><div id="monitoring-scripts" role="tabpanel" aria-labelledby="monitor-scripts-tab" hidden><details class="monitor-section monitor-fold" data-monitor-section="scripts" open><summary><h2>脚本库</h2></summary><p class="muted">脚本可留在 Loop 内，也可注册到平台复用。注册定义不会自动执行。</p><div id="monitoring-script-list"></div></details></div></div></section>
 <section id="schedules-page" hidden>
   <div class="page-heading"><div><h1>定时任务</h1><p class="muted">执行服务器 <span id="schedules-host"></span></p></div></div>
   <div class="schedules-content">

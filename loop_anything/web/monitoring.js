@@ -6,8 +6,37 @@ function monitorAge(at){if(!at)return '尚未采集';const n=Math.max(0,Math.flo
 function monitorValue(data,key){return key.split('.').reduce((v,k)=>v!=null&&Object.hasOwn(v,k)?v[k]:undefined,data);}
 function monitorMetrics(m){
   if(m.metrics.length)return m.metrics;
-  return Object.entries(m.sample?.data||{}).filter(([k,v])=>k!=='done'&&typeof v==='number').slice(0,3).map(([key])=>({key,label:key,unit:''}));
+  const data=m.sample?.data||{},seen=new Set();
+  const grouped=Array.isArray(data.metric_groups)?data.metric_groups.flatMap(group=>{
+    if(typeof group?.label!=='string'||!group.label||!Array.isArray(group.metrics))return [];
+    return group.metrics.flatMap(metric=>{
+      if(typeof metric?.key!=='string'||!metric.key||seen.has(metric.key))return [];
+      seen.add(metric.key);
+      return [{key:metric.key,label:typeof metric.label==='string'?metric.label:metric.key,
+        unit:typeof metric.unit==='string'?metric.unit:'',group:group.label}];
+    });
+  }):[];
+  if(grouped.length)return grouped;
+  return Object.entries(data).filter(([k,v])=>k!=='done'&&typeof v==='number').slice(0,3).map(([key])=>({key,label:key,unit:''}));
 }
+function monitorSectionOpen(key,defaultOpen=true){
+  try {
+    const value=localStorage.getItem('monitor-section:'+key);
+    return value===null?defaultOpen:value==='true';
+  } catch {return defaultOpen;}
+}
+document.addEventListener('DOMContentLoaded',()=>{
+  for(const el of document.querySelectorAll('#monitoring-page details[data-monitor-section]'))
+    el.open=monitorSectionOpen(el.dataset.monitorSection,!el.hasAttribute('data-default-closed'));
+});
+document.addEventListener('toggle',({target})=>{
+  if(!target.matches?.('#monitoring-page details[data-monitor-section]')||!target.isConnected)return;
+  const key=target.dataset.monitorSection;
+  if(target.open!==monitorSectionOpen(key,!target.hasAttribute('data-default-closed'))){
+    try {localStorage.setItem('monitor-section:'+key,String(target.open));} catch {}
+  }
+  if(target.open)refreshMonitorTrends();
+},true);
 function monitoringRunLink(id,title){return `<a href="#run/${encodeURIComponent(id)}" data-route-link>${esc(title||id)}</a>`;}
 function monitorCondition(expr){
   if(!expr||typeof expr!=='object')return typeof expr==='string'?expr:String(expr);
@@ -76,9 +105,24 @@ function monitorBars(m, entries) {
 function monitorReadings(m, preference = {}) {
   const metrics = monitorMetrics(m);
   if (!metrics.length) return `<p class="monitor-no-values">${m.data_state==='fresh'?'已收到观测结果，查看详情':'尚无有效观测值'}</p>`;
-  const matrix = metricMatrix(metrics);
   const view = preference.view && preference.view !== 'auto' ? preference.view :
-    m.display || (matrix || metrics.length > 4 ? 'table' : 'stat');
+    m.display || (metricMatrix(metrics) || metrics.length > 4 ? 'table' : 'stat');
+  if(metrics.some(metric=>metric.group)&&['stat','table'].includes(view)){
+    const groups=new Map();
+    for(const metric of metrics){
+      if(!groups.has(metric.group))groups.set(metric.group,[]);
+      groups.get(metric.group).push(metric);
+    }
+    return Array.from(groups,([group,entries])=>{
+      const key='group:'+m.id+':'+group;
+      return `<details class="monitor-metric-group monitor-fold" data-monitor-section="${esc(key)}"${monitorSectionOpen(key)?' open':''}><summary><h4>${esc(group)}</h4></summary>${monitorMetricView(group,entries,view,m,preference)}</details>`;
+    }).join('');
+  }
+  const named=metrics.map(metric=>metric.group?{...metric,label:metric.group+' · '+metric.label}:metric);
+  return monitorMetricView(m.name,named,view,m,preference);
+}
+function monitorMetricView(name,metrics,view,m,preference){
+  const matrix=metricMatrix(metrics);
   function reading(metric) {
     const value = metricNumber(m,metric);
     if (value===null) return '<span class="muted">—</span>';
@@ -98,10 +142,10 @@ function monitorReadings(m, preference = {}) {
   if (view==='stat') return '<dl class="monitor-values">' + metrics.map(metric =>
     `<div><dt>${esc(metric.label || metric.key)}</dt><dd>${reading(metric)}</dd></div>`
   ).join('') + '</dl>';
-  if (!matrix) return `<div class="metric-matrix"><table aria-label="${esc(m.name)}指标"><thead><tr><th scope="col">指标</th><th scope="col">当前值</th></tr></thead><tbody>${metrics.map(metric=>
+  if (!matrix) return `<div class="metric-matrix"><table aria-label="${esc(name)}指标"><thead><tr><th scope="col">指标</th><th scope="col">当前值</th></tr></thead><tbody>${metrics.map(metric=>
     `<tr><th scope="row">${esc(metric.label||metric.key)}</th><td>${reading(metric)}</td></tr>`).join('')}</tbody></table></div>`;
   const {rows, columns} = matrix;
-  return `<div class="metric-matrix"><table aria-label="${esc(m.name)}指标"><thead><tr><th scope="col">对象</th>${columns.map(c => `<th scope="col">${esc(c)}</th>`).join('')}</tr></thead><tbody>${
+  return `<div class="metric-matrix"><table aria-label="${esc(name)}指标"><thead><tr><th scope="col">对象</th>${columns.map(c => `<th scope="col">${esc(c)}</th>`).join('')}</tr></thead><tbody>${
     Array.from(rows, ([name, row]) => `<tr><th scope="row">${esc(name)}</th>${columns.map(c => `<td>${reading(row.get(c))}</td>`).join('')}</tr>`).join('')
   }</tbody></table></div>`;
 }
@@ -114,8 +158,9 @@ function monitorCard(m){
     ${m.error?'<p class="monitor-warning small">采集失败，当前外部状态未知</p>':''}</article>`;
 }
 function refreshMonitorTrends() {
-  if (page!=='monitors' || monitoringTab!=='overview') return;
+  if (!monitoringData || page!=='monitors' || monitoringTab!=='overview') return;
   for (const chart of document.querySelectorAll('#monitoring-overview [data-trend-metric]')) {
+    if(chart.closest('details:not([open])'))continue;
     const id = chart.closest('[data-monitor-id]').dataset.monitorId;
     const m = monitoringData.monitors.find(item=>item.id===id);
     const metric = monitorMetrics(m).find(item=>item.key===chart.dataset.trendMetric);
@@ -248,7 +293,8 @@ function monitorPlot(points,metric){
 }
 async function openMonitorDetail(id){
   const [value,history]=await Promise.all([platformCall('read_monitor',{monitor_id:id}),platformCall('read_monitor_history',{monitor_id:id})]);
-  const m=value.monitor,script=m.script.script,metrics=monitorMetrics({metrics:script.metrics||[],sample:m.sample});
+  const m=value.monitor,script=m.script.script,metrics=monitorMetrics({metrics:script.metrics||[],sample:m.sample})
+    .map(metric=>metric.group?{...metric,label:metric.group+' · '+metric.label}:metric);
   $('detail-title').textContent=script.description||m.script.id||'监控详情';
   $('detail-content').innerHTML=`<p>${m.run_id?'关联 '+monitoringRunLink(m.run_id):'常态监控'} · ${esc(monitorNames[m.status]||m.status)}</p><p class="small muted">来源：${esc(m.script.id?'平台注册 · '+m.script.id+' v'+m.script.revision:'自带脚本')} · 最近成功采集：${esc(monitorAge(m.sample?.at))}</p>${m.error?`<p class="monitor-warning">采集错误：${esc(m.error)}。这不代表实验失败。</p>`:''}${history.samples.length?metrics.map(metric=>monitorTrend(history.samples,metric)).join(''):'<p class="monitor-empty">尚无采样历史，接入脚本后开始记录。</p>'}<p class="small muted">最多保留最近 ${history.retention} 次采集；缺失与失败不会补成零。</p>${readerJSON('最近有效结果',m.sample)}${readerJSON('实例参数',m.parameters)}<button id="monitor-detail-stop" class="danger-quiet" ${m.status==='stopped'?'disabled':''}>停止后续采集</button><p class="small muted">只停止此监控实例，不终止实验，也不停止其他实例。</p>`;
   $('monitor-detail-stop').onclick=()=>safely(async()=>{await platformCall('stop_monitor',{monitor_id:id});await openMonitorDetail(id);await refreshMonitoring(true);});

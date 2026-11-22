@@ -45,3 +45,20 @@ test('a script display is the default and each viewer can override it',()=>{
   assert.match(vm.runInContext("monitorReadings(monitor,{view:'table'})",ctx),/<td>-8 <small>MB\/s/);
   assert.match(vm.runInContext("monitorReadings(monitor,{view:'trend',metric:'memory'})",ctx),/data-trend-metric="memory"/);
 });
+test('sample-driven groups keep per-pool totals and queue rows together',()=>{
+  const metrics=(pool,row,name)=>['总量','空余'].map((label,i)=>({key:[pool,row,i].join('.'),label:name+' · '+label,unit:'张'}));
+  ctx.monitor={id:'gpu',name:'GPU',display:'table',metrics:[],data_state:'fresh',sample:{data:{
+    private:{total:[8,0],queue:[8,0]},public:{total:[50,20],queue:[50,20]},
+    metric_groups:[
+      {label:'私有池',metrics:[...metrics('private','total','合计'),...metrics('private','queue','private-a')]},
+      {label:'公有池',metrics:[...metrics('public','total','合计'),...metrics('public','queue','public-a')]},
+    ],
+  }}};
+  ctx.localStorage={getItem:key=>key==='monitor-section:group:gpu:私有池'?'false':null};
+  const html=vm.runInContext('monitorReadings(monitor)',ctx);
+  assert.match(html,/data-monitor-section="group:gpu:私有池"><summary>/);
+  assert.match(html,/data-monitor-section="group:gpu:公有池" open><summary>/);
+  assert.match(html,/合计<\/th><td>8 <small>张<\/small><\/td><td>0 /);
+  assert.match(html,/合计<\/th><td>50 <small>张<\/small><\/td><td>20 /);
+  assert.match(vm.runInContext("monitorReadings(monitor,{view:'trend',metric:'public.total.1'})",ctx),/公有池 · 合计 · 空余/);
+});
