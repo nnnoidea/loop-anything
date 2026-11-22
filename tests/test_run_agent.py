@@ -457,6 +457,32 @@ print(json.dumps({'event':'completed','envelope':{'outputs':{'result':'fabricate
         self.engine.tick(self.id)
         self.assertEqual([], self.read()['executions'])
 
+    def test_workspace_sends_only_the_selected_approval_identity_and_schema(self):
+        from loop_anything.interfaces.run_workspace import read_workspace
+
+        self.bp['nodes']['approve'] = copy.deepcopy(self.bp['nodes']['reason'])
+        self.implementations['approve'] = {'options': {'default': {'kind': 'approval'}}, 'default': 'default'}
+        self.start()
+        self.complete('init', settings={'objective': 'Review'}, tasks=[task_spec('approve', 'approve')])
+        self.engine.tick(self.id)
+        with self.store.edit(self.id) as run:
+            run['executions'][0]['prompt_text'] = 'Raw Agent prompt for diagnosis'
+            self.store.log(run, 'observation', 'Raw output for diagnosis', run['executions'][0]['id'],
+                           {'stdout': 'Private diagnostic marker'})
+
+        overview = read_workspace(self.store, self.engine.timeline_runtime, self.id, {})
+        self.assertTrue(all('token' not in attempt for attempt in overview['executions']))
+        self.assertEqual(overview['loop_definition']['records'], {})
+        selected = read_workspace(self.store, self.engine.timeline_runtime, self.id, {'task': 'approve'})
+        approval = next(attempt for attempt in selected['executions'] if attempt['task_id'] == 'approve')
+        self.assertTrue(approval['token'])
+        self.assertTrue(selected['loop_definition']['records'])
+        response = json.dumps(selected)
+        self.assertNotIn('Raw Agent prompt', response)
+        self.assertNotIn('diagnostic marker', response)
+        self.assertEqual(selected['history'], [])
+        self.assertTrue(any(h['message'] == 'Raw output for diagnosis' for h in self.read()['history']))
+
 
 if __name__ == '__main__':
     unittest.main()

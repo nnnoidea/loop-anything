@@ -117,7 +117,7 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
       if(previous.type!=='run'||previous.id!==route.id){document.querySelector('.run-menu').open=false;taskOrder='graph';taskRound='';runHistoryOffset=0;restoreRounds(route.id);}
       if(previous.type!=='run'||previous.id!==route.id||previous.task!==route.task||route.task){
         if(route.task){taskOrder='graph';taskRound='';}
-        selectedTask=route.task || null;selectedAttempt=null;activeTab='task-history';taskStatus='';taskSearch='';inspectSignature='';
+        selectedTask=route.task || null;activeTab='task-history';taskStatus='';taskSearch='';inspectSignature='';
       }
       selected=route.id;run=nextRun;settingsBase=null;filterNode=null;page='runs';renderRun();
     }else{page='timelines';await showWorkLibrary();}

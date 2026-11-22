@@ -57,7 +57,7 @@ $('terminal-recover').onclick=()=>safely(async()=>{const view=terminalView;if(!v
 $('terminal-interrupt').onclick=()=>{if(terminalView)terminalSend(terminalView,{data:'\x03'});};
 document.addEventListener('click',event=>{const button=event.target.closest('[data-open-terminal]');if(button)safely(()=>openTerminal(button.dataset.openTerminal));});
 
-const resultDialog=document.createElement('dialog');resultDialog.id='task-result-dialog';resultDialog.innerHTML='<div class="dialog-heading"><h2 id="task-result-title">运行结果</h2><button id="task-result-close" aria-label="关闭结果">×</button></div><label>执行尝试<select id="task-result-attempt"></select></label><div id="task-result-content"></div>';document.body.append(resultDialog);
+const resultDialog=document.createElement('dialog');resultDialog.id='task-result-dialog';resultDialog.innerHTML='<div class="dialog-heading"><h2 id="task-result-title">运行结果</h2><button id="task-result-close" aria-label="关闭结果">×</button></div><label id="task-result-choices" hidden>执行尝试<select id="task-result-attempt"></select></label><div id="task-result-content"></div>';document.body.append(resultDialog);
 $('task-result-close').onclick=()=>resultDialog.close();
 let resultTask=null;
 function renderTaskResult(){
@@ -66,16 +66,17 @@ function renderTaskResult(){
   const task=data.tasks[resultTask.id],node=data.loop_definition.nodes[task.spec.node],attempt=data.executions.find(e=>e.id===$('task-result-attempt').value);
   $('task-result-title').textContent=taskLabel(task)+' · 运行结果';
   const outputs=Object.entries(attempt?.outputs||{});
-  $('task-result-content').innerHTML=`<p>${badge(attempt?.status||task.status)} <span class="small muted">${esc(task.id)}${attempt?' · 第 '+attempt.attempt+' 次执行':''}</span></p>${outputs.length?outputs.map(([port,value])=>`<section class="result-section"><h3>${esc(data.loop_definition.records[node.outputs[port]?.record_type]?.title||port)}</h3>${resultWithSchema(value,data.loop_definition.records[node.outputs[port]?.record_type]||{},attempt,port)}</section>`).join(''):`<p class="empty-inline">${attempt?.status==='completed'?'本次执行已完成，没有声明的输出。':'本次执行尚未提交结果。'}</p>`}${taskError(attempt)}${!attempt||attempt.id===task.execution_id?taskWaitReasons(task):''}${attempt?.implementation.kind==='agent'?`<div class="toolbar"><button data-result-terminal="${esc(attempt.id)}">查看会话记录</button>${!['completed','terminated'].includes(run.status)?`<button data-result-resume="${esc(attempt.id)}">${attempt.worker_active?'打开会话':'恢复会话'}</button>`:''}</div>`:''}`;
+  const canResume=attempt?.implementation.kind==='agent'&&!run.identity_read_only&&!['completed','terminated','continued'].includes(run.status);
+  $('task-result-content').innerHTML=`<p>${badge(attempt?.status||task.status)}</p>${outputs.length?outputs.map(([port,value])=>`<section class="result-section"><h3>${esc(data.loop_definition.records[node.outputs[port]?.record_type]?.title||port)}</h3>${resultWithSchema(value,data.loop_definition.records[node.outputs[port]?.record_type]||{},attempt,port)}</section>`).join(''):`<p class="empty-inline">${attempt?.status==='completed'?'本次执行已完成，没有声明的输出。':'本次执行尚未提交结果。'}</p>`}${taskError(attempt,!attempt||attempt.id===task.execution_id?task:null)}${canResume?`<div class="toolbar"><button data-result-resume="${esc(attempt.id)}">${attempt.worker_active?'打开会话':'恢复 Agent 会话'}</button></div>`:''}`;
 }
 async function openTaskResult(taskId){
   const request={id:taskId,runId:run.id};resultTask=request;
   $('task-result-title').textContent=taskLabel(run.tasks[taskId])+' · 运行结果';
   $('task-result-content').textContent='正在读取任务结果…';
-  const select=$('task-result-attempt');select.replaceChildren();select.disabled=true;
+  const select=$('task-result-attempt');select.replaceChildren();select.disabled=true;$('task-result-choices').hidden=true;
   if(!resultDialog.open)resultDialog.showModal();
   try{
-    const snapshot=await api(runWorkspacePath(request.runId,{task:taskId}));
+    const snapshot=await api(runWorkspacePath(request.runId,{tab:'result',task:taskId}));
     if(resultTask!==request||!resultDialog.open||run?.id!==request.runId)return;
     if(!snapshot.tasks[taskId])throw new Error('找不到该任务。');
     request.snapshot=snapshot;
@@ -83,6 +84,7 @@ async function openTaskResult(taskId){
     select.replaceChildren(...attempts.map(e=>new Option(`第 ${e.attempt} 次 · ${labels[e.status]||e.status}`,e.id)));
     if(attempts.length)select.value=attempts.at(-1).id;
     select.disabled=!attempts.length;
+    $('task-result-choices').hidden=attempts.length<2;
     renderTaskResult();
   }catch(error){if(resultTask===request&&resultDialog.open)$('task-result-content').textContent=error.message;}
 }
@@ -108,6 +110,5 @@ $('resume-agent-form').onsubmit=async event=>{
 document.addEventListener('click',event=>{const button=event.target.closest('button');if(!button)return;const d=button.dataset;
   if(d.taskResult)safely(()=>openTaskResult(d.taskResult));
   if(d.agentSession)safely(()=>openAgentSession(d.agentSession));
-  if(d.resultTerminal){resultDialog.close();safely(()=>openTerminal(d.resultTerminal));}
   if(d.resultResume){resultDialog.close();safely(()=>openAgentSession(d.resultResume));}
 });

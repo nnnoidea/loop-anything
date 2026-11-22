@@ -4,7 +4,7 @@ Object.assign(labels,{waiting_user:'等待用户',planned:'已规划',held:'暂�
 function renderTimelineSettings(){ $('attention').innerHTML=runIdleHint(run); }
 function runIdleHint(value){
   const tasks=Object.values(value.tasks||{});
-  if(value.status!=='running'||value.identity_read_only||!tasks.length||value.settings.completion_rule!=null||value.settings.termination_signal||(value.agent_sessions||[]).length||(value.diagnostics||[]).length||(value.agent_tasks?.items||[]).length||!tasks.every(t=>['completed','skipped','cancelled'].includes(t.status)))return '';
+  if(value.status!=='running'||value.identity_read_only||!tasks.length||value.settings.completion_rule!=null||value.settings.termination_signal||(value.agent_sessions||[]).length||(value.has_diagnostics||(value.diagnostics||[]).length)||(value.agent_tasks?.items||[]).length||!tasks.every(t=>['completed','skipped','cancelled'].includes(t.status)))return '';
   return '<div class="notice">已安排的任务均已结束；当前没有自动结束规则，Run 仍保持运行。需要继续时让 Agent 安排后续任务；目标已达成时让 Agent 明确结束条件。</div>';
 }
 const runIssueText={
@@ -35,7 +35,7 @@ function runAttentionItems(value){
   for(const item of value.agent_tasks?.waiting||[]){
     if(item.status==='waiting_configuration'&&item.notification_id)issues.set(item.id,{label:'通知出口待配置',control:true});
   }
-  if(value.agent_sessions?.some(owner=>owner.recovery_required))issues.set('session',{label:'Agent 会话状态需核实',note:'可以在相关节点查看会话和执行诊断。'});
+  if(value.agent_sessions?.some(owner=>owner.recovery_required))issues.set('session',{label:'Agent 会话状态需核实',note:'可请 Agent 核对会话状态。'});
   return [...issues.values()];
 }
 function runTaskLink(id,label){

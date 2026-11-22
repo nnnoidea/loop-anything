@@ -32,7 +32,7 @@ test('missing fixed notification bindings do not claim original-chat replies are
 });
 test('a running recovery only changes the headline for its own failed task',()=>{
   load('workspace.js','function readingText(','function taskCard(');
-  const failure={tasks:{id:'score',spec:{node:'score'},status:'fault'},attempts:[{error:"Traceback (most recent call last):\nFileNotFoundError: [Errno 2] No such file or directory: '/tmp/official_aggregate.json'"}],dependencies:[]};
+  const failure={tasks:{id:'score',spec:{node:'score'},status:'fault'},attempts:[{failure_summary:'找不到文件或目录 official_aggregate.json。'}],dependencies:[]};
   const repair={tasks:{id:'fix',spec:{node:'fix'},status:'executing',origin:{fallback:true,issues:[{task_id:'score'}]}},attempts:[],dependencies:[]};
   Object.assign(ctx,{TaskHistory:{rows:()=>[failure,repair]},taskLabel:t=>t.id,labels:{},routeHash:()=>'',badge:()=>'',value:{id:'r',status:'running'}});
   const html=run('runProgressHTML(value)');

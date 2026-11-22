@@ -73,10 +73,12 @@ test('Loop call details expose mappings and an encoded child Run link without an
   ctx.readerItem={loop_definition:{nodes:{n:{}}},implementations:{n:{default:'one'}},assets:[]};
   const html=run('readerCandidateHTML(readerItem,"n","one",implementation)');
   for(const text of ['调用的 Loop','installed-child','inputs.source','records.answer'])assert.ok(html.includes(text),text);
-  ctx.run={history:[]};ctx.labels={completed:'已完成'};
+  const workspace=fs.readFileSync('loop_anything/web/workspace.js','utf8');
+  vm.runInContext(workspace.slice(workspace.indexOf('function childRunLink('),workspace.indexOf('function taskDetails(')),ctx);
+  ctx.routeHash=({id})=>'#run/'+encodeURIComponent(id);ctx.labels={completed:'已完成'};
   ctx.attempt={id:'e',implementation:ctx.implementation,child_run_id:'run-child<1>',child_status:'completed',external_id:'run-child<1>',status:'waiting'};
-  const detail=run('executionLifecycle(attempt)');
-  assert.match(detail,/取消此处等待不会终止子 Run/);
+  const detail=run('childRunLink(attempt)');
+  assert.match(detail,/查看子 Run/);
   assert.match(detail,/href="#run\/run-child%3C1%3E"/);assert.match(detail,/已完成/);
   assert.doesNotMatch(detail,/下次检查|外部任务/);
 });

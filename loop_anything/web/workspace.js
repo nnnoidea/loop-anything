@@ -1,5 +1,5 @@
 'use strict';
-let selectedTask=null,selectedAttempt=null,taskOrder='graph',taskSearch='',taskStatus='',taskRound='',taskEdit=null,taskChanges=new Set(),taskNumbers=new Map();
+let selectedTask=null,taskOrder='graph',taskSearch='',taskStatus='',taskRound='',taskEdit=null,taskChanges=new Set(),taskNumbers=new Map();
 const expandedRounds=new Set(),mobileTaskGraph=window.matchMedia('(max-width:650px)'),inlineTaskDetail=window.matchMedia('(max-width:960px)');
 const roundStateKey=id=>'loop-anything.open-rounds.'+id;
 function restoreRounds(id){
@@ -23,10 +23,6 @@ const taskTime=t=>t?new Date(t*1000).toLocaleString('zh-CN',{month:'2-digit',day
 const taskLabel=t=>run.loop_definition.nodes[t.spec.node]?.label || t.spec.node;
 function flowDecisions(t){return Object.values(run.tasks).filter(d=>d.origin?.flow_agent?.task_id===t.id);}
 function flowDecisionButtons(t,compact=false){const decisions=flowDecisions(t);return (compact?decisions.slice(-1):decisions).map(d=>`<button class="flow-decision-link" data-task-focus="${esc(d.id)}">✦ 决策 · ${esc(labels[d.status]||d.status)}</button>`).join('');}
-function flowDecisionDetails(t){
-  const trigger=t.origin?.flow_agent,decisions=flowDecisions(t);
-  return (trigger?`<section class="flow-decision-details"><h3>内置流程决策</h3><p>触发来源：<button class="text-button" data-task-focus="${esc(trigger.task_id)}">${esc(taskLabel(run.tasks[trigger.task_id]))}</button> · ${esc(trigger.event)}</p><details><summary>事件与证据引用</summary>${resultView(trigger)}</details></section>`:'')+(decisions.length?`<section class="flow-decision-details"><h3>后续推进 · ${decisions.length} 次决策</h3>${flowDecisionButtons(t)}<p class="small muted">打开决策可查看完整结果、执行记录与原会话。</p></section>`:'');
-}
 function readingText(r){return r.label+' '+r.value+(r.unit?' '+r.unit:'');}
 function taskStatusLabel(item){
   const attempt=item.attempts.at(-1);
@@ -44,7 +40,7 @@ function taskReadout(item,attempt=item.attempts.at(-1)){
 function taskSummary(item){
   const t=item.tasks,e=item.attempts.at(-1);
   if(e?.observation_error)return '采集异常，外部任务状态待确认';
-  if(['fault','stale'].includes(t.status))return failureSummary(e?.error||t.budget_error);
+  if(['fault','stale'].includes(t.status))return taskFailureText(t,e);
   const facts=taskReadout(item);
   if(facts.length)return (t.status==='completed'&&facts[0].source==='progress'?'最后回报 · ':'')+facts.map(readingText).join(' · ');
   if(e?.child_run_id&&e.status==='waiting')return '子 Loop · '+(labels[e.child_status]||e.child_status||'等待中');
@@ -52,14 +48,8 @@ function taskSummary(item){
   if(t.wait_reasons?.length)return waitReasonText(t.wait_reasons[0]);
   return '';
 }
-function failureSummary(error){
-  if(!error)return '执行失败，可在节点详情查看原因。';
-  const last=String(error).trim().split(/\r?\n/).filter(Boolean).at(-1)||'';
-  const missing=last.match(/FileNotFoundError:.*No such file or directory:\s*['"]([^'"]+)['"]/);
-  if(missing)return '找不到文件或目录 '+missing[1].split(/[\\/]/).filter(Boolean).at(-1).slice(0,100)+'。';
-  if(/Traceback|\bFile ".*", line \d+/.test(last))return '执行脚本报错，完整错误在节点详情中。';
-  const message=last.replace(/^Handler failed:\s*/,'').trim();
-  return message.length>140?message.slice(0,139)+'…':message||'执行失败，请查看节点详情。';
+function taskFailureText(task,attempt){
+  return attempt?.failure_summary||task?.failure_summary||(task?.status==='stale'?'执行状态需要核实。':'本次执行失败，可请 Agent 核对。');
 }
 function runProgressHTML(value){
   if(value.superseded_by){
@@ -94,7 +84,7 @@ function runProgressHTML(value){
     if(t.status==='waiting_user')return value.task_dispositions?.[t.id]?.reason || '等待用户处理';
     if(e?.status==='approval')return '等待用户确认';
     if(t.status==='held')return '执行前已暂停，可到通知与控制查看放行条件。';
-    if(['fault','stale'].includes(t.status))return failureSummary(e?.error||t.budget_error);
+    if(['fault','stale'].includes(t.status))return taskFailureText(t,e);
     return t.wait_reasons?.length?waitReasonText(t.wait_reasons[0]):taskSummary(item) || labels[t.status] || t.status;
   }
   const link=(item,text)=>`<a class="progress-link" data-route-link href="${esc(routeHash({type:'run',id:value.id,task:item.tasks.id}))}">${esc(text)} ↗</a>`;
@@ -130,7 +120,7 @@ function runProgressHTML(value){
 }
 function taskCard(item){
   const t=item.tasks,order=taskNumbers.get(t.id),attempt=item.attempts.at(-1),agent=attempt?.implementation.kind==='agent',active=attempt?.worker_active||(run.agent_sessions||[]).some(o=>o.resume_execution===attempt?.id);
-  return `<article class="process-task ${selectedTask===t.id?'picked':''}" data-status="${esc(t.status)}" data-task-focus="${esc(t.id)}" data-task-row="${esc(t.id)}"><button class="task-card-main" data-task-focus="${esc(t.id)}" aria-pressed="${selectedTask===t.id}" title="${esc([taskLabel(t),t.spec.ref,t.id].filter(Boolean).join(' · '))}"><span class="task-card-top">${taskOrder==='time'?`<small class="task-number">${String(order).padStart(2,'0')}</small>`:''}${taskBadge(item)}${taskChanges.has(t.id)?'<span data-change-mark>已调整</span>':''}</span><span class="task-name">${esc(taskLabel(t))}</span>${t.spec.ref?`<small class="task-card-ref">${esc(t.spec.ref)}</small>`:''}<span class="task-summary">${esc(taskSummary(item))}</span><small class="task-card-time">${esc([item.round,item.started===null&&['skipped','cancelled'].includes(t.status)?'未执行':taskTime(item.started)].filter(Boolean).join(' · '))}</small></button><div class="task-card-actions"><button data-task-result="${esc(t.id)}">查看结果</button>${flowDecisionButtons(t,true)}${agent?`<button data-agent-session="${esc(attempt.id)}" ${['completed','terminated','continued'].includes(run.status)&&!active?'disabled title="Run 已结束，可查看结果与会话记录"':''}>${active?'打开会话':'恢复会话'}</button>`:''}</div></article>`;
+  return `<article class="process-task ${selectedTask===t.id?'picked':''}" data-status="${esc(t.status)}" data-task-focus="${esc(t.id)}" data-task-row="${esc(t.id)}"><button class="task-card-main" data-task-focus="${esc(t.id)}" aria-pressed="${selectedTask===t.id}" title="${esc([taskLabel(t),t.spec.ref,t.id].filter(Boolean).join(' · '))}"><span class="task-card-top">${taskOrder==='time'?`<small class="task-number">${String(order).padStart(2,'0')}</small>`:''}${taskBadge(item)}${taskChanges.has(t.id)?'<span data-change-mark>已调整</span>':''}</span><span class="task-name">${esc(taskLabel(t))}</span>${t.spec.ref?`<small class="task-card-ref">${esc(t.spec.ref)}</small>`:''}<span class="task-summary">${esc(taskSummary(item))}</span><small class="task-card-time">${esc([item.round,item.started===null&&['skipped','cancelled'].includes(t.status)?'未执行':taskTime(item.started)].filter(Boolean).join(' · '))}</small></button><div class="task-card-actions">${item.attempts.some(e=>e.has_outputs)?`<button data-task-result="${esc(t.id)}">查看结果</button>`: ''}${flowDecisionButtons(t,true)}${agent?`<button data-agent-session="${esc(attempt.id)}" ${['completed','terminated','continued'].includes(run.status)&&!active?'disabled title="Run 已结束，可查看结果与会话记录"':''}>${active?'打开会话':'恢复会话'}</button>`:''}</div></article>`;
 }
 const taskCardWidth=224,taskCardHeight=160,roundHeadingHeight=44;
 let showTaskOrigins=false;
@@ -383,11 +373,9 @@ mobileTaskGraph.addEventListener('change',()=>{
   graphScale=null;
   if(page==='runs'&&run){inspectSignature='';renderInspect();if(selectedTask)requestAnimationFrame(()=>locateGraphTask(selectedTask));}
 });
-function taskError(attempt){
-  if(!attempt?.error)return '';
-  const raw=String(attempt.error);
-  const summary=attempt.failure_kind==='command_start'?'命令启动配置错误':attempt.failure_kind==='agent_command'?'Agent 命令异常':attempt.observation_error?'监控异常，外部工作状态未知':raw.includes('Agent exited without sealing')?'Agent 未成功提交结果就退出了。':raw.includes('Agent exited without calling finish')?'Agent 退出前未释放操作权。':failureSummary(raw);
-  return `<section class="task-error" role="note"><strong>${esc(summary)}</strong><details><summary>原始错误与证据路径</summary><pre>${esc(raw)}</pre></details></section>`;
+function taskError(attempt,task){
+  if(!attempt?.failure_summary&&!task?.failure_summary&&!['fault','stale'].includes(task?.status))return '';
+  return `<section class="task-error" role="note"><strong>${esc(taskFailureText(task,attempt))}</strong></section>`;
 }
 function resultWithSchema(value,schema={},attempt,port,parts=[]){
   if(schema.format==='file'&&typeof value==='string'&&attempt){const url=`/api/runs/${encodeURIComponent(run.id)}/artifact?execution=${encodeURIComponent(attempt.id)}&output=${encodeURIComponent(port)}&path=${encodeURIComponent(JSON.stringify(parts))}`;return `${/\.(png|jpe?g|gif|webp)$/i.test(value)?`<img class="result-image" src="${esc(url)}" alt="${esc(port)}" loading="lazy">`:''}<a class="button" href="${esc(url)}" target="_blank" rel="noopener">查看文件 · ${esc(value)}</a>`;}
@@ -396,11 +384,16 @@ function resultWithSchema(value,schema={},attempt,port,parts=[]){
   return resultView(value);
 }
 function waitReasonText(r){
-  return r.reason==='order_dependency'?`等待前置任务 ${(run.tasks[r.action]?taskLabel(run.tasks[r.action]):r.action)} 完成`:r.reason==='missing_record'?`输入 ${r.input} 等待结果 ${r.record}`:r.reason==='missing_implementation'?'尚未选用可执行的实现；请由运行 Agent 选择已有方案；补充 Loop 实现使用构建 Agent':r.reason==='invalid_parameters'?'参数不满足所选实现的要求；由运行 Agent 核对任务参数，完整契约可在节点详情查看':r.reason==='invalid_input'?`输入 ${r.input} 尚不可用`:r.reason==='retry_pending'?'等待同一任务的旧进程确认结束，再重试原任务':r.detail||r.reason;
+  return r.reason==='order_dependency'?`等待前置任务 ${(run.tasks[r.action]?taskLabel(run.tasks[r.action]):r.action)} 完成`:r.reason==='missing_record'?`输入 ${r.input} 等待结果 ${r.record}`:r.reason==='missing_implementation'?'尚未选用可执行的实现；请由运行 Agent 选择已有方案；补充 Loop 实现使用构建 Agent':r.reason==='invalid_parameters'?'参数不满足所选实现的要求；由运行 Agent 核对任务参数，完整契约可在节点详情查看':r.reason==='invalid_input'?`输入 ${r.input} 尚不可用`:r.reason==='retry_pending'?'等待同一任务的旧进程确认结束，再重试原任务':'等待所需输入或执行条件';
 }
 function taskWaitReasons(task){
   if(['skipped','cancelled'].includes(task.status)||!task.wait_reasons?.length)return '';
-  return `<div class="wait-reasons"><strong>当前等待原因</strong><ul>${task.wait_reasons.map(r=>`<li>${esc(waitReasonText(r))}</li>`).join('')}</ul><details><summary>查看详细条件</summary>${resultView(task.wait_reasons)}</details></div>`;
+  return `<div class="wait-reasons"><strong>当前等待原因</strong><ul>${task.wait_reasons.map(r=>`<li>${esc(waitReasonText(r))}</li>`).join('')}</ul></div>`;
+}
+function taskNeedsReplyData(id){
+  const execution=run.tasks[id]?.execution_id;
+  const attempt=execution&&run.executions.find(e=>e.id===execution);
+  return Boolean(attempt&&(attempt.status==='approval'||attempt.status==='waiting'&&attempt.implementation.kind==='event'));
 }
 function taskFlowHTML(item){
   const id=item.tasks.id,edges=TaskHistory.links(run),incoming=edges.filter(e=>e.to===id),outgoing=edges.filter(e=>e.from===id);
@@ -408,25 +401,36 @@ function taskFlowHTML(item){
     const task=run.tasks[target],name=[taskLabel(task),task.spec.ref||task.spec.round].filter(Boolean).join(' · ');
     return `<li class="${edge.kind}"><small>${graphRelations[edge.kind].label}</small><button class="text-button" data-task-focus="${esc(target)}">${esc(name)}</button>${badge(task.status)}</li>`;
   };
-  return `<section class="task-flow"><h3>任务关系与推进</h3>${incoming.length?`<h4>来源</h4><ul>${incoming.map(e=>link(e,e.from)).join('')}</ul>`:''}${outgoing.length?`<h4>后续与异常处理</h4><ul>${outgoing.map(e=>link(e,e.to)).join('')}</ul>`:''}${!incoming.length&&!outgoing.length?'<p class="small muted">暂无已记录的关联任务。</p>':''}${item.tasks.origin?.route_id?`<p class="small muted">事件触发：${esc(item.tasks.origin.route_id)} → ${item.tasks.origin.flow_agent?'内置流程 Agent':'模板 '+esc(item.tasks.origin.plan)} · 报告 ${esc(item.tasks.origin.report_id)}</p>`:''}${item.tasks.origin?.fallback?`<details><summary>触发兜底时记录的问题</summary>${resultView(item.tasks.origin.issues||[])}</details>`:''}</section>`;
+  if(!incoming.length&&!outgoing.length)return '';
+  return `<section class="task-flow"><h3>任务关系与推进</h3>${incoming.length?`<h4>来源</h4><ul>${incoming.map(e=>link(e,e.from)).join('')}</ul>`:''}${outgoing.length?`<h4>后续与异常处理</h4><ul>${outgoing.map(e=>link(e,e.to)).join('')}</ul>`:''}</section>`;
 }
-function taskRevisionText(value){return value==null?'修订未记录':'修订 '+value;}
+function childRunLink(attempt){
+  if(!attempt?.child_run_id)return '';
+  const href=routeHash({type:'run',id:attempt.child_run_id});
+  return `<p><a data-route-link href="${esc(href)}">查看子 Run</a> · ${esc(labels[attempt.child_status]||attempt.child_status||'等待中')}</p>`;
+}
 function taskDetails(item){
-  if(!item)return '<p class="empty-inline">选择任务，查看结果或调整后续工作。</p>';
-  const t=item.tasks,attempt=item.attempts.find(e=>e.id===selectedAttempt)||item.attempts.at(-1),editable=run.status!=='continued'&&!t.execution_id&&['planned','blocked','ready','held'].includes(t.status),ended=['completed','terminated','continued'].includes(run.status);
-  const facts=taskReadout(item,attempt);
-  const edits=run.history.filter(h=>h.detail?.tasks===t.id&&(h.detail.before||h.kind==='planned'));
-  return `<div class="task-detail-heading"><h2>${esc(taskLabel(t))}</h2>${taskBadge(item)}</div><p class="small muted">${esc([item.round,t.spec.ref].filter(Boolean).join(' · '))}</p>
-    ${facts.length?`${attempt.status==='completed'&&facts[0].source==='progress'?'<small class="muted">最后一次进度回报</small>':''}<dl class="node-facts">${facts.map(f=>`<div><dt>${esc(f.label)}</dt><dd>${esc(f.value)} ${esc(f.unit||'')}</dd></div>`).join('')}</dl>`:''}
-    ${taskError(attempt)}${taskWaitReasons(t)}<div class="toolbar">${item.attempts.some(e=>Object.keys(e.outputs||{}).length)?`<button data-task-result="${esc(t.id)}">查看结果</button>`: ''}<button data-task-assistance="${esc(t.id)}">查看外援请求</button>${editable&&!ended?`<button data-task-cancel="${esc(t.id)}">取消任务</button>`:''}${(['fault','stale','cancelled','waiting_user','retrying'].includes(t.status)||attempt?.observation_error)&&!ended?`<button data-task-retry="${esc(t.id)}">${attempt?.observation_error?'恢复监控':'重试任务'}</button>`:''}</div>
-  ${attempt?.status==='waiting'&&['timer','event','loop'].includes(attempt.implementation.kind)&&!ended?`<button data-task-cancel="${esc(t.id)}">取消等待</button>`:''}${t.assistance_wait?'<p class="small muted">正在等待外援回复；等待结束后继续当前任务。</p>':''}${attempt?.communication_state?`<p class="small muted">群组执行：${esc(communicationStates[attempt.communication_state]||attempt.communication_state)}</p>`:''}${taskFlowHTML(item)}<section class="task-execution"><h3>执行记录 · ${item.attempts.length} 次</h3>${item.attempts.length>1?`<label>执行尝试<select id="task-attempt">${item.attempts.map(e=>`<option value="${esc(e.id)}" ${e.id===attempt?.id?'selected':''}>第 ${e.attempt} 次 · ${esc(taskRevisionText(e.task_revision))} · ${esc(labels[e.status]||e.status)} · ${taskTime(TaskHistory.startTime(e))}${Object.hasOwn(e,'started_at')?'':' · 历史派发时间'}</option>`).join('')}</select></label>`:''}${attempt?.implementation.kind==='agent'&&(attempt.implementation.command||attempt.communication_id)?`<button data-open-terminal="${esc(attempt.id)}">${attempt.implementation.terminal?'打开交互终端':'查看实时输出'}</button>`:''}${attempt?.implementation.kind==='agent'&&!ended?`<button data-agent-session="${esc(attempt.id)}">${attempt.worker_active?'打开会话':'恢复会话'}</button>`:''}${waitDetails(attempt)}<details><summary>执行诊断与来源</summary><p class="task-detail-id">${esc(t.id)} · <span data-task-revision>${esc(taskRevisionText(t.revision))}</span></p>${executionLifecycle(attempt)}${promptHistory(attempt)}${flowDecisionDetails(t)}<h3>输入与来源</h3>${Object.entries(attempt?.inputs || {}).map(([port,value])=>`<section><h4>${esc(run.loop_definition.nodes[t.spec.node].inputs[port]?.title || port)}</h4>${resultView(value)}${sourceLinks(attempt.sources?.[port])}</section>`).join('') || resultView(t.spec.inputs)}
-  <h3>当前前置任务</h3>${item.dependencies.map(id=>`<button class="text-button" data-task-focus="${esc(id)}">${esc(taskLabel(run.tasks[id]))}</button>`).join(' ')||'<span class="muted">无</span>'}
-  <h3>${attempt?'所选执行的参数与实现':'当前任务的参数与实现'}</h3>${resultView(attempt?attempt.parameters||{}:t.spec.parameters||{})}<p>${esc(attempt?(attempt.implementation_id||'历史实现标识未记录'):(t.spec.implementation||'沿用运行默认实现'))}</p>
-  ${attempt?.task_spec?`<details><summary>本次执行采用的任务安排 · ${esc(taskRevisionText(attempt.task_revision))}</summary>${resultView(attempt.task_spec)}</details>`:''}${attempt&&attempt.task_revision!==t.revision?`<details><summary>当前任务安排 · ${esc(taskRevisionText(t.revision))}</summary>${resultView(t.spec)}</details>`:''}
-  <h3>安排与修改</h3>${edits.map(h=>`<details><summary>${esc(taskTime(h.at))} · ${esc(h.message)} · ${h.detail.before?esc(taskRevisionText(h.detail.before_revision))+' → ':''}${esc(taskRevisionText(h.detail.after_revision))}</summary>${h.detail.actor?`<p class="small muted">操作者：${esc(({user:'用户',interactive:'持权操作者',background:'后台 Agent',engine:'Engine'})[h.detail.actor.kind]||h.detail.actor.kind)}${h.detail.actor.execution_id?' · '+esc(h.detail.actor.execution_id):''}</p>`:''}${h.detail.before?`<p>修改前</p>${resultView(h.detail.before)}`:''}<p>修改后</p>${resultView(h.detail.after)}</details>`).join('')||'<p class="muted">没有额外修改记录</p>'}
-  <details><summary>原始记录</summary><pre>${esc(pretty({task:t,execution:attempt}))}</pre></details></details></section>`;
+  const t=item.tasks,attempt=item.attempts.find(e=>e.id===t.execution_id)||item.attempts.at(-1);
+  const ended=run.identity_read_only||['completed','terminated','continued'].includes(run.status);
+  const editable=!t.execution_id&&['planned','blocked','ready','held'].includes(t.status);
+  const cancellable=editable||attempt?.status==='waiting'&&['timer','event','loop'].includes(attempt.implementation.kind);
+  const canRetry=['fault','stale','cancelled','waiting_user','retrying'].includes(t.status)||attempt?.observation_error;
+  const facts=taskReadout(item,attempt),agent=attempt?.implementation.kind==='agent';
+  const actions=[
+    item.attempts.some(e=>e.has_outputs)?`<button data-task-result="${esc(t.id)}">查看结果</button>`:'',
+    !ended&&cancellable?`<button data-task-cancel="${esc(t.id)}">${editable?'取消任务':'取消等待'}</button>`:'',
+    !ended&&canRetry?`<button data-task-retry="${esc(t.id)}">${attempt?.observation_error?'恢复监控':'重试任务'}</button>`:'',
+    agent&&attempt.implementation.terminal?`<button data-open-terminal="${esc(attempt.id)}">打开交互终端</button>`:'',
+    agent&&!ended?`<button data-agent-session="${esc(attempt.id)}">${attempt.worker_active?'打开会话':'恢复会话'}</button>`:'',
+    `<button data-task-assistance="${esc(t.id)}">查看外援请求</button>`
+  ].filter(Boolean);
+  return `<div class="task-detail-heading"><h2>${esc(taskLabel(t))}</h2>${taskBadge(item)}</div>
+    ${item.round||t.spec.ref?`<p class="small muted">${esc([item.round,t.spec.ref].filter(Boolean).join(' · '))}</p>`:''}
+    ${taskError(attempt,t)}${taskWaitReasons(t)}${waitDetails(attempt)}${childRunLink(attempt)}
+    ${t.assistance_wait?'<p class="small muted">正在等待外援回复。</p>':''}
+    ${facts.length?`<dl class="node-facts">${facts.map(f=>`<div><dt>${esc(f.label)}</dt><dd>${esc(f.value)} ${esc(f.unit||'')}</dd></div>`).join('')}</dl>`:''}
+    ${actions.length?`<div class="toolbar">${actions.join('')}</div>`:''}${taskFlowHTML(item)}`;
 }
-function sourceLinks(source){return (Array.isArray(source)?source:[source]).filter(Boolean).map(s=>{const e=run.executions.find(e=>e.id===s.execution);return e?`<button class="text-button" data-source-execution="${esc(e.id)}">来自 ${esc(taskLabel(run.tasks[e.task_id]))} · v${esc(s.revision)}</button>`:`<small>${esc(s.run_input?'初始输入 '+s.run_input:s.settings?'设置 '+s.settings:'直接输入')}</small>`;}).join(' ');}
 function renderTaskHistory(){
   if(run.superseded_by && !Object.keys(run.tasks).length)return '<p class="empty-inline">这次历史运行没有节点记录。</p>';
   const scroll=document.querySelector('.dependency-scroll'),detail=$('task-detail');
@@ -452,7 +456,7 @@ function renderTaskHistory(){
   const all=TaskHistory.rows(run),business=all.filter(i=>!i.tasks.origin?.flow_agent);
   taskNumbers=new Map(all.map((item,index)=>[item.tasks.id,index+1]));
   const selected=all.find(i=>i.tasks.id===selectedTask);
-  if(!selected){selectedTask=null;selectedAttempt=null;}
+  if(!selected)selectedTask=null;
   if(selected?.tasks.status==='completed'&&!expandedRounds.has(selected.round||'')){
     expandedRounds.add(selected.round||'');rememberRounds();
   }
@@ -460,7 +464,7 @@ function renderTaskHistory(){
   const visible=all.filter(i=>(!filterNode||i.tasks.spec.node===filterNode)&&(!taskStatus||i.tasks.status===taskStatus)&&
     (!taskRound||i.round===taskRound)&&(!query||[taskLabel(i.tasks),i.tasks.id,i.tasks.spec.ref,i.round].join(' ').toLowerCase().includes(query)));
   const rounds=[...new Set(all.map(i=>i.round).filter(Boolean))];
-  const detailPending=selected&&run.workspace_view&&run.workspace_view.task!==selectedTask;
+  const detailPending=selected&&taskNeedsReplyData(selectedTask)&&run.workspace_view&&run.workspace_view.task!==selectedTask;
   const groups=[{round:'已开始',items:visible.filter(i=>i.started!==null)},{round:'尚未开始',items:visible.filter(i=>i.started===null&&!['completed','skipped','cancelled','stale'].includes(i.tasks.status))},{round:'未执行且已结束',items:visible.filter(i=>i.started===null&&['completed','skipped','cancelled','stale'].includes(i.tasks.status))}];
   const filtered=Boolean(filterNode||taskStatus||query);
   return `<div class="task-heading"><div><h2>节点进度</h2><p class="muted small">${business.length} 项任务${rounds.length?' · '+rounds.length+' 轮':''}${all.length>business.length?' · '+(all.length-business.length)+' 次流程决策':''}</p></div></div><div class="process-controls" id="run-process-controls"><div class="segmented">${[['graph','节点图'],['time','时间顺序']].map(([id,label])=>`<button data-task-order="${id}" class="${taskOrder===id?'selected':''}" aria-pressed="${taskOrder===id}">${label}</button>`).join('')}</div>${rounds.length?`<label class="task-round-filter"><select id="task-round" aria-label="筛选轮次"><option value="">全部轮次</option>${rounds.map(r=>'<option value="'+esc(r)+'" '+(r===taskRound?'selected':'')+'>'+esc(r)+'</option>').join('')}</select></label>`:''}<label class="task-search-label"><span class="sr-only">查找任务</span><input id="task-search" placeholder="查找任务…" type="search" value="${esc(taskSearch)}"></label><label class="task-status-label"><span class="sr-only">任务状态</span><select id="task-status"><option value="">全部状态</option>${[...new Set(all.map(i=>i.tasks.status))].map(s=>`<option value="${esc(s)}" ${taskStatus===s?'selected':''}>${esc(labels[s]||s)}</option>`).join('')}</select></label>${filterNode?'<button id="clear-task-filter">清除节点筛选</button>':''}</div>
@@ -494,7 +498,7 @@ document.addEventListener('click',event=>safely(async()=>{
     if(el.getAttribute('aria-expanded')==='true'){
       expandedRounds.delete(round);
       const task=run.tasks[selectedTask];
-      if(task?.status==='completed'&&(task.spec.round||'')===round){selectedTask=null;selectedAttempt=null;syncRunTaskRoute();}
+      if(task?.status==='completed'&&(task.spec.round||'')===round){selectedTask=null;syncRunTaskRoute();}
     }else expandedRounds.add(round);
     rememberRounds();
     inspectSignature='';renderInspect();
@@ -502,16 +506,16 @@ document.addEventListener('click',event=>safely(async()=>{
     return;
   }
   if(d.focusGroup){
-    taskOrder='graph';activeTab='task-history';taskRound='';taskStatus='';taskSearch='';filterNode=d.focusGroup;selectedTask=null;selectedAttempt=null;
+    taskOrder='graph';activeTab='task-history';taskRound='';taskStatus='';taskSearch='';filterNode=d.focusGroup;selectedTask=null;
     syncRunTaskRoute();
     inspectSignature='';renderInspect();
     document.querySelector('.process-controls')?.scrollIntoView({block:'start'});return;
   }
-  if(d.taskFocus||d.sourceExecution){
-    const id=d.taskFocus||run.executions.find(e=>e.id===d.sourceExecution)?.task_id;
+  if(d.taskFocus){
+    const id=d.taskFocus;
     if(!run.tasks[id])return;
     if(!el.closest('[data-task-row]')){filterNode=null;taskRound='';taskSearch='';taskStatus='';}
-    selectedTask=id;selectedAttempt=d.sourceExecution||null;syncRunTaskRoute();
+    selectedTask=id;syncRunTaskRoute();
     inspectSignature='';renderInspect();
     requestAnimationFrame(()=>{locateGraphTask(id);if(inlineTaskDetail.matches)$('task-detail')?.scrollIntoView({block:'start'});});
   }
@@ -519,7 +523,7 @@ document.addEventListener('click',event=>safely(async()=>{
   else if(d.graphZoom)sizeTaskGraph(d.graphZoom);
   else if(d.taskOrder){taskOrder=d.taskOrder;inspectSignature='';renderInspect();if(selectedTask)requestAnimationFrame(()=>locateGraphTask(selectedTask));}
   else if(d.closeTask!==undefined){
-    const id=selectedTask;selectedTask=null;selectedAttempt=null;syncRunTaskRoute();inspectSignature='';renderInspect();
+    const id=selectedTask;selectedTask=null;syncRunTaskRoute();inspectSignature='';renderInspect();
     requestAnimationFrame(()=>{
       const card=document.querySelector(`.process-body [data-task-row="${CSS.escape(id)}"]`);
       positionGraph(card);
@@ -535,8 +539,7 @@ document.addEventListener('click',event=>safely(async()=>{
 document.addEventListener('change',event=>{const el=event.target;
   if(el.id==='graph-show-origins'){showTaskOrigins=el.checked;inspectSignature='';renderInspect();$('graph-show-origins')?.focus({preventScroll:true});}
   if(el.id==='task-status'||el.id==='task-search'){taskStatus=$('task-status').value;taskSearch=$('task-search').value;inspectSignature='';renderInspect();}
-  if(el.id==='task-round'){taskRound=el.value;selectedTask=null;selectedAttempt=null;syncRunTaskRoute();inspectSignature='';renderInspect();}
-  if(el.id==='task-attempt'){selectedAttempt=el.value;$('task-detail-body').innerHTML=taskDetails(TaskHistory.rows(run).find(i=>i.tasks.id===selectedTask));}
+  if(el.id==='task-round'){taskRound=el.value;selectedTask=null;syncRunTaskRoute();inspectSignature='';renderInspect();}
 });
 document.addEventListener('submit',event=>{
   if(event.target.id!=='task-edit-form')return;event.preventDefault();

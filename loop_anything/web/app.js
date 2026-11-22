@@ -23,7 +23,6 @@ $('platform-power-switch').onchange=()=>safely(async()=>{
   finally{powerPending=false;await refresh();}
 });
 let promptDefaults={};
-function promptHistory(record){return record&&Object.hasOwn(record,'prompt_text')?`<details class="prompt-history"><summary>本次唤醒提示词</summary><p class="small muted">实际发送记录 · 平台令牌已遮蔽</p><pre>${esc(record.prompt_text)}</pre></details>`:'';}
 let progressSignature = '', listSignature = '', inspectSignature = '';
 let runHistoryOffset=0, runViewRequest=null;
 const time = t => new Date(t * 1000).toLocaleTimeString('zh-CN', {hour12:false});
@@ -54,16 +53,15 @@ function toast(message,timeout=5500){
   return notice;
 }
 async function safely(fn) { try { await fn(); } catch (error) { toast(error.message); } }
-function runWorkspacePath(id,{tab='task-history',task='',audit=false,offset=0}={}){
+function runWorkspacePath(id,{tab='task-history',task='',offset=0}={}){
   const query=new URLSearchParams({view:'workspace',tab});
   if(task)query.set('task',task);
-  if(audit)query.set('audit','true');
   if(offset)query.set('offset',offset);
   return 'runs/'+encodeURIComponent(id)+'?'+query;
 }
 function visibleRunView(){
-  return {tab:activeTab,task:activeTab==='task-history'?selectedTask||'':'',
-    audit:false,offset:activeTab==='activity'?runHistoryOffset:0};
+  return {tab:activeTab,task:activeTab==='task-history'&&taskNeedsReplyData(selectedTask)?selectedTask:'',
+    offset:activeTab==='activity'?runHistoryOffset:0};
 }
 function refreshRunWorkspace(){
   if(page!=='runs'||!selected||pendingRunNavigation)return;
@@ -152,12 +150,12 @@ function renderRun() {
   loadSettings();
 }
 function loadSettings(){
-  $('run-settings-readonly').innerHTML=`${['running','paused'].includes(run.status)&&!run.superseded_by?'<label><input type="checkbox" id="follow-loop-updates" '+(run.follow_loop_updates?'checked':'')+'> 跟随此 Loop 后续发布的版本</label>':''}<p>目标和限制属于独立 Timeline；修改后由 Agent 检查并向用户汇报。</p>${run.timeline_id?'<button data-work-timeline="'+esc(run.timeline_id)+'">查看 Timeline 与进度</button>':''}${readerJSON('目标与限制',{目标:run.settings.objective,限制:run.settings.constraints},true)}${readerJSON('完整运行配置',run.settings)}`;
+  $('run-settings-readonly').innerHTML=`${['running','paused'].includes(run.status)&&!run.superseded_by?'<label><input type="checkbox" id="follow-loop-updates" '+(run.follow_loop_updates?'checked':'')+'> 跟随此 Loop 后续发布的版本</label>':''}<p>目标和限制属于独立 Timeline；修改后由 Agent 检查并向用户汇报。</p>${run.timeline_id?'<button data-work-timeline="'+esc(run.timeline_id)+'">查看 Timeline 与进度</button>':''}${run.settings.objective?`<h3>目标</h3><p>${esc(run.settings.objective)}</p>`:''}${run.settings.constraints?`<h3>限制</h3><p>${esc(run.settings.constraints)}</p>`:''}`;
 }
 function renderInspect() {
   const wanted=visibleRunView();
   const ready=!run.workspace_view||Object.keys(wanted).every(key=>run.workspace_view[key]===wanted[key]);
-  const signature = pretty([run.id,filterNode,wanted,ready,run.executions,run.history,run.history_total,run.changed_tasks,run.settings.revision,run.tasks,run.records,run.agent_sessions,run.task_dependencies,run.agent_tasks,run.notifications,run.events,run.hook_firings,run.controls_available]);
+  const signature = pretty([run.id,filterNode,wanted,ready,run.executions,run.history,run.history_total,run.changed_tasks,run.settings.revision,run.tasks,run.agent_sessions,run.task_dependencies,run.agent_tasks,run.task_dispositions,run.notifications,run.events,run.hook_firings,run.controls_available]);
   if(inspectSignature===signature)return;inspectSignature=signature;
   const issues=runAttentionItems(run);
   $('run-task-count').textContent=issues.length||'';
@@ -174,31 +172,17 @@ function renderInspect() {
   if(!ready)safely(refreshRunWorkspace);
 }
 
-async function details(id) {
-  const attempt=run.executions.find(e=>e.id===id),runId=run.id;
-  if(!attempt)return;
-  const current=await api(runWorkspacePath(runId,{task:attempt.task_id}));
-  const e=current.executions.find(x=>x.id===id);
-  if(!e||run.id!==runId)return;
-  $('detail-title').textContent=nodeLabel(e.node)+' · '+e.id;
-  const origin=run.tasks?.[e.task_id]?.origin;
-  const cause=origin?.fallback?'进入兜底节点':origin?.entry?'入口任务':origin?.route_id?'事件触发 · '+origin.route_id:origin?.agent?'Agent 安排':origin?.execution?'脚本安排':origin?.user?'用户安排':'历史记录';
-  $('detail-content').innerHTML=`${badge(e.status)} <span class="mono">attempt ${e.attempt} · settings r${e.settings_revision}</span>${e.error?`<pre>${esc(e.error)}</pre>`:''}${promptHistory(e)}<div class="detail-section"><h3>创建原因</h3><p class="small">${esc(cause)} · ${esc(e.task_id || '')}</p></div><div class="detail-grid"><div><h3>Resolved inputs</h3><pre>${esc(pretty(e.inputs))}</pre></div><div><h3>Committed outputs</h3><pre>${esc(pretty(e.outputs || null))}</pre></div></div><div class="detail-section"><h3>Input provenance</h3><pre>${esc(pretty(e.sources))}</pre></div><div class="detail-section"><h3>Handler / external task</h3><pre>${esc(pretty({implementation:e.implementation,external_id:e.external_id,wake_at:e.wake_at?new Date(e.wake_at*1000).toLocaleString():undefined}))}</pre></div>${run.tasks?.[e.task_id]?.execution_id===e.id && ['fault','blocked'].includes(e.status)&&!e.routed?`<button data-retry="${esc(e.id)}">重试此执行</button><p class="field-note">先检查外部任务是否已经产生副作用，避免重复提交。</p>`:''}`;
-  if(!$('detail-dialog').open)$('detail-dialog').showModal();
-}
 document.addEventListener('click',event=>safely(async()=>{
-  const button=event.target.closest('button,[data-exec]'); if(!button)return;
+  const button=event.target.closest('button'); if(!button)return;
   if(button.classList.contains('close-dialog')){button.closest('dialog').close();return;}
   const d=button.dataset;
   if(d.run){await selectRun(d.run);return;}
   if(d.node){filterNode=d.node;activeTab='task-history';inspectSignature='';renderInspect();return;}
   if(d.tab){activeTab=d.tab;renderInspect();if(button.closest('#attention'))document.querySelector('.run-tabs').scrollIntoView({block:'start'});return;}
   if(d.historyOffset!==undefined){runHistoryOffset=Number(d.historyOffset);renderInspect();return;}
-  if(d.exec){selectedTask=run.executions.find(e=>e.id===d.exec)?.task_id;selectedAttempt=d.exec;syncRunTaskRoute();activeTab='task-history';inspectSignature='';renderInspect();if(selectedTask)requestAnimationFrame(()=>locateGraphTask(selectedTask));return;}
   if(d.create){await openCreate(d.create);return;}
   if(d.validate){const c=catalog.find(x=>x.key===d.validate);const r=await api('validate',c);toast(r.valid?'验证通过 · '+r.warnings.join('；'):r.errors.join('；'));return;}
   const runId=run?.id;
-  if(d.retry){await api(`runs/${runId}/command`,{action:'retry',execution_id:d.retry});$('detail-dialog').close();await refresh();return;}
   switch(button.id){
     case 'new-run':await openCreate();break;
     case 'empty-create':await navigateTo({type:'catalog'});break;
@@ -210,7 +194,6 @@ document.addEventListener('click',event=>safely(async()=>{
 
   }
 }));
-document.addEventListener('keydown',e=>{if(e.key==='Enter' && e.target.matches('tr[data-exec]'))safely(()=>details(e.target.dataset.exec));});
 document.addEventListener('input',e=>{if(e.target.id.startsWith('result-'))drafts[e.target.id.slice(7)]=e.target.value;if(e.target.id.startsWith('event-'))drafts[e.target.id.slice(6)]=e.target.value;});
 
 async function loadCatalog(){
