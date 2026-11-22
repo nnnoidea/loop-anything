@@ -227,7 +227,13 @@ withPlatform(async({url,page,tool,api,startRun})=>{
     assert(await cancelled.getByText(cancelNote,{exact:true}).isVisible());
     const cancelledCard=mixed.locator(`[data-task-row="${cancelledId}"]`);
     assert(await cancelledCard.getByText('已取消',{exact:true}).isVisible());
-    assert(await cancelledCard.locator('.task-summary').evaluate(el=>el.clientHeight>16&&el.scrollHeight<=el.clientHeight));
+    assert(await cancelledCard.locator('.task-summary').evaluate(el=>{
+      // Allow for wider Chinese glyphs than the browser test host's fallback font.
+      el.style.letterSpacing='2px';
+      const fits=el.scrollHeight<=el.clientHeight;
+      el.style.removeProperty('letter-spacing');
+      return fits;
+    }));
     await mixed.getByRole('button',{name:'收起 '+cancelledRound,exact:true}).click();
     assert.equal(await page.locator('#task-detail').isVisible(),false);
     assert.equal(new URL(page.url()).hash,'#run/'+run.run_id);

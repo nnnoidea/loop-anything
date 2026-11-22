@@ -54,7 +54,7 @@
 .process-task .task-number{font:11px ui-monospace,monospace;color:#8c99ad}
 .process-task .task-name{flex:0 0 auto;font-size:13px;font-weight:600;line-height:19px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#273751}
 .task-summary{font-size:11px;color:#5b6d87;line-height:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-height:16px}
-.process-task[data-status="cancelled"] .task-summary{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal;overflow-wrap:anywhere}
+.process-task[data-status="cancelled"] .task-summary{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;white-space:normal;overflow-wrap:anywhere}
 .process-task .task-card-time{font-size:10px;color:#8b97a9;margin-top:auto}
 .process-task [data-change-mark]{font-size:10px;background:#fff1cd;color:#73551c;padding:2px 5px;border-radius:4px}
 .task-detail{border-top:1px solid var(--line);padding:22px;overflow:auto;min-width:0;background:#fff}
