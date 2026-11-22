@@ -63,20 +63,26 @@
       const members=group.items.filter(item=>item.tasks.status==='completed'&&!item.attempts.at(-1)?.observation_error);
       if(members.length<2)continue;
       const round=group.round||'';
-      const card={id:'$round:'+round,round,members,open:filtered||expanded.has(round)||members.some(i=>i.tasks.id===selected)};
+      const card={id:'$round:'+round,round,members,links:[],open:filtered||expanded.has(round)||members.some(i=>i.tasks.id===selected)};
       for(const item of members)owners.set(item.tasks.id,card);
     }
     const nodes=[];
     for(const item of graph.items){
-      const id=item.tasks.id,card=owners.get(id),first=card?.members[0]===item;
-      if(!card||card.open)nodes.push({id,item,card:first&&!filtered?card:null});
-      else if(first)nodes.push({id:card.id,card});
+      const id=item.tasks.id,card=owners.get(id);
+      if(!card)nodes.push({id,item});
+      else if(card.members[0]===item)nodes.push({id:card.id,card});
     }
-    const endpoint=id=>owners.get(id)?.open===false?owners.get(id).id:id;
     const links=new Map();
     for(const link of graph.links){
-      const from=endpoint(link.from),to=endpoint(link.to);
-      if(from!==to)links.set(JSON.stringify([from,to,link.kind]),{from,to,kind:link.kind});
+      const source=owners.get(link.from),target=owners.get(link.to);
+      if(source&&source===target){
+        if(source.open)source.links.push(link);
+        continue;
+      }
+      const from=source?.id??link.from,to=target?.id??link.to;
+      const key=JSON.stringify([from,to,link.kind]);
+      if(!links.has(key))links.set(key,{from,to,kind:link.kind,tasks:[]});
+      links.get(key).tasks.push(link);
     }
     return {nodes,links:[...links.values()]};
   }

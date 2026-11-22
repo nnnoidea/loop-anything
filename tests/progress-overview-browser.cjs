@@ -27,6 +27,9 @@ withPlatform(async({url,page,tool,api})=>{
   const changes=[];
   for(let round=1;round<=6;round++)for(const batch of ['A','B'])for(const node of Object.keys(nodes)){
     const ref=node+'-'+batch+'-'+round, args={ref,key:ref,node_id:node,inputs:{},round:'第 '+round+' 轮'};
+    if(node==='train')args.after_refs=['prepare-'+batch+'-'+round];
+    if(round<6&&node==='score')args.after_refs=['train-'+batch+'-'+round];
+    if(round>1&&round<6&&node==='prepare')args.after_refs=['score-A-'+(round-1),'score-B-'+(round-1)];
     if(round===6 && node==='train')args.implementation='watch';
     if(round===6 && batch==='B' && node==='score')args.implementation='missing';
     changes.push({tool:'add_task',arguments:args});
@@ -100,6 +103,12 @@ withPlatform(async({url,page,tool,api})=>{
   await third.click();
   assert.equal(await third.getAttribute('aria-expanded'),'true');
   assert.equal(await graph.locator('[data-task-row]').count(),9);
+  const frame=graph.getByRole('region',{name:'第 3 轮',exact:true});
+  assert.equal(await frame.locator('[data-task-row]').count(),6);
+  assert.equal(await frame.locator('[data-edge-kind="dependency"]').count(),4);
+  const incoming=graph.locator('svg').first().locator('[data-edge-to="$round:第 3 轮"]');
+  assert.equal(await incoming.count(),1);
+  assert.equal(await incoming.locator('title').textContent(),'4 条执行依赖');
   assert((await graph.innerText()).includes('验证准确率 87.5 %'));
   assert(!(await graph.innerText()).includes('/scratch/'));
   const member=graph.locator('[data-task-row]').filter({hasText:'score-A-3'}).locator('.task-card-main');
@@ -108,6 +117,8 @@ withPlatform(async({url,page,tool,api})=>{
   assert(taskDetail.executions.some(e=>e.task_id===memberId&&e.outputs?.review?.accuracy===87.5));
   assert(taskDetail.executions.filter(e=>e.task_id!==memberId).every(e=>!Object.hasOwn(e,'inputs')));
   await member.click();
+  await page.getByRole('heading',{name:'任务关系与推进'}).waitFor();
+  assert(await page.locator('.task-flow').getByRole('button',{name:'训练模型 · train-A-3'}).isVisible());
   await page.reload();
   await page.locator('#task-detail').getByRole('heading',{name:'评估输出',exact:true}).waitFor();
   assert.equal(await page.locator('#task-detail').getAttribute('data-task'),memberId);

@@ -132,82 +132,165 @@ function taskCard(item){
   const t=item.tasks,order=taskNumbers.get(t.id),attempt=item.attempts.at(-1),agent=attempt?.implementation.kind==='agent',active=attempt?.worker_active||(run.agent_sessions||[]).some(o=>o.resume_execution===attempt?.id);
   return `<article class="process-task ${selectedTask===t.id?'picked':''}" data-status="${esc(t.status)}" data-task-focus="${esc(t.id)}" data-task-row="${esc(t.id)}"><button class="task-card-main" data-task-focus="${esc(t.id)}" aria-pressed="${selectedTask===t.id}" title="${esc([taskLabel(t),t.spec.ref,t.id].filter(Boolean).join(' · '))}"><span class="task-card-top">${taskOrder==='time'?`<small class="task-number">${String(order).padStart(2,'0')}</small>`:''}${taskBadge(item)}${taskChanges.has(t.id)?'<span data-change-mark>已调整</span>':''}</span><span class="task-name">${esc(taskLabel(t))}</span>${t.spec.ref?`<small class="task-card-ref">${esc(t.spec.ref)}</small>`:''}<span class="task-summary">${esc(taskSummary(item))}</span><small class="task-card-time">${esc([item.round,item.started===null&&['skipped','cancelled'].includes(t.status)?'未执行':taskTime(item.started)].filter(Boolean).join(' · '))}</small></button><div class="task-card-actions"><button data-task-result="${esc(t.id)}">查看结果</button>${flowDecisionButtons(t,true)}${agent?`<button data-agent-session="${esc(attempt.id)}" ${['completed','terminated','continued'].includes(run.status)&&!active?'disabled title="Run 已结束，可查看结果与会话记录"':''}>${active?'打开会话':'恢复会话'}</button>`:''}</div></article>`;
 }
-function roundToggle(card){
-  const round=card.round||'未标注轮次';
-  const id=`data-round-toggle="${esc(card.round)}" aria-expanded="${card.open}"`;
-  if(card.open)return `<button class="round-collapse" ${id} aria-label="收起 ${esc(round)} 已完成节点">⌃ 收起 ${esc(round)}</button>`;
+const taskCardWidth=224,taskCardHeight=160,roundHeadingHeight=44;
+let showTaskOrigins=false;
+function roundHeading(card,filtered){
+  const title=card.round||'未标注轮次',count=card.members.length+' 个已完成节点';
+  const toggle=`data-round-toggle="${esc(card.round)}" aria-expanded="${card.open}"`;
+  const heading=`<strong>${esc(title)}</strong><small>${count}</small>`;
+  if(card.open)return filtered
+    ?`<div class="round-heading">${heading}</div>`
+    :`<button class="round-heading" ${toggle} aria-label="收起 ${esc(title)} 已完成节点">${heading}<span aria-hidden="true">收起 ⌃</span></button>`;
   const recent=[...card.members].reverse().find(item=>taskReadout(item).some(f=>f.source==='outputs'));
-  return `<button class="round-card" ${id}><strong>${esc(round)}</strong><span>${card.members.length} 个节点已完成</span>${recent?`<small>${esc(taskSummary(recent))}</small>`:''}<span class="round-action">展开已完成节点 <span aria-hidden="true">⌄</span></span></button>`;
+  return `<button class="round-card" ${toggle}>${heading}${recent?`<small>${esc(taskSummary(recent))}</small>`:''}<span class="round-action">展开已完成节点 <span aria-hidden="true">⌄</span></span></button>`;
 }
-function taskDependencyGraph(items,filtered){
-  const business=TaskHistory.businessGraph(run,items);
-  const {nodes,links}=TaskHistory.roundGraph(business,expandedRounds,selectedTask,filtered);
-  if(!nodes.length)return '<p class="empty-inline">流程决策可在时间顺序中查看。</p>';
+
+function layoutTaskGraph(nodes,links,mobile,insideRound=false){
+  const margin=insideRound?19:30,gap=mobile?28:26,columnGap=insideRound?54:70;
   const parents=new Map(nodes.map(node=>[node.id,[]]));
-  for(const link of links)parents.get(link.to).push(link.from);
+  for(const {from,to,kind} of links)if(kind==='dependency')parents.get(to).push(from);
   const levels=new Map(),pending=new Set(parents.keys());
   while(pending.size){
-    // A collapsed round may have both incoming and outgoing edges to another round.
     const ready=[...pending].filter(id=>parents.get(id).every(from=>levels.has(from)));
+    // Contracting nodes into a round can create a cycle between groups.
     for(const id of ready.length?ready:[pending.values().next().value]){
-      levels.set(id,Math.max(0,...parents.get(id).filter(from=>levels.has(from)).map(from=>levels.get(from)+1)));
+      const previous=parents.get(id).filter(from=>levels.has(from));
+      levels.set(id,Math.max(0,...previous.map(from=>levels.get(from)+1)));
       pending.delete(id);
     }
   }
-  const columns=[],positions=new Map(),cardWidth=224,cardHeight=168,gap=54,margin=44,columnStep=308;
+  const columns=[],positions=new Map();
   for(const node of nodes)(columns[levels.get(node.id)]??=[]).push(node);
-  const mobile=mobileTaskGraph.matches;
-  const height=2*margin+(mobile?nodes.length:Math.max(...columns.map(column=>column.length)))*(cardHeight+gap)-gap;
-  const width=mobile?cardWidth+2*margin:cardWidth+2*margin+(columns.length-1)*columnStep;
+  const columnWidths=columns.map(column=>Math.max(...column.map(node=>node.width)));
+  const width=2*margin+(mobile?Math.max(...columnWidths):columnWidths.reduce((sum,w)=>sum+w,0)+columnGap*(columns.length-1));
+  let height;
   if(mobile){
-    columns.flat().forEach((node,i)=>positions.set(node.id,{x:margin,y:margin+i*(cardHeight+gap)}));
+    let y=margin;
+    columns.flat().forEach(({id,width,height},order)=>{
+      positions.set(id,{x:margin,y,width,height,order});
+      y+=height+gap;
+    });
+    height=y-gap+margin;
   }else{
-    columns.forEach((column,col)=>column.forEach((node,row)=>positions.set(node.id,{x:margin+col*columnStep,y:(height-column.length*(cardHeight+gap)+gap)/2+row*(cardHeight+gap)})));
-    for(const column of columns.slice(1)){
+    const columnHeights=columns.map(column=>column.reduce((sum,node)=>sum+node.height+gap,-gap));
+    height=2*margin+Math.max(...columnHeights);
+    let x=margin;
+    columns.forEach((column,col)=>{
+      let natural=(height-columnHeights[col])/2;
+      const preferred=new Map(column.map(({id,height:boxHeight})=>{
+        const predecessors=parents.get(id).filter(from=>levels.get(from)<col).map(from=>positions.get(from));
+        const center=predecessors.length?predecessors.reduce((sum,box)=>sum+box.y+box.height/2,0)/predecessors.length:natural+boxHeight/2;
+        natural+=boxHeight+gap;
+        return [id,center];
+      }));
+      column.sort((a,b)=>preferred.get(a.id)-preferred.get(b.id));
       let bottom=margin;
-      for(const {id} of column){
-        const upstream=parents.get(id).filter(from=>levels.get(from)<levels.get(id)).map(from=>positions.get(from));
-        const p=positions.get(id);
-        if(upstream.length)p.y=upstream.reduce((sum,prior)=>sum+prior.y,0)/upstream.length;
-        p.y=Math.max(bottom,p.y);bottom=p.y+cardHeight+gap;
+      for(const {id,width,height:boxHeight} of column){
+        const y=Math.max(bottom,preferred.get(id)-boxHeight/2);
+        positions.set(id,{x,y,width,height:boxHeight});
+        bottom=y+boxHeight+gap;
       }
-      let top=height-margin-cardHeight;
-      for(const {id} of [...column].reverse()){
-        const p=positions.get(id);p.y=Math.min(top,p.y);top=p.y-cardHeight-gap;
+      let top=height-margin;
+      for(let i=column.length-1;i>=0;i--){
+        const box=positions.get(column[i].id);
+        box.y=Math.min(box.y,top-box.height);
+        top=box.y-gap;
       }
-    }
+      x+=columnWidths[col]+columnGap;
+    });
   }
-  function edgePath({from,to,kind}){
-    const a=positions.get(from),b=positions.get(to),ay=a.y+cardHeight/2,by=b.y+cardHeight/2;
-    const lane={dependency:15,planning:23,recovery:31}[kind];
-    if(mobile){
-      const side=a.y<b.y?a.x:a.x+cardWidth,rail=a.y<b.y?lane:width-lane;
-      return `M${side} ${ay} C${rail} ${ay},${rail} ${ay},${rail} ${ay+(by-ay)*.18} V${by-(by-ay)*.18} C${rail} ${by},${rail} ${by},${side} ${by}`;
+  return {width,height,positions,levels,columns,columnWidths};
+}
+
+function taskEdgePath(layout,{from,to,kind},index,mobile,startOffset=0,endOffset=0){
+  const {width,height,positions,levels,columns,columnWidths}=layout;
+  const a=positions.get(from),b=positions.get(to),ay=a.y+a.height/2+startOffset,by=b.y+b.height/2+endOffset;
+  const lane=6+(index%3)*5;
+  if(mobile){
+    if(b.order===a.order+1&&kind==='dependency'){
+      const x=Math.min(a.width,b.width)/2+a.x;
+      return `M${x} ${a.y+a.height} V${b.y}`;
     }
-    const ax=a.x+cardWidth,bx=b.x;
-    if(a.x>=b.x)return `M${ax} ${ay} H${ax+lane} V${lane} H${bx-lane} V${by} H${bx}`;
-    let x=ax,y=ay,path=`M${x} ${y}`;
-    const curve=(nx,ny)=>{const bend=(nx-x)/2;path+=` C${x+bend} ${y},${nx-bend} ${ny},${nx} ${ny}`;x=nx;y=ny;};
-    for(let col=levels.get(from)+1;col<levels.get(to);col++){
-      const obstacles=columns[col].map(node=>positions.get(node.id)),desired=(ay+by)/2;
-      const candidates=[desired,12,height-12,...obstacles.flatMap(p=>[p.y-12,p.y+cardHeight+12])];
-      const safe=candidates.filter(v=>v>=12&&v<=height-12&&obstacles.every(p=>v<=p.y-8||v>=p.y+cardHeight+8)).sort((a,b)=>Math.abs(a-desired)-Math.abs(b-desired))[0];
-      const left=margin+col*columnStep;curve(left-12,safe);x=left+cardWidth+12;path+=` L${x} ${safe}`;
-    }
-    curve(bx,by);return path;
+    const forward=a.order<b.order,ax=forward?a.x:a.x+a.width,bx=forward?b.x:b.x+b.width;
+    const rail=forward?lane:width-lane,turn=Math.sign(by-ay)*12;
+    return `M${ax} ${ay} Q${rail} ${ay},${rail} ${ay+turn} V${by-turn} Q${rail} ${by},${bx} ${by}`;
   }
-  const related=link=>selectedTask===link.from||selectedTask===link.to;
-  const paths=[...links].sort((a,b)=>Number(related(a))-Number(related(b))).map(link=>{
-    const {from,to,kind}=link,active=related(link);
-    return `<path class="${kind} ${active?'related':''}" data-edge-kind="${kind}" data-edge-from="${esc(from)}" data-edge-to="${esc(to)}" d="${edgePath(link)}" marker-end="url(#task-arrow-${kind})"></path>`;
+  const first=levels.get(from),last=levels.get(to),ax=a.x+a.width,bx=b.x;
+  if(first>=last)return `M${ax} ${ay} H${a.x+columnWidths[first]+lane} V${lane} H${bx-lane} V${by} H${bx}`;
+  let x=a.x+columnWidths[first]+8,y=ay,path=`M${ax} ${ay} H${x}`;
+  const curve=(nx,ny)=>{
+    const bend=(nx-x)/2;
+    path+=` C${x+bend} ${y},${nx-bend} ${ny},${nx} ${ny}`;
+    x=nx;y=ny;
+  };
+  for(let col=first+1;col<last;col++){
+    const obstacles=columns[col].map(node=>positions.get(node.id)),desired=(ay+by)/2;
+    const candidates=[desired,lane,height-lane,...obstacles.flatMap(box=>[box.y-8,box.y+box.height+8])];
+    const safe=candidates.filter(v=>v>=6&&v<=height-6&&obstacles.every(box=>v<=box.y-6||v>=box.y+box.height+6))
+      .sort((a,b)=>Math.abs(a-desired)-Math.abs(b-desired))[0];
+    const left=obstacles[0].x;
+    curve(left-8,safe);
+    x=left+columnWidths[col]+8;path+=` H${x}`;
+  }
+  curve(bx-8,by);
+  return path+` H${bx}`;
+}
+
+const graphRelations={dependency:{label:'执行依赖',color:'#5277a4'},planning:{label:'任务安排',color:'#8960b7'},recovery:{label:'异常来源',color:'#b26353'}};
+function taskEdgeOffsets(positions,links,endpoint,peer){
+  const byNode=new Map(),offsets=new Map();
+  for(const link of links){
+    const id=link[endpoint];
+    if(!byNode.has(id))byNode.set(id,[]);
+    byNode.get(id).push(link);
+  }
+  const center=id=>{const box=positions.get(id);return box.y+box.height/2;};
+  for(const [id,edges] of byNode){
+    edges.sort((a,b)=>center(a[peer])-center(b[peer]));
+    const spacing=Math.min(12,(positions.get(id).height-28)/Math.max(1,edges.length-1));
+    edges.forEach((edge,i)=>offsets.set(edge,(i-(edges.length-1)/2)*spacing));
+  }
+  return offsets;
+}
+function taskGraphSVG(layout,links,mobile,markers=false){
+  const related=link=>(link.tasks||[link]).some(({from,to})=>selectedTask===from||selectedTask===to);
+  const offsetsFrom=mobile?null:taskEdgeOffsets(layout.positions,links,'from','to');
+  const offsetsTo=mobile?null:taskEdgeOffsets(layout.positions,links,'to','from');
+  const defs=markers?`<defs>${Object.entries(graphRelations).map(([kind,{color}])=>`<marker id="task-arrow-${kind}" markerWidth="7" markerHeight="7" refX="7" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7" fill="${color}"/></marker>`).join('')}</defs>`:'';
+  const paths=links.map((link,index)=>({link,index,active:related(link)})).sort((a,b)=>Number(a.active)-Number(b.active)).map(({link,index,active})=>{
+    const {from,to,kind,tasks}=link,count=tasks?.length??1;
+    const path=taskEdgePath(layout,link,index,mobile,offsetsFrom?.get(link),offsetsTo?.get(link));
+    return `<path class="${kind} ${active?'related':''}" data-edge-kind="${kind}" data-edge-from="${esc(from)}" data-edge-to="${esc(to)}" d="${path}" marker-end="url(#task-arrow-${kind})"><title>${count} 条${graphRelations[kind].label}</title></path>`;
   }).join('');
+  return `<svg width="${layout.width}" height="${layout.height}" aria-hidden="true">${defs}<g class="dependency-lines${selectedTask?' has-related':''}">${paths}</g></svg>`;
+}
+
+function taskDependencyGraph(items,filtered){
+  const business=TaskHistory.businessGraph(run,items);
+  const graph=TaskHistory.roundGraph(business,expandedRounds,selectedTask,filtered);
+  if(!graph.nodes.length)return '<p class="empty-inline">流程决策可在时间顺序中查看。</p>';
+  const mobile=mobileTaskGraph.matches;
+  const visibleLinks=links=>links.filter(link=>link.kind==='dependency'||showTaskOrigins);
+  const links=visibleLinks(graph.links);
+  const taskNode=item=>({id:item.tasks.id,item,width:taskCardWidth,height:taskCardHeight});
+  const place=(box,content)=>`<div class="process-node" style="left:${box.x}px;top:${box.y}px;width:${box.width}px">${content}</div>`;
+  const groups=graph.nodes.map(({id,item,card})=>{
+    if(item)return {...taskNode(item),content:taskCard(item)};
+    const heading=roundHeading(card,filtered);
+    if(!card.open)return {id,width:taskCardWidth,height:132,content:heading};
+    const children=card.members.map(taskNode),internal=visibleLinks(card.links);
+    const body=layoutTaskGraph(children,internal,mobile,true);
+    const cards=children.map(child=>place(body.positions.get(child.id),taskCard(child.item))).join('');
+    const name=card.round||'未标注轮次';
+    const content=`<section class="round-frame" data-round-frame="${esc(card.round)}" aria-label="${esc(name)}">${heading}<div class="round-body" style="height:${body.height}px">${taskGraphSVG(body,internal,mobile)}${cards}</div></section>`;
+    return {id,width:body.width,height:body.height+roundHeadingHeight,content};
+  });
+  const layout=layoutTaskGraph(groups,links,mobile);
   const current=business.items.find(i=>i.tasks.status==='fault'||i.attempts.at(-1)?.observation_error)
     ||business.items.find(i=>['executing','waiting','waiting_user','ready','blocked'].includes(i.tasks.status));
-  const cards=nodes.map(node=>{
-    const {x,y}=positions.get(node.id);
-    return `<div class="process-node" style="left:${x}px;top:${y}px;width:${cardWidth}px">${node.card?roundToggle(node.card):''}${node.item?taskCard(node.item):''}</div>`;
-  }).join('');
-  return `<div class="graph-tools"><span class="graph-legend">蓝色依赖 · 紫色安排 · 红色异常来源</span><div>${current?`<button data-graph-current="${esc(current.tasks.id)}">定位当前</button>`:''}<button data-graph-zoom="out" aria-label="缩小依赖图">−</button><button id="graph-scale" data-graph-zoom="actual" aria-label="恢复实际大小"></button><button data-graph-zoom="in" aria-label="放大依赖图">＋</button><button data-graph-zoom="fit">${mobile?'适应宽度':'适应画布'}</button></div></div><div class="dependency-scroll" data-graph-run="${esc(run.id)}" tabindex="0" aria-label="节点图画布"><div class="process-extent"><div class="process-canvas" style="width:${width}px;height:${height}px"><svg width="${width}" height="${height}" aria-hidden="true"><defs>${['dependency','planning','recovery'].map(kind=>`<marker id="task-arrow-${kind}" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7" style="fill:${kind==='recovery'?'#bd705f':kind==='planning'?'#9564cf':'#7293bb'}"/></marker>`).join('')}</defs><g class="dependency-lines${links.some(related)?' has-related':''}">${paths}</g></svg>${cards}</div></div></div>`;
+  const cards=groups.map(node=>place(layout.positions.get(node.id),node.content)).join('');
+  const legend=showTaskOrigins?'蓝色执行依赖 · 紫色任务安排 · 红色异常来源':'蓝线表示执行依赖';
+  return `<div class="graph-tools"><div class="graph-context"><span class="graph-legend">${legend}${graph.nodes.some(n=>n.card)?' · 轮次框对外连线已合并':''}</span><label class="graph-origin-toggle"><input id="graph-show-origins" type="checkbox" ${showTaskOrigins?'checked':''}> 显示安排和异常关系</label></div><div class="graph-actions">${current?`<button data-graph-current="${esc(current.tasks.id)}">定位当前</button>`:''}<button data-graph-zoom="out" aria-label="缩小依赖图">−</button><button id="graph-scale" data-graph-zoom="actual" aria-label="恢复实际大小"></button><button data-graph-zoom="in" aria-label="放大依赖图">＋</button><button data-graph-zoom="fit">${mobile?'适应宽度':'适应画布'}</button></div></div><div class="dependency-scroll" data-graph-run="${esc(run.id)}" tabindex="0" aria-label="节点图画布"><div class="process-extent"><div class="process-canvas" style="width:${layout.width}px;height:${layout.height}px">${taskGraphSVG(layout,links,mobile,true)}${cards}</div></div></div>`;
 }
 let graphScale=null,graphRun=null;
 function sizeTaskGraph(mode){
@@ -217,13 +300,13 @@ function sizeTaskGraph(mode){
   const mobile=mobileTaskGraph.matches;
   const natural=mobile?widthFit:1;
   const fit=mobile?widthFit:Math.min(widthFit,(scroll.clientHeight-24)/canvas.offsetHeight);
-  if(mode==='fit')graphScale=fit;
-  else if(mode==='actual')graphScale=natural;
+  if(mode==='fit')graphScale=mobile?null:fit;
+  else if(mode==='actual')graphScale=null;
   else if(mode==='in')graphScale=Math.min(1.5,(graphScale??natural)+.15);
   else if(mode==='out')graphScale=Math.max(mobile ? 0.6 : 0.2,(graphScale??natural)-.15);
-  else graphScale??=natural;
-  canvas.style.transform=`scale(${graphScale})`;canvas.parentElement.style.width=canvas.offsetWidth*graphScale+'px';canvas.parentElement.style.height=canvas.offsetHeight*graphScale+'px';
-  $('graph-scale').textContent=Math.round(graphScale*100)+'%';
+  const scale=graphScale??natural;
+  canvas.style.transform=`scale(${scale})`;canvas.parentElement.style.width=canvas.offsetWidth*scale+'px';canvas.parentElement.style.height=canvas.offsetHeight*scale+'px';
+  $('graph-scale').textContent=Math.round(scale*100)+'%';
 }
 function graphElement(attribute,value){
   return document.querySelector(`.process-canvas [${attribute}="${CSS.escape(value)}"]`);
@@ -264,8 +347,11 @@ function taskWaitReasons(task){
 }
 function taskFlowHTML(item){
   const id=item.tasks.id,edges=TaskHistory.links(run),incoming=edges.filter(e=>e.to===id),outgoing=edges.filter(e=>e.from===id);
-  const link=(e,target)=>`<li class="${e.kind}"><small>${e.kind==='recovery'?'异常来源':e.kind==='planning'?'明确安排':'执行依赖'}</small><button class="text-button" data-task-focus="${esc(target)}">${esc(taskLabel(run.tasks[target]))}</button>${badge(run.tasks[target].status)}</li>`;
-  return `<section class="task-flow"><h3>任务关系与推进</h3>${incoming.length?`<h4>来源</h4><ul>${incoming.map(e=>link(e,e.from)).join('')}</ul>`:''}${outgoing.length?`<h4>后续与异常处理</h4><ul>${outgoing.map(e=>link(e,e.to)).join('')}</ul>`:''}${!incoming.length&&!outgoing.length?'<p class="small muted">暂无已记录的关联任务。</p>':''}${item.tasks.origin?.route_id?`<p class="small muted">事件触发：${esc(item.tasks.origin.route_id)} → ${item.tasks.origin.flow_agent?'内置流程 Agent':'模板 '+esc(item.tasks.origin.plan)} · 报告 ${esc(item.tasks.origin.report_id)}</p>`:''}${taskWaitReasons(item.tasks)}${item.tasks.origin?.fallback?`<details><summary>触发兜底时记录的问题</summary>${resultView(item.tasks.origin.issues||[])}</details>`:''}</section>`;
+  const link=(edge,target)=>{
+    const task=run.tasks[target],name=[taskLabel(task),task.spec.ref||task.spec.round].filter(Boolean).join(' · ');
+    return `<li class="${edge.kind}"><small>${graphRelations[edge.kind].label}</small><button class="text-button" data-task-focus="${esc(target)}">${esc(name)}</button>${badge(task.status)}</li>`;
+  };
+  return `<section class="task-flow"><h3>任务关系与推进</h3>${incoming.length?`<h4>来源</h4><ul>${incoming.map(e=>link(e,e.from)).join('')}</ul>`:''}${outgoing.length?`<h4>后续与异常处理</h4><ul>${outgoing.map(e=>link(e,e.to)).join('')}</ul>`:''}${!incoming.length&&!outgoing.length?'<p class="small muted">暂无已记录的关联任务。</p>':''}${item.tasks.origin?.route_id?`<p class="small muted">事件触发：${esc(item.tasks.origin.route_id)} → ${item.tasks.origin.flow_agent?'内置流程 Agent':'模板 '+esc(item.tasks.origin.plan)} · 报告 ${esc(item.tasks.origin.report_id)}</p>`:''}${item.tasks.origin?.fallback?`<details><summary>触发兜底时记录的问题</summary>${resultView(item.tasks.origin.issues||[])}</details>`:''}</section>`;
 }
 function taskRevisionText(value){return value==null?'修订未记录':'修订 '+value;}
 function taskDetails(item){
@@ -276,7 +362,7 @@ function taskDetails(item){
   return `<div class="task-detail-heading"><h2>${esc(taskLabel(t))}</h2>${taskBadge(item)}</div><p class="small muted">${esc([item.round,t.spec.ref].filter(Boolean).join(' · '))}</p>
     ${facts.length?`${attempt.status==='completed'&&facts[0].source==='progress'?'<small class="muted">最后一次进度回报</small>':''}<dl class="node-facts">${facts.map(f=>`<div><dt>${esc(f.label)}</dt><dd>${esc(f.value)} ${esc(f.unit||'')}</dd></div>`).join('')}</dl>`:''}
     ${taskError(attempt)}${taskWaitReasons(t)}<div class="toolbar">${item.attempts.some(e=>Object.keys(e.outputs||{}).length)?`<button data-task-result="${esc(t.id)}">查看结果</button>`: ''}<button data-task-assistance="${esc(t.id)}">查看外援请求</button>${editable&&!ended?`<button data-task-cancel="${esc(t.id)}">取消任务</button>`:''}${(['fault','stale','cancelled','waiting_user','retrying'].includes(t.status)||attempt?.observation_error)&&!ended?`<button data-task-retry="${esc(t.id)}">${attempt?.observation_error?'恢复监控':'重试任务'}</button>`:''}</div>
-  ${attempt?.status==='waiting'&&['timer','event','loop'].includes(attempt.implementation.kind)&&!ended?`<button data-task-cancel="${esc(t.id)}">取消等待</button>`:''}${t.assistance_wait?'<p class="small muted">正在等待外援回复；等待结束后继续当前任务。</p>':''}${attempt?.communication_state?`<p class="small muted">群组执行：${esc(communicationStates[attempt.communication_state]||attempt.communication_state)}</p>`:''}<section class="task-execution"><h3>执行记录 · ${item.attempts.length} 次</h3>${item.attempts.length>1?`<label>执行尝试<select id="task-attempt">${item.attempts.map(e=>`<option value="${esc(e.id)}" ${e.id===attempt?.id?'selected':''}>第 ${e.attempt} 次 · ${esc(taskRevisionText(e.task_revision))} · ${esc(labels[e.status]||e.status)} · ${taskTime(TaskHistory.startTime(e))}${Object.hasOwn(e,'started_at')?'':' · 历史派发时间'}</option>`).join('')}</select></label>`:''}${attempt?.implementation.kind==='agent'&&(attempt.implementation.command||attempt.communication_id)?`<button data-open-terminal="${esc(attempt.id)}">${attempt.implementation.terminal?'打开交互终端':'查看实时输出'}</button>`:''}${attempt?.implementation.kind==='agent'&&!ended?`<button data-agent-session="${esc(attempt.id)}">${attempt.worker_active?'打开会话':'恢复会话'}</button>`:''}${waitDetails(attempt)}<details><summary>执行诊断与来源</summary><p class="task-detail-id">${esc(t.id)} · <span data-task-revision>${esc(taskRevisionText(t.revision))}</span></p>${executionLifecycle(attempt)}${promptHistory(attempt)}${flowDecisionDetails(t)}${taskFlowHTML(item)}<h3>输入与来源</h3>${Object.entries(attempt?.inputs || {}).map(([port,value])=>`<section><h4>${esc(run.loop_definition.nodes[t.spec.node].inputs[port]?.title || port)}</h4>${resultView(value)}${sourceLinks(attempt.sources?.[port])}</section>`).join('') || resultView(t.spec.inputs)}
+  ${attempt?.status==='waiting'&&['timer','event','loop'].includes(attempt.implementation.kind)&&!ended?`<button data-task-cancel="${esc(t.id)}">取消等待</button>`:''}${t.assistance_wait?'<p class="small muted">正在等待外援回复；等待结束后继续当前任务。</p>':''}${attempt?.communication_state?`<p class="small muted">群组执行：${esc(communicationStates[attempt.communication_state]||attempt.communication_state)}</p>`:''}${taskFlowHTML(item)}<section class="task-execution"><h3>执行记录 · ${item.attempts.length} 次</h3>${item.attempts.length>1?`<label>执行尝试<select id="task-attempt">${item.attempts.map(e=>`<option value="${esc(e.id)}" ${e.id===attempt?.id?'selected':''}>第 ${e.attempt} 次 · ${esc(taskRevisionText(e.task_revision))} · ${esc(labels[e.status]||e.status)} · ${taskTime(TaskHistory.startTime(e))}${Object.hasOwn(e,'started_at')?'':' · 历史派发时间'}</option>`).join('')}</select></label>`:''}${attempt?.implementation.kind==='agent'&&(attempt.implementation.command||attempt.communication_id)?`<button data-open-terminal="${esc(attempt.id)}">${attempt.implementation.terminal?'打开交互终端':'查看实时输出'}</button>`:''}${attempt?.implementation.kind==='agent'&&!ended?`<button data-agent-session="${esc(attempt.id)}">${attempt.worker_active?'打开会话':'恢复会话'}</button>`:''}${waitDetails(attempt)}<details><summary>执行诊断与来源</summary><p class="task-detail-id">${esc(t.id)} · <span data-task-revision>${esc(taskRevisionText(t.revision))}</span></p>${executionLifecycle(attempt)}${promptHistory(attempt)}${flowDecisionDetails(t)}<h3>输入与来源</h3>${Object.entries(attempt?.inputs || {}).map(([port,value])=>`<section><h4>${esc(run.loop_definition.nodes[t.spec.node].inputs[port]?.title || port)}</h4>${resultView(value)}${sourceLinks(attempt.sources?.[port])}</section>`).join('') || resultView(t.spec.inputs)}
   <h3>当前前置任务</h3>${item.dependencies.map(id=>`<button class="text-button" data-task-focus="${esc(id)}">${esc(taskLabel(run.tasks[id]))}</button>`).join(' ')||'<span class="muted">无</span>'}
   <h3>${attempt?'所选执行的参数与实现':'当前任务的参数与实现'}</h3>${resultView(attempt?attempt.parameters||{}:t.spec.parameters||{})}<p>${esc(attempt?(attempt.implementation_id||'历史实现标识未记录'):(t.spec.implementation||'沿用运行默认实现'))}</p>
   ${attempt?.task_spec?`<details><summary>本次执行采用的任务安排 · ${esc(taskRevisionText(attempt.task_revision))}</summary>${resultView(attempt.task_spec)}</details>`:''}${attempt&&attempt.task_revision!==t.revision?`<details><summary>当前任务安排 · ${esc(taskRevisionText(t.revision))}</summary>${resultView(t.spec)}</details>`:''}
@@ -393,6 +479,7 @@ document.addEventListener('click',event=>safely(async()=>{
   else if(el.id==='clear-task-filter'){filterNode=null;inspectSignature='';renderInspect();}
 }));
 document.addEventListener('change',event=>{const el=event.target;
+  if(el.id==='graph-show-origins'){showTaskOrigins=el.checked;inspectSignature='';renderInspect();$('graph-show-origins')?.focus({preventScroll:true});}
   if(el.id==='task-status'||el.id==='task-search'){taskStatus=$('task-status').value;taskSearch=$('task-search').value;inspectSignature='';renderInspect();}
   if(el.id==='task-round'){taskRound=el.value;selectedTask=null;selectedAttempt=null;syncRunTaskRoute();inspectSignature='';renderInspect();}
   if(el.id==='task-attempt'){selectedAttempt=el.value;$('task-detail-body').innerHTML=taskDetails(TaskHistory.rows(run).find(i=>i.tasks.id===selectedTask));}
