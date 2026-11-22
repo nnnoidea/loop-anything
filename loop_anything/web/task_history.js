@@ -57,5 +57,23 @@
     }
     return {items:visible,links:mapped};
   }
-  const api={rows,groups,startTime,links,businessGraph};if(typeof module!=='undefined' && module.exports)module.exports=api;else root.TaskHistory=api;
+  function readings(fields, progress={}, outputs={}) {
+    const scalar=v=>Number.isFinite(v)||typeof v==='boolean'||(typeof v==='string'&&v.trim().length>0);
+    if(Array.isArray(fields) && fields.length){
+      const sources={progress,outputs};
+      return fields.flatMap(field=>{
+        if(typeof field?.path!=='string'||!field.label)return [];
+        const {path,label,unit}=field;
+        const value=path.split('.').reduce((obj,key)=>obj && typeof obj==='object' && Object.hasOwn(obj,key)?obj[key]:undefined,sources);
+        return scalar(value)?[{label,value,unit,source:path.split('.')[0]}]:[];
+      });
+    }
+    // These are explicit progress reports. Arbitrary result ports may contain paths or internal IDs.
+    const metrics=Object.entries(progress.metrics||{}), reported=progress.progress;
+    if(reported && typeof reported==='object')metrics.push(...Object.entries(reported));
+    else metrics.push(['进度',reported]);
+    metrics.push(['阶段',progress.phase]);
+    return metrics.filter(([,v])=>scalar(v)).map(([label,value])=>({label,value,source:'progress'}));
+  }
+  const api={rows,groups,startTime,links,businessGraph,readings};if(typeof module!=='undefined' && module.exports)module.exports=api;else root.TaskHistory=api;
 })(typeof globalThis!=='undefined'?globalThis:this);

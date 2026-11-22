@@ -1,8 +1,8 @@
 #workspace .tasks-grid{display:flex;flex-direction:column;gap:18px;align-items:stretch}
 #workspace .tasks-main{min-width:0;width:100%;display:flex;flex-direction:column;gap:16px}
 #workspace .settings-panel{position:static;max-height:none;width:100%}
-.graph-panel>summary,.settings-panel>summary{padding:16px;cursor:pointer;font-weight:600}
-#workspace .graph-panel{order:1}.inspect-panel{order:0}
+.settings-panel>summary{padding:16px;cursor:pointer;font-weight:600}
+.inspect-panel{order:0}
 #workspace #inspect{max-height:none;overflow:visible}
 #workspace .page-heading{padding-top:16px;padding-bottom:16px}
 #workspace .timeline-intro{margin:14px 34px}#run-key{overflow-wrap:anywhere}
@@ -111,7 +111,7 @@
 
 .process-task{height:160px;gap:9px}.process-task .task-card-main{display:flex;flex-direction:column;align-items:stretch;gap:6px;flex:1;min-height:0;width:100%;text-align:left;padding:0;border:0;background:transparent;box-shadow:none}.process-task .task-card-main:hover{background:transparent}.task-card-actions{display:flex;gap:7px;align-items:center;border-top:1px solid #edf0f5;padding-top:8px}.task-card-actions button{padding:4px 8px;font-size:11px;line-height:16px;border-radius:5px}.task-card-actions button:first-child{color:#355f99;background:#f2f6fd;border-color:#d9e4f4}#task-result-dialog{width:min(850px,94vw);max-height:90vh}#task-result-content{overflow:auto;max-height:70vh}#task-result-dialog .result-section{margin-bottom:12px}
 
-.process-task{height:244px}.process-task .node-axes{margin:1px 0;gap:3px}.task-card-actions{flex-wrap:wrap;gap:4px}.task-card-actions button{font-size:10px;padding:3px 6px}.node-axis-legend{display:block;color:#718096;font-size:10px;font-weight:400;line-height:1.5}
+.process-task{height:168px}.task-card-actions{flex-wrap:wrap;gap:4px}.task-card-actions button{font-size:10px;padding:3px 6px}.node-axis-legend{display:block;color:#718096;font-size:10px;font-weight:400;line-height:1.5}
 
 /* Group shared state endpoints; keep each trigger, condition and side effect bound to its own rule. */
 .lifecycle-diagram.rule-details .phase-group{grid-template-columns:minmax(0,1fr);gap:10px;align-items:start}
@@ -171,3 +171,31 @@
 #launch-created-by { margin-left: 12px; padding: 8px; border: 1px solid #cfd8e6; border-radius: 6px; }
 
 .run-filters[open] { max-height: 44vh; overflow: auto; padding-bottom: 8px; }
+.process-layout.overview-only{grid-template-columns:minmax(0,1fr)}
+.node-overview{background:white}
+.node-record{display:flex;width:100%;align-items:center;justify-content:space-between;gap:12px;padding:13px 18px;border:0;border-bottom:1px solid var(--line);border-radius:0;text-align:left;overflow-wrap:anywhere}
+.node-record strong{font-weight:600}
+.node-record>span:last-child{flex-shrink:0;max-width:44%}
+.node-record span:last-child:not(.badge){font-size:12px;color:var(--muted)}
+.node-instances{padding:4px 12px 6px 22px;background:var(--canvas)}
+.node-instances .node-record{font-size:12px;background:transparent}
+.route-audit{margin:0;padding:14px 18px;border-top:1px solid var(--line)}
+.run-issues{margin:0 34px 12px}
+.node-record[aria-pressed=true]{background:#edf2fc;color:#234486}
+@media(max-width:650px){
+ .process-controls .task-search-label{min-width:110px;flex:1}
+ .process-controls .task-round-filter{max-width:100%}
+}
+
+.progress-round{border-bottom:1px solid var(--line)}
+.progress-round>button{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap;width:100%;padding:13px 18px;border:0;border-radius:0;text-align:left;background:transparent}
+.progress-round>button[aria-expanded=true]{background:#eef3fc}
+.progress-round>button span,.node-record small{color:var(--muted);font-size:12px}
+.node-record small,.external-reading small{display:block;line-height:1.55}
+.node-facts{display:flex;flex-wrap:wrap;gap:10px 28px;margin:10px 0;overflow-wrap:anywhere}
+.node-facts dt{color:var(--muted);font-size:12px}
+.node-facts dd{margin:2px 0 0;font-weight:600;font-variant-numeric:tabular-nums}
+.loop-run-history{border-top:1px solid var(--line);padding:10px 0}
+.loop-run-history summary{cursor:pointer}
+
+.round-history>summary{padding:13px 18px;cursor:pointer;color:var(--muted);font-weight:500}

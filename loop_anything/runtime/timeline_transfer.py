@@ -10,7 +10,7 @@ from loop_anything.runtime.model import Invalid, Conflict, digest
 MAX_BYTES = 20 * 1024 * 1024
 FORMAT = 'loop-anything-timeline'
 STATE_FIELDS = ('type','id','revision','value','refs','run_id','task_id','execution_id','at','intent_revision')
-RESULT_FIELDS = ('id','revision','type','value','producer','tasks','source_run_id','at','sources')
+RESULT_FIELDS = ('id','revision','type','value','summary','producer','tasks','source_run_id','at','sources')
 ENTRY_FIELDS = ('key','sequence','text','kind','refs','actor','at')
 NOTICE = '已导入任务进度。请让 Agent 读取目标、限制和当前状态，使用本平台的相关 Loop 继续。原平台的进程和执行权限未迁移，外部文件仍需可访问。'
 

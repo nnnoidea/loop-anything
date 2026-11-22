@@ -265,6 +265,7 @@ class Store:
             if attempt is not None and progress:
                 active = active or attempt.get('activity_progress') != progress
                 attempt['activity_progress'] = copy.deepcopy(progress)
+                attempt['activity_progress_at'] = time.time()
         if active: run['last_activity_at'] = time.time()
         run['history'].append({'id': uid('event'), 'at': time.time(), 'kind': kind,
                                'message': message, 'execution': execution, 'detail': detail})

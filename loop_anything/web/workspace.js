@@ -1,5 +1,5 @@
 'use strict';
-let selectedTask=null,selectedAttempt=null,taskOrder='graph',taskSearch='',taskStatus='',taskEdit=null,taskChanges=new Map(),taskNumbers=new Map();
+let selectedTask=null,selectedAttempt=null,taskOrder='overview',taskSearch='',taskStatus='',taskEdit=null,taskChanges=new Map(),taskNumbers=new Map();
 const taskTime=t=>t?new Date(t*1000).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}):'尚未开始';
 const taskLabel=t=>run.loop_definition.nodes[t.spec.node]?.label || t.spec.node;
 function flowDecisions(t){return Object.values(run.tasks).filter(d=>d.origin?.flow_agent?.task_id===t.id);}
@@ -8,7 +8,40 @@ function flowDecisionDetails(t){
   const trigger=t.origin?.flow_agent,decisions=flowDecisions(t);
   return (trigger?`<section class="flow-decision-details"><h3>内置流程决策</h3><p>触发来源：<button class="text-button" data-task-focus="${esc(trigger.task_id)}">${esc(taskLabel(run.tasks[trigger.task_id]))}</button> · ${esc(trigger.event)}</p><details><summary>事件与证据引用</summary>${resultView(trigger)}</details></section>`:'')+(decisions.length?`<section class="flow-decision-details"><h3>后续推进 · ${decisions.length} 次决策</h3>${flowDecisionButtons(t)}<p class="small muted">打开决策可查看完整结果、执行记录与原会话。</p></section>`:'');
 }
-function taskSummary(item){if(item.tasks.status==='skipped')return '历史记录：已跳过，不再等待执行';if(item.tasks.status==='cancelled')return '已取消，不再等待执行';const e=item.attempts.at(-1);if(e?.child_run_id&&e.status==='waiting')return '子 Loop · '+(labels[e.child_status]||e.child_status||'等待中');if(e?.status==='waiting'&&['timer','event','approval'].includes(e.implementation.kind))return waitSummary(e.implementation);if(e?.observation_error)return '监控需要恢复 · 外部状态待确认';const values=Object.entries(e?.outputs || {});return values.slice(0,2).map(([k,v])=>`${k}：${typeof v==='object'?(Array.isArray(v)?v.length+' 项':'已保存'):String(v).slice(0,64)}`).join(' · ') || (e?.lifecycle_state?'当前阶段：'+lifecycleName(e.lifecycle_state):'');}
+function readingText(r){return r.label+' '+r.value+(r.unit?' '+r.unit:'');}
+function taskStatusLabel(item){
+  const attempt=item.attempts.at(-1);
+  if(item.tasks.status==='waiting' && attempt?.implementation?.kind==='external' && !attempt.observation_error &&
+      String(attempt.activity_progress?.external_status).toUpperCase()==='RUNNING')return '外部运行中';
+  return labels[item.tasks.status]||item.tasks.status;
+}
+function taskBadge(item){return `<span class="badge ${esc(item.tasks.status)}">${esc(taskStatusLabel(item))}</span>`;}
+function taskReadout(item,attempt=item.attempts.at(-1)){
+  const fields=run.loop_definition.nodes[item.tasks.spec.node]?.readout;
+  const facts=TaskHistory.readings(fields,attempt?.activity_progress,attempt?.outputs);
+  const results=facts.filter(f=>f.source==='outputs');
+  return results.length?results:facts;
+}
+function taskSummary(item){
+  const t=item.tasks,e=item.attempts.at(-1);
+  if(e?.observation_error)return '采集异常，外部任务状态待确认';
+  if(['fault','stale'].includes(t.status))return failureSummary(e?.error||t.budget_error);
+  const facts=taskReadout(item);
+  if(facts.length)return (t.status==='completed'&&facts[0].source==='progress'?'最后回报 · ':'')+facts.map(readingText).join(' · ');
+  if(e?.child_run_id&&e.status==='waiting')return '子 Loop · '+(labels[e.child_status]||e.child_status||'等待中');
+  if(e?.status==='waiting'&&['timer','event','approval'].includes(e.implementation.kind))return waitSummary(e.implementation);
+  if(t.wait_reasons?.length)return waitReasonText(t.wait_reasons[0]);
+  return '';
+}
+function failureSummary(error){
+  if(!error)return '执行失败，可在节点详情查看原因。';
+  const last=String(error).trim().split(/\r?\n/).filter(Boolean).at(-1)||'';
+  const missing=last.match(/FileNotFoundError:.*No such file or directory:\s*['"]([^'"]+)['"]/);
+  if(missing)return '找不到文件或目录 '+missing[1].split(/[\\/]/).filter(Boolean).at(-1).slice(0,100)+'。';
+  if(/Traceback|\bFile ".*", line \d+/.test(last))return '执行脚本报错，完整错误在节点详情中。';
+  const message=last.replace(/^Handler failed:\s*/,'').trim();
+  return message.length>140?message.slice(0,139)+'…':message||'执行失败，请查看节点详情。';
+}
 function runProgressHTML(value){
   if(value.superseded_by){
     const latest=value.timeline?.active_run_id;
@@ -26,6 +59,7 @@ function runProgressHTML(value){
   const rank=item=>{
     if(item.attempts.at(-1)?.observation_error)return 2;
     if(item.attempts.at(-1)?.status==='approval')return 1;
+    if(item.tasks.status==='held')return 1;
     const i=priorities.indexOf(item.tasks.status);return i<0?priorities.length:i;
   };
   const completed=rows.filter(i=>i.tasks.status==='completed').sort((a,b)=>(b.completed||0)-(a.completed||0));
@@ -33,37 +67,51 @@ function runProgressHTML(value){
   if(ended || !pending.length)focus=completed.slice(0,1);
   const primary=focus[0];
   const caption=value.status==='paused'?'运行已暂停':ended?'运行已结束':!pending.length?'执行进度':
-      rank(primary)<=4?'需要关注':primary.tasks.status==='waiting'?'当前等待':'当前执行';
+      rank(primary)<=4?'需要关注':taskStatusLabel(primary)==='外部运行中'?'外部运行中':primary.tasks.status==='waiting'?'当前等待':'当前执行';
   const title=primary?taskLabel(primary.tasks):ended?'没有已完成的节点':rows.length?'已安排的节点均已结束':'尚未安排任务';
   function detail(item){
     const t=item.tasks,e=item.attempts.at(-1);
     if(e?.observation_error)return '采集异常，外部任务状态待确认';
     if(t.status==='waiting_user')return value.task_dispositions?.[t.id]?.reason || '等待用户处理';
     if(e?.status==='approval')return '等待用户确认';
-    if(['fault','stale'].includes(t.status))return e?.error||t.budget_error||'打开节点查看异常原因';
-    if(e?.activity_progress && ['executing','waiting'].includes(t.status)){
-      const p=e.activity_progress;
-      const progress=[p.external_status,p.phase,p.progress].filter(v=>typeof v==='string'||typeof v==='number');
-      if(progress.length)return progress.join(' · ');
-    }
+    if(t.status==='held')return '执行前已暂停，可到通知与控制查看放行条件。';
+    if(['fault','stale'].includes(t.status))return failureSummary(e?.error||t.budget_error);
     return t.wait_reasons?.length?waitReasonText(t.wait_reasons[0]):taskSummary(item) || labels[t.status] || t.status;
   }
   const link=(item,text)=>`<a class="progress-link" data-route-link href="${esc(routeHash({type:'run',id:value.id,task:item.tasks.id}))}">${esc(text)} ↗</a>`;
-  const row=item=>`<li><span>${esc(taskLabel(item.tasks))}</span>${badge(item.tasks.status)} ${link(item,'节点详情')}</li>`;
   const more=focus.slice(1);
   const next=!ended && primary?pending.filter(i=>i.dependencies.includes(primary.tasks.id)):[];
-  const alongside=more.filter(i=>!next.includes(i));
+  const repairs=more.filter(i=>i.tasks.status==='executing' && i.tasks.origin?.fallback &&
+    i.tasks.origin.issues?.some(issue=>issue.task_id===primary?.tasks.id));
+  const alongside=more.filter(i=>!next.includes(i)&&!repairs.includes(i));
+  const parallel=new Map();
+  for(const item of alongside){
+    const key=JSON.stringify([item.tasks.spec.node,taskStatusLabel(item)]);
+    if(!parallel.has(key))parallel.set(key,[]);
+    parallel.get(key).push(item);
+  }
+  const sideRows=[...parallel.values()].map(group=>{
+    const i=group[0],t=i.tasks;
+    return group.length===1?`<li>${link(i,[taskLabel(t),i.round,t.spec.ref].filter(Boolean).join(' · '))}${taskBadge(i)}</li>`:
+      `<li><button class="progress-link" data-focus-group="${esc(t.spec.node)}" data-focus-round="${esc(i.round||'')}">${esc(taskLabel(t))} · ${group.length} 项${esc(taskStatusLabel(i))} →</button></li>`;
+  }).join('');
+  const failed=primary?.tasks.status==='fault';
+  const recentResult=completed.find(i=>i!==primary&&taskReadout(i).some(f=>f.source==='outputs'));
+  const nextNames=next.slice(0,2).map(i=>link(i,taskLabel(i.tasks))).join(' · ');
+
 
   return `<section class="progress-focus" data-tone="${ended||value.status==='paused'?'quiet':primary&&rank(primary)<=4?'attention':'live'}">
-    <div class="focus-label">${caption}<time>${value.last_activity_at?'最近变化 '+esc(taskTime(value.last_activity_at)):''}</time></div>
-    <h2>${esc(title)}</h2>${primary?`<p>${ended||!pending.length?'最近完成 · ':''}${esc(detail(primary))}</p>${link(primary,'查看节点详情')}`:''}
-    ${next.length?`<div class="next-work">后续已安排 · ${next.map(i=>link(i,taskLabel(i.tasks))).join(' · ')}</div>`:''}
-    ${alongside.length&&alongside.length<=2?`<ul class="also-working">${alongside.map(row).join('')}</ul>`:alongside.length?`<details class="parallel-work"><summary>其他待推进节点 · ${alongside.length}</summary><ul>${alongside.map(row).join('')}</ul></details>`:''}
-    <footer>${completed.length} 个节点已完成 · 本次已安排 ${rows.length} 个</footer></section>`;
+    <div class="focus-label">${failed && repairs.length && !ended && value.status!=='paused'?'正在处理异常':caption}<time>${value.last_activity_at?'最近变化 '+esc(taskTime(value.last_activity_at)):''}</time></div>
+    <h2>${esc(title)}${failed?'失败':''}</h2>${primary && (primary.round||primary.tasks.spec.ref)?`<small>${esc([primary.round,primary.tasks.spec.ref].filter(Boolean).join(' · '))}</small>`:''}${primary?`<p>${ended||!pending.length?'最近完成 · ':''}${esc(detail(primary))}</p>${link(primary,'查看节点详情')}`:''}
+    ${repairs.length?`<p>正在处理 · ${repairs.map(i=>link(i,taskLabel(i.tasks))).join(' · ')}</p>`:''}
+    ${next.length?`<div class="next-work">后续已安排 · ${nextNames}${next.length>2?' 等 '+next.length+' 项':''}</div>`:''}
+    ${parallel.size&&parallel.size<=2?`<ul class="also-working">${sideRows}</ul>`:alongside.length?`<details class="parallel-work"><summary>其他待推进任务 · ${alongside.length}</summary><ul>${sideRows}</ul></details>`:''}
+    ${recentResult?`<div class="next-work">最近结果 · ${link(recentResult,[recentResult.round,recentResult.tasks.spec.ref||taskLabel(recentResult.tasks)].filter(Boolean).join(' · '))}　${esc(taskSummary(recentResult))}</div>`:''}
+    <footer>已完成 ${completed.length} / ${rows.length} 项已安排任务</footer></section>`;
 }
 function taskCard(item){
   const t=item.tasks,order=taskNumbers.get(t.id),attempt=item.attempts.at(-1),agent=attempt?.implementation.kind==='agent',active=attempt?.worker_active||(run.agent_sessions||[]).some(o=>o.resume_execution===attempt?.id);
-  return `<article class="process-task ${selectedTask===t.id?'picked':''}" data-status="${esc(t.status)}" data-task-focus="${esc(t.id)}" data-task-row="${esc(t.id)}"><button class="task-card-main" data-task-focus="${esc(t.id)}" aria-pressed="${selectedTask===t.id}" title="${esc(taskLabel(t)+' · '+t.id)}"><span class="task-card-top"><small class="task-number">${String(order).padStart(2,'0')}</small>${badge(t.status)}${taskChanges.has(t.id)?'<span data-change-mark>已调整</span>':''}</span><span class="task-name">${esc(taskLabel(t))}</span>${nodeAxesHTML(run,t.spec.node,taskImplementation(run,t,attempt),null)}<span class="task-summary">${esc(taskSummary(item)||(['fault','stale'].includes(t.status)?'查看失败详情 →':'等待结果'))}</span><small class="task-card-time">${esc([item.round,item.started===null&&['skipped','cancelled'].includes(t.status)?'未执行':taskTime(item.started)].filter(Boolean).join(' · '))}</small></button><div class="task-card-actions"><button data-task-result="${esc(t.id)}">查看结果</button>${flowDecisionButtons(t,true)}${agent?`<button data-agent-session="${esc(attempt.id)}" ${['completed','terminated','continued'].includes(run.status)&&!active?'disabled title="Run 已结束，可查看结果与会话记录"':''}>${active?'打开会话':'恢复会话'}</button>`:''}</div></article>`;
+  return `<article class="process-task ${selectedTask===t.id?'picked':''}" data-status="${esc(t.status)}" data-task-focus="${esc(t.id)}" data-task-row="${esc(t.id)}"><button class="task-card-main" data-task-focus="${esc(t.id)}" aria-pressed="${selectedTask===t.id}" title="${esc(taskLabel(t)+' · '+t.id)}"><span class="task-card-top"><small class="task-number">${String(order).padStart(2,'0')}</small>${taskBadge(item)}${taskChanges.has(t.id)?'<span data-change-mark>已调整</span>':''}</span><span class="task-name">${esc(taskLabel(t))}</span><span class="task-summary">${esc(taskSummary(item))}</span><small class="task-card-time">${esc([item.round,item.started===null&&['skipped','cancelled'].includes(t.status)?'未执行':taskTime(item.started)].filter(Boolean).join(' · '))}</small></button><div class="task-card-actions"><button data-task-result="${esc(t.id)}">查看结果</button>${flowDecisionButtons(t,true)}${agent?`<button data-agent-session="${esc(attempt.id)}" ${['completed','terminated','continued'].includes(run.status)&&!active?'disabled title="Run 已结束，可查看结果与会话记录"':''}>${active?'打开会话':'恢复会话'}</button>`:''}</div></article>`;
 }
 function taskDependencyGraph(items){
   const graph=TaskHistory.businessGraph(run,items);items=graph.items;
@@ -71,7 +119,7 @@ function taskDependencyGraph(items){
   const links=graph.links,parents=id=>links.filter(e=>e.to===id).map(e=>e.from);
   const ids=new Set(items.map(x=>x.tasks.id)),levels=new Map(),pending=new Map(items.map(x=>[x.tasks.id,x]));
   while(pending.size){let moved=false;for(const [id,item] of pending){const deps=parents(item.tasks.id).filter(x=>ids.has(x));if(deps.every(x=>levels.has(x))){levels.set(id,deps.length?1+Math.max(...deps.map(x=>levels.get(x))):0);pending.delete(id);moved=true;}}if(!moved){for(const id of pending.keys())levels.set(id,0);break;}}
-  const columns=[],positions=new Map(),cardWidth=224,cardHeight=250,gap=28;
+  const columns=[],positions=new Map(),cardWidth=224,cardHeight=174,gap=28;
   for(const item of items)(columns[levels.get(item.tasks.id)]??=[]).push(item);
   const height=Math.max(1,...columns.map(c=>c.length))*(cardHeight+gap)+48;
   columns.forEach((column,col)=>column.forEach((item,row)=>positions.set(item.tasks.id,{x:28+col*320,y:40+(height-80-column.length*(cardHeight+gap)+gap)/2+row*(cardHeight+gap)})));
@@ -97,7 +145,7 @@ function taskDependencyGraph(items){
   }
   const paths=links.filter(e=>positions.has(e.from)&&positions.has(e.to)).map(e=>{const active=selectedTask===e.from||selectedTask===e.to;return `<path class="${e.kind} ${active?'related':''}" data-edge-kind="${e.kind}" data-edge-from="${esc(e.from)}" data-edge-to="${esc(e.to)}" d="${edgePath(e.from,e.to)}" marker-end="url(#task-arrow-${e.kind})"><title>${esc(e.kind==='recovery'?'这些异常触发了该兜底任务':e.kind==='planning'?'此任务执行时明确安排了后续任务':'真实结果或执行先后依赖')}</title></path>`;}).join('');
 
-  return `<div class="graph-tools"><span>实际任务关系 <span class="muted">· 蓝色依赖 / 紫色安排 / 红色异常来源</span><small class="node-axis-legend">形状图标＝执行者 · 边框标记＝推进方式 · 状态徽标＝运行状态</small></span><div><button data-graph-zoom="out" aria-label="缩小依赖图">−</button><span id="graph-scale"></span><button data-graph-zoom="in" aria-label="放大依赖图">＋</button><button data-graph-zoom="fit">适应画布</button></div></div><div class="dependency-scroll"><div class="process-extent"><div class="process-canvas" style="width:${width}px;height:${height}px"><svg width="${width}" height="${height}" aria-hidden="true"><defs>${['dependency','planning','recovery'].map(kind=>`<marker id="task-arrow-${kind}" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7" style="fill:${kind==='recovery'?'#bd705f':kind==='planning'?'#9564cf':'#7293bb'}"/></marker>`).join('')}</defs><g class="dependency-lines">${paths}</g></svg>${items.map(item=>{const p=positions.get(item.tasks.id);return `<div style="position:absolute;left:${p.x}px;top:${p.y}px;width:${cardWidth}px">${taskCard(item)}</div>`;}).join('')}</div></div></div>`;
+  return `<div class="graph-tools"><span>实际任务关系 <span class="muted">· 蓝色依赖 / 紫色安排 / 红色异常来源</span></span><div><button data-graph-zoom="out" aria-label="缩小依赖图">−</button><span id="graph-scale"></span><button data-graph-zoom="in" aria-label="放大依赖图">＋</button><button data-graph-zoom="fit">适应画布</button></div></div><div class="dependency-scroll"><div class="process-extent"><div class="process-canvas" style="width:${width}px;height:${height}px"><svg width="${width}" height="${height}" aria-hidden="true"><defs>${['dependency','planning','recovery'].map(kind=>`<marker id="task-arrow-${kind}" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7" style="fill:${kind==='recovery'?'#bd705f':kind==='planning'?'#9564cf':'#7293bb'}"/></marker>`).join('')}</defs><g class="dependency-lines">${paths}</g></svg>${items.map(item=>{const p=positions.get(item.tasks.id);return `<div style="position:absolute;left:${p.x}px;top:${p.y}px;width:${cardWidth}px">${taskCard(item)}</div>`;}).join('')}</div></div></div>`;
 }
 let graphScale=null,graphRun=null;
 function sizeTaskGraph(mode){
@@ -112,10 +160,8 @@ window.addEventListener('resize',()=>sizeTaskGraph());
 function taskError(attempt){
   if(!attempt?.error)return '';
   const raw=String(attempt.error);
-  const summary=attempt.failure_kind==='command_start'?'命令启动配置错误':attempt.failure_kind==='agent_command'?'Agent 命令异常':attempt.observation_error?'监控异常，外部工作状态未知':raw.includes('Agent exited without sealing')?'Agent 未成功提交结果就退出了。':raw.includes('Agent exited without calling finish')?'Agent 退出前未释放操作权。':'本次执行未能成功完成。';
-  const advice=attempt.failure_kind?`请核对命令、目录及 Agent 信任/登录配置；这不是外部业务失败的证明。工作目录：${attempt.implementation.cwd||'平台进程工作目录'}`:attempt.observation_error?'检查已停止，保留原外部任务，不自动重提。':'查看原始错误，核对本次执行和工具回执。';
-  const route=run.tasks[attempt.task_id]?.origin.fallback?'<p class="small muted">兜底 Agent 本次未完成；按现有恢复规则处理，连续失败三次后暂停并通知。</p>':'<div class="fallback-summary">'+fallbackSummary(run,run.settings.fallback_node,run.settings.bindings)+'</div>';
-  return `<section class="task-error" role="note"><strong>${esc(summary)}</strong><p>${esc(advice)}</p><details><summary>原始错误与证据路径</summary><pre>${esc(raw)}</pre></details></section>${attempt.status==='fault'?route:''}`;
+  const summary=attempt.failure_kind==='command_start'?'命令启动配置错误':attempt.failure_kind==='agent_command'?'Agent 命令异常':attempt.observation_error?'监控异常，外部工作状态未知':raw.includes('Agent exited without sealing')?'Agent 未成功提交结果就退出了。':raw.includes('Agent exited without calling finish')?'Agent 退出前未释放操作权。':failureSummary(raw);
+  return `<section class="task-error" role="note"><strong>${esc(summary)}</strong><details><summary>原始错误与证据路径</summary><pre>${esc(raw)}</pre></details></section>`;
 }
 function resultWithSchema(value,schema={},attempt,port,parts=[]){
   if(schema.format==='file'&&typeof value==='string'&&attempt){const url=`/api/runs/${encodeURIComponent(run.id)}/artifact?execution=${encodeURIComponent(attempt.id)}&output=${encodeURIComponent(port)}&path=${encodeURIComponent(JSON.stringify(parts))}`;return `${/\.(png|jpe?g|gif|webp)$/i.test(value)?`<img class="result-image" src="${esc(url)}" alt="${esc(port)}" loading="lazy">`:''}<a class="button" href="${esc(url)}" target="_blank" rel="noopener">查看文件 · ${esc(value)}</a>`;}
@@ -138,27 +184,90 @@ function taskFlowHTML(item){
 function taskRevisionText(value){return value==null?'修订未记录':'修订 '+value;}
 function taskDetails(item){
   if(!item)return '<p class="empty-inline">选择任务，查看结果或调整后续工作。</p>';
-  const t=item.tasks,node=run.loop_definition.nodes[t.spec.node],attempt=item.attempts.find(e=>e.id===selectedAttempt)||item.attempts.at(-1),editable=run.status!=='continued'&&!t.execution_id&&['planned','blocked','ready','held'].includes(t.status),ended=['completed','terminated','continued'].includes(run.status);
+  const t=item.tasks,attempt=item.attempts.find(e=>e.id===selectedAttempt)||item.attempts.at(-1),editable=run.status!=='continued'&&!t.execution_id&&['planned','blocked','ready','held'].includes(t.status),ended=['completed','terminated','continued'].includes(run.status);
+  const facts=taskReadout(item,attempt);
   const edits=run.history.filter(h=>h.detail?.tasks===t.id&&(h.detail.before||h.kind==='planned'));
-  return `<div class="task-detail-heading"><h2>${esc(taskLabel(t))}</h2>${badge(t.status)}</div><p class="task-detail-id">${esc(t.id)} · <span data-task-revision>${esc(taskRevisionText(t.revision))}</span></p><p class="small muted">所属任务：${t.parent_id?`<button class="text-button" data-task-focus="${esc(t.parent_id)}">${esc(taskLabel(run.tasks[t.parent_id]))}</button>`:'顶层安排'}</p><details class="task-instructions"><summary>任务说明</summary><p class="small muted">${esc(node.instructions)}</p></details><div class="toolbar"><button data-task-assistance="${esc(t.id)}">查看外援请求</button>${editable&&!ended?`<button data-task-cancel="${esc(t.id)}">取消任务</button>`:''}${(['fault','stale','cancelled','waiting_user','retrying'].includes(t.status)||attempt?.observation_error)&&!ended?`<button data-task-retry="${esc(t.id)}">${attempt?.observation_error?'恢复监控':'重试任务'}</button>`:''}</div>
-  ${attempt?.status==='waiting'&&['timer','event','loop'].includes(attempt.implementation.kind)&&!ended?`<button data-task-cancel="${esc(t.id)}">取消等待</button>`:''}${t.assistance_wait?'<p class="small muted">正在等待外援回复；等待结束后继续当前任务。</p>':''}${attempt?.communication_state?`<p class="small muted">群组执行：${esc(communicationStates[attempt.communication_state]||attempt.communication_state)}</p>`:''}${flowDecisionDetails(t)}${taskFlowHTML(item)}<section class="task-execution"><h3>执行记录 · ${item.attempts.length} 次</h3><p class="small muted">重试记录在同一任务下；每次保留当时的参数、实现和状态变化。</p>${item.attempts.length?`<label>执行尝试<select id="task-attempt">${item.attempts.map(e=>`<option value="${esc(e.id)}" ${e.id===attempt?.id?'selected':''}>第 ${e.attempt} 次 · ${esc(taskRevisionText(e.task_revision))} · ${esc(labels[e.status]||e.status)} · ${taskTime(TaskHistory.startTime(e))}${Object.hasOwn(e,'started_at')?'':' · 历史派发时间'}</option>`).join('')}</select></label>`:''}${attempt?.implementation.kind==='agent'&&(attempt.implementation.command||attempt.communication_id)?`<button data-open-terminal="${esc(attempt.id)}">${attempt.implementation.terminal?'打开交互终端':'查看实时输出'}</button>`:''}${attempt?.implementation.kind==='agent'&&!ended?`<button data-agent-session="${esc(attempt.id)}">${attempt.worker_active?'打开会话':'恢复会话'}</button>`:''}${promptHistory(attempt)}${taskError(attempt)}<h3>结果</h3>${Object.entries(attempt?.outputs || {}).map(([port,v])=>`<section class="result-section"><h4>${esc(run.loop_definition.records[node.outputs[port]?.record_type]?.title || port)}</h4>${resultWithSchema(v,run.loop_definition.records[node.outputs[port]?.record_type] || {},attempt,port)}</section>`).join('') || (t.status==='skipped'?'<p class="muted">历史任务已跳过，没有提交结果。</p>':'<p class="muted">尚未提交结果</p>')}
-  ${waitDetails(attempt)}${executionLifecycle(attempt)}<h3>输入与来源</h3>${Object.entries(attempt?.inputs || {}).map(([port,value])=>`<section><h4>${esc(node.inputs[port]?.title || port)}</h4>${resultView(value)}${sourceLinks(attempt.sources?.[port])}</section>`).join('') || resultView(t.spec.inputs)}
+  return `<div class="task-detail-heading"><h2>${esc(taskLabel(t))}</h2>${taskBadge(item)}</div><p class="small muted">${esc([item.round,t.spec.ref].filter(Boolean).join(' · '))}</p>
+    ${facts.length?`${attempt.status==='completed'&&facts[0].source==='progress'?'<small class="muted">最后一次进度回报</small>':''}<dl class="node-facts">${facts.map(f=>`<div><dt>${esc(f.label)}</dt><dd>${esc(f.value)} ${esc(f.unit||'')}</dd></div>`).join('')}</dl>`:''}
+    ${taskError(attempt)}${taskWaitReasons(t)}<div class="toolbar">${item.attempts.some(e=>Object.keys(e.outputs||{}).length)?`<button data-task-result="${esc(t.id)}">查看结果</button>`: ''}<button data-task-assistance="${esc(t.id)}">查看外援请求</button>${editable&&!ended?`<button data-task-cancel="${esc(t.id)}">取消任务</button>`:''}${(['fault','stale','cancelled','waiting_user','retrying'].includes(t.status)||attempt?.observation_error)&&!ended?`<button data-task-retry="${esc(t.id)}">${attempt?.observation_error?'恢复监控':'重试任务'}</button>`:''}</div>
+  ${attempt?.status==='waiting'&&['timer','event','loop'].includes(attempt.implementation.kind)&&!ended?`<button data-task-cancel="${esc(t.id)}">取消等待</button>`:''}${t.assistance_wait?'<p class="small muted">正在等待外援回复；等待结束后继续当前任务。</p>':''}${attempt?.communication_state?`<p class="small muted">群组执行：${esc(communicationStates[attempt.communication_state]||attempt.communication_state)}</p>`:''}<section class="task-execution"><h3>执行记录 · ${item.attempts.length} 次</h3>${item.attempts.length>1?`<label>执行尝试<select id="task-attempt">${item.attempts.map(e=>`<option value="${esc(e.id)}" ${e.id===attempt?.id?'selected':''}>第 ${e.attempt} 次 · ${esc(taskRevisionText(e.task_revision))} · ${esc(labels[e.status]||e.status)} · ${taskTime(TaskHistory.startTime(e))}${Object.hasOwn(e,'started_at')?'':' · 历史派发时间'}</option>`).join('')}</select></label>`:''}${attempt?.implementation.kind==='agent'&&(attempt.implementation.command||attempt.communication_id)?`<button data-open-terminal="${esc(attempt.id)}">${attempt.implementation.terminal?'打开交互终端':'查看实时输出'}</button>`:''}${attempt?.implementation.kind==='agent'&&!ended?`<button data-agent-session="${esc(attempt.id)}">${attempt.worker_active?'打开会话':'恢复会话'}</button>`:''}${waitDetails(attempt)}<details><summary>执行诊断与来源</summary><p class="task-detail-id">${esc(t.id)} · <span data-task-revision>${esc(taskRevisionText(t.revision))}</span></p>${executionLifecycle(attempt)}${promptHistory(attempt)}${flowDecisionDetails(t)}${taskFlowHTML(item)}<h3>输入与来源</h3>${Object.entries(attempt?.inputs || {}).map(([port,value])=>`<section><h4>${esc(run.loop_definition.nodes[t.spec.node].inputs[port]?.title || port)}</h4>${resultView(value)}${sourceLinks(attempt.sources?.[port])}</section>`).join('') || resultView(t.spec.inputs)}
   <h3>当前前置任务</h3>${item.dependencies.map(id=>`<button class="text-button" data-task-focus="${esc(id)}">${esc(taskLabel(run.tasks[id]))}</button>`).join(' ')||'<span class="muted">无</span>'}
   <h3>${attempt?'所选执行的参数与实现':'当前任务的参数与实现'}</h3>${resultView(attempt?attempt.parameters||{}:t.spec.parameters||{})}<p>${esc(attempt?(attempt.implementation_id||'历史实现标识未记录'):(t.spec.implementation||'沿用运行默认实现'))}</p>
   ${attempt?.task_spec?`<details><summary>本次执行采用的任务安排 · ${esc(taskRevisionText(attempt.task_revision))}</summary>${resultView(attempt.task_spec)}</details>`:''}${attempt&&attempt.task_revision!==t.revision?`<details><summary>当前任务安排 · ${esc(taskRevisionText(t.revision))}</summary>${resultView(t.spec)}</details>`:''}
-  </section><h3>安排与修改</h3>${edits.map(h=>`<details><summary>${esc(taskTime(h.at))} · ${esc(h.message)} · ${h.detail.before?esc(taskRevisionText(h.detail.before_revision))+' → ':''}${esc(taskRevisionText(h.detail.after_revision))}</summary>${h.detail.actor?`<p class="small muted">操作者：${esc(({user:'用户',interactive:'持权操作者',background:'后台 Agent',engine:'Engine'})[h.detail.actor.kind]||h.detail.actor.kind)}${h.detail.actor.execution_id?' · '+esc(h.detail.actor.execution_id):''}</p>`:''}${h.detail.before?`<p>修改前</p>${resultView(h.detail.before)}`:''}<p>修改后</p>${resultView(h.detail.after)}</details>`).join('')||'<p class="muted">没有额外修改记录</p>'}
-  <details><summary>原始记录</summary><pre>${esc(pretty({task:t,execution:attempt}))}</pre></details>`;
+  <h3>安排与修改</h3>${edits.map(h=>`<details><summary>${esc(taskTime(h.at))} · ${esc(h.message)} · ${h.detail.before?esc(taskRevisionText(h.detail.before_revision))+' → ':''}${esc(taskRevisionText(h.detail.after_revision))}</summary>${h.detail.actor?`<p class="small muted">操作者：${esc(({user:'用户',interactive:'持权操作者',background:'后台 Agent',engine:'Engine'})[h.detail.actor.kind]||h.detail.actor.kind)}${h.detail.actor.execution_id?' · '+esc(h.detail.actor.execution_id):''}</p>`:''}${h.detail.before?`<p>修改前</p>${resultView(h.detail.before)}`:''}<p>修改后</p>${resultView(h.detail.after)}</details>`).join('')||'<p class="muted">没有额外修改记录</p>'}
+  <details><summary>原始记录</summary><pre>${esc(pretty({task:t,execution:attempt}))}</pre></details></details></section>`;
 }
 function sourceLinks(source){return (Array.isArray(source)?source:[source]).filter(Boolean).map(s=>{const e=run.executions.find(e=>e.id===s.execution);return e?`<button class="text-button" data-source-execution="${esc(e.id)}">来自 ${esc(taskLabel(run.tasks[e.task_id]))} · v${esc(s.revision)}</button>`:`<small>${esc(s.run_input?'初始输入 '+s.run_input:s.settings?'设置 '+s.settings:'直接输入')}</small>`;}).join(' ');}
+let overviewGroup=null,overviewLimit=8,overviewRound='';
+function nodeOverview(items){
+  const groups=new Map();
+  for(const item of items){
+    const node=item.tasks.spec.node;
+    if(!groups.has(node))groups.set(node,[]);
+    groups.get(node).push(item);
+  }
+  const priority=t=>['fault','stale','waiting_user','approval'].includes(t.status)?0:
+    ['completed','skipped','cancelled'].includes(t.status)?2:1;
+  const button=(item,label)=>`<button class="node-record" aria-pressed="${selectedTask===item.tasks.id}" data-task-row="${esc(item.tasks.id)}" data-task-focus="${esc(item.tasks.id)}">
+    <span><strong>${esc(label)}</strong><small>${esc(taskSummary(item))}</small></span>${taskBadge(item)}</button>`;
+  const urgency=group=>group.reduce((best,item)=>Math.min(best,priority(item.tasks)),2);
+  const ordered=[...groups].sort((a,b)=>urgency(a[1])-urgency(b[1]));
+  return '<div class="node-overview">'+ordered.map(([node,group])=>{
+    if(group.length===1)return button(group[0],taskLabel(group[0].tasks));
+    const counts=new Map();
+    for(const item of group){const label=taskStatusLabel(item);counts.set(label,(counts.get(label)||0)+1);}
+    const statuses=[...counts].map(([status,n])=>n+' '+status).join(' · ');
+    const representative=[...group].sort((a,b)=>priority(a.tasks)-priority(b.tasks)||b.index-a.index)[0];
+    const note=taskSummary(representative);
+    const open=node===overviewGroup;
+    let records='';
+    if(open){
+      const sorted=[...group].sort((a,b)=>priority(a.tasks)-priority(b.tasks)||b.index-a.index);
+      records=sorted.slice(0,overviewLimit).map(i=>button(i,[i.round,i.tasks.spec.ref||'任务 '+taskNumbers.get(i.tasks.id)].filter(Boolean).join(' · '))).join('');
+      if(group.length>overviewLimit)records+='<button class="text-button" data-more-instances>查看更多执行</button>';
+    }
+    return `<button class="node-record" data-overview-group="${esc(node)}" aria-expanded="${open}"><span><strong>${esc(taskLabel(group[0].tasks))}</strong>${note?`<small>${esc(representative.tasks.spec.ref||'')} · ${esc(note)}</small>`: ''}</span>
+      <span>${esc(statuses)}　${open?'收起':'展开'}</span></button>${open?`<div class="node-instances">${records}</div>`:''}`;
+  }).join('')+'</div>';
+}
+function roundOverview(items){
+  const groups=TaskHistory.groups([...items].sort((a,b)=>(a.tasks.created_at||0)-(b.tasks.created_at||0)||a.index-b.index));
+  if(groups.length<2 || overviewRound)return nodeOverview(items);
+  const current=groups.filter(g=>g.round).at(-1);
+  function roundCard(group){
+    const id=group.round||'';
+    const open=openProgressRound===null?group===current:openProgressRound===id;
+    const done=group.items.filter(i=>i.tasks.status==='completed');
+    const faults=group.items.filter(i=>['fault','stale','waiting_user'].includes(i.tasks.status));
+    const last=[...done].sort((a,b)=>b.completed-a.completed).find(i=>taskReadout(i).some(f=>f.source==='outputs'));
+    const summary=[done.length+'/'+group.items.length+' 项完成',faults.length?faults.length+' 项需关注':'',last?[last.tasks.spec.ref||taskLabel(last.tasks),taskSummary(last)].join(' · '):''].filter(Boolean).join(' · ');
+    return `<section class="progress-round"><button data-progress-round="${esc(id)}" aria-expanded="${open}"><strong>${esc(id||'未标注轮次')}${group===current?' · 最新轮次':''}</strong><span>${esc(summary)}　${open?'⌄':'›'}</span></button>${open?nodeOverview(group.items):''}</section>`;
+  }
+  const history=groups.filter(g=>g!==current).reverse();
+  const olderRounds=history.filter(g=>g.round).length;
+  const historyLabel=olderRounds?'历史轮次 · '+olderRounds+' 轮'+(history.some(g=>!g.round)?' · 含未标注任务':''):'未标注轮次的任务';
+  const expanded=history.some(g=>openProgressRound===(g.round||'')) || document.querySelector('[data-round-history][open]')?.dataset.roundHistory===run.id;
+  return roundCard(current)+`<details class="round-history" data-round-history="${esc(run.id)}" ${expanded?'open':''}><summary>${esc(historyLabel)}</summary>${history.map(roundCard).join('')}</details>`;
+}
+let openProgressRound=null;
+function routeAuditHTML(){return `${run.history.filter(h=>h.kind==='plan_built'&&h.detail?.omitted?.length).map(h=>`<details class="omitted-steps"><summary>未安排的步骤 · ${esc(h.detail.name)} · ${esc(taskTime(h.at))}</summary>${omittedStepsHTML(h.detail.omitted,h.detail.name)}</details>`).join('')}${run.history.filter(h=>h.kind==='route_fired'||h.kind==='route_skipped').map(h=>`<details class="omitted-steps"><summary>${h.kind==='route_skipped'?'路由已跳过':'事件触发'} · ${esc(h.detail.route_id)} → ${esc(h.detail.flow_agent?'内置流程 Agent':h.detail.plan)} · ${h.detail.batches.reduce((n,b)=>n+b.task_ids.length,0)} 项任务</summary><p>来源：<button class="text-button" data-task-focus="${esc(h.detail.task_id)}">${esc(taskLabel(run.tasks[h.detail.task_id]))}</button> · ${esc(h.detail.event)}</p>${resultView(h.detail)}</details>`).join('')}`;}
+document.addEventListener('toggle',event=>{
+  const panel=event.target;
+  if(panel.matches?.('.route-audit[open]') && panel.children.length===1 && panel.dataset.auditRun===run?.id)panel.insertAdjacentHTML('beforeend',routeAuditHTML());
+},true);
 function renderTaskHistory(){
   if(run.superseded_by && !Object.keys(run.tasks).length)return '<p class="empty-inline">这次历史运行没有节点记录。</p>';
   requestAnimationFrame(()=>sizeTaskGraph());
   taskChanges=new Map(run.history.filter(h=>h.detail?.before&&h.detail?.tasks).map(h=>[h.detail.tasks,h]));
-  const all=TaskHistory.rows(run),business=all.filter(i=>!i.tasks.origin?.flow_agent);taskNumbers=new Map((taskOrder==='graph'?business:all).map((item,index)=>[item.tasks.id,index+1]));if(!all.some(i=>i.tasks.id===selectedTask)){selectedTask=all.find(i=>['executing','fault','blocked','ready'].includes(i.tasks.status))?.tasks.id||all[0]?.tasks.id;selectedAttempt=null;}
+  const all=TaskHistory.rows(run),business=all.filter(i=>!i.tasks.origin?.flow_agent);taskNumbers=new Map((taskOrder==='graph'?business:all).map((item,index)=>[item.tasks.id,index+1]));if(!all.some(i=>i.tasks.id===selectedTask)){selectedTask=taskOrder==='overview'?null:all.find(i=>['executing','fault','blocked','ready'].includes(i.tasks.status))?.tasks.id||all[0]?.tasks.id;selectedAttempt=null;}
   const items=all.filter(i=>(!filterNode||i.tasks.spec.node===filterNode)&&(!taskStatus||i.tasks.status===taskStatus)&&(!taskSearch||(taskLabel(i.tasks)+' '+i.tasks.id+' '+(i.round||'')).toLowerCase().includes(taskSearch.toLowerCase())));
-  const groups=taskOrder==='round'?TaskHistory.groups(items):[{round:'已开始',items:items.filter(i=>i.started!==null)},{round:'尚未开始',items:items.filter(i=>i.started===null&&!['completed','skipped','cancelled','stale'].includes(i.tasks.status))},{round:'未执行且已结束',items:items.filter(i=>i.started===null&&['completed','skipped','cancelled','stale'].includes(i.tasks.status))}];
-  return `<div class="task-heading"><div><h2>任务关系与推进 </h2><p class="muted small">${business.length} 项业务任务${all.length>business.length?' · '+(all.length-business.length)+' 次流程决策':''} · ${business.filter(i=>i.tasks.status==='completed').length} 已完成 · ${business.filter(i=>['fault','stale'].includes(i.tasks.status)).length} 失败 · ${business.filter(i=>i.started===null&&!['completed','skipped','cancelled','stale'].includes(i.tasks.status)).length} 尚未开始${all.some(i=>i.tasks.origin?.flow_agent&&['fault','stale'].includes(i.tasks.status))?' · 流程决策异常 '+all.filter(i=>i.tasks.origin?.flow_agent&&['fault','stale'].includes(i.tasks.status)).length:''}${all.some(i=>i.tasks.status==='skipped')?' · '+all.filter(i=>i.tasks.status==='skipped').length+' 已跳过':''}</p></div><div class="toolbar"></div></div><div class="process-controls"><div class="segmented">${[['graph','任务关系'],['time','时间顺序'],['round','按轮次']].map(([id,label])=>`<button data-task-order="${id}" class="${taskOrder===id?'selected':''}">${label}</button>`).join('')}</div><label class="task-search-label"><span class="sr-only">查找任务</span><input id="task-search" placeholder="查找任务…" type="search" value="${esc(taskSearch)}"></label><label class="task-status-label"><span class="sr-only">任务状态</span><select id="task-status"><option value="">全部状态</option>${[...new Set(all.map(i=>i.tasks.status))].map(s=>`<option value="${esc(s)}" ${taskStatus===s?'selected':''}>${esc(labels[s]||s)}</option>`).join('')}</select></label>${filterNode?'<button id="clear-task-filter">清除节点筛选</button>':''}</div>
-  <div class="process-layout"><section class="process-body">${items.length?(taskOrder==='graph'?taskDependencyGraph(items):groups.map(g=>`<details class="task-group" open><summary>${esc(g.round || '未标注轮次')} · ${g.items.length}</summary><div class="process-list">${g.items.map(taskCard).join('')}</div></details>`).join('')):'<p class="empty-inline">没有符合条件的任务</p>'}</section><aside id="task-detail" class="task-detail">${taskDetails(all.find(i=>i.tasks.id===selectedTask))}</aside></div>${run.history.filter(h=>h.kind==='plan_built'&&h.detail?.omitted?.length).map(h=>`<details class="omitted-steps"><summary>未安排的步骤 · ${esc(h.detail.name)} · ${esc(taskTime(h.at))}</summary>${omittedStepsHTML(h.detail.omitted,h.detail.name)}</details>`).join('')}${run.history.filter(h=>h.kind==='route_fired'||h.kind==='route_skipped').map(h=>`<details class="omitted-steps"><summary>${h.kind==='route_skipped'?'路由已跳过':'事件触发'} · ${esc(h.detail.route_id)} → ${esc(h.detail.flow_agent?'内置流程 Agent':h.detail.plan)} · ${h.detail.batches.reduce((n,b)=>n+b.task_ids.length,0)} 项任务</summary><p>来源：<button class="text-button" data-task-focus="${esc(h.detail.task_id)}">${esc(taskLabel(run.tasks[h.detail.task_id]))}</button> · ${esc(h.detail.event)}</p>${resultView(h.detail)}</details>`).join('')}${loopProgressHTML(run)}`;
+  const rounds=[...new Set(all.map(i=>i.round).filter(Boolean))];
+  const visible=overviewRound?items.filter(i=>i.round===overviewRound):items;
+  const auditOpen=document.querySelector('.route-audit[open]')?.dataset.auditRun===run.id;
+  const groups=[{round:'已开始',items:visible.filter(i=>i.started!==null)},{round:'尚未开始',items:visible.filter(i=>i.started===null&&!['completed','skipped','cancelled','stale'].includes(i.tasks.status))},{round:'未执行且已结束',items:visible.filter(i=>i.started===null&&['completed','skipped','cancelled','stale'].includes(i.tasks.status))}];
+  const nodeCount=new Set(business.map(i=>i.tasks.spec.node)).size;
+  return `<div class="task-heading"><div><h2>节点进度</h2><p class="muted small">${nodeCount} 个业务节点 · ${business.length} 项任务${rounds.length?' · '+rounds.length+' 轮':''}${all.length>business.length?' · '+(all.length-business.length)+' 次流程决策':''}</p></div><div class="toolbar"></div></div><div class="process-controls"><div class="segmented">${[['overview','节点概览'],['graph','完整关系图'],['time','时间顺序']].map(([id,label])=>`<button data-task-order="${id}" class="${taskOrder===id?'selected':''}">${label}</button>`).join('')}</div>${rounds.length?`<label class="task-round-filter"><select id="overview-round" aria-label="筛选轮次"><option value="">全部轮次</option>${rounds.map(r=>'<option value="'+esc(r)+'" '+(r===overviewRound?'selected':'')+'>'+esc(r)+'</option>').join('')}</select></label>`:''}<label class="task-search-label"><span class="sr-only">查找任务</span><input id="task-search" placeholder="查找任务…" type="search" value="${esc(taskSearch)}"></label><label class="task-status-label"><span class="sr-only">任务状态</span><select id="task-status"><option value="">全部状态</option>${[...new Set(all.map(i=>i.tasks.status))].map(s=>`<option value="${esc(s)}" ${taskStatus===s?'selected':''}>${esc(labels[s]||s)}</option>`).join('')}</select></label>${filterNode?'<button id="clear-task-filter">清除节点筛选</button>':''}</div>
+  <div class="process-layout ${taskOrder==='overview'&&!selectedTask?'overview-only':''}"><section class="process-body">${visible.length?(taskOrder==='overview'?roundOverview(visible):taskOrder==='graph'?taskDependencyGraph(visible):groups.filter(g=>g.items.length).map(g=>`<details class="task-group" open><summary>${esc(g.round || '未标注轮次')} · ${g.items.length}</summary><div class="process-list">${g.items.map(taskCard).join('')}</div></details>`).join('')):'<p class="empty-inline">没有符合条件的任务</p>'}</section><aside id="task-detail" class="task-detail" ${taskOrder==='overview'&&!selectedTask?'hidden':''}>${taskDetails(all.find(i=>i.tasks.id===selectedTask))}</aside></div><details class="route-audit" data-audit-run="${esc(run.id)}" ${auditOpen?'open':''}><summary>推进记录</summary>${auditOpen?routeAuditHTML():''}</details>`;
 }
 const editDialog=document.createElement('dialog');editDialog.id='task-edit-dialog';editDialog.innerHTML='<div class="dialog-heading"><h2 id="task-edit-title"></h2><button class="close-dialog" aria-label="关闭">×</button></div><div id="task-edit-error" role="alert"></div><form id="task-edit-form"><div id="task-edit-fields"></div><div class="dialog-tasks"><button type="button" class="close-dialog">取消</button><button type="submit" class="primary" id="task-edit-submit">确认操作</button></div></form>';document.body.append(editDialog);
 function openTaskEdit(kind,id=null){
@@ -175,15 +284,24 @@ function omittedStepsHTML(items,planName){return items.length?`<section class="o
 function collectTaskEdit(){return [{tool:'change_task',arguments:{task_id:taskEdit.id,operation:taskEdit.kind,reason:$('task-edit-reason').value.trim()||$('task-edit-title').textContent}}];}
 document.addEventListener('click',event=>safely(async()=>{
   const el=event.target.closest('button');if(!el)return;const d=el.dataset;
-  if(d.taskFocus||d.sourceExecution){selectedTask=d.taskFocus||run.executions.find(e=>e.id===d.sourceExecution)?.task_id;selectedAttempt=d.sourceExecution||null;const scroll=document.querySelector('.dependency-scroll'),position=scroll?{left:scroll.scrollLeft,top:scroll.scrollTop}:null;inspectSignature='';renderInspect();requestAnimationFrame(()=>{if(position)document.querySelector('.dependency-scroll')?.scrollTo(position);});}
+  if(el.hasAttribute('data-progress-round')){openProgressRound=el.getAttribute('aria-expanded')==='true'?undefined:d.progressRound;overviewGroup=null;selectedTask=null;inspectSignature='';renderInspect();return;}
+  if(d.focusGroup){
+    taskOrder='overview';activeTab='task-history';overviewGroup=d.focusGroup;overviewLimit=8;overviewRound='';openProgressRound=d.focusRound;taskStatus='';taskSearch='';filterNode=null;selectedTask=null;
+    inspectSignature='';renderInspect();
+    document.querySelector('.node-record[aria-expanded="true"]')?.scrollIntoView({block:'center'});return;
+  }
+  if(d.overviewGroup){overviewGroup=overviewGroup===d.overviewGroup?null:d.overviewGroup;overviewLimit=8;inspectSignature='';renderInspect();return;}
+  if(el.hasAttribute('data-more-instances')){overviewLimit+=8;inspectSignature='';renderInspect();return;}
+  if(d.taskFocus||d.sourceExecution){selectedTask=d.taskFocus||run.executions.find(e=>e.id===d.sourceExecution)?.task_id;selectedAttempt=d.sourceExecution||null;openProgressRound=run.tasks[selectedTask]?.spec.round||'';const scroll=document.querySelector('.dependency-scroll'),position=scroll?{left:scroll.scrollLeft,top:scroll.scrollTop}:null;inspectSignature='';renderInspect();requestAnimationFrame(()=>{if(position)document.querySelector('.dependency-scroll')?.scrollTo(position);if(taskOrder==='overview' && window.matchMedia('(max-width:800px)').matches)$('task-detail')?.scrollIntoView({block:'start'});});}
   else if(d.graphZoom)sizeTaskGraph(d.graphZoom);
-  else if(d.taskOrder){taskOrder=d.taskOrder;inspectSignature='';renderInspect();}
+  else if(d.taskOrder){taskOrder=d.taskOrder;if(taskOrder==='overview'){selectedTask=null;selectedAttempt=null;}inspectSignature='';renderInspect();}
   else if(d.taskCancel)openTaskEdit('cancel',d.taskCancel);
   else if(d.taskRetry)openTaskEdit('retry',d.taskRetry);
   else if(el.id==='clear-task-filter'){filterNode=null;inspectSignature='';renderInspect();}
 }));
 document.addEventListener('change',event=>{const el=event.target;
   if(el.id==='task-status'||el.id==='task-search'){taskStatus=$('task-status').value;taskSearch=$('task-search').value;inspectSignature='';renderInspect();}
+  if(el.id==='overview-round'){overviewRound=el.value;overviewGroup=null;selectedTask=null;inspectSignature='';renderInspect();}
   if(el.id==='task-attempt'){selectedAttempt=el.value;$('task-detail').innerHTML=taskDetails(TaskHistory.rows(run).find(i=>i.tasks.id===selectedTask));}
 });
 document.addEventListener('submit',event=>{

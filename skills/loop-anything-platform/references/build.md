@@ -72,6 +72,8 @@ Verify relationships separately from execution states. `after` delays already-cr
 
 ## Declare events and parameter sources
 
+Choose each node’s user-facing progress and result when designing its reports. Use the optional `put_node.readout` field described in [the node reference](build-reference.md).
+
 Use put_node.routes for event → plan → parameter origin. For example, research.completed maps outputs.requests to plan experiments; each expands experiments and collect aggregates them. Runtime submits `{requests:[PARAMETER_SET_1,PARAMETER_SET_2]}` and the platform generates Tasks, dependencies, and output IDs. An aggregation node can use when to decide whether the same rules should create another round.
 
 Route mapping can bind candidates, Task parameters, and inputs while retaining plan conditions, omission, batching, and collection. Timers or matching external-event nodes report completed and trigger routes too. Authors specify source output schemas, conditions, and destination plans; business decisions are not inferred. See [event-driven generation](build-reference.md#event-triggered-task-generation).

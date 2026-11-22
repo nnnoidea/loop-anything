@@ -10,12 +10,14 @@ withPlatform(async ({url, page, startRun, api}) => {
     await page.goto(url + '/#work/timelines/' + turn.timeline_id);
     await page.locator('#timeline-content .timeline-run-link').click();
     await page.locator('[data-task-row="' + task + '"]').click();
-    await page.locator('#task-detail').getByText(value, {exact: true}).waitFor();
-    const file = page.locator('#task-detail').getByRole('link', {name: 'report.md'});
+    await page.locator('#task-detail [data-task-result]').click();
+    await page.locator('#task-result-content').getByText(value, {exact: true}).waitFor();
+    const file = page.locator('#task-result-content').getByRole('link', {name: /report\.md/});
     const href = await file.getAttribute('href');
     const result = await page.request.get(new URL(href, url).href);
     assert(result.ok());
     assert.equal(await result.text(), 'Ready');
+    await page.locator('#task-result-close').click();
     await page.goBack();
     await page.locator('#timeline-content .timeline-run-link').waitFor();
     assert((await page.locator('.timeline-intent').innerText()).includes(title));

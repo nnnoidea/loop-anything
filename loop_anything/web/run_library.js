@@ -27,9 +27,23 @@ function runSummaryHTML(row){
   const countText=Object.entries(counts).map(([status,n])=>n+' '+(labels[status]||status)).join(' · ');
   return `<button class="run-item" data-run="${esc(row.id)}"><span class="run-row-main"><strong>${esc(row.title)}</strong><small>${esc(row.loop_name||'Loop')}${row.timeline_id?' · 所属 Timeline：'+esc(row.timeline_title||row.objective||row.timeline_id):''}${row.parent_run_id?' · 子 Run':''}${row.archived_at?' · 已归档':''}</small>${row.user_action?`<span class="work-action-note">等待你处理 · ${esc(row.user_action.label)}</span>`:''}${countText?`<span class="run-count-summary">${esc(countText)}</span>`:''}</span><span class="run-row-status">${row.timeline_id?esc(timelineRunLabel(row.status,row.active_run_id===row.id)):''} ${badge(row.status)}</span><span class="run-row-time"><small>最近活跃</small>${esc(runDate(row.last_activity_at))}</span><span class="row-arrow" aria-hidden="true">›</span></button>${row.child_count?`<details class="run-children" data-run-children="${esc(row.id)}"><summary>子 Run · ${row.child_count}</summary><div class="run-child-list"></div></details>`:''}`;
 }
-function groupedRunsHTML(rows,groups=[]){
+function runHistoryCards(items,fold){
+  if(!fold)return items.map(runSummaryHTML).join('');
+  const history=new Map(),current=[];
+  for(const row of items){
+    if(!row.timeline_id || !row.active_run_id || row.active_run_id===row.id){current.push(row);continue;}
+    const key=row.loop_id||row.loop_name;
+    if(!history.has(key))history.set(key,[]);
+    history.get(key).push(row);
+  }
+  return current.map(runSummaryHTML).join('')+[...history.values()].map(group=>{
+    const first=group[0],id=JSON.stringify([first.created_by,first.loop_id||first.loop_name]);
+    return `<details class="loop-run-history" data-run-history="${esc(id)}"><summary>${esc(first.loop_name||first.loop_id||'Loop')} · 历史 Run ${group.length}</summary>${group.map(runSummaryHTML).join('')}</details>`;
+  }).join('');
+}
+function groupedRunsHTML(rows,groups=[],fold=true){
   const people=new Map();for(const row of rows){const name=row.created_by||'';if(!people.has(name))people.set(name,[]);people.get(name).push(row);}
-  return [...people].map(([name,items])=>`<details class="run-person" data-run-person="${esc(name)}" open><summary>${esc(name||'未署名')} <span>本页 ${items.length} / 共 ${groups.find(g=>g.created_by===name)?.count??items.length}</span></summary>${items.map(runSummaryHTML).join('')}</details>`).join('')||'<p class="small muted">没有匹配的运行。</p>';
+  return [...people].map(([name,items])=>`<details class="run-person" data-run-person="${esc(name)}" open><summary>${esc(name||'未署名')} <span>本页 ${items.length} / 共 ${groups.find(g=>g.created_by===name)?.count??items.length}</span></summary>${runHistoryCards(items,fold)}</details>`).join('')||'<p class="small muted">没有匹配的运行。</p>';
 }
 async function refreshRunLibrary(){
   const serial=++runQuerySerial,args=runFilters(),key=JSON.stringify(args);
@@ -46,11 +60,13 @@ async function refreshRunLibrary(){
   const selector=$('runs-loop'),loop=selector.value;
   const loopHTML='<option value="">全部 Loop</option>'+[...knownRunLoops].map(([id,name])=>`<option value="${esc(id)}">${esc(name)}</option>`).join('');
   if(selector.innerHTML!==loopHTML){selector.innerHTML=loopHTML;selector.value=loop;}
-  const html=groupedRunsHTML(runs,result.groups);
+  const html=groupedRunsHTML(runs,result.groups,args.root_only);
   if(html!==listSignature){
+    const expanded=new Set([...$('run-list').querySelectorAll('[data-run-history][open]')].map(el=>el.dataset.runHistory));
     const closed=new Set([...$('run-list').querySelectorAll('.run-person:not([open])')].map(el=>el.dataset.runPerson));
     const children=new Map([...$('run-list').querySelectorAll('.run-children[open]')].map(el=>[el.dataset.runChildren,el.dataset.childOffset||'0']));
     $('run-list').innerHTML=html;listSignature=html;
+    for(const el of $('run-list').querySelectorAll('[data-run-history]'))el.open=expanded.has(el.dataset.runHistory);
     for(const el of $('run-list').querySelectorAll('.run-person'))if(closed.has(el.dataset.runPerson))el.open=false;
     for(const el of $('run-list').querySelectorAll('.run-children'))if(children.has(el.dataset.runChildren)){el.dataset.childOffset=children.get(el.dataset.runChildren);el.open=true;}
   }

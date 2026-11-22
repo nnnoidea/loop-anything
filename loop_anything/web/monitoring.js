@@ -143,6 +143,45 @@ document.addEventListener('change',event=>{
   refreshMonitorTrends();
 });
 
+function externalMonitorGroups(items){
+  const runs=new Map();
+  for(const item of items){
+    if(!runs.has(item.run_id))runs.set(item.run_id,new Map());
+    const nodes=runs.get(item.run_id);
+    if(!nodes.has(item.node))nodes.set(item.node,[]);
+    nodes.get(item.node).push(item);
+  }
+  function state(e){
+    if(['completed','cancelled','skipped','terminated','fault'].includes(e.status))return labels[e.status]||e.status;
+    if(e.error)return '采集异常';
+    const raw=e.business_status;
+    return ({RUNNING:'运行中',PENDING:'等待中',QUEUED:'排队中',FAILED:'失败',SUCCEEDED:'成功',COMPLETED:'已完成'})[String(raw).toUpperCase()]||raw||labels[e.status]||e.status;
+  }
+  function sample(e){
+    const facts=TaskHistory.readings(e.readout,e);
+    const time=e.sampled_at;
+    const link=routeHash({type:'run',id:e.run_id,task:e.task_id});
+    const identity=[e.round,e.ref||e.external_id||e.task_id].filter(Boolean).join(' · ');
+    const values=facts.map(f=>`<div><dt>${esc(f.label)}</dt><dd>${esc(f.value)}<small>${esc(f.unit||'')}</small></dd></div>`).join('');
+    return `<div class="external-reading"><dl class="node-facts">${values}</dl><div><a href="${esc(link)}" data-route-link>${esc(identity)}</a><small>${esc(state(e))}${time?' · '+esc(runDate(time))+' 回报':''}</small></div></div>`;
+  }
+  let without=0;
+  const cards=Array.from(runs,([id,nodes])=>{
+    const sections=[];
+    for(const [node,list] of nodes){
+      const reported=list.filter(e=>TaskHistory.readings(e.readout,e).length);
+      without+=list.length-reported.length;
+      if(!reported.length)continue;
+      reported.sort((a,b)=>(b.sampled_at||0)-(a.sampled_at||0));
+      const first=reported[0],rest=reported.slice(3);
+      sections.push(`<section><header><strong>${esc(first.label||node)}</strong></header>${reported.slice(0,3).map(sample).join('')}${rest.length?`<details data-external-group="${esc(JSON.stringify([id,node]))}"><summary>其他执行 · ${rest.length}</summary>${rest.map(sample).join('')}</details>`:''}</section>`);
+    }
+    const first=nodes.values().next().value[0];
+    return sections.length?`<article class="monitor-card external-group"><h3>${monitoringRunLink(id,first.run_title)}</h3>${sections.join('')}</article>`:'';
+  }).join('');
+  return cards+(without?`<small class="monitor-empty">${without} 项外部执行尚无指标回报</small>`:'');
+}
+
 function renderMonitoring(){
   if(!monitoringData)return;
   const d=monitoringData;
@@ -160,8 +199,10 @@ function renderMonitoring(){
   $('monitoring-pagination').hidden=d.total_runs<=d.limit;
   $('monitoring-standing').innerHTML=d.monitors.filter(m=>!m.run_id).map(monitorCard).join('')||'<p class="monitor-empty">尚未接入常态监控。用户或团队可以注册自己的资源监控脚本。</p>';
   const instances=d.monitors.filter(m=>m.run_id).map(monitorCard).join('');
-  const external=d.external.map(e=>`<article class="monitor-card"><div>${monitoringRunLink(e.run_id,e.run_title)} · ${esc(e.node)}</div><p class="small muted">Loop 自带监控 · 当前页 Run</p><p class="${e.error?'monitor-warning':''}">${e.error?'采集异常，外部状态待核实':esc(e.business_status||labels[e.status]||e.status)}</p><p class="small">进度与执行记录在对应 Run 中查看。</p></article>`).join('');
-  $('monitoring-instances').innerHTML=instances+external||'<p class="monitor-empty">尚无 Run 监控实例。可在 Run 中使用自带脚本，或实例化已注册的脚本。</p>';
+  const instancesRoot=$('monitoring-instances');
+  const opened=new Set([...instancesRoot.querySelectorAll('[data-external-group][open]')].map(el=>el.dataset.externalGroup));
+  instancesRoot.innerHTML=instances+externalMonitorGroups(d.external)||'<p class="monitor-empty">尚无 Run 监控实例。</p>';
+  for(const el of instancesRoot.querySelectorAll('[data-external-group]'))el.open=opened.has(el.dataset.externalGroup);
   $('monitoring-waits-title').textContent='等待条件 · '+d.waits.length;
   $('monitoring-waits').innerHTML=d.waits.map(w=>`<div class="monitor-wait"><div><strong>${esc(w.message||'等待条件满足后唤醒 Agent')}</strong> <span class="muted">${w.state==='ready'?'条件已满足，待会话处理':'等待中'}</span></div><p>${esc(monitorCondition(w.condition))}</p><p class="small">${Object.entries(w.sources).map(([name,s])=>s.kind==='monitor'?`<button class="monitor-detail-button" data-monitor-detail="${esc(s.id)}">${esc(name)} · 监控</button>`:monitoringRunLink(s.id,name)).join(' · ')} · <button data-work-timeline="${esc(w.timeline_id)}">查看 Timeline</button></p>${w.error?`<p class="monitor-warning small">当前无法判断：${esc(w.error)}</p>`:''}</div>`).join('')||'<p class="muted">当前没有待处理的条件等待。</p>';
   $('monitoring-script-list').innerHTML=d.scripts.length?`<div class="monitor-table-wrap"><table class="monitor-table"><thead><tr><th>脚本定义</th><th>版本</th><th>实例</th></tr></thead><tbody>${d.scripts.map(s=>`<tr><td>${esc(s.description||s.id)}<small>${esc(s.id)}</small></td><td>${s.revision}</td><td>${s.instances}</td></tr>`).join('')}</tbody></table></div>`:'<p class="monitor-empty">脚本库为空。这里不预置通用 GPU 或实验脚本，由用户或团队提供自己的实现。</p>';

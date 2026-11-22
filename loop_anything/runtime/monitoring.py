@@ -40,13 +40,30 @@ def overview(store, offset=0, limit=20):
                         json_extract(t.document,'$.spec.node') AS node,
                         json_extract(e.document,'$.status') AS status,
                         json_extract(e.document,'$.observation_error') AS error,
-                        json_extract(e.document,'$.activity_progress.external_status') AS business_status
+                        coalesce(json_extract(r.document,'$.retained_nodes.'||json_quote(json_extract(t.document,'$.spec.node'))||'.node.label'),
+                                 json_extract(l.document,'$.nodes.'||json_quote(json_extract(t.document,'$.spec.node'))||'.label')) AS label,
+                        coalesce(json_extract(r.document,'$.retained_nodes.'||json_quote(json_extract(t.document,'$.spec.node'))||'.node.readout'),
+                                 json_extract(l.document,'$.nodes.'||json_quote(json_extract(t.document,'$.spec.node'))||'.readout')) AS readout,
+                        json_extract(t.document,'$.spec.round') AS round,
+                        json_extract(t.document,'$.spec.ref') AS ref,
+                        json_extract(e.document,'$.external_id') AS external_id,
+                        json_extract(e.document,'$.activity_progress') AS reading,
+                        json_extract(e.document,'$.activity_progress_at') AS sampled_at,
+                        json_extract(e.document,'$.started_at') AS started_at,
+                        json_extract(e.document,'$.completed_at') AS completed_at
                     FROM timeline_parts t JOIN timeline_parts e ON e.run_id=t.run_id
                         AND e.section='attempts' AND e.item=json_extract(t.document,'$.execution_id')
+                    JOIN runs r ON r.id=t.run_id
+                    LEFT JOIN loop_definitions l ON l.key=json_extract(r.document,'$.loop_key')
                     WHERE t.run_id=? AND t.section='tasks'
                         AND json_extract(e.document,'$.implementation.kind')='external'
                     """,(row[0],)):
-                external.append(dict(observed,run_id=row[0],run_title=run['title']))
+                item=dict(observed,run_id=row[0],run_title=run['title'])
+                reading=json.loads(item.pop('reading') or '{}')
+                item['readout']=json.loads(item['readout'] or '[]')
+                item.update(business_status=reading.get('external_status'),phase=reading.get('phase'),
+                            progress=reading.get('progress'),metrics=reading.get('metrics'))
+                external.append(item)
             run_rows.append(dict(id=row[0],title=run['title'],status=run['status'],attention_count=attention,
                                  timeline_id=run.get('timeline_id'),superseded_by=run.get('superseded_by'),
                                  last_activity_at=run.get('last_activity_at',run.get('created_at'))))

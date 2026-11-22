@@ -19,8 +19,8 @@
 <div class="monitor-toolbar"><div class="monitor-tabs" role="tablist" aria-label="监控视图"><button id="monitor-overview-tab" role="tab" aria-selected="true" aria-controls="monitoring-overview" data-monitor-tab="overview" class="active">总览</button><button id="monitor-scripts-tab" role="tab" aria-selected="false" aria-controls="monitoring-scripts" data-monitor-tab="scripts">脚本库</button></div><div class="monitor-tools"><span class="muted" id="monitoring-updated">读取中…</span><button id="monitoring-refresh">刷新</button></div></div>
 <div id="monitoring-overview" role="tabpanel" aria-labelledby="monitor-overview-tab">
 <section class="monitor-section"><h2>常态监控</h2><div id="monitoring-standing" class="monitor-grid"></div></section>
+<section class="monitor-section"><h2>运行指标</h2><div id="monitoring-instances" class="monitor-grid"></div></section>
 <section class="monitor-section"><h2>Run 状态</h2><div id="monitoring-counts" class="monitor-counts"></div><div id="monitoring-runs" aria-live="polite">正在读取…</div><div id="monitoring-pagination" class="monitor-pagination" hidden><button id="monitoring-prev">上一页</button><span id="monitoring-page-number"></span><button id="monitoring-next">下一页</button></div></section>
-<section class="monitor-section"><h2>Run 的外部监控</h2><div id="monitoring-instances" class="monitor-grid"></div></section>
 <details class="monitor-section"><summary id="monitoring-waits-title">等待条件</summary><div id="monitoring-waits"></div></details>
 </div><div id="monitoring-scripts" role="tabpanel" aria-labelledby="monitor-scripts-tab" hidden><p class="muted">脚本可留在 Loop 内，也可注册到平台复用。注册定义不会自动执行。</p><div id="monitoring-script-list"></div></div></div></section>
 <section id="schedules-page" hidden>
@@ -34,7 +34,7 @@
 <div class="page-heading"><div><div class="eyebrow" id="run-key"></div><h1 id="run-title"></h1><div class="subtitle"><span id="run-status"></span><span id="run-id"></span><span class="simulation" id="simulation-label">SIMULATION</span></div></div><div class="toolbar"><button id="pause-run">Ⅱ 暂停</button><details class="run-menu"><summary>更多操作</summary><div><button id="archive-run">归档</button><button id="stop-run" class="danger-quiet">终止</button><button id="delete-run" class="danger-quiet">删除记录</button></div></details></div></div>
 <div id="run-progress" class="run-progress"></div>
 <div id="attention"></div>
-<div class="tasks-grid"><div class="tasks-main"><details class="panel graph-panel"><summary>查看 Loop 定义</summary><div id="graph"></div><div class="graph-caption" id="graph-caption"></div></details>
+<div class="tasks-grid"><div class="tasks-main">
 <section class="panel inspect-panel"><div class="tabs"><button data-tab="history">变更历史</button><button data-tab="decisions">Agent 执行</button></div><div id="inspect"></div></section></div>
 <details class="panel settings-panel"><summary>运行配置与安排 · 只读</summary><div id="run-settings-readonly"></div></details></div>
 </section></main>

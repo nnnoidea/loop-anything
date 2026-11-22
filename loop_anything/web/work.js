@@ -102,9 +102,10 @@ function businessStateCards(state,id,data){
   return `<section class="work-history"><h3>业务状态 <span>${state.total}</span></h3>${recentRecords(cards)}${state.complete?'':'<p class="small muted">当前显示前 '+state.records.length+' 条，完整记录可通过读取工具分页查询。</p>'}</section>`;
 }
 function savedResultsHTML(data,id){
-  const records=data.results?.records||[];
+  const featured=data.progress?.kind==='result'?data.progress.refs?.[0]:null;
+  const records=(data.results?.records||[]).filter(r=>r.id!==featured?.record||r.revision!==featured?.revision);
   if(!records.length)return '';
-  return `<section class="work-history"><h3>已保存结果</h3>${recentRecords(records.map(r=>`<article class="work-entry"><strong>${esc(r.type||r.id)}</strong><p class="small muted">${esc(r.id)}</p><button data-work-result="${esc(r.id)}" data-result-timeline="${esc(id)}" data-result-revision="${r.revision}">查看结果</button> ${sourceTaskLink(data,r.source_run_id,r.task_id)}<div class="business-record-detail"></div></article>`))}${data.results.complete?'':'<p class="small muted">这里显示最近 50 份结果，下载文件包含全部记录。</p>'}</section>`;
+  return `<section class="work-history"><h3>${featured?'此前结果':'已保存结果'}</h3>${recentRecords(records.map(r=>`<article class="work-entry"><div class="work-entry-meta"><strong>${esc(r.summary||r.type||'节点结果')}</strong><time>${esc(runDate(r.at))}</time></div><button data-work-result="${esc(r.id)}" data-result-timeline="${esc(id)}" data-result-revision="${r.revision}">查看结果</button> ${sourceTaskLink(data,r.source_run_id,r.task_id)}<div class="business-record-detail"></div></article>`))}${data.results.complete?'':'<p class="small muted">这里显示最近 50 份结果，下载文件包含全部记录。</p>'}</section>`;
 }
 function importSourceHTML(data){
   const source=data.timeline.import_source;
@@ -156,6 +157,11 @@ function timelineSections(data,id){
   for(const r of data.runs){if(titles.has(r.title))duplicates.add(r.title);titles.add(r.title);}
   const runLink=r=>`<a class="timeline-run-link" href="${esc(routeHash({type:'run',id:r.id}))}" data-route-link><span>${esc(r.title||r.id)}${r.title&&duplicates.has(r.title)?` <code>${esc(r.id)}</code>`:''}</span>${badge(r.status)} <span aria-hidden="true">›</span></a>`;
   const others=data.runs.filter(r=>r!==active);
+  const loopHistory=new Map();
+  for(const r of others){
+    if(!loopHistory.has(r.loop_id))loopHistory.set(r.loop_id,[]);
+    loopHistory.get(r.loop_id).push(r);
+  }
   const p=data.progress;
   const featured=p?.kind==='view' && data.observations?.views.some(v=>v.name===p.name)?p.name:null;
   const trail=(data.business_state?.records||[]).map(r=>({
@@ -173,7 +179,7 @@ function timelineSections(data,id){
     'work-trail':trail.length?`<section class="work-history progress-trail"><h3>近期工作脉络</h3>${trail.map(e=>workEntryHTML(e,id,data)).join('')}</section>`:'',
     'work-state':businessStateCards(data.business_state,id,data),
     'work-results':savedResultsHTML(data,id),
-    'work-runs':others.length?`<section class="timeline-linked"><h3>历史 Run</h3>${others.map(runLink).join('')}</section>`:'',
+    'work-runs':others.length?`<section class="timeline-linked"><h3>历史 Run</h3>${[...loopHistory.values()].map(group=>`<details class="loop-run-history"><summary>${esc(group[0].loop_name||group[0].loop_id||'关联运行')} · ${group.length} 次运行</summary>${group.map(runLink).join('')}</details>`).join('')}</section>`:'',
     'work-source':importSourceHTML(data)
   };
 }

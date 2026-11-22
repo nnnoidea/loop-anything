@@ -92,8 +92,9 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
       populateMeta();renderEditor();renderProperties();
     }else if(route.type==='run'){
       if(previous.type!=='run')runReturns.set(route.id,structuredClone(previous));
-      if(previous.type!=='run'||previous.id!==route.id)document.querySelector('.run-menu').open=false;
+      if(previous.type!=='run'||previous.id!==route.id){document.querySelector('.run-menu').open=false;taskOrder='overview';overviewGroup=null;overviewLimit=8;overviewRound='';openProgressRound=null;}
       if(previous.id!==route.id || route.task){
+        if(route.task){openProgressRound=nextRun.tasks[route.task]?.spec.round||'';overviewGroup=nextRun.tasks[route.task]?.spec.node;if(overviewRound!==openProgressRound)overviewRound='';}
         selectedTask=route.task || null;selectedAttempt=null;activeTab='task-history';taskStatus='';taskSearch='';inspectSignature='';
       }
       selected=route.id;run=nextRun;settingsBase=null;filterNode=null;page='runs';renderRun();

@@ -54,10 +54,12 @@ class PlatformToolTests(unittest.TestCase):
         self.edit('set_loop',handbook='Use the agreed goal.')
         self.edit('put_node',node_id='initialize',instructions='Full execution instructions.',
                   skills=[{'name':'Method','content':'Keep this operational detail.'}])
-        self.edit('put_node',node_id='initialize',description='Prepare the agreed work.')
+        readout=[{'path':'progress.metrics.count','label':'Reviewed','unit':'items'}]
+        self.edit('put_node',node_id='initialize',description='Prepare the agreed work.',readout=readout)
         key=self.tools.call('publish_loop',{'draft_id':self.draft['draft_id'],'revision':self.draft['revision']})['key']
         node=self.tools.call('read_loop',{'key':key})['loop']['loop_definition']['nodes']['initialize']
         self.assertEqual(node['description'],'Prepare the agreed work.')
+        self.assertEqual(node['readout'],readout)
         run=runtime_run(self.tools.store, {'key':key,'title':'Description check','authorization':'Initialize only'})
         task=self.tools.call('read_task',{'run_id':run['run_id'],'token':run['token'],'task_id':run['entry_task_id']})
         self.assertEqual(task['instructions'],'Full execution instructions.')

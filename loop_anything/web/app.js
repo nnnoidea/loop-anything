@@ -24,7 +24,7 @@ $('platform-power-switch').onchange=()=>safely(async()=>{
 });
 let promptDefaults={};
 function promptHistory(record){return record&&Object.hasOwn(record,'prompt_text')?`<details class="prompt-history"><summary>本次唤醒提示词</summary><p class="small muted">实际发送记录 · 平台令牌已遮蔽</p><pre>${esc(record.prompt_text)}</pre></details>`:'';}
-let progressSignature = '', listSignature = '', graphSignature = '', inspectSignature = '';
+let progressSignature = '', listSignature = '', inspectSignature = '';
 const time = t => new Date(t * 1000).toLocaleTimeString('zh-CN', {hour12:false});
 const nodeLabel = id => run?.loop_definition.nodes[id]?.label || id;
 async function api(url, data) {
@@ -101,23 +101,10 @@ function renderRun() {
     $('run-progress').innerHTML=progress;progressSignature=progress;$('run-progress').dataset.run=run.id;
     if(opened && $('run-progress').querySelector('details'))$('run-progress').querySelector('details').open=true;
   }
-  const tasks = run.agent_tasks?.items || [];
-  $('attention').innerHTML = tasks.length ? `<div class="notice">当前 ${tasks.length} 项节点任务或异常，请在「任务与问题」查看。</div>` : '';
-
+  $('attention').innerHTML='';
   renderTimelineSettings();
-  renderGraph();
   if (!['TEXTAREA','INPUT','SELECT'].includes(document.activeElement?.tagName) || !document.activeElement.closest('#inspect')) renderInspect();
   loadSettings();
-}
-function renderGraph() {
-  const signature = pretty([run.id,filterNode,run.settings,run.executions,Object.values(run.tasks || {}).map(w=>[w.id,w.status]),[],$('graph').clientWidth]);
-  if(graphSignature===signature)return;graphSignature=signature;
-  const old=$('graph').querySelector('.loop-map'),keep=old?.dataset.runId===run.id&&old.dataset.filterNode===(filterNode||'');
-  const focus=keep?old.dataset.mapFocus:filterNode,view=keep?old.dataset.mapView:'execution',layer=keep?old.dataset.graphLayer:'relations';
-  $('graph').innerHTML=loopGraphHTML(run,{bindings:run.settings.bindings || {},focus:focus || '',action:'run'});
-  const root=$('graph').querySelector('.loop-map');
-  if(root){setGraphLayer(root,layer);root.dataset.runId=run.id;root.dataset.filterNode=filterNode||'';if(focus&&Object.hasOwn(run.loop_definition.nodes,focus))focusLoopMap(root,focus,view);}
-  $('graph-caption').textContent='循环关系来自 Loop 定义；上方运行过程保留每一项实际任务、结果与历次执行。';
 }
 function loadSettings(){
   $('run-settings-readonly').innerHTML=`${['running','paused'].includes(run.status)&&!run.superseded_by?'<label><input type="checkbox" id="follow-loop-updates" '+(run.follow_loop_updates?'checked':'')+'> 跟随此 Loop 后续发布的版本</label>':''}<p>目标和限制属于独立 Timeline；修改后由 Agent 检查并向用户汇报。</p>${run.timeline_id?'<button data-work-timeline="'+esc(run.timeline_id)+'">查看 Timeline 与进度</button>':''}${readerJSON('目标与限制',{目标:run.settings.objective,限制:run.settings.constraints},true)}${readerJSON('完整运行配置',run.settings)}`;
@@ -156,8 +143,8 @@ document.addEventListener('click',event=>safely(async()=>{
   if(button.classList.contains('close-dialog')){button.closest('dialog').close();return;}
   const d=button.dataset;
   if(d.run){await selectRun(d.run);return;}
-  if(d.node){filterNode=d.node;activeTab='task-history';inspectSignature='';renderGraph();renderInspect();return;}
-  if(d.tab){activeTab=d.tab;renderInspect();return;}
+  if(d.node){filterNode=d.node;activeTab='task-history';inspectSignature='';renderInspect();return;}
+  if(d.tab){activeTab=d.tab;renderInspect();if(button.classList.contains('run-issues'))$('inspect').scrollIntoView({block:'start'});return;}
   if(d.exec){selectedTask=run.executions.find(e=>e.id===d.exec)?.task_id;selectedAttempt=d.exec;activeTab='task-history';inspectSignature='';renderInspect();return;}
   if(d.create){await openCreate(d.create);return;}
   if(d.validate){const c=catalog.find(x=>x.key===d.validate);const r=await api('validate',c);toast(r.valid?'验证通过 · '+r.warnings.join('；'):r.errors.join('；'));return;}
@@ -167,7 +154,7 @@ document.addEventListener('click',event=>safely(async()=>{
     case 'new-run':await openCreate();break;
     case 'empty-create':await navigateTo({type:'catalog'});break;
     case 'loop_definitions-nav':await navigateTo({type:'catalog'});break;
-    case 'clear-filter':filterNode=null;renderGraph();renderInspect();break;
+    case 'clear-filter':filterNode=null;renderInspect();break;
     case 'node-contract':$('detail-title').textContent=nodeLabel(filterNode)+' · Contract';$('detail-content').innerHTML=`<pre>${esc(pretty(run.loop_definition.nodes[filterNode]))}</pre>`;$('detail-dialog').showModal();break;
     case 'pause-run':await api(`runs/${runId}/command`,{action:run.status==='paused'?'resume':'pause'});await refresh();break;
     case 'stop-run':if(confirm('终止后不会再推进。外部已发生的操作不会被撤销。是否终止？')){await api(`runs/${runId}/command`,{action:'terminate'});await refresh();}break;
@@ -176,7 +163,7 @@ document.addEventListener('click',event=>safely(async()=>{
 }));
 document.addEventListener('keydown',e=>{if(e.key==='Enter' && e.target.matches('tr[data-exec]'))details(e.target.dataset.exec);});
 document.addEventListener('input',e=>{if(e.target.id.startsWith('result-'))drafts[e.target.id.slice(7)]=e.target.value;if(e.target.id.startsWith('event-'))drafts[e.target.id.slice(6)]=e.target.value;});
-window.addEventListener('resize',()=>{if(run && page==='runs')renderGraph();});
+
 async function loadCatalog(){
   [catalog,promptDefaults,lifecycleTemplates]=await Promise.all([api('catalog?include_archived='+String(!!$('show-archived-loops')?.checked)),api('agent-prompts'),api('lifecycles')]);
   $('catalog-cards').innerHTML=catalog.map(libraryCard).join('') || '<p class="empty-inline">还没有 Loop。可以导入 .loop.zip，或通过构建 Agent 添加。</p>';

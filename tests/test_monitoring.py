@@ -101,11 +101,14 @@ class MonitoringTests(unittest.TestCase):
             from loop_anything.runtime.timeline_plan import add_task
             task=add_task(current,{'id':'observed','node':'work','inputs':{},'outputs':{'value':{'id':'observed.value'}}},{'test':True})
             task['execution_id']='external-current'
-            current['executions'].append({'id':'external-current','task_id':task['id'],'node':task['spec']['node'],
+            current['executions'].append({'id':'external-current','task_id':task['id'],'node':task['spec']['node'],'external_id':'batch-A',
                 'implementation':{'kind':'external','command':['private-submit'],'observe':['private-check']},
-                'status':'waiting','token':'private-token','observation_error':'timeout','activity_progress':{'external_status':'RUNNING'}})
+                'status':'waiting','token':'private-token','observation_error':'timeout','activity_progress_at':10,'activity_progress':{'external_status':'RUNNING','progress':0,'metrics':{'loss':0.25}}})
         overview=self.tools.call('read_monitor_dashboard',{})
         self.assertEqual(len(overview['external']),1)
         self.assertEqual(overview['external'][0]['run_id'],run['id'])
-        self.assertEqual(overview['external'][0]['business_status'],'RUNNING')
+        reading=overview['external'][0]
+        self.assertEqual(reading['business_status'],'RUNNING')
+        self.assertEqual((reading['external_id'],reading['progress'],reading['sampled_at']),('batch-A',0,10))
+        self.assertEqual(reading['metrics'],{'loss':0.25})
         self.assertNotIn('private-',json.dumps(overview))

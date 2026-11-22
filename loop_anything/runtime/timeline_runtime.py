@@ -107,6 +107,25 @@ def agent_exited(run, runtime, error=None, scope_task=None):
                   detail={'failures': counter['agent_failures'], 'error': str(error)})
 
 
+def result_summary(node, port, value):
+    """Keep the author's selected result facts readable after the source Run is gone."""
+    parts = []
+    fields = node.get('readout')
+    for field in fields if isinstance(fields,list) else []:
+        if not isinstance(field,dict) or not isinstance(field.get('path'),str) or not field.get('label'):
+            continue
+        source = field['path'].split('.')
+        if source[:2] != ['outputs',port]:
+            continue
+        try:
+            fact = path(value,source[2:])
+        except (TypeError,ValueError,KeyError,IndexError):
+            continue
+        if isinstance(fact,(str,int,float,bool)) and str(fact).strip():
+            parts.append(' '.join(str(v) for v in (field['label'],fact,field.get('unit')) if v is not None and v!=''))
+    return ' · '.join(parts)
+
+
 class TimelineRuntime:
     def __init__(self, engine):
         self.engine, self.store = engine, engine.store
@@ -548,6 +567,10 @@ class TimelineRuntime:
             rec = {'id': destination['id'], 'revision': destination.get('expected_revision', 0) + 1,
                    'type': output_types[name], 'value': copy.deepcopy(value),
                    'producer': e['id'], 'tasks': tasks['id'], 'source_run_id':run['id'], 'at': time.time(), 'sources': copy.deepcopy(e['sources'])}
+            summary = result_summary(node, name, value)
+            if summary:
+                context_label = ' · '.join(str(tasks['spec'][k]) for k in ('round','ref') if tasks['spec'].get(k))
+                rec['summary'] = ' · '.join(filter(None,(context_label,summary)))
             run['records'].setdefault(rec['id'], []).append(rec)
             refs[name] = {'record': rec['id'], 'revision': rec['revision']}
         e.update(status='completed', completed_at=time.time(), record_refs=refs, outputs=copy.deepcopy(outputs))

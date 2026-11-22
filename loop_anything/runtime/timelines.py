@@ -109,9 +109,9 @@ def progress_preview(db, source, ref, definition):
         return dict(kind=source,text=state_preview(state['summary']) or state['type']+' · '+state['id'],
                     run_id=state['run_id'],task_id=state['task_id'],evidence=state['refs'],refs=[{k:state[k] for k in ('type','id','revision')}])
     row = db.execute("""SELECT id,revision,
-        CASE WHEN json_type(document,'$.value') IN ('text','integer','real') THEN substr(json_extract(document,'$.value'),1,300) END,
+        coalesce(json_extract(document,'$.summary'),CASE WHEN json_type(document,'$.value') IN ('text','integer','real') THEN substr(json_extract(document,'$.value'),1,300) END),
         json_extract(document,'$.source_run_id'),json_extract(document,'$.tasks') FROM work_results WHERE rowid=?""",(ref,)).fetchone()
-    return dict(kind='result',text=str(row[2]) if row[2] is not None else row[0],run_id=row[3],task_id=row[4],refs=[dict(record=row[0],revision=row[1])])
+    return dict(kind='result',text=str(row[2]) if row[2] is not None else '节点已提交结果',run_id=row[3],task_id=row[4],refs=[dict(record=row[0],revision=row[1])])
 
 
 def list_timelines(store, loop_id=None, unbound=False, limit=20, offset=0):
@@ -174,8 +174,13 @@ def read(store, ident, after=0, limit=100, newest_first=False):
             'SELECT document FROM work_entries WHERE timeline_id=?'+_ENTRY_FILTER+' ORDER BY sequence DESC LIMIT 5',(ident,))]
 
         runs=[]
-        for row in db.execute('SELECT id,document FROM runs WHERE json_extract(document,\'$.timeline_id\')=?',(ident,)):
-            run=json.loads(row[1]);run['status']=public_status(run);runs.append({k:run.get(k) for k in ('id','title','status','continued_from','superseded_by')})
+        for row in db.execute("""SELECT r.document, json_extract(l.document,'$.id') AS loop_id,
+                    json_extract(l.document,'$.name') AS loop_name
+                FROM runs r LEFT JOIN loop_definitions l ON l.key=json_extract(r.document,'$.loop_key')
+                WHERE json_extract(r.document,'$.timeline_id')=? ORDER BY json_extract(r.document,'$.created_at') DESC,r.id""",(ident,)):
+            run=json.loads(row[0])
+            item={k:run.get(k) for k in ('id','title','continued_from','superseded_by')}
+            runs.append(dict(item,status=public_status(run),loop_id=row[1] or run.get('loop_key'),loop_name=row[2] or row[1]))
         from loop_anything.runtime import business_state
         current=db.execute("SELECT l.document FROM runs r JOIN loop_definitions l ON l.key=json_extract(r.document,'$.loop_key') WHERE r.id=?",(value.get('active_run_id'),)).fetchone()
         definition=(json.loads(current[0]).get('state') if current else None) or value.get('state_definition')
@@ -183,7 +188,7 @@ def read(store, ident, after=0, limit=100, newest_first=False):
         progress=progress_preview(db,last['source'],last['ref'],definition) if last else None
         if progress:progress['at']=last['at']
         result_rows=db.execute("""SELECT id,revision,json_extract(document,'$.type') AS type,
-                json_extract(document,'$.source_run_id') AS source_run_id,json_extract(document,'$.tasks') AS task_id,json_extract(document,'$.at') AS at
+                json_extract(document,'$.summary') AS summary,json_extract(document,'$.source_run_id') AS source_run_id,json_extract(document,'$.tasks') AS task_id,json_extract(document,'$.at') AS at
                 FROM work_results WHERE timeline_id=? ORDER BY rowid DESC LIMIT 51""",(ident,)).fetchall()
         from loop_anything.runtime.observations import overview as view_overview
         return dict(timeline=value,progress=progress,recent_entries=recent_entries,observations=view_overview(db,ident),entries=entries,runs=runs,business_state=business_state.timeline_overview(db,ident,definition),
