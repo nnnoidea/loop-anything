@@ -94,6 +94,11 @@
 .external-group header{justify-content:space-between}
 .external-group header span,.external-reading small{color:var(--muted);font-size:12px}
 .external-group details{margin:3px 0 6px}
+.result-monitor-card .monitor-card-heading{align-items:baseline;flex-wrap:wrap}
+.result-monitor-card .monitor-card-heading>a{font-size:12px;flex-shrink:0}
+.result-monitor-card .result-monitor-label{margin:14px 0 4px;font-weight:600}
+.result-monitor-card p.small{margin:0}
+.result-monitor-card .observation-chart{max-width:none;overflow-wrap:anywhere}
 .external-reading{font-size:13px;overflow-wrap:anywhere;display:grid;grid-template-columns: minmax(160px,max-content) minmax(0,1fr);gap:10px 26px;align-items:center;padding:10px 0}
 .external-reading+.external-reading{border-top:1px solid var(--line)}
 @media(max-width:640px){.external-reading{grid-template-columns:1fr;gap:6px}}

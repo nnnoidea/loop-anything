@@ -17,7 +17,7 @@ def definitions():
         ('read_observations','Read the saved views and effective observation arrangements for a Timeline.',{'timeline_id':T},['timeline_id'],True),
         ('update_run_method','Hot-apply an installed version or opt in/out of published updates. Patch named observations; null disables, inherit restores Loop defaults. Existing tasks keep their method.',{'run_id':T,'token':T,'key':T,'follow':{'type':'boolean'},'observations':O,'inherit':{'type':'array','items':T}},['run_id','token'],False),
         ('refresh_observation','Generate the current view now, without sending a notification. Confirm a stopped process only when explicitly recovering an interrupted attempt.',{'run_id':T,'token':T,'name':T,'confirmed_stopped':{'type':'boolean'}},['run_id','token','name'],False),
-        ('read_monitor_dashboard','Read-only monitoring overview: actual Run states, external monitor samples and pending waits. Never starts or polls scripts. Run summaries exclude execution archives and credentials.',
+        ('read_monitor_dashboard','Read-only monitoring overview: Run states, saved result charts, external monitor samples and pending waits. Never starts or polls scripts. Run summaries exclude execution archives and credentials.',
          {'offset':N,'limit':{'type':'integer','minimum':1,'maximum':100}},[],True),
         ('read_monitor_history','Read up to 240 retained checks for one monitor. Supply metric to receive only its timestamp/value points, with gaps for failed or missing readings.',
          {'monitor_id':T,'metric':T,'limit':{'type':'integer','minimum':1,'maximum':240}},['monitor_id'],True),

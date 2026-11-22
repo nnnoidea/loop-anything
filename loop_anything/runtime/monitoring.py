@@ -29,9 +29,24 @@ def overview(store, offset=0, limit=20):
         headers=db.execute("SELECT id,document"+base+
             " ORDER BY CASE WHEN json_extract(document,'$.status') IN ('running','paused') THEN 0 ELSE 1 END,"
             "coalesce(json_extract(document,'$.last_activity_at'),json_extract(document,'$.created_at')) DESC,id LIMIT ? OFFSET ?",(limit,offset)).fetchall()
-        run_rows=[];external=[]
+        run_rows=[];external=[];result_charts=[]
         for row in headers:
             run=json.loads(row[1])
+            for chart in db.execute("""
+                    SELECT v.name,json_extract(v.document,'$.at') AS at,
+                           json_extract(v.document,'$.view.summary') AS summary,
+                           json_extract(v.document,'$.view.series') AS series
+                    FROM observation_views v JOIN observations s
+                         ON s.timeline_id=v.timeline_id AND s.name=v.name
+                    WHERE v.timeline_id=? AND s.run_id=?
+                          AND json_extract(v.document,'$.run_id')=s.run_id
+                          AND json_array_length(v.document,'$.view.series')>0
+                    ORDER BY v.name
+                    """,(run.get('timeline_id'),row[0])):
+                series=[line for line in json.loads(chart['series']) if line['points']]
+                if series:
+                    result_charts.append(dict(run_id=row[0],run_title=run['title'],timeline_id=run['timeline_id'],
+                                              name=chart['name'],at=chart['at'],summary=chart['summary'],series=series))
             # Only current task states; do not deserialize records, prompts or execution archives.
             attention=db.execute("SELECT count(*) FROM timeline_parts WHERE run_id=? AND section='tasks' "
                 "AND json_extract(document,'$.status') IN ('fault','stale','waiting_user')",(row[0],)).fetchone()[0]
@@ -82,7 +97,7 @@ def overview(store, offset=0, limit=20):
                       instances=sum(m.get('script_id')==s['id'] for m in monitors))
                  for s in work.rows(db,'monitor_script')]
         return dict(at=now,counts=counts,runs=run_rows,total_runs=total,offset=offset,limit=limit,
-                    monitors=monitors,external=external,waits=waits,scripts=scripts)
+                    monitors=monitors,external=external,result_charts=result_charts,waits=waits,scripts=scripts)
 
 
 def history(store, monitor_id, limit=120, metric=None):

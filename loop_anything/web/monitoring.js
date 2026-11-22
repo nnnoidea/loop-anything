@@ -143,7 +143,19 @@ document.addEventListener('change',event=>{
   refreshMonitorTrends();
 });
 
-function externalMonitorGroups(items){
+function resultMonitorCard(chart){
+  const timeline=routeHash({type:'timeline',id:chart.timeline_id});
+  return `<article class="monitor-card result-monitor-card" data-result-monitor-run="${esc(chart.run_id)}">
+    <header class="monitor-card-heading"><h3>${monitoringRunLink(chart.run_id,chart.run_title)}</h3>
+    <a href="${esc(timeline)}" data-route-link>查看 Timeline</a></header>
+    <p class="result-monitor-label">${esc(chart.name)}</p>
+    ${chart.summary?`<p class="small muted">${esc(chart.summary)}</p>`:''}
+    ${observationFigure(chart.series)}
+    <small class="muted">更新于 ${esc(runDate(chart.at))}</small>
+  </article>`;
+}
+
+function externalMonitorGroups(items,showEmpty=true){
   const runs=new Map();
   for(const item of items){
     if(!runs.has(item.run_id))runs.set(item.run_id,new Map());
@@ -179,7 +191,7 @@ function externalMonitorGroups(items){
     const first=nodes.values().next().value[0];
     return sections.length?`<article class="monitor-card external-group"><h3>${monitoringRunLink(id,first.run_title)}</h3>${sections.join('')}</article>`:'';
   }).join('');
-  return cards+(without?`<small class="monitor-empty">${without} 项外部执行尚无指标回报</small>`:'');
+  return cards+(without&&showEmpty?`<small class="monitor-empty">${without} 项外部执行尚无指标回报</small>`:'');
 }
 
 function renderMonitoring(){
@@ -187,7 +199,7 @@ function renderMonitoring(){
   const d=monitoringData;
   $('monitoring-overview').hidden=monitoringTab!=='overview';$('monitoring-scripts').hidden=monitoringTab!=='scripts';
   document.querySelectorAll('[data-monitor-tab]').forEach(b=>{b.classList.toggle('active',b.dataset.monitorTab===monitoringTab);b.setAttribute('aria-selected',String(b.dataset.monitorTab===monitoringTab));});
-  const signature=JSON.stringify([d.counts,d.runs,d.monitors,d.external,d.waits,d.scripts,monitoringOffset]);
+  const signature=JSON.stringify([d.counts,d.runs,d.monitors,d.result_charts,d.external,d.waits,d.scripts,monitoringOffset]);
   $('monitoring-updated').textContent='更新于 '+new Date(d.at*1000).toLocaleTimeString('zh-CN',{hour12:false});
   document.querySelectorAll('#monitoring-page [data-monitor-at]').forEach(e=>{e.textContent=monitorAge(Number(e.dataset.monitorAt));});
   if(signature===monitoringSignature){refreshMonitorTrends();return;}
@@ -199,9 +211,10 @@ function renderMonitoring(){
   $('monitoring-pagination').hidden=d.total_runs<=d.limit;
   $('monitoring-standing').innerHTML=d.monitors.filter(m=>!m.run_id).map(monitorCard).join('')||'<p class="monitor-empty">尚未接入常态监控。用户或团队可以注册自己的资源监控脚本。</p>';
   const instances=d.monitors.filter(m=>m.run_id).map(monitorCard).join('');
+  const results=(d.result_charts||[]).map(resultMonitorCard).join('');
   const instancesRoot=$('monitoring-instances');
   const opened=new Set([...instancesRoot.querySelectorAll('[data-external-group][open]')].map(el=>el.dataset.externalGroup));
-  instancesRoot.innerHTML=instances+externalMonitorGroups(d.external)||'<p class="monitor-empty">尚无 Run 监控实例。</p>';
+  instancesRoot.innerHTML=results+instances+externalMonitorGroups(d.external,!results)||'<p class="monitor-empty">尚无 Run 监控实例。</p>';
   for(const el of instancesRoot.querySelectorAll('[data-external-group]'))el.open=opened.has(el.dataset.externalGroup);
   $('monitoring-waits-title').textContent='等待条件 · '+d.waits.length;
   $('monitoring-waits').innerHTML=d.waits.map(w=>`<div class="monitor-wait"><div><strong>${esc(w.message||'等待条件满足后唤醒 Agent')}</strong> <span class="muted">${w.state==='ready'?'条件已满足，待会话处理':'等待中'}</span></div><p>${esc(monitorCondition(w.condition))}</p><p class="small">${Object.entries(w.sources).map(([name,s])=>s.kind==='monitor'?`<button class="monitor-detail-button" data-monitor-detail="${esc(s.id)}">${esc(name)} · 监控</button>`:monitoringRunLink(s.id,name)).join(' · ')} · <button data-work-timeline="${esc(w.timeline_id)}">查看 Timeline</button></p>${w.error?`<p class="monitor-warning small">当前无法判断：${esc(w.error)}</p>`:''}</div>`).join('')||'<p class="muted">当前没有待处理的条件等待。</p>';

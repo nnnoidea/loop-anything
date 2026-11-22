@@ -126,8 +126,15 @@ withPlatform(async({url,page,tool,api})=>{
   assert.equal(await graph.locator('[data-status="fault"]').count(),1);
   await page.locator('#task-round').selectOption('');
   await page.locator('[data-task-order="time"]').click();
+  await page.waitForFunction(()=>document.querySelectorAll('.process-list [data-task-row]').length===36);
   assert.equal(await page.locator('.process-list [data-task-row]').count(),36);
   await page.locator('[data-task-order="graph"]').click();
+  const scored=await tool('start_run',{key,request_id:randomUUID(),title:'已保存评分',objective:'从监控读取已保存的曲线。'});
+  const {token}=await tool('acquire_run',{run_id:scored.run_id});
+  try{
+    await tool('update_run_method',{run_id:scored.run_id,token,observations:{'评测结果':{on:null,steps:[{kind:'command',
+      command:report({summary:'两次评测',series:[{label:'准确率',points:[[1,82],[2,87.5]]}]})}]}}});
+  }finally{await tool('finish',{run_id:scored.run_id,token});}
   for(const [name,width] of [['desktop',1280],['mobile',390]]){
     await page.setViewportSize({width,height:850});
     await page.goto(url+'/#run/'+run.run_id);await page.reload();await hero.getByText(/official_aggregate/).waitFor();await page.evaluate(()=>window.scrollTo(0,0));
@@ -143,6 +150,10 @@ withPlatform(async({url,page,tool,api})=>{
       assert(await page.locator('.dependency-scroll').evaluate(el=>el.scrollWidth<=el.clientWidth+1));
     }
     await page.goto(url+'/#work/monitors');
+    const savedChart=page.locator(`[data-result-monitor-run="${scored.run_id}"]`);
+    await savedChart.getByText('评测结果',{exact:true}).waitFor();
+    assert.equal(await savedChart.locator('.observation-chart circle').count(),2);
+    assert.equal(await savedChart.getByRole('link',{name:'查看 Timeline'}).getAttribute('href'),'#work/timelines/'+scored.timeline_id);
     const group=page.locator('.external-group');
     await group.getByText('训练模型',{exact:true}).waitFor();
     assert.equal(await group.count(),1);

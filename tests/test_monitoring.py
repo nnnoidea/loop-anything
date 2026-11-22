@@ -15,7 +15,7 @@ class MonitoringTests(unittest.TestCase):
     def test_empty_dashboard_is_read_only_and_installs_no_scripts(self):
         first=self.tools.call('read_monitor_dashboard',{})
         second=self.tools.call('read_monitor_dashboard',{})
-        for field in ('runs','monitors','waits','scripts'):
+        for field in ('runs','monitors','result_charts','waits','scripts'):
             self.assertEqual(first[field],[])
             self.assertEqual(first[field],second[field])
         self.assertEqual(self.store.list(),[])
@@ -35,6 +35,26 @@ class MonitoringTests(unittest.TestCase):
         self.assertEqual(before,self.store.get(receipt['run_id']))
         self.t.engine.command(receipt['run_id'],'pause')
         self.assertEqual(self.tools.call('read_monitor_dashboard',{})['counts']['paused'],1)
+
+    def test_dashboard_projects_saved_series_from_their_own_run(self):
+        run=self.store.create(self.t.key,'Scored work')
+        run_id, timeline_id=run['id'],run['timeline_id']
+        series=[{'label':'F1','points':[[1,0.24],[2,0.42]]}]
+        with work.transaction(self.store) as db:
+            for number,(name,owner,view) in enumerate([
+                ('Results', run_id, {'summary':'Two scores','series':series,'image_png':'not part of dashboard'}),
+                ('Text only', run_id, {'summary':'no chart'}),
+                ('Previous Run', 'continued-from', {'series':series}),
+                ('Disabled', run_id, {'series':series}),
+            ],1):
+                if name!='Disabled':
+                    db.execute('INSERT INTO observations VALUES(?,?,?,?,?,?,?)',
+                               (run_id,name,timeline_id,f'gen-{number}','{}',0,None))
+                db.execute('INSERT INTO observation_views VALUES(?,?,?,?)',
+                           (timeline_id,name,number,json.dumps({'run_id':owner,'at':100,'view':view})))
+        charts=self.tools.call('read_monitor_dashboard',{})['result_charts']
+        self.assertEqual(charts,[{'run_id':run_id,'run_title':'Scored work','timeline_id':timeline_id,
+                                  'name':'Results','summary':'Two scores','at':100,'series':series}])
 
     def test_history_retains_gaps_and_bounds_each_instance(self):
         m=self.tools.call('start_monitor',{'request_id':'history','interval':30,
