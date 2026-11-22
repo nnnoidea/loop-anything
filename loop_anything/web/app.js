@@ -25,6 +25,7 @@ $('platform-power-switch').onchange=()=>safely(async()=>{
 let promptDefaults={};
 function promptHistory(record){return record&&Object.hasOwn(record,'prompt_text')?`<details class="prompt-history"><summary>本次唤醒提示词</summary><p class="small muted">实际发送记录 · 平台令牌已遮蔽</p><pre>${esc(record.prompt_text)}</pre></details>`:'';}
 let progressSignature = '', listSignature = '', inspectSignature = '';
+let runHistoryOffset=0, runViewRequest=null;
 const time = t => new Date(t * 1000).toLocaleTimeString('zh-CN', {hour12:false});
 const nodeLabel = id => run?.loop_definition.nodes[id]?.label || id;
 async function api(url, data, {signal} = {}) {
@@ -53,6 +54,35 @@ function toast(message,timeout=5500){
   return notice;
 }
 async function safely(fn) { try { await fn(); } catch (error) { toast(error.message); } }
+function runWorkspacePath(id,{tab='task-history',task='',audit=false,offset=0}={}){
+  const query=new URLSearchParams({view:'workspace',tab});
+  if(task)query.set('task',task);
+  if(audit)query.set('audit','true');
+  if(offset)query.set('offset',offset);
+  return 'runs/'+encodeURIComponent(id)+'?'+query;
+}
+function visibleRunView(){
+  const audit=document.querySelector('.route-audit[open]');
+  return {tab:activeTab,task:activeTab==='task-history'?selectedTask||'':'',
+    audit:activeTab==='task-history'&&audit?.dataset.auditRun===run?.id,
+    offset:activeTab==='history'?runHistoryOffset:0};
+}
+function refreshRunWorkspace(){
+  if(page!=='runs'||!selected||pendingRunNavigation)return;
+  const id=selected,serial=navigationSerial,path=runWorkspacePath(id,visibleRunView());
+  if(runViewRequest?.path===path&&runViewRequest.serial===serial)return runViewRequest.promise;
+  runViewRequest?.controller.abort();
+  const controller=new AbortController();
+  const request={path,serial,controller};
+  request.promise=api(path,undefined,{signal:controller.signal}).then(current=>{
+    if(serial===navigationSerial&&page==='runs'&&selected===id&&path===runWorkspacePath(id,visibleRunView())){
+      run=current;renderRun();
+    }
+  }).catch(error=>{if(!controller.signal.aborted)throw error;})
+    .finally(()=>{if(runViewRequest===request)runViewRequest=null;});
+  runViewRequest=request;
+  return request.promise;
+}
 function showPage() {
   $('settings-page').hidden=page!=='settings';
   $('monitoring-page').hidden=page!=='monitors';
@@ -86,7 +116,7 @@ async function refresh() {
   try {
     if(page==='run-list'||page==='communication')await refreshRunLibrary();
     $('engine-status').textContent = '平台已连接';
-    if (selected && page==='runs') { const id=selected;try{const current=await api('runs/' + id);if(page==='runs' && selected===id){run=current;renderRun();}}catch(error){if(error.status===404&&selected===id){run=null;selected=null;await navigateTo({type:'run-list'});}else throw error;} }
+    if (selected && page==='runs') { const id=selected;try{await refreshRunWorkspace();}catch(error){if(error.status===404&&selected===id&&page==='runs'){run=null;selected=null;await navigateTo({type:'run-list'});}else throw error;} }
     const platform=await api('platform'),power=platform.keep_awake;
     if(!$('platform-version'))document.querySelector('.topbar').insertAdjacentHTML('beforeend','<small id="platform-version" class="muted"></small>');
     document.querySelector('.brand .version').textContent=platform.service?platform.service.version:'';
@@ -107,7 +137,7 @@ function renderRun() {
   $('run-status').innerHTML = badge(run.status)+(run.identity_read_only?' · 只读历史副本，不接管原执行':'');
   $('run-id').textContent = run.id+' · '+(run.created_by||'未署名')+(run.archived_at?' · 已归档':'');
   if($('archive-run'))$('archive-run').textContent=run.archived_at?'取消归档':'归档';
-  const simulation = Object.values(run.implementations).some(entry => Object.values(implementationOptions(entry)).some(b => b.kind === 'mock' || b.simulation));
+  const simulation = run.simulation ?? Object.values(run.implementations).some(entry => Object.values(implementationOptions(entry)).some(b => b.kind === 'mock' || b.simulation));
   $('simulation-label').hidden = !simulation;
   const ended = run.identity_read_only || ['completed','terminated','continued'].includes(run.status);
   $('pause-run').textContent = run.status === 'paused' ? '▷ 恢复' : 'Ⅱ 暂停';
@@ -128,14 +158,22 @@ function loadSettings(){
   $('run-settings-readonly').innerHTML=`${['running','paused'].includes(run.status)&&!run.superseded_by?'<label><input type="checkbox" id="follow-loop-updates" '+(run.follow_loop_updates?'checked':'')+'> 跟随此 Loop 后续发布的版本</label>':''}<p>目标和限制属于独立 Timeline；修改后由 Agent 检查并向用户汇报。</p>${run.timeline_id?'<button data-work-timeline="'+esc(run.timeline_id)+'">查看 Timeline 与进度</button>':''}${readerJSON('目标与限制',{目标:run.settings.objective,限制:run.settings.constraints},true)}${readerJSON('完整运行配置',run.settings)}`;
 }
 function renderInspect() {
-  const signature = pretty([run.id,filterNode,activeTab,run.executions,run.history,run.settings.revision,run.tasks,run.records,run.agent_sessions,run.task_dependencies]);
+  const wanted=visibleRunView();
+  const ready=!run.workspace_view||Object.keys(wanted).every(key=>run.workspace_view[key]===wanted[key]);
+  const signature = pretty([run.id,filterNode,wanted,ready,run.executions,run.history,run.history_total,run.changed_tasks,run.settings.revision,run.tasks,run.records,run.agent_sessions,run.task_dependencies,run.agent_tasks,run.notifications,run.events,run.hook_firings]);
   if(inspectSignature===signature)return;inspectSignature=signature;
   document.querySelectorAll('[data-tab]').forEach(el=>el.classList.toggle('selected',el.dataset.tab===activeTab));
   let content='';
-  if(['records','task-history','hooks','tasks'].includes(activeTab)) {
+  if(!ready&&activeTab!=='task-history'){
+    content='<p class="empty-inline" role="status">正在读取运行记录…</p>';
+  } else if(['records','task-history','hooks','tasks'].includes(activeTab)) {
     content=renderV2Inspect(activeTab);
   } else if(activeTab==='history') {
     content = run.history.slice().reverse().map(h=>`<div class="timeline-row"><time>${time(h.at)}</time><div><span class="event-type">${esc(h.kind)}</span>${esc(h.message)}${h.detail?`<details><summary>查看记录</summary><pre>${esc(pretty(h.detail))}</pre></details>`:''}</div></div>`).join('');
+    if(run.history_total>0){
+      const end=runHistoryOffset+run.history.length;
+      content+=`<div class="run-pagination"><button data-history-offset="${Math.max(0,runHistoryOffset-50)}" ${runHistoryOffset?'':'disabled'}>← 更新的记录</button><span>${runHistoryOffset+1}–${end} / ${run.history_total} 条</span><button data-history-offset="${end}" ${end<run.history_total?'':'disabled'}>更早的记录 →</button></div>`;
+    }else if(!content)content='<p class="empty-inline">暂无变更记录。</p>';
   } else if(activeTab==='decisions') {
     content = run.executions.filter(e=>['approval','decision','unresolved'].includes(e.status) && e.implementation.kind!=='agent').map(e=>task(e)).join('');
     const waiting = run.executions.filter(e=>e.status==='waiting' && e.implementation.kind==='event');
@@ -143,13 +181,18 @@ function renderInspect() {
     if(!content) content = '<div class="empty-inline">当前无需决策。Engine 会在到达决策节点时创建任务。</div>';
   }
   $('inspect').innerHTML = content;
+  if(!ready)safely(refreshRunWorkspace);
 }
 function task(e) {
   return `<div class="task-card"><h2>${esc(nodeLabel(e.node))}</h2>${waitDetails(e)}${readerJSON('输入',e.inputs,true)}${readerJSON('结果与执行记录',e)}</div>`;
 }
 
-function details(id) {
-  const e = run.executions.find(x=>x.id===id); if(!e)return;
+async function details(id) {
+  const attempt=run.executions.find(e=>e.id===id),runId=run.id;
+  if(!attempt)return;
+  const current=await api(runWorkspacePath(runId,{task:attempt.task_id}));
+  const e=current.executions.find(x=>x.id===id);
+  if(!e||run.id!==runId)return;
   $('detail-title').textContent=nodeLabel(e.node)+' · '+e.id;
   const origin=run.tasks?.[e.task_id]?.origin;
   const cause=origin?.fallback?'进入兜底节点':origin?.entry?'入口任务':origin?.route_id?'事件触发 · '+origin.route_id:origin?.agent?'Agent 安排':origin?.execution?'脚本安排':origin?.user?'用户安排':'历史记录';
@@ -163,6 +206,7 @@ document.addEventListener('click',event=>safely(async()=>{
   if(d.run){await selectRun(d.run);return;}
   if(d.node){filterNode=d.node;activeTab='task-history';inspectSignature='';renderInspect();return;}
   if(d.tab){activeTab=d.tab;renderInspect();if(button.classList.contains('run-issues'))$('inspect').scrollIntoView({block:'start'});return;}
+  if(d.historyOffset!==undefined){runHistoryOffset=Number(d.historyOffset);renderInspect();return;}
   if(d.exec){selectedTask=run.executions.find(e=>e.id===d.exec)?.task_id;selectedAttempt=d.exec;syncRunTaskRoute();activeTab='task-history';inspectSignature='';renderInspect();if(selectedTask)requestAnimationFrame(()=>locateGraphTask(selectedTask));return;}
   if(d.create){await openCreate(d.create);return;}
   if(d.validate){const c=catalog.find(x=>x.key===d.validate);const r=await api('validate',c);toast(r.valid?'验证通过 · '+r.warnings.join('；'):r.errors.join('；'));return;}
@@ -179,7 +223,7 @@ document.addEventListener('click',event=>safely(async()=>{
 
   }
 }));
-document.addEventListener('keydown',e=>{if(e.key==='Enter' && e.target.matches('tr[data-exec]'))details(e.target.dataset.exec);});
+document.addEventListener('keydown',e=>{if(e.key==='Enter' && e.target.matches('tr[data-exec]'))safely(()=>details(e.target.dataset.exec));});
 document.addEventListener('input',e=>{if(e.target.id.startsWith('result-'))drafts[e.target.id.slice(7)]=e.target.value;if(e.target.id.startsWith('event-'))drafts[e.target.id.slice(6)]=e.target.value;});
 
 async function loadCatalog(){

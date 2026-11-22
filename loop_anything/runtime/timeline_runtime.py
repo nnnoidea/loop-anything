@@ -107,23 +107,27 @@ def agent_exited(run, runtime, error=None, scope_task=None):
                   detail={'failures': counter['agent_failures'], 'error': str(error)})
 
 
-def result_summary(node, port, value):
-    """Keep the author's selected result facts readable after the source Run is gone."""
-    parts = []
+def result_readings(node, outputs):
+    """Select the scalar fields declared for these outputs, in display order."""
     fields = node.get('readout')
     for field in fields if isinstance(fields,list) else []:
         if not isinstance(field,dict) or not isinstance(field.get('path'),str) or not field.get('label'):
             continue
         source = field['path'].split('.')
-        if source[:2] != ['outputs',port]:
+        if len(source)<2 or source[0]!='outputs':
             continue
         try:
-            fact = path(value,source[2:])
+            fact = path(outputs,source[1:])
         except (TypeError,ValueError,KeyError,IndexError):
             continue
         if isinstance(fact,(str,int,float,bool)) and str(fact).strip():
-            parts.append(' '.join(str(v) for v in (field['label'],fact,field.get('unit')) if v is not None and v!=''))
-    return ' · '.join(parts)
+            yield {'label': field['label'], 'value': fact, 'unit': field.get('unit'), 'source': 'outputs'}
+
+
+def result_summary(node, port, value):
+    """Keep the author's selected result facts readable after the source Run is gone."""
+    return ' · '.join(' '.join(str(v) for v in (r['label'],r['value'],r['unit']) if v is not None and v!='')
+                      for r in result_readings(node, {port:value}))
 
 
 class TimelineRuntime:

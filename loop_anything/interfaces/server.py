@@ -176,6 +176,10 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                     query['root_only']=query['root_only']=='true'
                 self.send(platform_tools.call('list_runs',query))
             elif len(parts) == 3 and parts[:2] == ['api', 'runs']:
+                if query.get('view') == 'workspace':
+                    from loop_anything.interfaces.run_workspace import read_workspace
+                    self.send(read_workspace(store, engine.timeline_runtime, parts[2], query), compressible=True)
+                    return
                 current = store.get(parts[2])
                 from loop_anything.interfaces.agent_tasks import task_list
                 current['agent_tasks'] = task_list(current, engine.timeline_runtime)

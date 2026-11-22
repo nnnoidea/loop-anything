@@ -61,15 +61,30 @@ const resultDialog=document.createElement('dialog');resultDialog.id='task-result
 $('task-result-close').onclick=()=>resultDialog.close();
 let resultTask=null;
 function renderTaskResult(){
-  const task=run.tasks[resultTask],node=run.loop_definition.nodes[task.spec.node],attempt=run.executions.find(e=>e.id===$('task-result-attempt').value);
+  const data=resultTask?.snapshot;
+  if(!data||data.id!==run?.id)return;
+  const task=data.tasks[resultTask.id],node=data.loop_definition.nodes[task.spec.node],attempt=data.executions.find(e=>e.id===$('task-result-attempt').value);
   $('task-result-title').textContent=taskLabel(task)+' · 运行结果';
   const outputs=Object.entries(attempt?.outputs||{});
-  $('task-result-content').innerHTML=`<p>${badge(attempt?.status||task.status)} <span class="small muted">${esc(task.id)}${attempt?' · 第 '+attempt.attempt+' 次执行':''}</span></p>${outputs.length?outputs.map(([port,value])=>`<section class="result-section"><h3>${esc(run.loop_definition.records[node.outputs[port]?.record_type]?.title||port)}</h3>${resultWithSchema(value,run.loop_definition.records[node.outputs[port]?.record_type]||{},attempt,port)}</section>`).join(''):`<p class="empty-inline">${attempt?.status==='completed'?'本次执行已完成，没有声明的输出。':'本次执行尚未提交结果。'}</p>`}${taskError(attempt)}${!attempt||attempt.id===task.execution_id?taskWaitReasons(task):''}${attempt?.implementation.kind==='agent'?`<div class="toolbar"><button data-result-terminal="${esc(attempt.id)}">查看会话记录</button>${!['completed','terminated'].includes(run.status)?`<button data-result-resume="${esc(attempt.id)}">${attempt.worker_active?'打开会话':'恢复会话'}</button>`:''}</div>`:''}`;
+  $('task-result-content').innerHTML=`<p>${badge(attempt?.status||task.status)} <span class="small muted">${esc(task.id)}${attempt?' · 第 '+attempt.attempt+' 次执行':''}</span></p>${outputs.length?outputs.map(([port,value])=>`<section class="result-section"><h3>${esc(data.loop_definition.records[node.outputs[port]?.record_type]?.title||port)}</h3>${resultWithSchema(value,data.loop_definition.records[node.outputs[port]?.record_type]||{},attempt,port)}</section>`).join(''):`<p class="empty-inline">${attempt?.status==='completed'?'本次执行已完成，没有声明的输出。':'本次执行尚未提交结果。'}</p>`}${taskError(attempt)}${!attempt||attempt.id===task.execution_id?taskWaitReasons(task):''}${attempt?.implementation.kind==='agent'?`<div class="toolbar"><button data-result-terminal="${esc(attempt.id)}">查看会话记录</button>${!['completed','terminated'].includes(run.status)?`<button data-result-resume="${esc(attempt.id)}">${attempt.worker_active?'打开会话':'恢复会话'}</button>`:''}</div>`:''}`;
 }
 async function openTaskResult(taskId){
-  run=await api('runs/'+run.id);resultTask=taskId;const attempts=run.executions.filter(e=>e.task_id===taskId);
-  $('task-result-attempt').replaceChildren(...attempts.map(e=>new Option(`第 ${e.attempt} 次 · ${labels[e.status]||e.status}`,e.id)));if(attempts.length)$('task-result-attempt').value=attempts.at(-1).id;
-  $('task-result-attempt').disabled=!attempts.length;renderTaskResult();resultDialog.showModal();
+  const request={id:taskId,runId:run.id};resultTask=request;
+  $('task-result-title').textContent=taskLabel(run.tasks[taskId])+' · 运行结果';
+  $('task-result-content').textContent='正在读取任务结果…';
+  const select=$('task-result-attempt');select.replaceChildren();select.disabled=true;
+  if(!resultDialog.open)resultDialog.showModal();
+  try{
+    const snapshot=await api(runWorkspacePath(request.runId,{task:taskId}));
+    if(resultTask!==request||!resultDialog.open||run?.id!==request.runId)return;
+    if(!snapshot.tasks[taskId])throw new Error('找不到该任务。');
+    request.snapshot=snapshot;
+    const attempts=snapshot.executions.filter(e=>e.task_id===taskId);
+    select.replaceChildren(...attempts.map(e=>new Option(`第 ${e.attempt} 次 · ${labels[e.status]||e.status}`,e.id)));
+    if(attempts.length)select.value=attempts.at(-1).id;
+    select.disabled=!attempts.length;
+    renderTaskResult();
+  }catch(error){if(resultTask===request&&resultDialog.open)$('task-result-content').textContent=error.message;}
 }
 $('task-result-attempt').onchange=renderTaskResult;
 const resumeDialog=document.createElement('dialog');resumeDialog.id='resume-agent-dialog';resumeDialog.innerHTML='<form id="resume-agent-form"><div class="dialog-heading"><h2>恢复 Agent 会话</h2><button type="button" id="resume-agent-close" aria-label="关闭恢复会话">×</button></div><p id="resume-agent-notice" class="small muted"></p><div class="candidate-identity"><label>CLI<select id="resume-agent-provider"><option value="codex">Codex</option><option value="claude">Claude Code</option><option value="custom">其他 CLI</option></select></label><label>原生 session ID<input id="resume-agent-id" required placeholder="该次 CLI 执行的真实会话 ID"></label></div><label>工作目录<input id="resume-agent-cwd" placeholder="沿用原执行目录"></label><p id="resume-agent-identity-note" class="small muted"></p><label>想继续讨论或处理什么？<textarea id="resume-agent-message" rows="3" required placeholder="例如：解释这次结果，并指出还有哪些未验证的假设"></textarea></label><details><summary>恢复命令（每行一个参数，或 JSON 数组）</summary><textarea id="resume-agent-command" class="code" rows="5" required></textarea><p class="small muted">使用 {{session_id}} 和 {{prompt}} / {{prompt_file}}。请保留所需 CLI 配置；不会自动添加模型或权限参数。</p></details><p id="resume-agent-error" role="alert"></p><div class="dialog-tasks"><button class="primary" id="resume-agent-submit">恢复并继续</button></div></form>';document.body.append(resumeDialog);
@@ -87,7 +102,7 @@ $('resume-agent-provider').onchange=()=>{const provider=$('resume-agent-provider
 $('resume-agent-form').onsubmit=async event=>{
   event.preventDefault();$('resume-agent-submit').disabled=true;
   try{const value=await api(`runs/${encodeURIComponent(resumeTarget.runId)}/executions/${encodeURIComponent(resumeTarget.executionId)}/resume`,{revision:resumeTarget.revision,previous_native_session:resumeTarget.native,provider:$('resume-agent-provider').value,native_session_id:$('resume-agent-id').value.trim(),command:readArgv($('resume-agent-command').value),message:$('resume-agent-message').value,...($('resume-agent-cwd').value.trim()?{cwd:$('resume-agent-cwd').value.trim()}:{})});resumeDialog.close();await openTerminal(resumeTarget.executionId,value.session_id);if(value.attached&&terminalView){terminalView.notice='此会话已在运行，本次要求尚未发送。请在终端输入：'+$('resume-agent-message').value;$('terminal-error').textContent=terminalView.notice;}}
-  catch(error){$('resume-agent-error').textContent=error.message;const current=await api('runs/'+resumeTarget.runId);resumeTarget.revision=current.revision;}
+  catch(error){$('resume-agent-error').textContent=error.message;const current=await api(runWorkspacePath(resumeTarget.runId));resumeTarget.revision=current.revision;}
   finally{$('resume-agent-submit').disabled=false;}
 };
 document.addEventListener('click',event=>{const button=event.target.closest('button');if(!button)return;const d=button.dataset;

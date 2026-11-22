@@ -53,7 +53,7 @@ async function openRun(route){
   const notice=toast('正在打开运行详情…',0);
   const timeout=setTimeout(()=>request.controller.abort(),25000);
   try{
-    return await api('runs/'+encodeURIComponent(route.id),undefined,{signal:request.controller.signal});
+    return await api(runWorkspacePath(route.id,{task:route.task}),undefined,{signal:request.controller.signal});
   }catch(error){
     if(request.controller.signal.aborted)throw new Error('加载运行详情超时，请重试。');
     throw error;
@@ -113,7 +113,7 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
       populateMeta();renderEditor();renderProperties();
     }else if(route.type==='run'){
       if(previous.type!=='run')runReturns.set(route.id,structuredClone(previous));
-      if(previous.type!=='run'||previous.id!==route.id){document.querySelector('.run-menu').open=false;taskOrder='graph';taskRound='';restoreRounds(route.id);}
+      if(previous.type!=='run'||previous.id!==route.id){document.querySelector('.run-menu').open=false;taskOrder='graph';taskRound='';runHistoryOffset=0;restoreRounds(route.id);}
       if(previous.type!=='run'||previous.id!==route.id||previous.task!==route.task||route.task){
         if(route.task){taskOrder='graph';taskRound='';}
         selectedTask=route.task || null;selectedAttempt=null;activeTab='task-history';taskStatus='';taskSearch='';inspectSignature='';

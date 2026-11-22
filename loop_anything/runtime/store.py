@@ -302,7 +302,7 @@ class Store:
         from loop_anything.runtime.flow_agent import materialize
         materialize(run, run.get('configuration', {}).get('package_root'))
 
-    def _load(self, db, run_id):
+    def _load(self, db, run_id, *, include_history=True, include_arrangements=True):
         row = db.execute('SELECT document FROM runs WHERE id=?', (run_id,)).fetchone()
         if row is None:
             raise Invalid('Unknown Run')
@@ -314,6 +314,9 @@ class Store:
         from loop_anything.runtime.timelines import materialize_retained
         materialize_retained(run)
         for field, section in self.PARTS.items():
+            if field == 'history' and not include_history:
+                run[field] = []
+                continue
             rows = [json.loads(r[0]) for r in db.execute(
                 'SELECT document FROM timeline_parts WHERE run_id=? AND section=? ORDER BY position', (run_id, section))]
             if field == 'tasks':
@@ -329,7 +332,8 @@ class Store:
             from loop_anything.runtime import business_state
             run['business_state']=business_state.load(db,timeline)
             run['records']=business_state.results(db,run['timeline_id'])
-            run['arrangements']=business_state.arrangements(db,run['timeline_id'],run['tasks'])
+            if include_arrangements:
+                run['arrangements']=business_state.arrangements(db,run['timeline_id'],run['tasks'])
         return run
 
     def _save(self, db, run):

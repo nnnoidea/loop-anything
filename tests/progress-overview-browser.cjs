@@ -51,6 +51,18 @@ withPlatform(async({url,page,tool,api})=>{
   const plain=await fetch(runURL,{headers:{'Accept-Encoding':'gzip;q=0'}});
   assert.equal(plain.headers.get('content-encoding'),null);
   assert.equal((await plain.json()).id,(await encoded.json()).id);
+  const workspaceURL=runURL+'?view=workspace&tab=task-history';
+  const overview=await (await fetch(workspaceURL)).json();
+  assert.equal(overview.id,run.run_id);
+  assert.equal(Object.keys(overview.tasks).length,36);
+  assert.equal(overview.history.length,0);
+  assert.deepEqual(overview.records,{});
+  assert(overview.executions.every(e=>!Object.hasOwn(e,'inputs')&&!Object.hasOwn(e,'task_spec')));
+  const historyPage=await (await fetch(runURL+'?view=workspace&tab=history')).json();
+  assert.equal(historyPage.history.length,50);
+  assert(historyPage.history_total>50);
+  const older=await (await fetch(runURL+'?view=workspace&tab=history&offset=50')).json();
+  assert(!older.history.some(e=>historyPage.history.some(other=>other.id===e.id)));
   const portable=(await tool('export_timeline',{timeline_id:run.timeline_id})).document;
   const copied=(await tool('import_timeline',{document:portable,request_id:randomUUID()})).timeline;
   const copy=await tool('read_work_timeline',{timeline_id:copied.id});
@@ -63,13 +75,13 @@ withPlatform(async({url,page,tool,api})=>{
   await history.locator('summary').click();
   await history.getByRole('link',{name:/首批验证/}).waitFor();
   const currentLink=page.locator('#work-run-relation .timeline-run-link');
-  await page.route(runURL,route=>route.fulfill({status:502,contentType:'text/plain',body:'Gateway unavailable'}),{times:1});
+  await page.route(workspaceURL,route=>route.fulfill({status:502,contentType:'text/plain',body:'Gateway unavailable'}),{times:1});
   await currentLink.click();
   await page.locator('#toast').filter({hasText:/无法打开运行详情.*HTTP 502/}).waitFor();
   let release;
   const delay=new Promise(resolve=>{release=resolve;});
   let requests=0;
-  await page.route(runURL,async route=>{requests++;await delay;await route.continue();});
+  await page.route(workspaceURL,async route=>{requests++;await delay;await route.continue();});
   try{
     await currentLink.click();
     await page.locator('#toast').filter({hasText:'正在打开运行详情…'}).waitFor();
@@ -78,7 +90,7 @@ withPlatform(async({url,page,tool,api})=>{
   }finally{release();}
   const hero=page.locator('#run-progress');
   await hero.getByText('找不到文件或目录 official_aggregate.json。',{exact:true}).waitFor();
-  await page.unroute(runURL);
+  await page.unroute(workspaceURL);
   assert(!(await hero.innerText()).includes('Traceback'));
   const graph=page.locator('.process-canvas');
   const toggles=graph.locator('[data-round-toggle]');
@@ -92,6 +104,9 @@ withPlatform(async({url,page,tool,api})=>{
   assert(!(await graph.innerText()).includes('/scratch/'));
   const member=graph.locator('[data-task-row]').filter({hasText:'score-A-3'}).locator('.task-card-main');
   const memberId=await member.getAttribute('data-task-focus');
+  const taskDetail=await (await fetch(workspaceURL+'&task='+encodeURIComponent(memberId))).json();
+  assert(taskDetail.executions.some(e=>e.task_id===memberId&&e.outputs?.review?.accuracy===87.5));
+  assert(taskDetail.executions.filter(e=>e.task_id!==memberId).every(e=>!Object.hasOwn(e,'inputs')));
   await member.click();
   await page.reload();
   await page.locator('#task-detail').getByRole('heading',{name:'评估输出',exact:true}).waitFor();

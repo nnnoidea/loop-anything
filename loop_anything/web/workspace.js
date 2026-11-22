@@ -1,5 +1,5 @@
 'use strict';
-let selectedTask=null,selectedAttempt=null,taskOrder='graph',taskSearch='',taskStatus='',taskRound='',taskEdit=null,taskChanges=new Map(),taskNumbers=new Map();
+let selectedTask=null,selectedAttempt=null,taskOrder='graph',taskSearch='',taskStatus='',taskRound='',taskEdit=null,taskChanges=new Set(),taskNumbers=new Map();
 const expandedRounds=new Set(),mobileTaskGraph=window.matchMedia('(max-width:650px)');
 const roundStateKey=id=>'loop-anything.open-rounds.'+id;
 function restoreRounds(id){
@@ -38,7 +38,7 @@ function taskBadge(item){return `<span class="badge ${esc(item.tasks.status)}">$
 function taskReadout(item,attempt=item.attempts.at(-1)){
   const fields=run.loop_definition.nodes[item.tasks.spec.node]?.readout;
   const facts=TaskHistory.readings(fields,attempt?.activity_progress,attempt?.outputs);
-  const results=facts.filter(f=>f.source==='outputs');
+  const results=attempt?.output_readout??facts.filter(f=>f.source==='outputs');
   return results.length?results:facts;
 }
 function taskSummary(item){
@@ -287,7 +287,12 @@ function sourceLinks(source){return (Array.isArray(source)?source:[source]).filt
 function routeAuditHTML(){return `${run.history.filter(h=>h.kind==='plan_built'&&h.detail?.omitted?.length).map(h=>`<details class="omitted-steps"><summary>未安排的步骤 · ${esc(h.detail.name)} · ${esc(taskTime(h.at))}</summary>${omittedStepsHTML(h.detail.omitted,h.detail.name)}</details>`).join('')}${run.history.filter(h=>h.kind==='route_fired'||h.kind==='route_skipped').map(h=>`<details class="omitted-steps"><summary>${h.kind==='route_skipped'?'路由已跳过':'事件触发'} · ${esc(h.detail.route_id)} → ${esc(h.detail.flow_agent?'内置流程 Agent':h.detail.plan)} · ${h.detail.batches.reduce((n,b)=>n+b.task_ids.length,0)} 项任务</summary><p>来源：<button class="text-button" data-task-focus="${esc(h.detail.task_id)}">${esc(taskLabel(run.tasks[h.detail.task_id]))}</button> · ${esc(h.detail.event)}</p>${resultView(h.detail)}</details>`).join('')}`;}
 document.addEventListener('toggle',event=>{
   const panel=event.target;
-  if(panel.matches?.('.route-audit[open]') && panel.children.length===1 && panel.dataset.auditRun===run?.id)panel.insertAdjacentHTML('beforeend',routeAuditHTML());
+  if(panel.matches?.('.route-audit[open]') && panel.children.length===1 && panel.dataset.auditRun===run?.id){
+    if(run.workspace_view&&!run.workspace_view.audit){
+      panel.insertAdjacentHTML('beforeend','<p class="empty-inline" role="status">正在读取推进记录…</p>');
+      safely(refreshRunWorkspace);
+    }else panel.insertAdjacentHTML('beforeend',routeAuditHTML());
+  }
 },true);
 function renderTaskHistory(){
   if(run.superseded_by && !Object.keys(run.tasks).length)return '<p class="empty-inline">这次历史运行没有节点记录。</p>';
@@ -308,7 +313,7 @@ function renderTaskHistory(){
     if(focusedRound!==undefined)graphElement('data-round-toggle',focusedRound)?.focus({preventScroll:true});
     if(focusedTask)graphElement('data-task-row',focusedTask)?.querySelector('.task-card-main')?.focus({preventScroll:true});
   });
-  taskChanges=new Map(run.history.filter(h=>h.detail?.before&&h.detail?.tasks).map(h=>[h.detail.tasks,h]));
+  taskChanges=new Set(run.changed_tasks??run.history.filter(h=>h.detail?.before&&h.detail?.tasks).map(h=>h.detail.tasks));
   const all=TaskHistory.rows(run),business=all.filter(i=>!i.tasks.origin?.flow_agent);
   taskNumbers=new Map(all.map((item,index)=>[item.tasks.id,index+1]));
   const selected=all.find(i=>i.tasks.id===selectedTask);
@@ -321,10 +326,12 @@ function renderTaskHistory(){
     (!taskRound||i.round===taskRound)&&(!query||[taskLabel(i.tasks),i.tasks.id,i.tasks.spec.ref,i.round].join(' ').toLowerCase().includes(query)));
   const rounds=[...new Set(all.map(i=>i.round).filter(Boolean))];
   const auditOpen=document.querySelector('.route-audit[open]')?.dataset.auditRun===run.id;
+  const auditPending=auditOpen&&run.workspace_view&&!run.workspace_view.audit;
+  const detailPending=selected&&run.workspace_view&&run.workspace_view.task!==selectedTask;
   const groups=[{round:'已开始',items:visible.filter(i=>i.started!==null)},{round:'尚未开始',items:visible.filter(i=>i.started===null&&!['completed','skipped','cancelled','stale'].includes(i.tasks.status))},{round:'未执行且已结束',items:visible.filter(i=>i.started===null&&['completed','skipped','cancelled','stale'].includes(i.tasks.status))}];
   const filtered=Boolean(filterNode||taskStatus||query);
   return `<div class="task-heading"><div><h2>节点进度</h2><p class="muted small">${business.length} 项任务${rounds.length?' · '+rounds.length+' 轮':''}${all.length>business.length?' · '+(all.length-business.length)+' 次流程决策':''}</p></div></div><div class="process-controls"><div class="segmented">${[['graph','节点图'],['time','时间顺序']].map(([id,label])=>`<button data-task-order="${id}" class="${taskOrder===id?'selected':''}" aria-pressed="${taskOrder===id}">${label}</button>`).join('')}</div>${rounds.length?`<label class="task-round-filter"><select id="task-round" aria-label="筛选轮次"><option value="">全部轮次</option>${rounds.map(r=>'<option value="'+esc(r)+'" '+(r===taskRound?'selected':'')+'>'+esc(r)+'</option>').join('')}</select></label>`:''}<label class="task-search-label"><span class="sr-only">查找任务</span><input id="task-search" placeholder="查找任务…" type="search" value="${esc(taskSearch)}"></label><label class="task-status-label"><span class="sr-only">任务状态</span><select id="task-status"><option value="">全部状态</option>${[...new Set(all.map(i=>i.tasks.status))].map(s=>`<option value="${esc(s)}" ${taskStatus===s?'selected':''}>${esc(labels[s]||s)}</option>`).join('')}</select></label>${filterNode?'<button id="clear-task-filter">清除节点筛选</button>':''}</div>
-  <div class="process-layout ${selected?'':'process-only'}"><section class="process-body">${visible.length?(taskOrder==='graph'?taskDependencyGraph(visible,filtered):groups.filter(g=>g.items.length).map(g=>`<details class="task-group" open><summary>${g.round} · ${g.items.length}</summary><div class="process-list">${g.items.map(taskCard).join('')}</div></details>`).join('')):'<p class="empty-inline">没有符合条件的任务</p>'}</section><aside id="task-detail" class="task-detail" ${selected?`data-task="${esc(selectedTask)}"`:'hidden'}>${selected?`<button class="close-task-detail" data-close-task aria-label="关闭节点详情">×</button><div id="task-detail-body">${taskDetails(selected)}</div>`:''}</aside></div><details class="route-audit" data-audit-run="${esc(run.id)}" ${auditOpen?'open':''}><summary>推进记录</summary>${auditOpen?routeAuditHTML():''}</details>`;
+  <div class="process-layout ${selected?'':'process-only'}"><section class="process-body">${visible.length?(taskOrder==='graph'?taskDependencyGraph(visible,filtered):groups.filter(g=>g.items.length).map(g=>`<details class="task-group" open><summary>${g.round} · ${g.items.length}</summary><div class="process-list">${g.items.map(taskCard).join('')}</div></details>`).join('')):'<p class="empty-inline">没有符合条件的任务</p>'}</section><aside id="task-detail" class="task-detail" ${selected?`data-task="${esc(selectedTask)}"`:'hidden'}>${selected?`<button class="close-task-detail" data-close-task aria-label="关闭节点详情">×</button><div id="task-detail-body">${detailPending?'<p class="empty-inline" role="status">正在读取节点详情…</p>':taskDetails(selected)}</div>`:''}</aside></div><details class="route-audit" data-audit-run="${esc(run.id)}" ${auditOpen?'open':''}><summary>推进记录</summary>${auditOpen?(auditPending?'<p class="empty-inline" role="status">正在读取推进记录…</p>':routeAuditHTML()):''}</details>`;
 }
 const editDialog=document.createElement('dialog');editDialog.id='task-edit-dialog';editDialog.innerHTML='<div class="dialog-heading"><h2 id="task-edit-title"></h2><button class="close-dialog" aria-label="关闭">×</button></div><div id="task-edit-error" role="alert"></div><form id="task-edit-form"><div id="task-edit-fields"></div><div class="dialog-tasks"><button type="button" class="close-dialog">取消</button><button type="submit" class="primary" id="task-edit-submit">确认操作</button></div></form>';document.body.append(editDialog);
 function openTaskEdit(kind,id=null){
