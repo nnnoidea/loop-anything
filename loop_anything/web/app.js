@@ -27,13 +27,31 @@ function promptHistory(record){return record&&Object.hasOwn(record,'prompt_text'
 let progressSignature = '', listSignature = '', inspectSignature = '';
 const time = t => new Date(t * 1000).toLocaleTimeString('zh-CN', {hour12:false});
 const nodeLabel = id => run?.loop_definition.nodes[id]?.label || id;
-async function api(url, data) {
-  const response = await fetch('/api/' + url, data === undefined ? {} : {method:'POST',headers:{'Content-Type':'application/json','X-Loop-Anything':'workspace'},body:JSON.stringify(data)});
-  const result = await response.json();
-  if (!response.ok){const error=new Error(result.error?.message || result.error || '请求失败');error.status=response.status;throw error;}
-  return result;
+async function api(url, data, {signal} = {}) {
+  const request = data === undefined ? {signal} : {signal,method:'POST',headers:{'Content-Type':'application/json','X-Loop-Anything':'workspace'},body:JSON.stringify(data)};
+  const response = await fetch('/api/' + url, request);
+  if (!response.ok){
+    const result=await response.json().catch(()=>null);
+    const error=new Error(result?.error?.message || result?.error || `请求失败（HTTP ${response.status}）`);
+    error.status=response.status;
+    throw error;
+  }
+  return response.json();
 }
-function toast(message) { $('toast').textContent = message; $('toast').style.display = 'block'; clearTimeout(toast.timer); toast.timer = setTimeout(() => $('toast').style.display = 'none', 5500); }
+function dismissToast(message){
+  if(toast.current!==message)return;
+  $('toast').style.display='none';
+  toast.current=null;
+}
+function toast(message,timeout=5500){
+  const notice=Symbol();
+  toast.current=notice;
+  $('toast').textContent=message;
+  $('toast').style.display='block';
+  clearTimeout(toast.timer);
+  if(timeout)toast.timer=setTimeout(()=>dismissToast(notice),timeout);
+  return notice;
+}
 async function safely(fn) { try { await fn(); } catch (error) { toast(error.message); } }
 function showPage() {
   $('settings-page').hidden=page!=='settings';

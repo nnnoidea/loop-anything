@@ -1,7 +1,9 @@
 """Local same-origin workspace for loop_definition authoring and run settings."""
 import json
 import base64
+import gzip
 import mimetypes
+import re
 import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -10,6 +12,22 @@ from pathlib import Path
 from urllib.parse import urlsplit, parse_qs, quote
 from loop_anything.runtime.model import Conflict, Invalid, validate
 from loop_anything.paths import platform_skill_directory
+
+
+def accepts_gzip(value):
+    for entry in value.lower().split(','):
+        encoding, *parameters = entry.split(';')
+        if encoding.strip() != 'gzip':
+            continue
+        for parameter in parameters:
+            name, _, weight = parameter.partition('=')
+            if name.strip() == 'q':
+                try:
+                    return 0 < float(weight) <= 1
+                except ValueError:
+                    return False
+        return True
+    return False
 
 
 def serve(store, engine, port, initial_run=None, protection=None, open_browser=False, host='127.0.0.1', mailbox=None, public_url=None, local_tasks_root=None):
@@ -42,11 +60,18 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 return not self.headers.get('Origin') and engine.communication.authorized({'request_id':parts[1],'token':parts[2]})
             return True
 
-        def send(self, data, status=200):
+        def send(self, data, status=200, compressible=False):
             content = json.dumps(data, ensure_ascii=False, separators=(',', ':')).encode()
+            encoded = compressible and len(content) >= 16_384 and accepts_gzip(self.headers.get('Accept-Encoding', ''))
+            if encoded:
+                content = gzip.compress(content, compresslevel=1, mtime=0)
             self.send_response(status)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
             self.send_header('Cache-Control', 'no-store')
+            if compressible:
+                self.send_header('Vary', 'Accept-Encoding')
+            if encoded:
+                self.send_header('Content-Encoding', 'gzip')
             self.send_header('Content-Length', str(len(content)))
             self.end_headers()
             self.wfile.write(content)
@@ -162,7 +187,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 current['task_dependencies'] = task_dependencies(current)
                 from loop_anything.runtime.timelines import public_status
                 current['status']=public_status(current)
-                self.send(current)
+                self.send(current, compressible=True)
             elif len(parts) == 4 and parts[:2] == ['api', 'runs'] and parts[3] == 'artifact':
                 from loop_anything.packaging.packages import load_installed
                 try:
@@ -223,8 +248,14 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                     self.send({'error': 'Not found'}, 404)
                     return
                 content = (root / filename).read_bytes()
+                if filename == 'index.html':
+                    from loop_anything.capabilities import LOADED_BUILD
+                    version = LOADED_BUILD.encode('ascii')
+                    content = re.sub(rb'((?:src|href)="/[\w.-]+\.(?:css|js))"',
+                                     lambda match: match[1]+b'?v='+version+b'"', content)
                 self.send_response(200)
                 self.send_header('Content-Type', mimetypes.guess_type(filename)[0] + '; charset=utf-8')
+                self.send_header('Cache-Control', 'no-cache')
                 self.send_header('Content-Security-Policy', "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'")
                 self.send_header('Content-Length', str(len(content)))
                 self.end_headers()

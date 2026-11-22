@@ -1,6 +1,7 @@
 'use strict';
 // Routes identify assets, draft editors and individual Runs; never mutate runtime state.
 let activeRoute={type:'home'}, navigationSerial=0;
+let pendingRunNavigation=null;
 const editorSessions=new Map(),runReturns=new Map(),routeScroll=new Map();
 function routeHash(route){
   if(route.type==='settings')return '#settings/'+(route.tab||'general');
@@ -46,8 +47,27 @@ function registerEditor(){
   editorSessions.set(editor.routeId,{editor,selection:null});
   return editor.routeId;
 }
+async function openRun(route){
+  const request={target:routeHash(route),controller:new AbortController()};
+  pendingRunNavigation=request;
+  const notice=toast('正在打开运行详情…',0);
+  const timeout=setTimeout(()=>request.controller.abort(),25000);
+  try{
+    return await api('runs/'+encodeURIComponent(route.id),undefined,{signal:request.controller.signal});
+  }catch(error){
+    if(request.controller.signal.aborted)throw new Error('加载运行详情超时，请重试。');
+    throw error;
+  }finally{
+    clearTimeout(timeout);
+    if(pendingRunNavigation===request)pendingRunNavigation=null;
+    dismissToast(notice);
+  }
+}
 async function navigateTo(route,{replace=false,external=false,capture=true}={}){
   if(route.type==='loop')route={type:'editor',id:route.key};
+  if(pendingRunNavigation?.target===routeHash(route))return false;
+  pendingRunNavigation?.controller.abort();
+  pendingRunNavigation=null;
   const previous=activeRoute,serial=++navigationSerial;
   routeScroll.set(routeHash(previous),window.scrollY);
   if(page==='communication'&&route.type==='communication'){
@@ -73,7 +93,7 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
     }
     if(route.type==='loop' && !catalog.some(c=>c.key===route.key))await loadCatalog();
     if(route.type==='loop' && !catalog.some(c=>c.key===route.key))throw new Error('找不到这个 Loop 版本，请返回 Loop 库。');
-    const nextRun=route.type==='run'?await api('runs/'+route.id):null;
+    const nextRun=route.type==='run'?await openRun(route):null;
     if(serial!==navigationSerial)return false;
     if(document.fullscreenElement===editorPage&&routeHash(route)!==routeHash(previous))await document.exitFullscreen();
     if(!external)history[replace?'replaceState':'pushState'](null,'',routeHash(route));
@@ -105,7 +125,7 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
   }catch(error){
     if(serial!==navigationSerial)return false;
     if(external){activeRoute={type:'catalog'};history.replaceState(null,'','#loop_definitions');page='catalog';showPage();updateNavigationUI();}
-    toast(error.message);return false;
+    toast(route.type==='run'?'无法打开运行详情 · '+error.message:error.message);return false;
   }
 }
 function navLink(route,label){return `<a href="${esc(routeHash(route))}" data-route-link>${esc(label)}</a>`;}

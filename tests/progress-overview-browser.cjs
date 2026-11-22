@@ -41,6 +41,16 @@ withPlatform(async({url,page,tool,api})=>{
     await new Promise(resolve=>setTimeout(resolve,250));
   }while(Date.now()<deadline);
   assert(externalRows.length===2 && externalRows.every(e=>e.metrics?.loss===0.24),'missing external readings');
+  const app=await fetch(url+'/');
+  assert.equal(app.headers.get('cache-control'),'no-cache');
+  assert.match(await app.text(),/src="\/workspace\.js\?v=[a-f0-9]{16}"/);
+  const runURL=url+'/api/runs/'+run.run_id;
+  const encoded=await fetch(runURL,{headers:{'Accept-Encoding':'gzip'}});
+  assert.equal(encoded.headers.get('content-encoding'),'gzip');
+  assert.equal(encoded.headers.get('vary'),'Accept-Encoding');
+  const plain=await fetch(runURL,{headers:{'Accept-Encoding':'gzip;q=0'}});
+  assert.equal(plain.headers.get('content-encoding'),null);
+  assert.equal((await plain.json()).id,(await encoded.json()).id);
   const portable=(await tool('export_timeline',{timeline_id:run.timeline_id})).document;
   const copied=(await tool('import_timeline',{document:portable,request_id:randomUUID()})).timeline;
   const copy=await tool('read_work_timeline',{timeline_id:copied.id});
@@ -52,9 +62,23 @@ withPlatform(async({url,page,tool,api})=>{
   assert.equal(await history.locator('.timeline-run-link').isVisible(),false);
   await history.locator('summary').click();
   await history.getByRole('link',{name:/首批验证/}).waitFor();
-  await page.locator('#work-run-relation .timeline-run-link').click();
+  const currentLink=page.locator('#work-run-relation .timeline-run-link');
+  await page.route(runURL,route=>route.fulfill({status:502,contentType:'text/plain',body:'Gateway unavailable'}),{times:1});
+  await currentLink.click();
+  await page.locator('#toast').filter({hasText:/无法打开运行详情.*HTTP 502/}).waitFor();
+  let release;
+  const delay=new Promise(resolve=>{release=resolve;});
+  let requests=0;
+  await page.route(runURL,async route=>{requests++;await delay;await route.continue();});
+  try{
+    await currentLink.click();
+    await page.locator('#toast').filter({hasText:'正在打开运行详情…'}).waitFor();
+    await currentLink.click();
+    assert.equal(requests,1);
+  }finally{release();}
   const hero=page.locator('#run-progress');
   await hero.getByText('找不到文件或目录 official_aggregate.json。',{exact:true}).waitFor();
+  await page.unroute(runURL);
   assert(!(await hero.innerText()).includes('Traceback'));
   const graph=page.locator('.process-canvas');
   const toggles=graph.locator('[data-round-toggle]');
