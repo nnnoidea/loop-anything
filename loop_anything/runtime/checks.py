@@ -2,7 +2,7 @@
 from loop_anything.runtime.model import Invalid, path
 
 
-ARITY = {'eq': 2, 'le': 2, 'ge': 2, 'add': 2, 'len': 1, 'and': None, 'or': None}
+ARITY = {'eq': 2, 'le': 2, 'ge': 2, 'add': 2, 'subtract': 2, 'multiply': 2, 'len': 1, 'and': None, 'or': None}
 
 
 def validate_expression(expr):
@@ -41,6 +41,10 @@ def evaluate(expr, context, *, read_path=None):
         return args[0] >= args[1]
     if op == 'add':
         return args[0] + args[1]
+    if op in ('subtract', 'multiply'):
+        if any(type(value) not in (int, float) for value in args):
+            raise Invalid('Arithmetic expects two numbers')
+        return args[0] - args[1] if op == 'subtract' else args[0] * args[1]
     if op == 'len':
         return len(args[0])
     raise Invalid('Unknown assertion operation')

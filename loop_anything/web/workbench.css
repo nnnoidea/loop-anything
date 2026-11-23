@@ -93,6 +93,16 @@
 #timeline-observations .work-entry>strong {display:block;margin-bottom:6px}
 .observation-chart {background:var(--canvas);padding:12px;border-radius:8px}
 .observation-chart figcaption {line-height:1.6}
+.interactive-chart{position:relative}
+.interactive-chart svg{cursor:crosshair}
+.interactive-chart svg:focus-visible{outline:2px solid var(--blue);outline-offset:2px;border-radius:4px}
+.chart-guide{stroke:#8191a6;stroke-width:1;stroke-dasharray:3 3;pointer-events:none}
+[data-chart-point].active{r:4.5px;stroke:#fff;stroke-width:1.4px}
+.chart-tooltip{position:absolute;z-index:3;top:10px;max-width:min(360px,calc(100% - 16px));padding:8px 10px;background:#fff;color:var(--ink);border:1px solid var(--line);border-radius:8px;box-shadow:0 3px 14px #18283d24;font-size:12px;line-height:1.45;pointer-events:none}
+.chart-tooltip dl{margin:4px 0 0;display:grid;gap:4px}
+.chart-tooltip dl>div{display:flex;justify-content:space-between;gap:10px}
+.chart-tooltip dt{min-width:0;overflow-wrap:anywhere}
+.chart-tooltip dd{margin:0;flex:none;font-variant-numeric:tabular-nums}
 @media(max-width:650px){
   .sidebar {border-right:0;border-bottom:1px solid var(--line)}
   .page-heading .toolbar {flex-direction:row;flex-wrap:wrap}

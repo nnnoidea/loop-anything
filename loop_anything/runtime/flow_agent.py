@@ -48,6 +48,13 @@ def materialize(run, root=None):
                         '完成后 finish。等待交给平台，不能用持续轮询代替等待。',
         'inputs': {'trigger': {'type': 'object'}},
         'outputs': {'decision': {'record_type': RECORD}},
+        'details': [{'title': '流程决策', 'fields': [
+            {'label': '结论', 'format': 'text', 'sources': [
+                {'path': 'outputs.decision.conclusion'}, {'path': 'outputs.decision.summary'}, {'path': 'outputs.decision'}]},
+            {'label': '下一步', 'format': 'text', 'sources': [{'path': 'outputs.decision.next_step'}]},
+            {'label': '依据', 'format': 'folded', 'sources': [
+                {'path': 'outputs.decision.reason'}, {'path': 'outputs.decision.rationale'}]},
+        ]}],
     }
     run['implementations'][NODE] = {'options': {'default': implementation}, 'default': 'default'}
 

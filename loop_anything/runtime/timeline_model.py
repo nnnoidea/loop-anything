@@ -104,6 +104,11 @@ def validate_v2(bp, implementations):
             check_schema(schema)
         for name, node in nodes.items():
             location = ['nodes', name]
+            if 'details' in node:
+                from loop_anything.runtime.node_details import validate
+                location = ['nodes', name, 'details']
+                validate(node['details'])
+                location = ['nodes', name]
             if 'completion_checks' in node:
                 raise Invalid('Use assertions with eq for node completion checks')
             if 'terminal' in node:

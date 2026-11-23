@@ -296,9 +296,8 @@ class Store:
             snapshot = run['configuration']
             configured = effective(json.loads(package[0]), snapshot['package_root'], snapshot['config'])
             run.update({k: configured[k] for k in ('loop_definition', 'implementations')})
-        if run['loop_definition']['id']=='platform-collaboration' and run.get('collaboration',{}).get('coordinator_implementation'):
-            run['implementations']['coordinate']={'options': {'default': copy.deepcopy(run['collaboration']['coordinator_implementation'])}, 'default': 'default'}
-
+        from loop_anything.runtime.collaboration import materialize as materialize_collaboration
+        materialize_collaboration(run)
         from loop_anything.runtime.flow_agent import materialize
         materialize(run, run.get('configuration', {}).get('package_root'))
 

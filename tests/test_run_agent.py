@@ -566,56 +566,64 @@ print(json.dumps({'event':'completed','envelope':{'outputs':{'result':'fabricate
         self.assertEqual(content, [{'label': '摘要', 'text': '保留这个方向'},
                                    {'label': '报告', 'file': {'port': 'decision', 'path': ['report'], 'name': 'report.md'}}])
 
-    def test_workspace_projects_selected_research_training_details(self):
+    def test_workspace_projects_declared_details_for_selected_node(self):
         from loop_anything.interfaces.run_workspace import read_workspace
 
-        self.bp['id'] = 'auto-research-structure'
-        self.bp['nodes']['train_model'] = copy.deepcopy(self.bp['nodes']['wait'])
-        self.implementations['train_model'] = self.implementations['wait']
+        def selection(path):
+            return {'path': path}
+
+        self.bp['nodes']['wait']['details'] = [{'title': '质检摘要', 'fields': [
+            {'label': '样本', 'sources': [selection('inputs.missing'), selection('inputs.sample.count')], 'unit': '条'},
+            {'label': '总容量', 'sources': [{'op': 'multiply', 'args': [selection('parameters.workers'), 2]}]},
+            {'label': '时长', 'sources': [selection('timing.observed_seconds')], 'format': 'duration'},
+            {'label': '决定', 'sources': [selection('outputs.result.reviews.*.message')], 'format': 'text'},
+            {'label': '依据', 'sources': [selection('outputs.result.reason')], 'format': 'folded'},
+        ], 'observation': {'key': 'phase', 'value': 'processing'}}]
         self.start()
-        self.complete('init', settings={'objective': 'Review'}, tasks=[task_spec('train', 'train_model')])
+        self.complete('init', settings={'objective': 'Review'}, tasks=[task_spec('quality', 'wait')])
         self.engine.tick(self.id)
         with self.store.edit(self.id) as run:
-            attempt = next(e for e in run['executions'] if e['task_id'] == 'train')
+            attempt = next(e for e in run['executions'] if e['task_id'] == 'quality')
             attempt.update(status='completed', started_at=1, completed_at=180,
-                           external_id='merlin-job', parameters={'num_train_epochs': 1.5, 'script': '/private/command'},
-                           inputs={'dataset': {'data_manifest': {'train_rows': 360000}, 'dataset_ref': '/private/data'},
-                                   'action': {'stages': {'train': {'executor': {'resources': {
-                                       'gpu': 4, 'instances': 2, 'gpu_type': 'H100', 'queue_name': 'private-queue'}}}}}})
-            for stamp, status, accepted in [(10, 'QUEUED', True), (20, 'RUNNING', False), (60, 'RUNNING', True)]:
+                           external_id='custom-job', parameters={'workers': 4, 'script': '/private/command'},
+                           inputs={'sample': {'count': 360000}, 'dataset_ref': '/private/data'},
+                           outputs={'result': {'reviews': [{'message': '已通过'}, {'message': '已通过'}], 'reason': '抽样一致'}})
+            for stamp, status, accepted in [(10, 'queued', True), (20, 'processing', False), (60, 'processing', True)]:
                 self.store.log(run, 'transition', status, attempt['id'],
-                               {'accepted': accepted, 'detail': {'external_status': status}})
+                               {'accepted': accepted, 'detail': {'phase': status}})
                 run['history'][-1]['at'] = stamp
 
         base = read_workspace(self.store, self.engine.timeline_runtime, self.id, {})
-        self.assertTrue(base['tasks']['train']['has_node_details'])
-        self.assertNotIn('node_details', base['tasks']['train'])
-        detail = read_workspace(self.store, self.engine.timeline_runtime, self.id, {'task': 'train'})
-        self.assertEqual(detail['workspace_view']['task'], 'train')
-        self.assertEqual([(f['label'], f['value']) for f in detail['tasks']['train']['node_details']['facts']],
-                         [('训练样本', 360000), ('训练轮数', 1.5), ('GPU 配置', 8), ('训练时长（约）', 120)])
-        payload = json.dumps(detail)
-        self.assertNotIn('/private/', payload)
-        self.assertNotIn('private-queue', payload)
+        self.assertTrue(base['tasks']['quality']['has_node_details'])
+        self.assertNotIn('node_details', base['tasks']['quality'])
+        detail = read_workspace(self.store, self.engine.timeline_runtime, self.id, {'task': 'quality'})
+        self.assertEqual(detail['workspace_view']['task'], 'quality')
+        panel = detail['tasks']['quality']['node_details']
+        self.assertEqual([(f['label'], f['value']) for f in panel['facts']],
+                         [('样本', 360000), ('总容量', 8), ('时长', 120)])
+        self.assertEqual(panel['sections'], [{'label': '决定', 'items': ['已通过'], 'supplementary': False},
+                                             {'label': '依据', 'items': ['抽样一致'], 'supplementary': True}])
+        self.assertNotIn('/private/', json.dumps(detail))
 
-    def test_research_node_details_show_judgments_without_action_snapshots(self):
-        from loop_anything.interfaces.research_node_details import node_details
+    def test_retained_details_fallback_stays_within_the_same_loop(self):
+        from loop_anything.runtime.node_details import specifications
 
-        result = {'outputs': {'decision': {'judgments': [{'conclusion': '优先扩大样本覆盖',
-                    'evidence_summary': '两组评分可比较', 'next_step': '再验证一次', 'id': 'internal-id'}],
-                    'action_requests': [{'summary': '安排第四轮训练', 'stages': {'train': {'path': '/private/path'}}}]}}}
-        detail = node_details('design_research', result)
-        self.assertEqual([(s['label'], s['items']) for s in detail['sections']],
-                         [('结论', ['优先扩大样本覆盖']), ('下一步', ['再验证一次']),
-                          ('实验方案', ['安排第四轮训练']), ('依据', ['两组评分可比较'])])
-        self.assertNotIn('internal-id', json.dumps(detail))
-        self.assertNotIn('/private/path', json.dumps(detail))
-        merge = node_details('train_model', {'status': 'completed', 'started_at': 10, 'completed_at': 26,
-                             'parameters': {'source_checkpoints': ['a', 'b'], 'second_weight': .25},
-                             'inputs': {'action': {'stages': {'train': {'implementation': 'user_script'}}}}})
-        self.assertEqual(merge['title'], '模型合并')
-        self.assertEqual([(f['label'], f['value']) for f in merge['facts']],
-                         [('两个来源模型的权重', '75 : 25'), ('合并用时', 16)])
+        previous = self.store.publish(self.bp, self.implementations)['key']
+        other = self.store.publish(dict(self.bp, id='another-loop'), self.implementations)['key']
+        specs = [{'title': '任务结果', 'fields': [{'label': '结果', 'sources': [{'path': 'outputs.result'}]}]}]
+        node = self.bp['nodes']['reason']
+        self.bp['nodes'] = {'reason': dict(node, details=specs), 'older': node,
+                            'other': node, 'with_original': dict(node, details=[{'title': '旧版本字段'}])}
+        run = {'loop_definition': self.bp, 'loop_key': 'new', 'retained_nodes': {
+            'older': {'node_id': 'reason', 'loop_key': previous},
+            'other': {'node_id': 'reason', 'loop_key': other},
+            'with_original': {'node_id': 'reason', 'loop_key': previous},
+        }}
+        with self.store.connection() as db:
+            result = specifications(db, run)
+        self.assertEqual(result['older'], specs)
+        self.assertNotIn('other', result)
+        self.assertEqual(result['with_original'], [{'title': '旧版本字段'}])
 
 
 if __name__ == '__main__':

@@ -404,7 +404,8 @@ function durationValue(seconds){
   return minutes?`${minutes} 分 ${seconds%60} 秒`:`${seconds} 秒`;
 }
 function readingsHTML(readings,className='node-facts'){
-  return `<dl class="${className}">${readings.map(r=>`<div><dt>${esc(r.label)}</dt><dd>${esc(r.format==='duration'?durationValue(r.value):readingValue(r.value))}${r.unit?' '+esc(r.unit):''}</dd></div>`).join('')}</dl>`;
+  const value=r=>r.format==='duration'?durationValue(r.value):r.format==='percent'?new Intl.NumberFormat('zh-CN',{style:'percent',maximumFractionDigits:2}).format(r.value):readingValue(r.value);
+  return `<dl class="${className}">${readings.map(r=>`<div><dt>${esc(r.label)}</dt><dd>${esc(value(r))}${r.unit?' '+esc(r.unit):''}</dd></div>`).join('')}</dl>`;
 }
 function nodeDetailsHTML(task,pending){
   const details=task.node_details;

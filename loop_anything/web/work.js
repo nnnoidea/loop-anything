@@ -112,6 +112,80 @@ function importSourceHTML(data){
   if(!source)return '';
   return `<section class="timeline-portable"><div class="timeline-portable-heading"><span class="timeline-mark" aria-hidden="true">◎</span><div><strong>从已有进度继续</strong><p>让 Agent 读取这条 Timeline，选择本平台的相关 Loop 推进任务。</p></div></div><details><summary>导入来源</summary><p class="small muted">${esc(source.exported_at?'导出于 '+runDate(source.exported_at):'来自另一份 Timeline')}。已导入任务进度，外部文件仍保留为引用。</p></details></section>`;
 }
+function chartPoint(x,y,r,label,position,value,className=''){
+  return `<circle class="${className}" cx="${x}" cy="${y}" r="${r}" data-chart-point data-chart-label="${esc(label)}" data-chart-position="${esc(position)}" data-chart-value="${esc(value)}"/>`;
+}
+function chartGuide(top,bottom){
+  return `<line class="chart-guide" x1="0" x2="0" y1="${top}" y2="${bottom}" visibility="hidden"/>`;
+}
+function chartTooltip(){
+  return '<output class="chart-tooltip" aria-live="polite" hidden></output>';
+}
+const chartSelections=new WeakMap();
+let selectedChart=null;
+function chartSelection(svg){
+  if(!chartSelections.has(svg)){
+    const groups=new Map();
+    for(const point of svg.querySelectorAll('[data-chart-point]')){
+      const x=point.cx.baseVal.value;
+      if(!groups.has(x))groups.set(x,[]);
+      groups.get(x).push(point);
+    }
+    chartSelections.set(svg,{groups:[...groups].sort(([a],[b])=>a-b),index:-1});
+  }
+  return chartSelections.get(svg);
+}
+function chartSelect(svg,index){
+  const state=chartSelection(svg), tooltip=svg.parentElement.querySelector('.chart-tooltip');
+  const guide=svg.querySelector('.chart-guide');
+  if(index===state.index)return;
+  for(const point of state.groups[state.index]?.[1]||[])point.classList.remove('active');
+  state.index=index;
+  if(index<0){
+    if(selectedChart===svg)selectedChart=null;
+    tooltip.hidden=true;guide.setAttribute('visibility','hidden');return;
+  }
+  if(selectedChart&&selectedChart!==svg)chartSelect(selectedChart,-1);
+  selectedChart=svg;
+  const [x,points]=state.groups[index];
+  guide.setAttribute('x1',x);guide.setAttribute('x2',x);guide.setAttribute('visibility','visible');
+  for(const point of points)point.classList.add('active');
+  tooltip.innerHTML=`<strong>${esc(points[0].dataset.chartPosition)}</strong><dl>${points.map(point=>
+    `<div><dt>${esc(point.dataset.chartLabel)}</dt><dd>${esc(point.dataset.chartValue)}</dd></div>`).join('')}</dl>`;
+  tooltip.hidden=false;
+  const screen=new DOMPoint(x,0).matrixTransform(svg.getScreenCTM());
+  const frame=svg.parentElement.getBoundingClientRect(), width=tooltip.offsetWidth, offset=screen.x-frame.left;
+  tooltip.style.left=Math.max(8,Math.min(offset+10,frame.width-width-8))+'px';
+}
+function chartPointer(event){
+  const svg=event.target.closest('svg[data-interactive-chart]');
+  if(!svg||!svg.getScreenCTM())return;
+  const {x}=new DOMPoint(event.clientX,event.clientY).matrixTransform(svg.getScreenCTM().inverse());
+  const {groups}=chartSelection(svg);
+  let nearest=0;
+  for(let i=1;i<groups.length;i++)if(Math.abs(groups[i][0]-x)<Math.abs(groups[nearest][0]-x))nearest=i;
+  chartSelect(svg,nearest);
+}
+document.addEventListener('pointermove',chartPointer);
+document.addEventListener('pointerdown',event=>{
+  if(selectedChart&&!selectedChart.contains(event.target))chartSelect(selectedChart,-1);
+  chartPointer(event);
+});
+document.addEventListener('pointerout',event=>{
+  const svg=event.target.closest('svg[data-interactive-chart]');
+  if(svg&&!svg.contains(event.relatedTarget)&&!svg.matches(':focus-visible')&&event.pointerType!=='touch')chartSelect(svg,-1);
+});
+document.addEventListener('focusout',event=>{
+  if(event.target.matches('svg[data-interactive-chart]'))chartSelect(event.target,-1);
+});
+document.addEventListener('keydown',event=>{
+  const svg=event.target;
+  if(!svg.matches('svg[data-interactive-chart]'))return;
+  const {groups,index}=chartSelection(svg),last=groups.length-1;
+  const next={ArrowLeft:Math.max(0,index-1),ArrowRight:Math.min(last,index+1),Home:0,End:last,Escape:-1};
+  if(!Object.hasOwn(next,event.key))return;
+  event.preventDefault();chartSelect(svg,next[event.key]);
+});
 function observationFigure(series){
   const lines=series.filter(s=>s.points.length);
   if(!lines.length)return '';
@@ -126,10 +200,10 @@ function observationFigure(series){
     const color=colors[i%colors.length];
     const points=line.points.map(([a,b])=>x(a)+','+y(b)).join(' ');
     return '<g fill="'+color+'"><polyline fill="none" stroke="'+color+'" stroke-width="2" points="'+points+'"/>'+
-      line.points.map(([a,b])=>'<circle cx="'+x(a)+'" cy="'+y(b)+'" r="3"><title>'+esc(line.label+' · '+a+' / '+b)+'</title></circle>').join('')+'</g>';
+      line.points.map(([a,b])=>chartPoint(x(a),y(b),3,line.label,a,b)).join('')+'</g>';
   }).join('');
   const number=n=>esc(new Intl.NumberFormat('zh-CN',{maximumFractionDigits:3}).format(n));
-  return '<figure class="observation-chart"><svg viewBox="0 0 560 135" role="img" aria-label="'+esc(lines.map(s=>s.label).join('、'))+'"><path d="M46 12 V108 H536" fill="none" stroke="#b7c1ce"/><g fill="currentColor" font-size="10"><text x="2" y="22">'+number(y1)+'</text><text x="2" y="110">'+number(y0)+'</text><text x="46" y="126">'+number(x0)+'</text><text text-anchor="end" x="536" y="126">'+number(x1)+'</text></g>'+marks+'</svg><figcaption>'+
+  return '<figure class="observation-chart interactive-chart"><svg viewBox="0 0 560 135" data-interactive-chart tabindex="0" role="group" aria-label="'+esc(lines.map(s=>s.label).join('、'))+'，使用方向键查看数据点"><path d="M46 12 V108 H536" fill="none" stroke="#b7c1ce"/><g fill="currentColor" font-size="10"><text x="2" y="22">'+number(y1)+'</text><text x="2" y="110">'+number(y0)+'</text><text x="46" y="126">'+number(x0)+'</text><text text-anchor="end" x="536" y="126">'+number(x1)+'</text></g>'+chartGuide(12,108)+marks+'</svg>'+chartTooltip()+'<figcaption>'+
     lines.map((s,i)=>'<span style="color:'+colors[i%colors.length]+'">● '+esc(s.label)+'</span>').join(' · ')+'</figcaption></figure>';
 }
 function observationHTML(data,featured){

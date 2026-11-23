@@ -8,6 +8,20 @@ from loop_anything.runtime.store import Store
 
 LOOP_ID = 'platform-collaboration'
 EVENT = 'platform-assistance-result'
+COLLECT_DETAILS = [{'title': '协作结果', 'fields': [
+    {'label': '回复', 'format': 'text', 'sources': [{'path': 'outputs.result.result.confirmation'},
+        {'path': 'outputs.result.result.summary'}, {'path': 'outputs.result.result'}]},
+]}]
+
+
+def materialize(run):
+    """Apply the platform's built-in presentation to existing collaboration Runs."""
+    if run['loop_definition']['id'] != LOOP_ID:
+        return
+    run['loop_definition']['nodes']['collect']['details'] = copy.deepcopy(COLLECT_DETAILS)
+    coordinator = run.get('collaboration', {}).get('coordinator_implementation')
+    if coordinator:
+        run['implementations']['coordinate'] = {'options': {'default': copy.deepcopy(coordinator)}, 'default': 'default'}
 
 
 def ensure_loop(store):

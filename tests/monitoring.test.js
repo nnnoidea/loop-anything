@@ -1,6 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
 const script=fs.readFileSync('loop_anything/web/monitoring.js','utf8');
 const ctx=vm.createContext({document:{addEventListener(){}},esc:v=>String(v??'').replaceAll('<','&lt;'),Date,Intl,time:t=>String(t)});
+vm.runInContext(fs.readFileSync('loop_anything/web/work.js','utf8'),ctx);
 vm.runInContext(script,ctx);
 test('monitor metrics preserve zero and do not invent units',()=>{
   ctx.m={metrics:[],sample:{data:{available:0,done:true,status:'running'}}};
@@ -13,6 +14,15 @@ test('history gaps are not connected or changed to zero',()=>{
   const html=vm.runInContext("monitorTrend(samples,{key:'n',label:'count',unit:''})",ctx);
   assert.match(html,/M42.0 92.0 M512.0 27.0/);
   assert.doesNotMatch(html,/ L/);
+  assert.match(html,/tabindex="0"/);
+  assert.match(html,/data-chart-value="0"/);
+  assert.match(html,/chart-tooltip/);
+});
+test('result charts expose the exact submitted readings to the interactive plot',()=>{
+  ctx.series=[{label:'precision',points:[[1,.876543],[2,0]]},{label:'recall',points:[[1,.5]]}];
+  const html=vm.runInContext('observationFigure(series)',ctx);
+  assert.match(html,/data-chart-position="1" data-chart-value="0\.876543"/);
+  assert.match(html,/data-chart-label="recall" data-chart-position="1"/);
 });
 test('conditions stay readable and run links reuse existing route',()=>{
   assert.equal(vm.runInContext("monitorCondition({op:'ge',args:[{path:'gpu.available'},8]})",ctx),'gpu.available ≥ 8');
