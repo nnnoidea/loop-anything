@@ -8,6 +8,10 @@ from loop_anything.runtime.store import Store
 
 LOOP_ID = 'platform-collaboration'
 EVENT = 'platform-assistance-result'
+NODE_PURPOSES = {
+    'coordinate': '推进用户交付的协作任务，梳理已有结果。需要外援时发出请求，收到回复后继续完成原任务。',
+    'collect': '等待一项外援请求完成，将收到的回复交回原协作任务，供后续判断和继续执行。',
+}
 COLLECT_DETAILS = [{'title': '协作结果', 'fields': [
     {'label': '回复', 'format': 'text', 'sources': [{'path': 'outputs.result.result.confirmation'},
         {'path': 'outputs.result.result.summary'}, {'path': 'outputs.result.result'}]},
@@ -18,6 +22,8 @@ def materialize(run):
     """Apply the platform's built-in presentation to existing collaboration Runs."""
     if run['loop_definition']['id'] != LOOP_ID:
         return
+    for node_id, description in NODE_PURPOSES.items():
+        run['loop_definition']['nodes'][node_id].setdefault('description', description)
     run['loop_definition']['nodes']['collect']['details'] = copy.deepcopy(COLLECT_DETAILS)
     coordinator = run.get('collaboration', {}).get('coordinator_implementation')
     if coordinator:
@@ -29,7 +35,7 @@ def ensure_loop(store):
         with store.connection() as db:
             if db.execute('SELECT 1 FROM loop_definitions WHERE key=?',(store._collaboration_loop_key,)).fetchone():return store._collaboration_loop_key
     definition = {
-        'schema_version': 2, 'id': LOOP_ID, 'version': '1', 'name': '独立协作',
+        'schema_version': 2, 'id': LOOP_ID, 'version': '2', 'name': '独立协作',
         'requires': ['standalone_collaboration'],
         'description': '平台内置：独立会话的协作、结果等待和原会话续跑。',
         'entry': 'coordinate', 'defaults': {'message': ''},
@@ -40,9 +46,11 @@ def ensure_loop(store):
         'records': {'result': {'type': 'object'}},
         'nodes': {
             'coordinate': {'label': '推进协作',
+                'description': NODE_PURPOSES['coordinate'],
                 'instructions': '完成 inputs.message；必要时临时求援并挂起，恢复原 session 后继续。',
                 'inputs': {'message': {'type': 'string'}}, 'outputs': {'result': {'record_type': 'result'}}},
-            'collect': {'label': '等待外援结果', 'instructions': '由平台把外援终态写入关联事件，复用事件等待。',
+            'collect': {'label': '等待外援结果', 'description': NODE_PURPOSES['collect'],
+                'instructions': '由平台把外援终态写入关联事件，复用事件等待。',
                 'inputs': {}, 'outputs': {'result': {'record_type': 'result'}}}},
         'seed': {'id': 'coordinate', 'node': 'coordinate', 'inputs': {'message': {'run': 'message'}},
                  'outputs': {'result': {'id': 'collaboration.result'}}}, 'plans': {}}

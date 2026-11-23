@@ -63,7 +63,10 @@ function renderProperties(){
   renderAuthorProperties();renderEditorDetail();
   renderEditorNodeStates();setEditorDetailTab(editor.detailTab||'info');
 }
-function selectEditor(selection){return navigateTo({type:'editor',id:editor.routeId,...(selection.node?{node:selection.node}:{})});}
+function selectEditor(selection){
+  editor.detailTab='info';
+  return navigateTo({type:'editor',id:editor.routeId,...(selection.node?{node:selection.node}:{})});
+}
 window.addEventListener('message',event=>{
   if(page!=='editor'||!editor)return;
   const id=overviewNodeMessage(event,$('editor-flow-overview').querySelector('iframe'),editor.loop_definition.nodes);
@@ -82,7 +85,7 @@ function renderReport(report){
 }
 document.addEventListener('click',event=>safely(async()=>{
   const el=event.target.closest('button,[data-edit-edge]');if(!el)return;const d=el.dataset;
-  if(d.editorNode){el.closest('dialog')?.close();if(d.editorDetail)editor.detailTab=d.editorDetail;await navigateTo({type:'editor',id:editor.routeId,node:d.editorNode,...(d.editorImplementation?{implementation:d.editorImplementation}:{})});return;}
+  if(d.editorNode){el.closest('dialog')?.close();editor.detailTab=d.editorDetail||'info';await navigateTo({type:'editor',id:editor.routeId,node:d.editorNode,...(d.editorImplementation?{implementation:d.editorImplementation}:{})});return;}
   if(el.id==='close-editor-detail'){await selectEditor({});return;}
   if(d.inputLocation){await locateEditorIssue(JSON.parse(d.inputLocation));return;}
   if(d.openDraft){await navigateTo({type:'editor',id:d.openDraft});return;}

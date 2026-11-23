@@ -19,19 +19,30 @@ test('node introduction is authored for users while full execution guidance stay
   const fields=new Map(),node={label:'Prepare',description:'准备本轮工作。',instructions:'完整 <执行指令>',inputs:{},outputs:{},skills:[{name:'Method',content:'完整方法'}]};
   const field=id=>{if(!fields.has(id))fields.set(id,{});return fields.get(id);};
   const ctx=vm.createContext({$:field,editor:{loop_definition:{nodes:{init:node}},implementations:{}},
-    editSelection:{node:'init'},activeRoute:{},implementationOptions:()=>({}),loopRelationships:()=>[],nodeFlowHTML:()=>'',
+    editSelection:{node:'init'},activeRoute:{},implementationOptions:entry=>entry||{},
+    defaultImplementation:()=> 'manual',nodeSignalsHTML:()=>'',kindNames:{command:'脚本'},
     esc:value=>String(value).replaceAll('<','&lt;').replaceAll('>','&gt;'),pretty:value=>JSON.stringify(value)});
+  const app=fs.readFileSync('loop_anything/web/app.js','utf8');
+  vm.runInContext(app.slice(app.indexOf('function nodePurposeHTML('),app.indexOf('const randomKey')),ctx);
   const source=fs.readFileSync('loop_anything/web/authoring.js','utf8');
   vm.runInContext(source,ctx);
   vm.runInContext('renderAuthorProperties()',ctx);
   const html=field('editor-properties').innerHTML;
-  assert.match(html,/节点用途/);assert.match(html,/准备本轮工作。/);
+  assert.ok(html.indexOf('职责与目的') < html.indexOf('输入契约'));
+  assert.match(html,/准备本轮工作。/);
   assert.doesNotMatch(html.split('<h3>执行说明与 Skill</h3>')[0],/执行指令/);
   assert.match(html,/<details class="reader-detail" ><summary>给执行者的说明<\/summary><pre>完整 &lt;执行指令&gt;<\/pre>/);
   assert.match(html,/完整方法/);assert.match(html,/完整节点定义/);
+  ctx.editor.implementations.init={manual:{kind:'command',label:'执行方案'}};
+  ctx.activeRoute.implementation='manual';
+  vm.runInContext('renderAuthorProperties()',ctx);
+  assert.match(field('editor-properties').innerHTML,/职责与目的[\s\S]+准备本轮工作。/);
+  assert.match(field('editor-properties').innerHTML,/执行方案/);
+  delete ctx.activeRoute.implementation;
+  delete ctx.editor.implementations.init;
   delete node.description;
   vm.runInContext('renderAuthorProperties()',ctx);
-  assert.doesNotMatch(field('editor-properties').innerHTML,/节点用途|尚未填写/);
+  assert.doesNotMatch(field('editor-properties').innerHTML,/职责与目的|尚未填写/);
   assert.match(field('editor-properties').innerHTML,/完整 &lt;执行指令&gt;/);
 });
 

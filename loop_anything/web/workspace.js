@@ -485,6 +485,7 @@ function taskDetails(item,pending,detailError){
   ].filter(Boolean);
   return `<div class="task-detail-heading"><h2>${esc(taskLabel(t))}</h2>${taskBadge(item)}</div>
     ${item.round||t.spec.ref?`<p class="task-detail-reference small muted">${esc([item.round,t.spec.ref].filter(Boolean).join(' · '))}</p>`:''}
+    ${nodePurposeHTML(run.loop_definition.nodes[t.spec.node])}
     ${request?`<div class="wait-description"><strong>等待用户处理</strong><p>${esc(request)}</p></div>`:''}
     ${detailError?runViewErrorHTML(detailError):''}
     ${cancelled?`<section class="task-cancellation"><h3>取消原因</h3><p>${esc(taskSummary(item))}</p></section>`:

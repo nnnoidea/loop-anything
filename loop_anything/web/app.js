@@ -2,6 +2,12 @@
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pretty = value => JSON.stringify(value, null, 2);
+
+function nodePurposeHTML(node){
+  const description=typeof node?.description==='string'?node.description.trim():'';
+  if(!description)return '';
+  return `<section class="node-purpose"><h3>职责与目的</h3><p>${esc(description)}</p></section>`;
+}
 // getRandomValues also works on ordinary HTTP inside the team network.
 const randomKey = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('');
 const labels = {planned:'已安排',waiting_user:'等待用户',stale:'待核实',continued:'已接续',waiting_configuration:'等待配置',skipped:'已跳过',running:'运行中',ready:'待执行',executing:'执行中',waiting:'等待中',completed:'已完成',paused:'已暂停',terminated:'已终止',cancelled:'已取消',fault:'执行失败',retrying:'等待重试',blocked:'输入未就绪',decision:'等待 Agent',approval:'等待确认',unresolved:'转移待决策'};

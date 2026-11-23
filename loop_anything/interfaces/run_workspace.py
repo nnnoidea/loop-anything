@@ -283,7 +283,7 @@ def read_workspace(store, runtime, run_id, query):
     waiting = next((e for e in run['executions'] if e['id'] == selected_execution and
                     e['implementation']['kind'] in ('approval', 'event') and e['status'] in ('approval', 'waiting')), None)
     view['loop_definition'] = dict(pick(loop, 'id', 'name', 'version'),
-                                   nodes={key: pick(node, 'label', 'readout', 'outputs') for key, node in nodes.items()},
+                                   nodes={key: pick(node, 'label', 'description', 'readout', 'outputs') for key, node in nodes.items()},
                                    records=output_schemas(loop, nodes[waiting['node']]) if waiting else {})
     view['tasks'] = {ident: task_summary(task) for ident, task in run['tasks'].items()}
     for ident, task in run['tasks'].items():
