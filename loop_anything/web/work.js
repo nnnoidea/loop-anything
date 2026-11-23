@@ -115,55 +115,65 @@ function importSourceHTML(data){
 function chartPoint(x,y,r,label,position,value,className=''){
   return `<circle class="${className}" cx="${x}" cy="${y}" r="${r}" data-chart-point data-chart-label="${esc(label)}" data-chart-position="${esc(position)}" data-chart-value="${esc(value)}"/>`;
 }
-function chartGuide(top,bottom){
-  return `<line class="chart-guide" x1="0" x2="0" y1="${top}" y2="${bottom}" visibility="hidden"/>`;
-}
-function chartTooltip(){
-  return '<output class="chart-tooltip" aria-live="polite" hidden></output>';
+function chartTooltip(showTime=false){
+  return `<output class="chart-tooltip" aria-live="polite" hidden><span class="sr-only" data-chart-description></span><span data-chart-reading></span>${showTime?'<small data-chart-time aria-hidden="true"></small>':''}</output>`;
 }
 const chartSelections=new WeakMap();
 let selectedChart=null;
 function chartSelection(svg){
   if(!chartSelections.has(svg)){
-    const groups=new Map();
-    for(const point of svg.querySelectorAll('[data-chart-point]')){
-      const x=point.cx.baseVal.value;
-      if(!groups.has(x))groups.set(x,[]);
-      groups.get(x).push(point);
-    }
-    chartSelections.set(svg,{groups:[...groups].sort(([a],[b])=>a-b),index:-1});
+    const legends=new Map([...svg.parentElement.querySelectorAll('[data-chart-legend]')].map(el=>[el.dataset.chartLegend,el]));
+    const points=[...svg.querySelectorAll('[data-chart-point]')].map(element=>({element,
+      x:element.cx.baseVal.value,y:element.cy.baseVal.value,legend:legends.get(element.parentElement.dataset.chartSeries)
+    })).sort((a,b)=>a.x-b.x||a.y-b.y);
+    chartSelections.set(svg,{points,index:-1});
   }
   return chartSelections.get(svg);
 }
 function chartSelect(svg,index){
-  const state=chartSelection(svg), tooltip=svg.parentElement.querySelector('.chart-tooltip');
-  const guide=svg.querySelector('.chart-guide');
+  const figure=svg.parentElement,state=chartSelection(svg),tooltip=figure.querySelector('.chart-tooltip');
   if(index===state.index)return;
-  for(const point of state.groups[state.index]?.[1]||[])point.classList.remove('active');
+  const previous=state.points[state.index];
+  previous?.element.classList.remove('active');previous?.legend?.classList.remove('active');
   state.index=index;
   if(index<0){
     if(selectedChart===svg)selectedChart=null;
-    tooltip.hidden=true;guide.setAttribute('visibility','hidden');return;
+    tooltip.hidden=true;return;
   }
   if(selectedChart&&selectedChart!==svg)chartSelect(selectedChart,-1);
   selectedChart=svg;
-  const [x,points]=state.groups[index];
-  guide.setAttribute('x1',x);guide.setAttribute('x2',x);guide.setAttribute('visibility','visible');
-  for(const point of points)point.classList.add('active');
-  tooltip.innerHTML=`<strong>${esc(points[0].dataset.chartPosition)}</strong><dl>${points.map(point=>
-    `<div><dt>${esc(point.dataset.chartLabel)}</dt><dd>${esc(point.dataset.chartValue)}</dd></div>`).join('')}</dl>`;
+  const {x,y,element,legend}=state.points[index];
+  element.classList.add('active');legend?.classList.add('active');
+  const {chartLabel,chartPosition,chartValue}=element.dataset;
+  tooltip.querySelector('[data-chart-description]').textContent=`${chartLabel}，${chartPosition}，`;
+  tooltip.querySelector('[data-chart-reading]').textContent=chartValue;
+  const time=tooltip.querySelector('[data-chart-time]');
+  if(time)time.textContent=chartPosition;
   tooltip.hidden=false;
-  const screen=new DOMPoint(x,0).matrixTransform(svg.getScreenCTM());
-  const frame=svg.parentElement.getBoundingClientRect(), width=tooltip.offsetWidth, offset=screen.x-frame.left;
-  tooltip.style.left=Math.max(8,Math.min(offset+10,frame.width-width-8))+'px';
+  const screen=new DOMPoint(x,y).matrixTransform(svg.getScreenCTM());
+  const frame=figure.getBoundingClientRect(),width=tooltip.offsetWidth,height=tooltip.offsetHeight;
+  const left=screen.x-frame.left-width/2,above=screen.y-frame.top-height-7;
+  tooltip.style.left=Math.max(2,Math.min(left,frame.width-width-2))+'px';
+  tooltip.style.top=(above>=0?above:screen.y-frame.top+7)+'px';
 }
 function chartPointer(event){
+  if(event.type==='pointermove'&&event.pointerType==='touch')return;
   const svg=event.target.closest('svg[data-interactive-chart]');
-  if(!svg||!svg.getScreenCTM())return;
-  const {x}=new DOMPoint(event.clientX,event.clientY).matrixTransform(svg.getScreenCTM().inverse());
-  const {groups}=chartSelection(svg);
-  let nearest=0;
-  for(let i=1;i<groups.length;i++)if(Math.abs(groups[i][0]-x)<Math.abs(groups[nearest][0]-x))nearest=i;
+  const matrix=svg?.getScreenCTM();
+  if(!matrix)return;
+  const {points,index}=chartSelection(svg);
+  let nearest=-1,distance=(event.pointerType==='touch'?22:11)**2;
+  for(const [i,{x,y}] of points.entries()){
+    const dx=matrix.a*x+matrix.c*y+matrix.e-event.clientX;
+    const dy=matrix.b*x+matrix.d*y+matrix.f-event.clientY;
+    const squared=dx*dx+dy*dy;
+    if(squared<distance||(squared===distance&&i===index)){nearest=i;distance=squared;}
+  }
+  if(event.type==='pointerdown'&&nearest>=0&&nearest===index){
+    const {x,y}=points[index],samePoint=p=>p.x===x&&p.y===y;
+    const next=points.findIndex((point,i)=>i>index&&samePoint(point));
+    nearest=next<0?points.findIndex(samePoint):next;
+  }
   chartSelect(svg,nearest);
 }
 document.addEventListener('pointermove',chartPointer);
@@ -181,7 +191,7 @@ document.addEventListener('focusout',event=>{
 document.addEventListener('keydown',event=>{
   const svg=event.target;
   if(!svg.matches('svg[data-interactive-chart]'))return;
-  const {groups,index}=chartSelection(svg),last=groups.length-1;
+  const {points,index}=chartSelection(svg),last=points.length-1;
   const next={ArrowLeft:Math.max(0,index-1),ArrowRight:Math.min(last,index+1),Home:0,End:last,Escape:-1};
   if(!Object.hasOwn(next,event.key))return;
   event.preventDefault();chartSelect(svg,next[event.key]);
@@ -199,12 +209,12 @@ function observationFigure(series){
   const marks=lines.map((line,i)=>{
     const color=colors[i%colors.length];
     const points=line.points.map(([a,b])=>x(a)+','+y(b)).join(' ');
-    return '<g fill="'+color+'"><polyline fill="none" stroke="'+color+'" stroke-width="2" points="'+points+'"/>'+
+    return '<g fill="'+color+'" data-chart-series="'+i+'"><polyline fill="none" stroke="'+color+'" stroke-width="2" points="'+points+'"/>'+
       line.points.map(([a,b])=>chartPoint(x(a),y(b),3,line.label,a,b)).join('')+'</g>';
   }).join('');
   const number=n=>esc(new Intl.NumberFormat('zh-CN',{maximumFractionDigits:3}).format(n));
-  return '<figure class="observation-chart interactive-chart"><svg viewBox="0 0 560 135" data-interactive-chart tabindex="0" role="group" aria-label="'+esc(lines.map(s=>s.label).join('、'))+'，使用方向键查看数据点"><path d="M46 12 V108 H536" fill="none" stroke="#b7c1ce"/><g fill="currentColor" font-size="10"><text x="2" y="22">'+number(y1)+'</text><text x="2" y="110">'+number(y0)+'</text><text x="46" y="126">'+number(x0)+'</text><text text-anchor="end" x="536" y="126">'+number(x1)+'</text></g>'+chartGuide(12,108)+marks+'</svg>'+chartTooltip()+'<figcaption>'+
-    lines.map((s,i)=>'<span style="color:'+colors[i%colors.length]+'">● '+esc(s.label)+'</span>').join(' · ')+'</figcaption></figure>';
+  return '<figure class="observation-chart interactive-chart"><svg viewBox="0 0 560 135" data-interactive-chart tabindex="0" role="group" aria-label="'+esc(lines.map(s=>s.label).join('、'))+'，使用方向键查看数据点"><path d="M46 12 V108 H536" fill="none" stroke="#b7c1ce"/><g fill="currentColor" font-size="10"><text x="2" y="22">'+number(y1)+'</text><text x="2" y="110">'+number(y0)+'</text><text x="46" y="126">'+number(x0)+'</text><text text-anchor="end" x="536" y="126">'+number(x1)+'</text></g>'+marks+'</svg>'+chartTooltip()+'<figcaption>'+
+    lines.map((s,i)=>'<span data-chart-legend="'+i+'" style="color:'+colors[i%colors.length]+'">● '+esc(s.label)+'</span>').join(' · ')+'</figcaption></figure>';
 }
 function observationHTML(data,featured){
   if(!data||(!data.views.length&&!data.arrangements.length))return '';
