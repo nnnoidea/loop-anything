@@ -38,11 +38,14 @@ Check an external condition and execute once when it holds:
 ```
 
 - Choose either positive seconds in `every` or a timezone-aware ISO `at`. Explicitly starting a past `at` executes once immediately; reading old registrations never backfills execution.
+- Optional `until` is the exclusive deadline for starting new checks/actions. Use an ISO timestamp with timezone (for example `"until":"2026-11-23T20:00:00+08:00"`). At the cutoff the schedule expires; an action already started can finish. Use the separate `timeout` for a per-invocation runtime limit.
 - `check` exits 0 when satisfied, 1 to continue waiting, and another code on check failure. Checks default to a 60-second maximum. Conditional jobs default to one action; set `repeat:true` for intentional periodic use.
 - An unconditional `every` repeats by default, measured from the previous completion, without overlap or accumulating missed occurrences. `repeat:false` runs once.
 - `command` and `check` are argv arrays; invoke a shell explicitly for shell syntax. Optional fields include `cwd`, `stdin`, positive-seconds `timeout`, and `agent_cli`. An interactive CLI can set `terminal:true` and receive instructions via `{{prompt}}` / `{{prompt_file}}`.
 - `register task.json --id ID` changes the definition for the next explicit start. Normal check/action failures stop that job and preserve the error rather than repeating unknown side effects.
 - Retain only the latest result and bounded diagnostics. When a recoverable native session is identified, store its ID rather than copying the conversation. Commands write business artifacts to the user-agreed location.
+
+When supporting 规划托管, prefer a Run/Task/monitor wake or a deterministic `check`. A schedule that repeatedly launches an Agent merely to look for change requires the user's agreed cadence and stopping condition. Explain why no reliable trigger works and wait for the user's decision before registering or starting it; reuse explicit instructions already given. Ordinary scheduled work that the user actually requested can proceed.
 
 Wake an agent only for actions requiring judgment; scripts perform recurring checks. Use `client tool <TOOL> --url <NAS_OR_HTTP_URL>` or the existing platform Skill's `call.py` with its saved connection to submit team-platform operations. Do not access the service database directly.
 

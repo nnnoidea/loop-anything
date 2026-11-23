@@ -55,7 +55,7 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 
 - Activation: operator
 - Platform handles: Checks cross-Run and monitor conditions and resumes the exact native server session with evidence.
-- Author provides: Register wait_for, finish Run scopes, exit the process and acknowledge handled events.
+- Author provides: For 规划托管, register the current branch trigger with wait_for, explain the next action in message, finish scopes and exit. Use a script check for external signals. When no reliable trigger exists, agree any repeated Agent inspections with the user before scheduling. Acknowledge handled events.
 - Configuration: `wait_for`, `cancel_wait`, `acknowledge_wait`
 - Limits: Active or unknown processes are never resumed concurrently. Failed or unavailable sessions need explicit recovery.
 - Tools: wait_for, read_wait, cancel_wait, acknowledge_wait, read_work_session, resume_work_session
@@ -90,6 +90,16 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 - Limits: Registration never starts execution. Stale or failed readings are unknown. Stopping monitoring does not stop the experiment.
 - Tools: read_monitor_dashboard, read_monitor_history, register_monitor, list_monitor_scripts, start_monitor, read_monitor, list_monitors, stop_monitor, restart_monitor
 - Reference: [references/work.md](work.md)
+
+## run_facts
+
+- Activation: operator
+- Platform handles: Projects compact facts for selected Runs and computes counts and timings in the requested groups. The same filters retrieve the underlying rows.
+- Author provides: Choose the Run cohort, sources, grouping and interpretation for the user question. A complete Loop review is a Skill workflow. Trigger it manually, by an agreed plan or on the requested schedule; save conclusions using ordinary Timeline entries.
+- Configuration: `list_runs`, `query_run_facts`, `read_execution_attempt`, `append_timeline`
+- Limits: Run selection uses creation or activity dates. Attempt versions follow the executed method. Missing times stay unknown; external turnaround includes queueing.
+- Tools: list_runs, query_run_facts, read_execution_attempt, read_observations, read_work_timeline, append_timeline
+- Reference: [references/loop-review.md](loop-review.md)
 
 ## run_library
 
@@ -137,7 +147,7 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 - Platform handles: Shares a small scheduling, pure-transition, and process-management core for timers, script conditions, and local CLIs without a service, Run, or web UI.
 - Author provides: Use the same client with loop-anything-local, optionally using NAS for persistent definitions; explicitly select IDs with client local start.
 - Configuration: `client local --root register/list/show/start/stop`
-- Limits: Definitions persist; processes stop with their machine. Loading/moving machines does not restart them. Intervals run after completion; conditions fire once by default. Failure stops with a saved error; receiver communication errors retry at the configured interval.
+- Limits: Definitions persist; processes stop with their machine. Loading/moving machines does not restart them. Intervals run after completion; conditions fire once by default. Optional until is the exclusive deadline for new checks and actions, separate from a command timeout. Failure stops with a saved error; receiver communication errors retry at the configured interval.
 - Tools: Provided by the runtime; no separate call required
 - Reference: [references/team-runtime.md](team-runtime.md)
 

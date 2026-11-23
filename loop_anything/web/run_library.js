@@ -1,6 +1,6 @@
 'use strict';
 let runOffset=0,runNext=null,runTotal=0,runQuerySerial=0;
-const knownPeople=new Set(), knownRunLoops=new Map(), relatedRunPages=new Map();
+const knownPeople=new Set(), knownRunLoops=new Map();
 const runDate=value=>value?new Date(value*1000).toLocaleString('zh-CN',{hour12:false}):'—';
 function dateBound(value,end=false){
   if(!value)return null;
@@ -93,34 +93,6 @@ async function showRunChildren(element,offset){
     }
   }finally{if(element.dataset.childRequest===String(serial))element.dataset.childLoading='false';}
 }
-async function refreshRelatedRuns(key,offset,force=false){
-  const old=relatedRunPages.get(key);
-  offset??=old?.data?.offset||0;
-  if(!force&&old&&(old.loading||Date.now()-old.at<5000))return;
-  const request=Symbol('related-runs');relatedRunPages.set(key,{...old,loading:true,request});
-  try{
-    const data=await api('runs?'+new URLSearchParams({loop_key:key,archived:'include',limit:20,offset}));
-    if(relatedRunPages.get(key)?.request!==request)return;
-    if(offset&&offset>=data.total)return refreshRelatedRuns(key,data.total?Math.floor((data.total-1)/20)*20:0,true);
-    relatedRunPages.set(key,{data,at:Date.now(),loading:false,request});
-    if(page==='editor'&&editor?.installedKey===key)renderRelatedRuns(key);
-  }catch(error){if(relatedRunPages.get(key)?.request===request)relatedRunPages.delete(key);throw error;}
-}
-function relatedRunRows(key){
-  const data=relatedRunPages.get(key)?.data;
-  if(!data)return '<p class="small muted">正在读取运行…</p>';
-  const people=new Map();for(const row of data.runs){const name=row.created_by||'';if(!people.has(name))people.set(name,[]);people.get(name).push(row);}
-  const shortDate=value=>value?new Date(value*1000).toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}):'—';
-  const groups=[...people].map(([name,items],index)=>`<details class="related-run-group" data-related-person="${esc(name)}" ${index===0?'open':''}><summary><span class="related-person-icon" aria-hidden="true">${esc(Array.from(name||'未')[0])}</span><strong>${esc(name||'未署名')}</strong><span class="related-person-count">本页 ${items.length} / 共 ${data.groups?.find(g=>g.created_by===name)?.count??items.length}</span><span class="related-chevron" aria-hidden="true">›</span></summary><div class="related-run-rows">${items.map(r=>`<a class="related-run-row" href="${esc(routeHash({type:'run',id:r.id}))}" data-route-link><span class="related-run-name"><strong>${esc(r.title)}</strong><small>启动 ${esc(shortDate(r.created_at))}${r.parent_run_id?' · 子 Run':''}${r.archived_at?' · 已归档':''}</small></span>${badge(r.status)}<span class="related-run-activity"><small>最近活跃</small><time title="${esc(runDate(r.last_activity_at))}">${esc(shortDate(r.last_activity_at))}</time></span><span class="related-row-arrow" aria-hidden="true">↗</span></a>`).join('')}</div></details>`).join('');
-  return `<section class="related-runs"><header><div><h3>运行记录 <span>${data.total}</span></h3><p>这个版本 · 按发起人分组 · 最近活跃优先</p></div><span class="related-page-range">${data.total?`${data.offset+1}–${data.offset+data.runs.length} / ${data.total}`:'0 条'}</span></header>${groups||'<p class="related-runs-empty">还没有运行记录。</p>'}${data.offset||data.next_offset!==null?`<div class="run-pagination"><button data-related-key="${esc(key)}" data-related-page="${Math.max(0,data.offset-20)}" ${data.offset?'':'disabled'}>← 上一页</button><small>每页最多 20 条</small><button data-related-key="${esc(key)}" data-related-page="${data.next_offset??data.offset}" ${data.next_offset===null?'disabled':''}>下一页 →</button></div>`:''}</section>`;
-}
-function renderRelatedRuns(key){
-  const container=$('reader-runs');if(!container)return;
-  const html=relatedRunRows(key);if(container.dataset.signature===html)return;
-  const groups=new Map([...container.querySelectorAll('[data-related-person]')].map(el=>[el.dataset.relatedPerson,el.open]));
-  container.innerHTML=html;container.dataset.signature=html;
-  for(const element of container.querySelectorAll('[data-related-person]'))if(groups.has(element.dataset.relatedPerson))element.open=groups.get(element.dataset.relatedPerson);
-}
 let runFilterTimer;
 document.addEventListener('input',event=>{
   if(!event.target.closest('.run-filters'))return;
@@ -135,7 +107,6 @@ document.addEventListener('click',event=>safely(async()=>{
   const target=event.target.closest('button');if(!target)return;
   if(target.id==='runs-prev'||target.id==='runs-next'){runOffset=target.id==='runs-prev'?Math.max(0,runOffset-30):runNext??runOffset;await refreshRunLibrary();}
   if(target.dataset.childPage!==undefined)await showRunChildren(target.closest('[data-run-children]'),Number(target.dataset.childPage));
-  if(target.dataset.relatedKey)await refreshRelatedRuns(target.dataset.relatedKey,Number(target.dataset.relatedPage),true);
   if(target.id==='archive-run'&&run){await platformCall('submit_run_request',{request_id:randomKey(),run_id:run.id,operation:'update_run',arguments:{metadata_revision:run.metadata_revision||0,archived:!run.archived_at}});runOffset=0;await refresh();}
   if(target.id==='delete-run'&&run&&confirm('删除这次 Run 的执行详情？Timeline 的目标、进度和正式结果会保留。外部任务和原生 Agent 会话可继续运行。')){
     await platformCall('submit_run_request',{request_id:randomKey(),run_id:run.id,operation:'delete_run',arguments:{metadata_revision:run.metadata_revision||0}});run=null;selected=null;runOffset=0;await navigateTo({type:'run-list'});await refresh();

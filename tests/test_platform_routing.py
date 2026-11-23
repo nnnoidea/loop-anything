@@ -124,6 +124,7 @@ class RoutingTests(unittest.TestCase):
             for field in definition['inputSchema']['properties']:
                 if field.endswith('_id') or field.endswith('_ids'):
                     self.assertIn(field,handled,definition['name']+': new selector needs a routing decision')
+        self.assertEqual(self.routing.references('list_runs',{'run_ids':['run-x']}),[('run','run-x')])
         observed=self.routing.resources('communication_workspace',{'directory':{'loops':[{'key':'remote-loop'}],'agents':[{'id':'agent'}]}})
         self.assertNotIn(('loop','remote-loop'),observed)
         self.assertIn(('agent','agent'),observed)

@@ -11,7 +11,7 @@ function agentModelModeLabel(mode){
 
 function renderLoopModelSummary(item){
   $('open-loop-model-settings').hidden=!item.installedKey;
-  $('reader-default-model').textContent=item.models?.default||'';
+  $('reader-default-model').textContent=item.models?.default||(item.models?'自动选择':'');
 }
 
 function modelSettingsRow(id,node){
@@ -22,7 +22,7 @@ function modelSettingsRow(id,node){
     <div><strong>${esc(node.label)}</strong>${suffix?`<small>${esc(suffix)}</small>`:''}</div>
     ${managed?`<div class="loop-model-choice">
       <select aria-label="${esc(node.label)}模型来源">
-        <option value="inherit">跟随 Loop 默认</option>
+        <option value="inherit">自动选择</option>
         <option value="override" ${node.override?'selected':''}>单独设置</option>
       </select>
       <input aria-label="${esc(node.label)}模型" list="loop-model-options" value="${esc(node.override||'')}" maxlength="100"
@@ -38,13 +38,13 @@ async function openLoopModelSettings(focusNode){
   const models=await platformCall('read_loop_models',{key});
   if(editor!==item||page!=='editor'||loopModelDialog.open)return;
   const rows=Object.entries(models.nodes);
-  const suggestions=[...new Set(['gpt-6.1-sol','gpt-6.2-sol',models.default,...rows.map(([,node])=>node.override).filter(Boolean)])];
+  const suggestions=[...new Set(['gpt-6.1-sol','gpt-6.2-sol',models.default,...rows.map(([,node])=>node.override)].filter(Boolean))];
   loopModelDialog.innerHTML=`<div class="dialog-heading"><h2 id="loop-model-title">模型设置</h2>
     <button type="button" class="close-dialog" aria-label="关闭">×</button></div>
     <form class="loop-model-form">
       <datalist id="loop-model-options">${suggestions.map(model=>`<option value="${esc(model)}"></option>`).join('')}</datalist>
       <label class="loop-model-default">Loop 默认模型
-        <input id="loop-default-model" list="loop-model-options" value="${esc(models.default)}" maxlength="100" spellcheck="false" required>
+        <input id="loop-default-model" list="loop-model-options" value="${esc(models.default||'')}" placeholder="留空沿用启动命令，未指定时用 ${esc(models.fallback)}" maxlength="100" spellcheck="false">
       </label>
       <p class="small muted">保存后用于新 Run 中由平台启动的 Codex Agent。</p>
       ${rows.length?`<section class="loop-model-nodes"><h3>Agent 节点</h3>${rows.map(([id,node])=>modelSettingsRow(id,node)).join('')}</section>`:''}
@@ -62,7 +62,7 @@ async function openLoopModelSettings(focusNode){
       input.disabled=input.hidden=!separate;
       input.required=separate;
       if(separate){
-        input.value ||= defaultModel.value;
+        input.value ||= defaultModel.value || Object.values(models.nodes[row.dataset.modelNode].models)[0] || models.fallback;
         input.focus();
         input.select();
       }
@@ -81,7 +81,7 @@ async function openLoopModelSettings(focusNode){
         const value=select?select.value==='override'&&row.querySelector('input').value.trim():models.nodes[id].override;
         if(value)nodes[id]=value;
       }
-      const saved=await platformCall('set_loop_models',{key,revision:models.revision,models:{default:defaultModel.value.trim(),nodes}});
+      const saved=await platformCall('set_loop_models',{key,revision:models.revision,models:{...(defaultModel.value.trim()?{default:defaultModel.value.trim()}:{}),nodes}});
       item.models=saved;
       loopModelDialog.close();
       if(editor===item&&page==='editor'){

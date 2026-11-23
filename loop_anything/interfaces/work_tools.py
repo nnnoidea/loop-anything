@@ -14,6 +14,10 @@ SESSION={'session_id':T,'session_token':T}
 def definitions():
     page = {'timeline_id':T,'type':T,'id':T,'offset':N,'limit':{'type':'integer','minimum':1,'maximum':200},'as_of':N}
     entries=[
+        ('query_run_facts','Read compact facts for selected Runs. Omit group_by for individual rows; [] gives totals. Group and filter on this source’s fields, e.g. attempts by node/version/status, history by kind/event or observations by subject/status. Pagination applies to output rows after aggregation. Filters match exact scalar values. Times are seconds; missing values are unknown.',
+         {'run_ids':{'type':'array','items':T},'source':{'enum':['runs','tasks','attempts','history','diagnostics','notifications','observations']},
+          'filters':O,'group_by':{'type':'array','items':T},'order_by':T,'descending':{'type':'boolean'},'offset':N,'limit':{'type':'integer','minimum':1,'maximum':200}},['run_ids','source'],True),
+        ('read_execution_attempt','Read the timing, progress, error and result references for one exact execution, including earlier attempts.',{'run_id':T,'execution_id':T},['run_id','execution_id'],True),
         ('read_observations','Read the saved views and effective observation arrangements for a Timeline.',{'timeline_id':T},['timeline_id'],True),
         ('update_run_method','Hot-apply an installed version or opt in/out of published updates. Patch named observations; null disables, inherit restores Loop defaults. Existing tasks keep their method.',{'run_id':T,'token':T,'key':T,'follow':{'type':'boolean'},'observations':O,'inherit':{'type':'array','items':T}},['run_id','token'],False),
         ('refresh_observation','Generate the current view now, without sending a notification. Confirm a stopped process only when explicitly recovering an interrupted attempt.',{'run_id':T,'token':T,'name':T,'confirmed_stopped':{'type':'boolean'}},['run_id','token','name'],False),
@@ -49,7 +53,7 @@ def definitions():
          ['run_id','task_id','operation','reason'],False),
         ('resume_work_session','Explicitly retry a failed/unknown wake after confirming the previous process stopped. Does not acknowledge pending events.',
          dict(SESSION,confirmed_stopped={'const':True}),[*SESSION,'confirmed_stopped'],False),
-        ('wait_for','Persist a wait for named Run/Task/monitor sources and a deterministic condition. source={kind:run|task|monitor,id,task_id?,max_age?}; condition reads sources by alias using path/op/args. A run source follows its Timeline current Run across continuation; a task source observes that exact Task and its committed output versions. Keeps this exact session. Finish active Run turns and exit the Agent process so it can be resumed. Does not create a Loop.',
+        ('wait_for','Persist a wait for named Run/Task/monitor sources and a deterministic condition. source={kind:run|task|monitor,id,task_id?,max_age?}; condition reads sources by alias using path/op/args. A run source follows its Timeline current Run across continuation; a task source observes that exact Task and its committed output versions. For a managed plan, use message to describe the trigger and what to do after waking. Keeps this exact session. Finish active Run turns and exit the Agent process so it can be resumed. Does not create a Loop.',
          dict(SESSION,timeline_id=T,key=T,sources=O,condition=O,message=TEXT),[*SESSION,'timeline_id','key','sources','condition'],False),
         ('read_wait','Read state, evidence or query error of a wait.',{'wait_id':T},['wait_id'],True),
         ('cancel_wait','Cancel your wait, without cancelling observed Runs or monitors.',dict(SESSION,wait_id=T),[*SESSION,'wait_id'],False),
@@ -71,6 +75,12 @@ def definitions():
 
 
 def call(store,name,a):
+    if name=='read_execution_attempt':
+        from loop_anything.runtime.run_facts import read_attempt
+        return read_attempt(store,**a)
+    if name=='query_run_facts':
+        from loop_anything.runtime.run_facts import query
+        return query(store,**a)
     if name=='read_observations':
         from loop_anything.runtime.observations import overview
         with store.connection() as db:

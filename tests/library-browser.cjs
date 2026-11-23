@@ -10,7 +10,8 @@ withPlatform(async ({url, page, key, api, startRun}) => {
   assert.equal(await page.locator('#reader-description').innerText(), '记录 <b>实验结果</b>');
   assert.equal(await page.locator('#reader-description b').count(), 0);
   await page.locator('.reader-heading').getByRole('button', {name:'模型设置',exact:true}).click();
-  assert.equal(await page.getByLabel('Loop 默认模型').inputValue(), 'gpt-6.1-sol');
+  assert.equal(await page.getByLabel('Loop 默认模型').inputValue(), '');
+  assert.match(await page.getByLabel('Loop 默认模型').getAttribute('placeholder'), /gpt-6.1-sol/);
   await page.getByRole('button', {name: '取消', exact: true}).click();
   assert.equal(await page.getByRole('button', {name:'启动', exact:true}).count(),0);
   assert.equal(await page.locator('#reader-technical').getAttribute('open'),null);
@@ -92,7 +93,9 @@ withPlatform(async ({url, page, key, api, startRun}) => {
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   const {turn}=await startRun('运行记录验收');
   await page.reload();
-  await page.locator(`#reader-runs a[href="#run/${turn.run_id}"]`).click();
+  await page.getByRole('link',{name:/查看此 Loop 的 Run/}).click();
+  assert.equal(await page.locator('#runs-loop').inputValue(),'browser');
+  await page.locator(`#run-list [data-run="${turn.run_id}"]`).click();
   await page.locator('#workspace').waitFor();
   assert.equal(new URL(page.url()).hash,'#run/'+turn.run_id);
   await page.goto(url+'/#work/runs');

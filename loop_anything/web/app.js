@@ -122,14 +122,18 @@ function showPage() {
   $('workbench-nav').classList.toggle('active',inWork);
   const tab=page==='timeline'?'timelines':['runs','run-list'].includes(page)?'runs':page;
   document.querySelectorAll('[data-work-tab]').forEach(el=>{el.classList.toggle('active',el.dataset.workTab===tab);if(el.dataset.workTab===tab)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');});
+  $('plans-page').hidden=page!=='plans';$('plans-nav').classList.toggle('active',page==='plans');
+  $('rsi-page').hidden=page!=='rsi';$('loop-parent').hidden=!['catalog','rsi'].includes(page);
+  document.querySelectorAll('[data-loop-tab]').forEach(el=>el.classList.toggle('active',el.dataset.loopTab===page));
   $('catalog-page').hidden = page !== 'catalog';
   if($('loop_definition-editor'))$('loop_definition-editor').hidden=page!=='editor';
   if($('loop-detail'))$('loop-detail').hidden=page!=='loop';
-  $('loop_definitions-nav').classList.toggle('active', ['catalog','editor','loop'].includes(page));
+  $('loop_definitions-nav').classList.toggle('active', ['catalog','editor','loop','rsi'].includes(page));
   if(typeof updateNavigationUI==='function')updateNavigationUI();
 
 }
 async function refresh() {
+  if(page==='plans'||page==='rsi')safely(()=>refreshAssignments());
   if(page==='timeline')safely(refreshObservations);
   if(page==='timelines')safely(()=>showWorkLibrary(true));
   if(page==='monitors')refreshMonitoring();

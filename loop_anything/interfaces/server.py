@@ -152,6 +152,10 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             if parts == ['api','notification-channels']:
                 self.send(platform_tools.call('read_notification_channels',{}))
                 return
+            if len(parts)==3 and parts[:2]==['api','assignments']:
+                from loop_anything.runtime.web_assignments import overview
+                self.send(overview(store,parts[2]))
+                return
             if parts == ['api', 'platform']:
                 import platform
                 from loop_anything.capabilities import service_info
@@ -248,7 +252,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.send({'snapshot': run, 'execution_id': execution['id'], 'token': execution.get('token'),
                            'settings_revision': execution['settings_revision'], 'output_contract': node_for(run, execution['node'])['outputs']})
             else:
-                filename = {name: name for name in ('loop_models.js', 'shared_resources.js', 'shared_resources.css', 'spaces.js', 'workbench.css', 'monitoring.js', 'monitoring.css', 'work.js', 'schedules.js', 'communication.js', 'communication.css', 'terminal.js', 'terminal.css', 'xterm.js', 'xterm-fit.js', 'xterm.css', 'app.js', 'notifications.js', 'lifecycle.js', 'loop_graph.js', 'flow_bridge.js', 'settings.js', 'forms.js', 'workspace.js', 'authoring.js', 'workspace.css', 'task_history.js', 'style.css', 'graph.css', 'editor.js', 'editor.css', 'packages.js', 'library.js', 'library.css', 'navigation.js', 'run_library.js')}.get('/'.join(parts))
+                filename = {name: name for name in ('assignments.js','assignments.css','loop_models.js', 'shared_resources.js', 'shared_resources.css', 'spaces.js', 'workbench.css', 'monitoring.js', 'monitoring.css', 'work.js', 'schedules.js', 'communication.js', 'communication.css', 'terminal.js', 'terminal.css', 'xterm.js', 'xterm-fit.js', 'xterm.css', 'app.js', 'notifications.js', 'lifecycle.js', 'loop_graph.js', 'flow_bridge.js', 'settings.js', 'forms.js', 'workspace.js', 'authoring.js', 'workspace.css', 'task_history.js', 'style.css', 'graph.css', 'editor.js', 'editor.css', 'packages.js', 'library.js', 'library.css', 'navigation.js', 'run_library.js')}.get('/'.join(parts))
                 if parts == ['']:
                     filename = 'index.html'
                 if not filename:
@@ -312,6 +316,14 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.send({'error': 'Internal error; inspect engine console'}, 500)
 
         def post(self, parts, body):
+            if parts==['api','assignments']:
+                from loop_anything.runtime.web_assignments import start
+                self.send(start(store,body))
+                return
+            if len(parts)==4 and parts[:2]==['api','assignments'] and parts[3]=='reply':
+                from loop_anything.runtime.web_assignments import follow_up
+                self.send(follow_up(store,parts[2],body))
+                return
             if body.get('expected_workspace') is not None and body['expected_workspace']!=engine.communication.settings()['instance_id']:
                 raise Conflict('Request belongs to another platform workspace')
             if parts==['api','spaces']:

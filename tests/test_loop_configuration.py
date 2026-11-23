@@ -65,15 +65,19 @@ class LoopConfigurationTests(unittest.TestCase):
     def test_agent_models_follow_node_then_loop_default_and_pin_existing_runs(self):
         doc = document()
         doc['implementations']['initialize']['options']['default'] = {
-            'kind': 'agent', 'command': ['codex', '-a', 'never', 'exec', '--model=legacy', '-'],
+            'kind': 'agent', 'command': ['codex', '-a', 'never', 'exec', '--model=gpt-6.2-sol', '-'],
         }
+        doc['implementations']['initialize']['options']['plain'] = {'kind':'agent','command':['codex','exec','-']}
         doc['implementations']['finish']['options']['default'] = {'kind': 'agent'}
         raw = make_archive(doc, assets())
         key = install(self.store, raw)['key']
         write(self.store, key, {'inputs': {'dataset': '/data'}}, read(self.store, key)['revision'])
         tools = PlatformTools(self.store)
         baseline = tools.call('read_loop_models', {'key': key})
-        self.assertEqual(baseline['default'], 'gpt-6.1-sol')
+        self.assertIsNone(baseline['default'])
+        self.assertEqual(baseline['fallback'], 'gpt-6.1-sol')
+        self.assertEqual(baseline['nodes']['initialize']['models']['default'], 'gpt-6.2-sol')
+        self.assertEqual(baseline['nodes']['initialize']['models']['plain'], 'gpt-6.1-sol')
         self.assertEqual(baseline['nodes']['finish']['candidates'], {'default': 'manual'})
         first = self.store.create(key, 'default')
         saved = tools.call('set_loop_models', {'key': key, 'revision': baseline['revision'],
@@ -81,10 +85,13 @@ class LoopConfigurationTests(unittest.TestCase):
         self.assertEqual(saved['nodes']['initialize']['override'], 'gpt-6.1-terra')
         self.assertEqual(read(self.store, key)['config']['inputs'], {'dataset': '/data'})
         self.assertEqual(self.store.get(first['id'])['implementations']['initialize']['options']['default']['agent_model'],
-                         'gpt-6.1-sol')
+                         'gpt-6.2-sol')
         second = self.store.create(key, 'overridden')
         engine = Engine(self.store)
         try:
+            initial = first['implementations']['initialize']['options']
+            self.assertIn('--model=gpt-6.2-sol', engine.implementation(initial['default'])['command'])
+            self.assertEqual(engine.implementation(initial['plain'])['command'], ['codex','exec','--model','gpt-6.1-sol','-'])
             actual = engine.implementation(second['implementations']['initialize']['options']['default'])
             self.assertEqual(actual['command'], ['codex', '-a', 'never', 'exec', '--model', 'gpt-6.1-terra', '-'])
         finally:
@@ -95,9 +102,9 @@ class LoopConfigurationTests(unittest.TestCase):
         with self.assertRaises(Invalid):
             tools.call('set_loop_models', {'key': key, 'revision': saved['revision'],
                        'models': {'default': '--config some.invalid.value'}})
-        tools.call('set_loop_models', {'key': key, 'revision': saved['revision'], 'models': {'default': 'gpt-6.2-sol'}})
+        tools.call('set_loop_models', {'key': key, 'revision': saved['revision'], 'models': {'default': 'gpt-6.1-terra'}})
         third = self.store.create(key, 'inherit')
-        self.assertEqual(third['implementations']['initialize']['options']['default']['agent_model'], 'gpt-6.2-sol')
+        self.assertEqual(third['implementations']['initialize']['options']['default']['agent_model'], 'gpt-6.1-terra')
 
     def test_agent_model_flag_keeps_resume_target_and_arguments_after_separator(self):
         from loop_anything.runtime.agent_models import launch_command

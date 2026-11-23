@@ -9,6 +9,8 @@ metadata:
 
 For a live chart, summary, event-triggered observation, or hot update of a running method, use [observation arrangements](references/observations.md).
 
+For **规划托管** (a one-off plan), identify an observable trigger for each wait. Register the current stage with `wait_for`, then exit. Reuse a monitor or a cheap script check when the signal lives outside the platform. If only repeated Agent inspections could tell, explain why and get the user's choice before scheduling them. An explicit cadence and stopping condition already supplied by the user count as confirmation. [Planning waits and fallback](references/work.md#规划托管) covers this workflow.
+
 For persistent work, see [Timeline, startup and waits](references/work.md). Start the Run with the user objective or an existing Timeline. If the Loop has no initial tasks, arrange the first business steps using its handbook before reporting that work is underway. Read the Run for execution status and the Timeline for progress and decisions. Register the current session when the user wants a conditional wake.
 
 The web interface is for reading and runtime operations, not editing or separate agent conversations. An external building agent edits Loop definitions; source files can also be edited and repackaged. Recipient runtime configuration can be edited in the file returned by `read_loop_config`. Node sessions handle their current Run tasks, not Loop authoring.
@@ -79,3 +81,5 @@ Choose capabilities such as `authoring`, `task_scheduler`, or `agent_communicati
 - Resume using the recorded original session and current operation credentials; never guess the latest session. Follow the author Skill returned by `read_task`.
 
 Read only what the current task needs: [authoring fields and assets](references/build-reference.md), [capability map](references/platform-capabilities.md), [contracts](references/contracts.md), [testing](references/testing.md), [notifications](references/notifications.md), and [execution terminals](references/terminal.md).
+
+For recurring Loop improvement, use the [Loop review workflow](references/loop-review.md). Compose Run fact queries around the user’s question and write findings to the chosen Timeline.

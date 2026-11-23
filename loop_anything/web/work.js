@@ -74,9 +74,11 @@ function sourceTaskLink(data,runId,taskId){
   if(!runId || !taskId || !data.runs?.some(r=>r.id===runId))return '';
   return `<a class="progress-link" href="${esc(routeHash({type:'run',id:runId,task:taskId}))}" data-route-link>查看来源节点 ↗</a>`;
 }
-function evidenceHTML(refs,id,data){
+function evidenceHTML(refs,id,data,sourceTimeline){
   if(!Array.isArray(refs)||!refs.length)return '';
   return refs.map(r=>{
+    if(r.run_id && !r.deleted && sourceTimeline===id && !r.record && !r.type)
+      return `<a class="progress-link" href="${esc(routeHash({type:'run',id:r.run_id,task:r.task_id}))}" data-route-link>${r.task_id?'查看来源节点':'查看来源 Run'} ↗</a>`;
     if(r.record && r.revision)return `<button class="progress-link" data-work-result="${esc(r.record)}" data-result-revision="${esc(r.revision)}" data-result-timeline="${esc(id)}">${refs.length===1?'查看结果':'结果 · '+esc(r.record)}</button>`;
     if(r.type && r.id && r.revision)return `<button class="progress-link" data-business-timeline="${esc(id)}" data-business-type="${esc(r.type)}" data-business-id="${esc(r.id)}" data-business-revision="${esc(r.revision)}">${esc(r.type)} · ${esc(r.id)}</button>`;
     if(data && r.run_id && r.task_id){
@@ -233,7 +235,7 @@ function observationHTML(data,featured){
   }).join('')+'</section>';
 }
 function workEntryHTML(e,id,data){
-  return `<article class="work-entry"><div class="work-entry-meta"><strong>${esc(workEntryLabels[e.kind]||e.kind)}</strong><time>${esc(runDate(e.at))}</time></div><p>${esc(e.text)}</p>${evidenceHTML(e.refs,id,data)}</article>`;
+  return `<article class="work-entry"><div class="work-entry-meta"><strong>${esc(workEntryLabels[e.kind]||e.kind)}</strong><time>${esc(runDate(e.at))}</time></div><p>${esc(e.text)}</p>${evidenceHTML(e.refs,id,data,e.source_timeline_id)}</article>`;
 }
 function timelineSections(data,id){
   const active=data.runs.find(r=>r.id===data.timeline.active_run_id);
@@ -257,7 +259,7 @@ function timelineSections(data,id){
     'work-run-relation':active?`<div class="run-relation"><strong>${timelineRunLabel(active.status)}</strong>${runLink(active)}</div>`:
       `<p class="empty-relation">${others.length?'暂无当前 Run':'本平台暂无关联 Run'}</p>`,
     'work-focus':featured?'':`<section class="progress-focus"><div class="focus-label">${esc(p?workEntryLabels[p.kind]:'当前进展')}${p?.at?`<time>${esc(runDate(p.at))}</time>`:''}</div>
-      <h3>${esc(p?.text||'尚未提交业务进展')}</h3>${evidenceHTML(p?.refs,id,data)}${p?.evidence?.length?`<details class="focus-evidence"><summary>判断依据 · ${p.evidence.length}</summary>${evidenceHTML(p.evidence,id,data)}</details>`:''}${sourceTaskLink(data,p?.run_id,p?.task_id)}
+      <h3>${esc(p?.text||'尚未提交业务进展')}</h3>${evidenceHTML(p?.refs,id,data,p?.source_timeline_id)}${p?.evidence?.length?`<details class="focus-evidence"><summary>判断依据 · ${p.evidence.length}</summary>${evidenceHTML(p.evidence,id,data)}</details>`:''}${sourceTaskLink(data,p?.run_id,p?.task_id)}
       </section>`,
     'timeline-observations':observationHTML(data.observations,featured),
     'work-trail':trail.length?`<section class="work-history progress-trail"><h3>近期工作脉络</h3>${trail.map(e=>workEntryHTML(e,id,data)).join('')}</section>`:'',

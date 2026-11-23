@@ -1,6 +1,6 @@
 'use strict';
 
-const scheduleLabels={registered:'已登记',waiting:'等待触发',checking:'检查条件中',running:'执行中',completed:'已完成',failed:'执行失败',stopped:'已停止',offline:'离线',unknown:'执行状态未知'};
+const scheduleLabels={registered:'已登记',waiting:'等待触发',checking:'检查条件中',running:'执行中',completed:'已完成',expired:'已到截止时间',failed:'执行失败',stopped:'已停止',offline:'离线',unknown:'执行状态未知'};
 const activeScheduleStates=['waiting','checking','running'];
 const scheduleTime=value=>value ? new Date(value*1000).toLocaleString('zh-CN',{hour12:false}) : '—';
 const pendingSchedules=new Set();
@@ -10,7 +10,7 @@ function scheduleTrigger(definition){
   const repeats=!definition.at && (definition.repeat ?? !definition.conditional);
   const trigger=definition.at ? `指定时间 ${scheduleTime(Date.parse(definition.at)/1000)}` :
     `${definition.conditional?'每隔':'间隔'} ${definition.every} 秒${definition.conditional?'检查条件':''}`;
-  return `${trigger} · ${repeats?'重复':'单次'}`;
+  return `${trigger} · ${repeats?'重复':'单次'}${definition.until?' · 截止 '+scheduleTime(Date.parse(definition.until)/1000):''}`;
 }
 
 function scheduleCard(task, open){
@@ -26,7 +26,7 @@ function scheduleCard(task, open){
       <p class="muted small">${running?esc(scheduleTrigger(running)):'当前实例使用早期配置，未记录触发方式。'}</p></div>
       <span class="badge ${esc(runtime.status)}">${esc(scheduleLabels[runtime.status] || runtime.status)}</span></div>
     ${running?.description?`<p class="card-description">${esc(running.description)}</p>`:''}
-    ${runtime.status==='waiting'?`<p class="small muted">${running?.conditional?'下次检查':running?'下次执行':'下次触发'} ${scheduleTime(runtime.next_at)}</p>`:''}
+    ${runtime.status==='waiting'&&(!running?.until||runtime.next_at<Date.parse(running.until)/1000)?`<p class="small muted">${running?.conditional?'下次检查':running?'下次执行':'下次触发'} ${scheduleTime(runtime.next_at)}</p>`:''}
     ${updated?`<p class="small muted">下次启动使用新配置 · ${esc(definition.name)} · ${esc(definition.receiver?'接单端，请通过 CLI 启动':scheduleTrigger(definition))}</p>`:''}
     ${runtime.error?`<p class="notice">${esc(runtime.error)}</p>`:''}
     ${occupied && !active?'<p class="small muted">上次执行待核实。请通过 CLI 查看进程状态。</p>':''}

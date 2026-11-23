@@ -304,7 +304,8 @@ def register_wait(store,a):
                    condition=a['condition'],message=a.get('message',''),fingerprint=fingerprint,
                    state='waiting',created_at=time.time(),next_at=0,error=None)
         put(db,'wait',value)
-        timelines.append(db,a['timeline_id'],ident,'已登记等待','action',[{'wait_id':ident}],actor='platform')
+        description='已登记等待' + (' · '+a['message'] if a.get('message') else '')
+        timelines.append(db,a['timeline_id'],ident,description,'action',[{'wait_id':ident}],actor='platform')
         return value
 
 
@@ -341,7 +342,8 @@ def poll_wait(store, ident, *, changes_only=False):
         if result:
             current.pop('retained_sources',None)
             current.update(state='ready',evidence=evidence,triggered_at=time.time())
-            timelines.append(db,current['timeline_id'],ident+':ready','等待条件已满足','action',
+            description='等待条件已满足' + (' · '+current['message'] if current.get('message') else '')
+            timelines.append(db,current['timeline_id'],ident+':ready',description,'action',
                              [{'wait_id':ident,'evidence':evidence}],actor='platform')
         put(db,'wait',current)
         return current
@@ -351,7 +353,7 @@ class WorkRuntime:
     def __init__(self,engine):
         self.engine=engine;self.store=engine.store
         with transaction(self.store) as db:
-            observations.recover(db)
+            observations.recover(db,self.store)
             for kind in ('monitor','session'):
                 for value in rows(db,kind):
                     if value.get('call_id') or value.get('wake'):
@@ -361,7 +363,9 @@ class WorkRuntime:
 
     def tick(self):
         with self.store.connection() as db:
-            monitors=rows(db,'monitor');waits=rows(db,'wait');sessions=rows(db,'session')
+            monitors=rows(db,'monitor');waits=rows(db,'wait')
+            sessions=db.execute("""SELECT id,json_extract(document,'$.state') AS state FROM work_objects
+                WHERE kind='session' AND json_extract(document,'$.state') IN ('active','idle','queued')""").fetchall()
             high=events.position(db)
         for item in monitors:
             if item['status']=='running' and not item.get('call_id') and item['next_at']<=time.time():
@@ -378,7 +382,7 @@ class WorkRuntime:
         for job in observations.collect(self.store):
             self.engine.futures.add(self.engine.pool.submit(observations.execute,self.engine,job))
         for session in sessions:
-            self.wake(session['id'])
+            self.wake(session['id'],queued=session['state']=='queued')
 
     def monitor(self,value):
         from loop_anything.runtime.host_runtime import run_command,CommandNotStopped
@@ -411,16 +415,17 @@ class WorkRuntime:
             put(db,'monitor',current)
 
 
-    def wake(self,ident):
+    def wake(self,ident,queued=False):
         with self.store.connection() as db:
             waits=[v for v in rows(db,'wait') if v['session_id']==ident and v['state']=='ready']
-        if not waits:return
+        if not waits and not queued:return
         with transaction(self.store) as db:
             session=get(db,'session',ident)
-            if session['state'] not in ('idle','active') or session.get('wake') or alive(session.get('process_id')):return
+            if session['state'] not in ('queued','idle','active') or session.get('wake') or alive(session.get('process_id')):return
+            if not waits and session['state']!='queued':return
             from loop_anything.runtime.native_sessions import active_native
             native=session['native_session']
-            if active_native(db,native['provider'],native['id'],self.store):return
+            if native and active_native(db,native['provider'],native['id'],self.store):return
             call=uid('wake')
             session.update(state='running',wake=call)
             put(db,'session',session)
@@ -434,30 +439,41 @@ class WorkRuntime:
         ident=session['id'];call=session['wake']
         with self.store.connection() as db:
             waits=[get(db,'wait',w['id']) for w in waits if get(db,'wait',w['id'])['state']=='ready']
-        if not waits:
+        assignment=session.get('assignment')
+        if not waits and not assignment:
             with transaction(self.store) as db:
                 current=get(db,'session',ident)
                 if current.get('wake')==call:
                     current.update(state='idle',wake=None);put(db,'session',current)
             return
-        config=resume_config(session['implementation'],session['native_session'])
-        config['native_session']=session['native_session']
         def changed(doc):
             with transaction(self.store) as db:
                 current=get(db,'session',ident)
                 if current.get('wake')==call:
                     current['process']=doc
                     if doc.get('pid'):current['process_id']=doc['pid']
+                    if assignment and doc.get('native_session'):
+                        current['native_session']=doc['native_session']
                     put(db,'session',current)
-        process=ProcessSession(call,config,changed)
         context={'workspace_id':self.engine.communication.settings()['instance_id'],'session_id':ident,'session_token':session['token'],'waits':waits,
                  'platform_url':getattr(self.engine,'platform_url',None),
                  'platform_client':str(platform_skill_directory()/'scripts/call.py')}
         prompt='继续当前会话。先读取关联 Timeline 的最新目标、限制和进度。等待已满足仅表示需要判断，不能重复启动已有工作。目标或限制修改后检查并向用户汇报，由用户决定额外调整。处理完用 acknowledge_wait 确认收到等待结果。\n'+json.dumps(context,ensure_ascii=False)
         unknown=False
         try:
+            if assignment:
+                from loop_anything.runtime import web_assignments
+                from pathlib import Path
+                config,prompt=web_assignments.launch(session,context)
+                directory=Path(self.store.filename).resolve().parent/'agent-work'/ident
+                directory.mkdir(parents=True,exist_ok=True)
+                config['cwd']=str(directory)
+            else:
+                config=resume_config(session['implementation'],session['native_session'])
+                config['native_session']=session['native_session']
+            process=ProcessSession(call,config,changed)
             result=run_command(config['command'],prompt,config.get('timeout'),config.get('cwd'),self.engine.stopping,process,context=context)
-            error=None if result.returncode==0 else 'Agent exited: '+str(result.returncode)
+            error=None if result.returncode==0 else ('Agent exited: '+str(result.returncode)+' '+result.stderr[-500:]).strip()
         except Exception as exc:
             error=str(exc);unknown=isinstance(exc,CommandNotStopped)
         with transaction(self.store) as db:
@@ -466,6 +482,8 @@ class WorkRuntime:
             current.update(state='unknown' if unknown else 'failed' if error else 'idle',
                            wake=call if unknown else None,error=error)
             if not unknown:current['process_id']=None
+            if assignment and not error:
+                current['state'],current['error']=web_assignments.finished(db,current)
             # Require an explicit retry for unacknowledged work after a successful but incomplete turn.
             if not error and any(get(db,'wait',w['id'])['state']=='ready' for w in waits):
                 current.update(state='failed',error='Wake finished without acknowledging its waits; inspect before retry')

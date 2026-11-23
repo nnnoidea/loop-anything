@@ -27,7 +27,7 @@ editorPage.innerHTML=`
         </div>
         <div id="editor-flow-overview"></div>
       </section>
-      <div id="reader-runs" class="reader-runs" hidden></div>
+      <a id="reader-runs" class="progress-link" data-route-link hidden>查看此 Loop 的 Run →</a>
       <details id="reader-technical">
         <summary>技术资料</summary>
         <div class="reader-technical-body">
@@ -97,7 +97,7 @@ function populateMeta(){
   technical.dataset.loop=editor.routeId;
   $('reader-documentation').innerHTML=readerDocumentsHTML(editor);
   $('reader-runs').hidden=$('reader-check').hidden=!editor.installedKey;
-  if(!editor.installedKey){$('reader-runs').replaceChildren();delete $('reader-runs').dataset.signature;}
+  if(editor.installedKey)$('reader-runs').href=routeHash({type:'run-list',loopId:editor.loop_definition.id});
   $('loop-config-template').textContent=editor.installedKey?'运行配置文件':'运行配置模板';
 }
 function renderReaderSummary(){

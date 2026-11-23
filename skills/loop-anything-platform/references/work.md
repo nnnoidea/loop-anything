@@ -51,6 +51,15 @@ uses a new key. `add_task.after_work=[{key,step}]` resolves dependencies on thos
 arrangements, including retained experiments. No external command runs inside
 this database transaction.
 
+## 规划托管
+
+A user can give a one-off arrangement that calls existing Loops. Keep the goal and progress on the ordinary Timeline. At each wait, identify an observable fact that makes another Agent turn useful:
+
+- Use a Run or Task result when it exists. For an external condition use an existing monitor or a script that can check it. A readiness script may poll; the Agent exits while waiting. Keep any semantic decision for the wake-up turn.
+- Register only the branch that has actually been reached. For example, wait for evaluation to finish, read the score once, and only if it improved register a wait for at least eight available GPUs. In wait_for.message write both the trigger and next action in the user's language, e.g. “等评测完成后比较基线；若提升，再等 8 张 GPU”。 Keep the receipt, finish any held scope and exit. After waking, read the Timeline and act on the evidence, then acknowledge the wait.
+- If there is no reliable signal, first offer a concrete one (a user reply or a ready file, for example). If repeated Agent inspection is the viable fallback, explain the gap and offer manual continuation or polling with a specific cadence and stopping condition. Record the pending choice on the Timeline and wait for the reply before registering or starting the polling job. Do not start a sleep/read loop inside an Agent. A user's explicit instructions such as “每半小时检查一次，直到今晚八点” already supply the decision.
+- Record the agreed fallback on the Timeline with append_timeline(kind=decision). Apply the agreed interval and stop condition through the existing scheduler; a wall-clock cutoff maps to until, with the user's timezone. A single command timeout governs one invocation. [Local schedules](../../loop-anything-local/SKILL.md) describes the runner.
+
 ## Wait without a business Loop
 
 wait_for takes your session identity, timeline_id, stable key, sources, condition

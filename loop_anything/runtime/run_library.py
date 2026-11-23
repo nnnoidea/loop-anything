@@ -38,7 +38,7 @@ def initialize(db):
 def list_runs(store, query='', status='', created_by=None, loop_key='', loop_id='',
               created_from=None, created_to=None, active_from=None, active_to=None,
               sort='last_activity_at', order='desc', archived='exclude', parent_run_id=None,
-              root_only=False, kind='', limit=50, offset=0, run_ids=None):
+              root_only=False, kind='', limit=50, offset=0, run_ids=None, view='summary', known_revisions=None):
     if sort not in ('created_at', 'last_activity_at') or order not in ('asc', 'desc'):
         raise Invalid('Sort by created_at or last_activity_at, with asc or desc order')
     if archived not in ('exclude', 'include', 'only'):
@@ -84,6 +84,33 @@ def list_runs(store, query='', status='', created_by=None, loop_key='', loop_id=
     with store.connection() as db:
         db.execute('BEGIN')
         total=db.execute('SELECT count(*)'+base+where,args).fetchone()[0]
+        if view=='revisions' or known_revisions is not None:
+            # Compare lightweight Run/observation identities, without reading task
+            # or history partitions. Page changes after comparing the full scope.
+            selection='SELECT r.id,'+j('revision')+' AS revision'+base+where+' ORDER BY '+j(sort)+' '+order+',r.id '+order
+            selected_args=args
+            if known_revisions is None:
+                selection+=' LIMIT ? OFFSET ?'
+                selected_args=args+[limit,offset]
+            rows=[dict(row) for row in db.execute(selection,selected_args)]
+            ids=json.dumps([row['id'] for row in rows])
+            stamps={row['id']:[] for row in rows}
+            observed=db.execute("""SELECT run_id,id,status FROM observation_jobs WHERE run_id IN (SELECT value FROM json_each(?))
+                 UNION ALL SELECT json_extract(document,'$.run_id'),job_id,'completed' FROM observation_views
+                 WHERE json_extract(document,'$.run_id') IN (SELECT value FROM json_each(?)) ORDER BY 1,2,3""",(ids,ids))
+            for rid,job,status in observed:
+                stamps[rid].append((job,status))
+            for row in rows:
+                jobs=stamps[row['id']]
+                row['observation_stamp']=hashlib.sha256(json.dumps(jobs).encode()).hexdigest() if jobs else None
+            result={}
+            if known_revisions is not None:
+                known={r['id']:r for r in known_revisions}
+                result['removed_run_ids']=sorted(known.keys()-stamps.keys())
+                changed=[r for r in rows if r!=known.get(r['id'])]
+                total=len(changed)
+                rows=changed[offset:offset+limit]
+            return dict(result,runs=rows,total=total,next_offset=offset+len(rows) if offset+len(rows)<total else None)
         groups=[dict(row) for row in db.execute('SELECT '+author+' AS created_by,count(*) AS count,max('+j('last_activity_at')+') AS last_activity_at'+base+where+' GROUP BY '+author+' ORDER BY last_activity_at DESC,created_by',args)]
         loops=[dict(row) for row in db.execute("SELECT json_extract(l.document,'$.id') AS loop_id,json_extract(l.document,'$.name') AS name,max("+j('created_at')+") AS created_at"+base+where+" GROUP BY json_extract(l.document,'$.id') ORDER BY name,loop_id",args)]
         rows=[dict(row) for row in db.execute('SELECT '+','.join(fields)+base+where+' ORDER BY '+j(sort)+' '+order+',r.id '+order+' LIMIT ? OFFSET ?',args+[limit,offset])]
@@ -221,17 +248,9 @@ def manage_loop(store, key=None, draft_id=None, revision=None, archived=None, de
                 if db.execute("""SELECT 1 FROM observation_jobs
                         WHERE json_extract(input,'$.observation_config.loop_key')=? LIMIT 1""",(key,)).fetchone():
                     raise Conflict('An observation still needs this Loop version to finish')
-                from loop_anything.runtime.implementations import options
                 def calls(implementations):
-                    for entry in implementations.values():
-                        # Older installed versions stored one candidate directly.
-                        # Keep their Loop calls protected without requiring an
-                        # obsolete version to pass current authoring validation.
-                        candidates = [entry] if isinstance(entry, dict) and 'kind' in entry else options(entry).values()
-                        if any(candidate.get('kind') == 'loop' and candidate['loop']['key'] == key
-                               for candidate in candidates):
-                            return True
-                    return False
+                    return any(candidate.get('kind')=='loop' and candidate['loop']['key']==key
+                               for entry in implementations.values() for candidate in (entry or {}).get('options', {}).values())
                 for other in db.execute('SELECT key,implementations FROM loop_definitions'):
                     if other['key']!=key and calls(json.loads(other['implementations'])):raise Conflict('Another Loop calls this version')
                 for other in db.execute('SELECT document FROM loop_drafts'):

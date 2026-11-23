@@ -8,9 +8,11 @@ function routeHash(route){
   if(route.type==='communication')return '#communication/'+(route.tab||'agents');
   if(route.type==='timelines'||route.type==='home')return '#work/timelines';
   if(route.type==='timeline')return '#work/timelines/'+encodeURIComponent(route.id);
-  if(route.type==='run-list')return '#work/runs';
+  if(route.type==='run-list')return '#work/runs'+(route.loopId?'/'+encodeURIComponent(route.loopId):'');
   if(route.type==='monitors')return '#work/monitors';
   if(route.type==='schedules')return '#work/schedules';
+  if(route.type==='plans')return '#plans'+(route.id?'/'+encodeURIComponent(route.id):'');
+  if(route.type==='rsi')return '#rsi';
   if(route.type==='resources')return '#resources'+(route.id?'/'+encodeURIComponent(route.id):'');
   if(route.type==='catalog')return '#loop_definitions';
   if(route.type==='loop')return '#loop/'+encodeURIComponent(route.key)+'/'+(route.tab || 'overview');
@@ -24,10 +26,13 @@ function parseRoute(hash){
   if(parts[0]==='communication')return {type:'communication',tab:['agents','requests'].includes(parts[1])?parts[1]:'agents'};
   if(parts[0]==='work'){
     if(parts[1]==='timelines'&&parts[2])return {type:'timeline',id:decodeURIComponent(parts[2])};
+    if(parts[1]==='runs'&&parts[2])return {type:'run-list',loopId:decodeURIComponent(parts[2])};
     const type={timelines:'timelines',runs:'run-list',monitors:'monitors',schedules:'schedules'}[parts[1]];
     if(type)return {type};
   }
   if(!parts[0])return {type:'home'};
+  if(parts[0]==='plans')return {type:'plans',id:decodeURIComponent(parts[1]||'')};
+  if(parts[0]==='rsi')return {type:'rsi'};
   if(parts[0]==='resources')return {type:'resources',...(parts[1]?{id:decodeURIComponent(parts[1])}:{})};
   if(parts[0]==='loop_definitions'||parts[0]==='prepare')return {type:'catalog'};
   if(parts[0]==='loop')return {type:'loop',key:decodeURIComponent(parts[1] || ''),tab:['overview','flow','prepare'].includes(parts[2])?parts[2]:'overview'};
@@ -101,7 +106,15 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
     else if(route.type==='communication'){page='communication';await renderCommunication();}
     else if(route.type==='timelines'||route.type==='home'){page='timelines';await showWorkLibrary();}
     else if(route.type==='timeline'){page='timeline';await showWorkTimeline(route.id);}
-    else if(route.type==='run-list'){page='run-list';await refreshRunLibrary();}
+    else if(route.type==='plans'||route.type==='rsi'){page=route.type;await refreshAssignments(true);}
+    else if(route.type==='run-list'){page='run-list';
+      if(route.loopId){
+        document.querySelectorAll('#runs-page input').forEach(el=>el.value='');
+        document.querySelectorAll('#runs-page select').forEach(el=>el.selectedIndex=0);
+        const el=$('runs-loop');if(![...el.options].some(o=>o.value===route.loopId))el.add(new Option(route.loopId,route.loopId));
+        el.value=route.loopId;$('runs-archived').value='include';runOffset=0;
+      }
+      await refreshRunLibrary();}
     else if(route.type==='monitors'){page='monitors';refreshMonitoring(true);}
     else if(route.type==='schedules'){page='schedules';refreshSchedules();}
     else if(route.type==='resources'){page='resources';await openSharedResources(route,serial);}
@@ -144,7 +157,9 @@ function updateNavigationUI(){
   $('communication-nav').classList.toggle('active',page==='communication');
   const workPage=['timelines','timeline','run-list','runs','monitors','schedules'].includes(page);
   const crumbs=workPage?[navLink({type:'timelines'},'工作台')]:page==='settings'?['设置']:page==='communication'?['Agent 通信']:page==='resources'?(activeRoute.id?[navLink({type:'resources'},'共享资源'),esc($('shared-resource-title')?.textContent||activeRoute.id)]:['共享资源']):[navLink({type:'catalog'},'Loop 库')];
-  if(page==='settings')crumbs.push(settingsLabels[activeRoute.tab||'general']);
+  if(page==='plans')crumbs.splice(0,crumbs.length,'规划托管');
+  else if(page==='rsi')crumbs.splice(0,crumbs.length,navLink({type:'catalog'},'Loop'),'RSI for loop');
+  else if(page==='settings')crumbs.push(settingsLabels[activeRoute.tab||'general']);
   else if(page==='communication'){crumbs.push({agents:'Agent',requests:'协作请求'}[activeRoute.tab||'agents']);}
   else if(page==='timelines'){crumbs.push('Timeline');}
   else if(page==='timeline'){crumbs.push(navLink({type:'timelines'},'Timeline'));crumbs.push(esc($('timeline-title').textContent));}
@@ -152,7 +167,6 @@ function updateNavigationUI(){
   else if(page==='monitors'){crumbs.push('监控');}
   else if(page==='schedules'){crumbs.push('定时任务');}
   else if(page==='editor' && editor){
-    if(editor.installedKey&&$('reader-runs')){renderRelatedRuns(editor.installedKey);safely(()=>refreshRelatedRuns(editor.installedKey));}
     if(editor.returnTo?.type==='loop')crumbs.push(navLink(editor.returnTo,'来源 Loop'));
     const title=editor.loop_definition.name||'草稿';
     crumbs.push(activeRoute.node?navLink({type:'editor',id:editor.routeId},title):esc(title));

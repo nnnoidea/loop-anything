@@ -363,7 +363,8 @@ def install(store, data):
         existing = db.execute('SELECT document, root FROM loop_packages WHERE key=?', (key,)).fetchone()
         if existing and (json.loads(existing[0]) != document or existing[1] != str(root) and not getattr(store,'hosting_team',False)):
             raise Conflict('Package identity already installed with different content/location')
-        db.execute('INSERT OR IGNORE INTO loop_packages VALUES (?,?,?,?)', (key, fingerprint, str(root), json.dumps(document)))
+        db.execute('INSERT OR IGNORE INTO loop_packages(key,digest,root,document) VALUES (?,?,?,?)',
+                   (key,fingerprint,str(root),json.dumps(document)))
         if getattr(store,'hosting_team',False):db.execute('UPDATE loop_packages SET root=? WHERE key=?',(str(root),key))
         db.execute('INSERT OR IGNORE INTO loop_definitions VALUES (?,?,?,?)',
                    (key, fingerprint, json.dumps(effective_definition(document)), json.dumps(bound)))

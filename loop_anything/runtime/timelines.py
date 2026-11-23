@@ -49,7 +49,7 @@ def append(db, ident, key, text, kind='note', refs=None, actor='agent'):
         if entry['fingerprint'] != digest(body): raise Conflict('Entry key already belongs to different content')
         return entry
     sequence=db.execute('SELECT coalesce(max(sequence),0)+1 FROM work_entries WHERE timeline_id=?',(ident,)).fetchone()[0]
-    entry=dict(body, key=key, sequence=sequence, at=time.time(), fingerprint=digest(body))
+    entry=dict(body, source_timeline_id=ident, key=key, sequence=sequence, at=time.time(), fingerprint=digest(body))
     db.execute('INSERT INTO work_entries VALUES (?,?,?,?)',(ident,key,sequence,json.dumps(entry,ensure_ascii=False)))
     return entry
 
@@ -101,7 +101,7 @@ def progress_preview(db, source, ref, definition):
     if source == 'entry':
         row = db.execute('SELECT document FROM work_entries WHERE rowid=?',(ref,)).fetchone()
         entry = json.loads(row[0])
-        return dict(kind=entry['kind'],text=entry['text'],refs=entry.get('refs',[]))
+        return dict(kind=entry['kind'],text=entry['text'],source_timeline_id=entry.get('source_timeline_id'),refs=entry.get('refs',[]))
     if source == 'state':
         from loop_anything.runtime.business_state import overview
         raw = db.execute('SELECT document FROM work_state WHERE rowid=?',(ref,)).fetchone()

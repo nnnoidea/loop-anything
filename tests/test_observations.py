@@ -108,6 +108,23 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual([r['name'] for r in data['arrangements']],['a'])
         self.assertIn('new1',[v['view']['summary'] for v in data['views']])
 
+    def test_agent_can_query_observer_failure_after_a_successful_refresh(self):
+        config=chart('metrics')
+        config['steps'][0]['command']=[sys.executable,'-c','raise SystemExit("metrics unavailable")']
+        self.update(observations={'metrics':config})
+        self.drain()
+        def facts(source,**opts):
+            return self.tools.call('query_run_facts',dict(run_ids=[self.run_id],source=source,**opts))['items']
+        failed=facts('observations',filters={'status':'failed'})
+        self.assertIn('metrics unavailable',failed[0]['reason'])
+        self.assertEqual(failed[0]['subject'],'metrics')
+        self.update(observations={'metrics':chart('Recovered')})
+        self.drain()
+        events=facts('history',filters={'kind':'observation_failed'})
+        self.assertEqual(len(events),1)
+        self.assertIn('metrics unavailable',events[0]['reason'])
+        self.assertEqual(facts('observations',filters={'status':'completed'})[0]['summary'],'Recovered0')
+
     def test_rollback_no_event_and_interrupted_claim_no_relaunch(self):
         with self.store.connection() as db:
             pos=events.position(db)

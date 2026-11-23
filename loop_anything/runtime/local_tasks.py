@@ -28,7 +28,7 @@ def read(path, default=None):
 
 
 def schedule_summary(definition):
-    summary = {key: definition[key] for key in ('name', 'description', 'at', 'every', 'repeat') if key in definition}
+    summary = {key: definition[key] for key in ('name', 'description', 'at', 'every', 'repeat', 'until') if key in definition}
     return dict(summary, conditional=bool(definition.get('check')), receiver=bool(definition.get('receiver')))
 
 
@@ -40,13 +40,14 @@ class TaskRegistry:
     def register(self, definition, ident=None):
         if not isinstance(definition,dict) or not isinstance(definition.get('name'),str) or not definition['name'].strip():
             raise ValueError('A task needs a name')
-        if set(definition)-{'name','description','every','at','check','command','stdin','cwd','timeout','repeat','agent_cli','terminal','receiver'}:
+        if set(definition)-{'name','description','every','at','until','check','command','stdin','cwd','timeout','repeat','agent_cli','terminal','receiver'}:
             raise ValueError('Unknown local task field')
         if bool('every' in definition)==bool('at' in definition):raise ValueError('Supply exactly one of every (seconds) or at (ISO time with timezone)')
         if 'every' in definition:
             seconds=definition['every']
             if type(seconds) not in (int,float) or not math.isfinite(seconds) or seconds<=0:raise ValueError('every must be positive seconds')
         else:parse_time(definition['at'])
+        if 'until' in definition:parse_time(definition['until'],'until')
         receiver=definition.get('receiver')
         if receiver:
             if not isinstance(receiver,dict) or set(receiver)-{'server','name','capacity'} or not receiver.get('server'):
@@ -55,7 +56,7 @@ class TaskRegistry:
                 raise ValueError('receiver.server must be a NAS or HTTP endpoint')
             if type(receiver.get('capacity',1)) is not int or not 1<=receiver.get('capacity',1)<=8:
                 raise ValueError('receiver capacity must be 1–8')
-            if 'command' in definition or 'check' in definition or 'at' in definition:raise ValueError('A receiver uses an every schedule without command/check')
+            if {'command','check','at','until'} & definition.keys():raise ValueError('A receiver uses an every schedule; action triggers and deadlines apply to scheduled commands')
         for field in ('command','check'):
             if field=='command' and not receiver or field in definition:
                 value=definition.get(field)
@@ -104,11 +105,11 @@ class TaskRegistry:
         return {'id':ident,'stop_requested':bool(owner),'notice':'A stop request is not confirmation that the process has exited.'}
 
 
-def parse_time(value):
+def parse_time(value, field='at'):
     from datetime import datetime
-    if not isinstance(value,str):raise ValueError('at must be an ISO time with timezone')
+    if not isinstance(value,str):raise ValueError(field+' must be an ISO time with timezone')
     parsed=datetime.fromisoformat(value.replace('Z','+00:00'))
-    if parsed.tzinfo is None:raise ValueError('at must include a timezone')
+    if parsed.tzinfo is None:raise ValueError(field+' must include a timezone')
     return parsed.timestamp()
 
 
@@ -134,7 +135,8 @@ class LocalRuntime:
                     'schedule':schedule_summary(definition),
                     'next_at':parse_time(definition['at']) if 'at' in definition else now+(0 if definition.get('check') or definition.get('receiver') else definition['every'])}
                 if item['runtime'].get('last_result'):state['last_result']=item['runtime']['last_result']
-                self.items[ident]={'definition':definition,'state':state,'future':None,'stop':threading.Event()}
+                self.items[ident]={'definition':definition,'state':state,'future':None,'stop':threading.Event(),
+                                   'until':parse_time(definition['until'],'until') if 'until' in definition else None}
                 self.save(ident)
             self.scheduler.add(self.tick,.2,immediate=True)
             self.scheduler.add(self.heartbeat,5)
@@ -160,6 +162,12 @@ class LocalRuntime:
                 event.set()
         return event.is_set()
 
+    def expire_if_due(self, item):
+        if item['until'] is None or time.time()<item['until']:
+            return False
+        item['state'].update(status='expired',next_at=None)
+        return True
+
     def tick(self):
         active=False
         inspect_controls=time.monotonic()-self.last_control>=1
@@ -173,6 +181,8 @@ class LocalRuntime:
                 if item.get('receiver'):item['receiver'].close()
                 state.update(status='stopped',next_at=None);self.save(ident)
             if state['status'] not in ('waiting','checking','running'):continue
+            if idle and self.expire_if_due(item):
+                self.save(ident);continue
             active=True
             if due:
                 self.move(item,'due');self.save(ident)
@@ -183,7 +193,7 @@ class LocalRuntime:
         item=self.items[ident];definition=item['definition'];state=item['state'];event=item['stop']
         session=None
         try:
-            if self.stop_requested(ident,item):return
+            if self.stop_requested(ident,item) or self.expire_if_due(item):return
             if definition.get('receiver'):
                 from loop_anything.runtime.executor_client import Receiver
                 if 'receiver' not in item:item['receiver']=Receiver(definition['receiver'],self.registry.path(ident))
@@ -194,12 +204,14 @@ class LocalRuntime:
             else:
                 if definition.get('check'):
                     checked,_=self.run_action(ident,checking=True)
+                    if checked is None:return
                     if checked.returncode==1:
                         self.move(item,'not_ready');return
                     if checked.returncode:raise ValueError('Condition check failed: '+checked.stderr[-2000:])
-                self.move(item,'ready');state['last_started_at']=time.time();self.save(ident)
-                if self.stop_requested(ident,item):return
+                if self.stop_requested(ident,item) or self.expire_if_due(item):return
+                self.move(item,'ready');self.save(ident)
                 result,session=self.run_action(ident)
+                if result is None:return
                 state['last_result']={'returncode':result.returncode,'at':time.time(),
                     'native_session':session.doc.get('native_session'),
                     **({} if session.doc.get('output_source')=='native_session' else {'stdout':result.stdout[-8192:],'stderr':result.stderr[-8192:]})}
@@ -220,6 +232,7 @@ class LocalRuntime:
             if event.is_set() and state['status']!='unknown':
                 if item.get('receiver'):item['receiver'].close()
                 state['status']='stopped'
+            if state['status']=='waiting':self.expire_if_due(item)
             state['next_at']=time.time()+definition.get('every',1) if state['status']=='waiting' else None
             state['heartbeat']=time.time();self.save(ident)
 
@@ -236,6 +249,11 @@ class LocalRuntime:
             if doc.get('pid'):execution['process_group']=doc['pid']
             core.atomic_json(path,execution)
         session=ProcessSession(execution['id'],{} if checking else definition,changed)
+        # Writing the launch intent can cross the cutoff (e.g. a slow shared registry).
+        if self.stop_requested(ident,item) or self.expire_if_due(item):
+            changed({'state':'stopped','ended_at':time.time()})
+            return None,None
+        if not checking:state['last_started_at']=time.time()
         result=run_command(definition['check' if checking else 'command'],definition.get('stdin',''),
             definition.get('timeout',60 if checking else None),definition.get('cwd'),item['stop'],session)
         return result,session

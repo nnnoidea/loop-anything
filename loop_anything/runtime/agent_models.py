@@ -52,43 +52,63 @@ def validate(document, settings):
             raise Invalid('模型名须以字母或数字开头，最长 100 个字符')
 
 
+def model_arguments(command):
+    """Separate model options from the rest of the Codex argv, up to --."""
+    args = [command[0]]
+    boundary = command.index('--') if '--' in command else len(command)
+    source = iter(command[1:boundary])
+    model = config_model = None
+    for operand in source:
+        if operand in ('--model', '-m'):
+            model = next(source, None)
+        elif operand.startswith('--model='):
+            model = operand[len('--model='):]
+        elif operand.startswith('-m'):
+            model = operand[2:].lstrip('=')
+        elif operand in ('--config', '-c') or operand.startswith(('--config=', '-c')):
+            separate = operand in ('--config', '-c')
+            value = next(source, None) if separate else operand.removeprefix('--config=').removeprefix('-c').lstrip('=')
+            key, sep, setting = (value or '').partition('=')
+            if sep and key.strip() == 'model':
+                config_model = setting.strip().strip("'\"")
+            else:
+                args.append(operand)
+                if separate and value is not None:
+                    args.append(value)
+        else:
+            args.append(operand)
+    return model or config_model, args, command[boundary:]
+
+
+def effective_model(config, ident, settings, fallback):
+    return (settings.get('nodes', {}).get(ident) or settings.get('default')
+            or model_arguments(config['command'])[0] or fallback)
+
+
 def describe(document, settings, fallback=DEFAULT_MODEL):
-    default = settings.get('default', fallback)
-    overrides = settings.get('nodes', {})
-    return {'default': default, 'nodes': {
-        ident: {'label': label, 'override': overrides.get(ident),
-                'candidates': {key: mode(config) for key, config in agents.items()}}
+    return {'default': settings.get('default'), 'fallback': fallback, 'nodes': {
+        ident: {'label': label, 'override': settings.get('nodes', {}).get(ident),
+                'candidates': {key: mode(config) for key, config in agents.items()},
+                'models': {key: effective_model(config, ident, settings, fallback) for key, config in agents.items()
+                           if mode(config) == 'managed'}}
         for ident, label, agents in targets(document)
     }}
 
 
 def annotate(document, settings, fallback):
-    default = settings.get('default', fallback)
-    overrides = settings.get('nodes', {})
     for ident, _, agents in targets(document):
         for config in agents.values():
             if mode(config) == 'managed':
-                config['agent_model'] = overrides.get(ident, default)
+                config['agent_model'] = effective_model(config, ident, settings, fallback)
 
 
 def launch_command(command, model):
-    """Override Codex's model flag while keeping its other arguments and prompt."""
+    """Keep an explicit matching model and all arguments after the separator."""
     if not model or not codex_command(command):
         return command
-    args = [command[0]]
-    boundary = command.index('--') if '--' in command else len(command)
-    source = iter(command[1:boundary])
-    for operand in source:
-        if operand in ('--model', '-m'):
-            next(source, None)
-        elif operand in ('--config', '-c'):
-            value = next(source, None)
-            if value is None or value.partition('=')[0].strip() != 'model':
-                args.append(operand)
-                if value is not None:
-                    args.append(value)
-        elif not operand.startswith(('--model=', '-m', '--config=model=', '-cmodel=')):
-            args.append(operand)
+    declared, args, tail = model_arguments(command)
+    if declared == model:
+        return command
     position = 1
     for index, operand in enumerate(args[1:], 1):
         if operand in ('exec', 'e', 'resume'):
@@ -96,4 +116,4 @@ def launch_command(command, model):
             if operand in ('exec', 'e') and 'resume' in args[position:] and '{{session_id}}' in args:
                 position = args.index('resume', position) + 1
             break
-    return args[:position] + ['--model', model] + args[position:] + command[boundary:]
+    return args[:position] + ['--model', model] + args[position:] + tail

@@ -73,6 +73,7 @@ def main():
     parser.add_argument('--wait', type=float, default=30, help='Seconds to wait for a NAS tool receipt; timeout never cancels the operation')
     parser.add_argument('--notification-command', help='Sender argv as JSON or @UTF8_JSON_FILE (start_run/change_settings only)')
     parser.add_argument('--output', help='Write an exported Loop ZIP or Timeline JSON to this new file')
+    parser.add_argument('--if-changed',action='store_true',help='For list_runs with known_revisions: exit 0 on changes, 1 if unchanged, 2 on error.')
     args = parser.parse_args()
     if args.notification_command is not None and args.tool not in ('start_run', 'change_settings'):
         parser.error('--notification-command is only for start_run or change_settings')
@@ -105,6 +106,8 @@ def main():
         parser.error('--created-by is only for creating Runs or standalone collaboration')
     values = load_json(args.arguments)
     if not isinstance(values,dict):parser.error('Arguments must be an object')
+    if args.if_changed and (args.tool!='list_runs' or 'known_revisions' not in values):
+        parser.error('--if-changed needs list_runs with known_revisions')
     snapshot=os.environ.get('LOOP_ANYTHING_OBSERVATION_READ')
     collection={'read_business_state':'state','read_work_result':'results','read_work_results':'results'}.get(args.tool)
     if snapshot and collection and 'as_of' not in values and not (args.url or args.space or args.work):
@@ -182,6 +185,9 @@ def main():
             json.dump(result.pop('document'),output,ensure_ascii=False,separators=(',',':'))
         result['file']=str(Path(args.output).resolve())
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.if_changed:
+        if not result.get('ok') or 'removed_run_ids' not in result:raise SystemExit(2)
+        raise SystemExit(0 if result['total'] or result['removed_run_ids'] else 1)
     raise SystemExit(0 if result.get('ok', args.tool == 'list') and result.get('accepted', True) else 2)
 
 

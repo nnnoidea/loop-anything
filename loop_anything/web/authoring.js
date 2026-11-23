@@ -19,10 +19,10 @@ function readerNodeModelHTML(item,nodeId,candidate){
   const mode=candidate?node.candidates[candidate]:null;
   if(candidate&&!mode)return '';
   const managed=candidate?mode==='managed':Object.values(node.candidates).includes('managed');
-  const model=managed?(node.override||settings.default):agentModelModeLabel(mode||Object.values(node.candidates)[0]);
-  const source=managed?(node.override?'节点单独设置':'继承 Loop 默认'):'';
+  const model=managed?(candidate?node.models[candidate]:[...new Set(Object.values(node.models))].join(' / ')):agentModelModeLabel(mode||Object.values(node.candidates)[0]);
+  const source=managed?(node.override?'节点单独设置':settings.default?'继承 Loop 默认':''):'';
   return `<div class="reader-node-model"><span>模型</span><strong>${esc(model)}</strong>
-    ${source?`<small>${esc(source)}</small><button type="button" data-model-settings-node="${esc(nodeId)}">设置</button>`:''}</div>`;
+    ${source?`<small>${esc(source)}</small>`:''}${managed?`<button type="button" data-model-settings-node="${esc(nodeId)}">设置</button>`:''}</div>`;
 }
 function renderAuthorProperties(){
   const root=$('editor-properties'),bp=editor.loop_definition,id=editSelection?.node,node=bp.nodes[id];

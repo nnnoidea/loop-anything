@@ -74,6 +74,54 @@ class TeamRuntimeTests(unittest.TestCase):
             self.assertEqual(registry.show(ident)['runtime']['status'],'completed')
         finally:runtime.stop.set();thread.join(timeout=5)
 
+    def test_deadline_between_check_and_action_never_starts_agent(self):
+        from unittest.mock import patch
+        registry=TaskRegistry(self.root/'plans')
+        checked,agent=self.root/'checked',self.root/'agent'
+        def mark(path):
+            return [sys.executable,'-c','import pathlib,sys;pathlib.Path(sys.argv[1]).touch()',str(path)]
+        ident=registry.register(dict(name='Watch',every=1,check=mark(checked),command=mark(agent),
+                                     until='1970-01-01T00:25:00+00:00'))['id']
+        with patch('loop_anything.runtime.local_tasks.time',wraps=time) as clock:
+            clock.time.side_effect=lambda:2000 if checked.exists() else 1000
+            runtime=LocalRuntime(registry,[ident])
+            try:
+                runtime.tick()
+                runtime.items[ident]['future'].result(timeout=5)
+                state=registry.show(ident)['runtime']
+                self.assertTrue(checked.exists())
+                self.assertFalse(agent.exists())
+                self.assertEqual((state['status'],state['next_at']),('expired',None))
+            finally:runtime.close()
+            # A later explicit restart also leaves the expired schedule idle.
+            with patch.object(LocalRuntime,'run_action',side_effect=AssertionError('launched after cutoff')):
+                runtime=LocalRuntime(registry,[ident])
+                try:
+                    runtime.tick()
+                    self.assertFalse(runtime.items[ident]['future'])
+                    self.assertEqual(registry.show(ident)['runtime']['status'],'expired')
+                finally:runtime.close()
+
+    def test_deadline_allows_an_action_already_started_to_finish(self):
+        from unittest.mock import patch
+        registry=TaskRegistry(self.root/'plans')
+        calls=self.root/'calls'
+        command=[sys.executable,'-c','import sys;open(sys.argv[1],"a").write("called\\n")',str(calls)]
+        ident=registry.register(dict(name='Confirmed polling',every=10,command=command,
+                                     until='1970-01-01T00:25:00Z'))['id']
+        with patch('loop_anything.runtime.local_tasks.time',wraps=time) as clock:
+            clock.time.return_value=1000
+            runtime=LocalRuntime(registry,[ident])
+            try:
+                clock.time.side_effect=lambda:2000 if calls.exists() else 1010
+                runtime.tick()
+                runtime.items[ident]['future'].result(timeout=5)
+                runtime.tick()
+                state=registry.show(ident)['runtime']
+                self.assertEqual((state['status'],state['last_result']['returncode']),('expired',0))
+                self.assertEqual(calls.read_text().splitlines(),['called'])
+            finally:runtime.close()
+
     def setup_service(self, database_on_nas=False):
         store=Store(self.root/('team' if database_on_nas else 'server')/'platform.sqlite3',journal_mode='DELETE');store.hosting_team=True
         engine=Engine(store);self.addCleanup(engine.close)

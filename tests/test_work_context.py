@@ -168,6 +168,35 @@ class WorkContextTests(unittest.TestCase):
         self.tools.call('acknowledge_wait',dict(registered,wait_id=wait['id']))
         self.assertEqual(self.tools.call('read_wait',{'wait_id':wait['id']})['wait']['state'],'handled')
 
+    def test_plan_wait_records_next_action_and_wakes_only_when_source_changes(self):
+        import subprocess
+        sleeper=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'])
+        self.addCleanup(sleeper.wait,5)
+        self.addCleanup(lambda: sleeper.poll() is None and sleeper.kill())
+        calls=self.root/'resume-count'
+        session=self.tools.call('register_work_session',{
+            'native_session':{'provider':'custom','id':'plan-test','cwd':str(self.root)},
+            'implementation':{'kind':'agent','command':[sys.executable,'-c','pass'],
+                'resume_command':[sys.executable,'-c','import sys;open(sys.argv[1],"a").write("wake\\n")',str(calls),'{{session_id}}','{{prompt}}']},
+            'process_id':sleeper.pid})
+        source=self.start()
+        message='等评测完成后比较基线，若提升再等 GPU。'
+        wait=self.tools.call('wait_for',dict(session,timeline_id=source['timeline_id'],key='evaluate',
+            sources={'job':{'kind':'run','id':source['run_id']}},
+            condition={'op':'eq','args':[{'path':'job.status'},'completed']},message=message))['wait']
+        self.assertEqual(wait['state'],'waiting')
+        read=self.tools.call('read_work_timeline',{'timeline_id':source['timeline_id']})
+        self.assertTrue(any(message in entry['text'] and {'wait_id':wait['id']} in entry['refs'] for entry in read['entries']))
+        sleeper.terminate();sleeper.wait(timeout=5)
+        for _ in range(3):self.engine.work.tick()
+        self.assertFalse(calls.exists())
+        with self.store.edit(source['run_id']) as run:run['status']='completed'
+        self.engine.work.tick()
+        for future in list(self.engine.futures):future.result(timeout=5)
+        self.tools.call('acknowledge_wait',dict(session,wait_id=wait['id']))
+        self.engine.work.tick()
+        self.assertEqual(calls.read_text().splitlines(),['wake'])
+
     def test_missing_timeline_is_checked_when_loading_that_run(self):
         import json
         receipt=self.start()

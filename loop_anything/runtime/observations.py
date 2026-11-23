@@ -22,9 +22,11 @@ def initialize(db):
             id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, name TEXT NOT NULL,
             generation TEXT NOT NULL, reason TEXT NOT NULL, input TEXT, status TEXT NOT NULL, error TEXT, process_pid INTEGER, remote_call TEXT);
         CREATE INDEX IF NOT EXISTS observation_queue ON observation_jobs(status,run_id,name);
+        CREATE INDEX IF NOT EXISTS observation_jobs_run ON observation_jobs(run_id,id);
         CREATE TABLE IF NOT EXISTS observation_views(
             timeline_id TEXT, name TEXT, job_id INTEGER NOT NULL, document TEXT NOT NULL,
             PRIMARY KEY(timeline_id,name));
+        CREATE INDEX IF NOT EXISTS observation_views_run ON observation_views(json_extract(document,'$.run_id'));
         CREATE TRIGGER IF NOT EXISTS remove_observation_jobs AFTER DELETE ON observations BEGIN
             DELETE FROM observation_jobs WHERE run_id=old.run_id AND name=old.name;
         END;
@@ -261,7 +263,7 @@ def condition_matches(db, expression, facts):
     return checks.evaluate(expression,facts,read_path=read_path)
 
 
-def recover(db):
+def recover(db,store):
     # A claim only reserves a worker slot. Only a launched local process is ambiguous.
     db.execute("UPDATE observation_jobs SET status='pending' WHERE status IN ('claimed','preparing')")
     db.execute("""UPDATE observation_jobs SET status='pending' WHERE status='running'
@@ -269,9 +271,18 @@ def recover(db):
                   coalesce(json_array_length(input,'$.observation_config.steps'),
                       (SELECT json_array_length(config,'$.steps') FROM observations s
                        WHERE s.generation=observation_jobs.generation)))""")
+    interrupted = db.execute("SELECT id,run_id,name FROM observation_jobs WHERE status='running'").fetchall()
     db.execute("""UPDATE observation_jobs SET status='unknown',
                   error='Service interrupted during execution; inspect before retry'
                   WHERE status='running'""")
+
+    for job in interrupted:
+        log_outcome(store,db,job,'unknown','Service interrupted during execution; inspect before retry')
+
+
+def log_outcome(store,db,job,status,error=None):
+    with store.edit(job['run_id'],_db=db) as run:
+        store.log(run,'observation_'+status,job['name'],detail=dict(name=job['name'],job=job['id'],error=error))
 
 
 def release_receipts(engine):
@@ -417,12 +428,17 @@ def execute(engine,job):
                     if base and base.startswith(('https://','http://')) and urlsplit(base).hostname not in ('127.0.0.1','localhost','::1'):
                         message+='\n'+base.rstrip('/')+'/#work/timelines/'+job['timeline_id']
                     enqueue(engine.store,current,'observation:'+str(job['id']),{'message':message,'route':config.get('route','default')})
+            if db.execute("SELECT 1 FROM observation_jobs WHERE run_id=? AND name=? AND status='failed' AND id<? LIMIT 1",
+                          (job['run_id'],job['name'],job['id'])).fetchone():
+                log_outcome(engine.store,db,job,'recovered')
             db.execute("DELETE FROM observation_jobs WHERE run_id=? AND name=? AND (id=? OR (status='failed' AND id<?))",
                        (job['run_id'],job['name'],job['id'],job['id']))
     except Exception as exc:
         with transaction(engine.store) as db:
-            db.execute('UPDATE observation_jobs SET status=?,error=?,input=NULL WHERE id=?',
-                       ('unknown' if isinstance(exc,CommandNotStopped) else 'failed',str(exc),job['id']))
+            status='unknown' if isinstance(exc,CommandNotStopped) else 'failed'
+            changed=db.execute('UPDATE observation_jobs SET status=?,error=?,input=NULL WHERE id=?',(status,str(exc),job['id']))
+            if changed.rowcount:
+                log_outcome(engine.store,db,job,status,str(exc))
 
 
 def validate_view(view):
