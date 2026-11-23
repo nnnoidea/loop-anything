@@ -54,7 +54,9 @@ function overviewFlowHTML(item){
     const html=new TextDecoder('utf-8',{fatal:true}).decode(Uint8Array.from(atob(asset.base64),c=>c.charCodeAt(0)));
     // Opaque-origin sandbox: an imported page cannot access platform cookies, DOM or APIs.
     const bridgeURL=location.origin+'/flow_bridge.js';
-    const policy=`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${bridgeURL}; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">`;
+    // CSP host sources cannot express an IPv6 address. Authorize only the bridge element.
+    const nonce=randomKey();
+    const policy=`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">`;
     // Keep overview sections stacked when opening the inspector changes the iframe width.
     const style=`<style>
       html,body{height:auto!important;min-height:0!important;overscroll-behavior-y:auto!important}
@@ -70,7 +72,7 @@ function overviewFlowHTML(item){
       [data-loop-node][aria-pressed=true]>:is(rect,path,polygon,ellipse){stroke:#446aff;stroke-width:3px}
     </style>`;
     const nodes=JSON.stringify(Object.entries(item.loop_definition?.nodes||{}).map(([id,n])=>[id,n.label||id]));
-    const bridge=`<script src="${esc(bridgeURL)}" data-nodes="${esc(nodes)}" defer></script>`;
+    const bridge=`<script nonce="${nonce}" src="${esc(bridgeURL)}" data-nodes="${esc(nodes)}" defer></script>`;
     // The host's script-src 'self' is inherited by srcdoc. Use a trusted external bridge,
     // and one viewer policy instead of the exported page's inline-script hash policy.
     const pageHTML=html.replace(/<!doctype[^>]*>/i,'').replace(/<meta\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi,tag=>/\bhttp-equiv\s*=\s*(?:"content-security-policy"|'content-security-policy'|content-security-policy(?=[\s/>]))/i.test(tag)?'':tag);

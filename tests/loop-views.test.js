@@ -7,6 +7,7 @@ const ctx=vm.createContext({location:{origin:'http://127.0.0.1:8769'},document:{
 for(const name of ['loop_graph','lifecycle'])vm.runInContext(fs.readFileSync(`loop_anything/web/${name}.js`,'utf8'),ctx);
 const run=code=>vm.runInContext(code,ctx);
 ctx.atob=atob;ctx.TextDecoder=TextDecoder;
+ctx.randomKey=()=> 'fixtureNonce';
 test('authored overview displays saved UTF-8 HTML in an opaque sandbox without deriving routes',()=>{
   const html='<html><body><h1>研究流程</h1><script>parent.document.body.remove()</script></body></html>';
   ctx.item={assets:[{path:'docs/flow.html',base64:Buffer.from(html).toString('base64')}]};
@@ -181,8 +182,11 @@ test('sandbox bridge binds exact unique names or explicit IDs and ignores auxili
 test('overview uses only the trusted external bridge under the parent CSP, with escaped node metadata',()=>{
   const html=`<html data-theme="paper"><head><meta http-equiv="Content-Security-Policy" content="script-src 'sha256-OLD'"></head><body><p>Flow</p></body></html>`;
   ctx.item={loop_definition:{nodes:{'n"<':{label:'</script><script>alert(1)</script>'}}},assets:[{path:'docs/flow.html',base64:Buffer.from(html).toString('base64')}]};
-  const rendered=run('overviewFlowHTML(item)');
+  const rendered=run(`location.origin='http://[::1]:9000'; overviewFlowHTML(item)`);
+  ctx.location.origin='http://127.0.0.1:8769';
   assert.match(rendered,/flow_bridge.js/);assert.doesNotMatch(rendered,/sha256-OLD|script-src &#39;unsafe-inline&#39;|<script>/);
+  assert.match(rendered,/script-src &#39;nonce-fixtureNonce&#39;/);
+  assert.match(rendered,/script nonce=&quot;fixtureNonce&quot; src=&quot;http:\/\/\[::1\]:9000\/flow_bridge\.js/);
   assert.match(rendered,/data-theme=&quot;paper&quot;/);assert.match(rendered,/data-nodes=/);
 });
 
