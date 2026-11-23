@@ -112,7 +112,6 @@ function showPage() {
   $('schedules-page').hidden=page!=='schedules';
   $('resources-page').hidden=page!=='resources';
   if($('communication-page'))$('communication-page').hidden=page!=='communication';
-  if($('launch-page'))$('launch-page').hidden=page!=='launch';
   $('workspace').hidden = page !== 'runs' || !run;
   $('runs-page').hidden=page!=='run-list';
   $('timelines-page').hidden=page!=='timelines';
@@ -217,12 +216,9 @@ document.addEventListener('click',event=>safely(async()=>{
   if(d.tab){activeTab=d.tab;renderInspect();if(button.closest('#attention'))document.querySelector('.run-tabs').scrollIntoView({block:'start'});return;}
   if(d.retryRunView!==undefined){runViewFailure=null;renderInspect();await refreshRunWorkspace();return;}
   if(d.historyOffset!==undefined){runHistoryOffset=Number(d.historyOffset);renderInspect();return;}
-  if(d.create){await openCreate(d.create);return;}
   if(d.validate){const c=catalog.find(x=>x.key===d.validate);const r=await api('validate',c);toast(r.valid?'验证通过 · '+r.warnings.join('；'):r.errors.join('；'));return;}
   const runId=run?.id;
   switch(button.id){
-    case 'new-run':await openCreate();break;
-    case 'empty-create':await navigateTo({type:'catalog'});break;
     case 'loop_definitions-nav':await navigateTo({type:'catalog'});break;
     case 'clear-filter':filterNode=null;renderInspect();break;
     case 'node-contract':$('detail-title').textContent=nodeLabel(filterNode)+' · Contract';$('detail-content').innerHTML=`<pre>${esc(pretty(run.loop_definition.nodes[filterNode]))}</pre>`;$('detail-dialog').showModal();break;

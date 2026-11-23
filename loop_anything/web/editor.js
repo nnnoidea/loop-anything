@@ -2,8 +2,55 @@
 // Read-only Loop viewer. Drafts and installed versions share the same detail surface.
 let editor=null, savedDrafts=[], editSelection=null;
 const editorPage=document.createElement('section');editorPage.id='loop_definition-editor';editorPage.hidden=true;
-editorPage.innerHTML=`<div class="run-navigation"><button id="editor-back">← 返回 Loop 库</button><span>流程、规则与文件 · 只读</span></div>
-<div class="editor-layout"><div class="editor-left"><section class="panel"><header class="reader-summary"><div class="reader-heading"><div class="reader-identity"><h1 id="reader-title"></h1><small id="reader-version"></small></div><div class="toolbar reader-actions" role="group" aria-label="Loop 操作"><button type="button" id="reader-refresh">刷新</button><button type="button" id="reader-start" hidden>启动</button><details class="editor-more"><summary>更多</summary><div class="editor-more-actions"><button id="editor-json">查看完整定义</button><button id="reader-check">环境检查</button></div></details></div></div><p id="reader-description"></p><div id="reader-model-summary" class="reader-model-summary" hidden></div></header><div class="editor-help"><span id="editor-hint"></span></div><div class="editor-overview-summary" id="editor-overview-summary"></div><div class="editor-view-controls"><strong class="flow-view-title">整体流程</strong><div class="canvas-tools" role="group" aria-label="画布视图"><button type="button" id="canvas-fullscreen">全屏</button></div></div><div id="editor-flow-overview"></div><div id="editor-edges-list" class="editor-edge-list"></div><div id="reader-documentation" class="reader-documentation"></div><div class="editor-report" id="editor-report"></div></section></div><aside class="panel editor-right" aria-label="节点信息与状态转移" tabindex="-1"><div class="editor-inspector-heading"><div class="panel-heading"><h2 id="property-title">节点详情</h2><button type="button" id="close-editor-detail" aria-label="关闭节点侧栏">×</button></div><div class="editor-detail-tabs" role="group" aria-label="节点查看方式"><button type="button" data-editor-detail="info" aria-pressed="true" aria-controls="editor-properties">节点信息</button><button type="button" data-editor-detail="states" aria-pressed="false" aria-controls="editor-node-states">状态转移</button></div></div><div class="editor-properties" id="editor-properties"></div><div id="editor-node-states" class="editor-properties" hidden></div></aside></div>`;
+editorPage.innerHTML=`
+<div class="editor-layout">
+  <div class="editor-left">
+    <section class="panel">
+      <header class="reader-summary">
+        <div class="reader-heading">
+          <h1 id="reader-title"></h1>
+          <button type="button" id="open-loop-model-settings" class="reader-model-action" aria-label="模型设置" aria-describedby="reader-default-model" hidden>
+            <span>模型设置</span><small id="reader-default-model"></small>
+          </button>
+        </div>
+        <p id="reader-description"></p>
+      </header>
+      <div class="editor-view-controls">
+        <h2 id="reader-flow-title" class="flow-view-title">流程</h2>
+        <div class="canvas-tools"><button type="button" id="canvas-fullscreen">全屏</button></div>
+      </div>
+      <div id="editor-flow-overview"></div>
+      <div id="reader-runs" class="reader-runs" hidden></div>
+      <details id="reader-technical">
+        <summary>技术资料</summary>
+        <div class="reader-technical-body">
+          <p id="reader-version" class="small muted"></p>
+          <div class="toolbar reader-technical-actions">
+            <button type="button" id="editor-json">查看完整定义</button>
+            <button type="button" id="loop-config-template">运行配置文件</button>
+            <button type="button" id="reader-check">环境检查</button>
+            <button type="button" id="loop-package">下载与导入</button>
+            <button type="button" id="reader-refresh">重新读取</button>
+          </div>
+          <div id="editor-edges-list" class="editor-edge-list"></div>
+          <div id="reader-documentation" class="reader-documentation"></div>
+          <div id="editor-report" class="editor-report"></div>
+        </div>
+      </details>
+    </section>
+  </div>
+  <aside class="panel editor-right" aria-label="节点信息与状态转移" tabindex="-1">
+    <div class="editor-inspector-heading">
+      <div class="panel-heading"><h2 id="property-title">节点详情</h2><button type="button" id="close-editor-detail" aria-label="关闭节点侧栏">×</button></div>
+      <div class="editor-detail-tabs" role="group" aria-label="节点查看方式">
+        <button type="button" data-editor-detail="info" aria-pressed="true" aria-controls="editor-properties">节点信息</button>
+        <button type="button" data-editor-detail="states" aria-pressed="false" aria-controls="editor-node-states">状态转移</button>
+      </div>
+    </div>
+    <div class="editor-properties" id="editor-properties"></div>
+    <div id="editor-node-states" class="editor-properties" hidden></div>
+  </aside>
+</div>`;
 document.querySelector('main').append(editorPage);
 const jsonDialog=document.createElement('dialog');jsonDialog.id='editor-json-dialog';jsonDialog.className='editor-json-modal';
 jsonDialog.innerHTML=`<div class="dialog-heading"><h2>完整定义与节点实现 · 只读</h2><button class="close-dialog" aria-label="关闭">×</button></div><textarea id="editor-json-value" aria-label="完整 Loop 定义 JSON" readonly></textarea><div class="dialog-tasks"><button id="editor-export">下载 JSON</button></div>`;
@@ -32,26 +79,33 @@ async function loadReader(id){
 function readerIdentity(item=editor){return item.installedKey?{key:item.installedKey}:{draft_id:item.id};}
 function openEditor(){return navigateTo({type:'editor',id:registerEditor()},{capture:false});}
 function populateMeta(){
-  renderReaderSummary();$('reader-documentation').innerHTML=readerDocumentsHTML(editor)+(editor.installedKey?'<div id="reader-runs">'+relatedRunsHTML(editor.installedKey)+'</div>':'');
-  $('reader-start').hidden=$('reader-check').hidden=!editor.installedKey;
-  if($('loop-config-template'))$('loop-config-template').textContent=editor.installedKey?'运行配置文件':'运行配置模板';
+  renderReaderSummary();
+  const technical=$('reader-technical');
+  if(technical.dataset.loop!==editor.routeId)technical.open=false;
+  technical.dataset.loop=editor.routeId;
+  $('reader-documentation').innerHTML=readerDocumentsHTML(editor);
+  $('reader-runs').hidden=$('reader-check').hidden=!editor.installedKey;
+  if(!editor.installedKey){$('reader-runs').replaceChildren();delete $('reader-runs').dataset.signature;}
+  $('loop-config-template').textContent=editor.installedKey?'运行配置文件':'运行配置模板';
 }
 function renderReaderSummary(){
   const b=editor.loop_definition;
   $('reader-title').textContent=b.name||b.id;
   $('reader-version').textContent=`${b.id} · 版本 ${b.version}${editor.installedKey?'':` · 草稿 r${editor.revision}`}`;
-  $('reader-description').textContent=b.description||'';
-  $('reader-description').hidden=!b.description;
+  const purpose=b.guide?.purpose||b.description||'';
+  $('reader-description').textContent=purpose;
+  $('reader-description').hidden=!purpose;
   renderLoopModelSummary(editor);
 }
 function renderEditor(){
   renderReaderSummary();
   const b=editor.loop_definition;
-  $('editor-overview-summary').innerHTML=`<span>${Object.keys(b.nodes).length} 个节点 · ${Object.values(b.nodes).reduce((n,v)=>n+Object.keys(v.inputs||{}).length,0)} 个输入端口</span><small>点击流程节点，在侧栏查看节点信息与状态转移。</small>`;
-  $('editor-flow-overview').innerHTML=overviewFlowHTML(editor);
-  $('editor-flow-overview').querySelector('iframe')?.addEventListener('load',syncOverviewSelection);
+  const overview=$('editor-flow-overview');
+  overview.innerHTML=overviewFlowHTML(editor);
+  const frame=overview.querySelector('iframe');
+  $('reader-flow-title').textContent=frame?'流程':'节点';
+  frame?.addEventListener('load',syncOverviewSelection);
   $('editor-edges-list').innerHTML=readerPlansHTML(b);
-  $('editor-hint').textContent='选择流程节点，查看职责、实现及状态规则；切换查看不会修改 Loop。';
   updateCanvasControls();
 }
 function syncOverviewSelection(){
@@ -79,7 +133,7 @@ window.addEventListener('message',event=>{
 async function locateEditorIssue(path){
   const id=path[0]==='seed'?editor.loop_definition.entry:path[1];
   if(['nodes','implementations','seed'].includes(path[0])&&editor.loop_definition.nodes[id]){await navigateTo({type:'editor',id:editor.routeId,node:id});return;}
-  if(path[0]==='plans'){await navigateTo({type:'editor',id:editor.routeId});$('editor-edges-list').scrollIntoView({block:'center'});return;}
+  if(path[0]==='plans'){await navigateTo({type:'editor',id:editor.routeId});$('reader-technical').open=true;$('editor-edges-list').scrollIntoView({block:'center'});return;}
   toast('完整定义中可查看此项，请将问题交给 Agent 修正。');
 }
 function renderReport(report){
@@ -96,9 +150,8 @@ document.addEventListener('click',event=>safely(async()=>{
   switch(el.id){
 
     case 'reader-refresh':{const id=editor.routeId,tab=editor.detailTab;editor=await loadReader(id);editor.detailTab=tab;editorSessions.set(id,{editor,selection:editSelection});if(editSelection?.node&&!editor.loop_definition.nodes[editSelection.node])editSelection=null;populateMeta();renderEditor();renderProperties();break;}
-    case 'reader-start':await openCreate(editor.installedKey);break;
-    case 'reader-check':{el.closest('details').open=false;const report=await api('packages/smoke',{key:editor.installedKey});preflightCache.set(editor.installedKey,report);readerCheckDialog.innerHTML='<div class="dialog-heading"><h2>环境检查 · 只读</h2><button class="close-dialog">×</button></div>'+checkHTML(report);readerCheckDialog.showModal();break;}
-    case 'editor-json':el.closest('details').open=false;$('editor-json-value').value=pretty({loop_definition:editor.loop_definition,implementations:editor.implementations});jsonDialog.showModal();break;
+    case 'reader-check':{const report=await api('packages/smoke',{key:editor.installedKey});preflightCache.set(editor.installedKey,report);readerCheckDialog.innerHTML='<div class="dialog-heading"><h2>环境检查 · 只读</h2><button class="close-dialog">×</button></div>'+checkHTML(report);readerCheckDialog.showModal();break;}
+    case 'editor-json':$('editor-json-value').value=pretty({loop_definition:editor.loop_definition,implementations:editor.implementations});jsonDialog.showModal();break;
     case 'editor-export':{const content=$('editor-json-value').value;JSON.parse(content);const url=URL.createObjectURL(new Blob([content],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=(editor.loop_definition.id || 'loop_definition')+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);break;}
   }
 }));
@@ -121,7 +174,7 @@ document.addEventListener('click',event=>{
 
 function updateCanvasControls(){
   $('canvas-fullscreen').textContent=document.fullscreenElement===editorPage?'退出全屏':'全屏';
-  $('canvas-fullscreen').hidden=!document.fullscreenEnabled;
+  $('canvas-fullscreen').hidden=!document.fullscreenEnabled||!$('editor-flow-overview').querySelector('iframe');
 }
 document.addEventListener('click',event=>{
   if(event.target.closest('#canvas-fullscreen'))safely(async()=>{if(document.fullscreenElement===editorPage)await document.exitFullscreen();else await editorPage.requestFullscreen();});

@@ -6,7 +6,7 @@ This is a reference for direct tool use, not a mandatory runtime procedure. If t
 
 If the context includes tool_url, read [Scoped tool entry](scoped-entry.md) first. The ordinary run_id/token examples here cannot be copied directly to that entry.
 
-When receiving a Loop or adapting paths, agents, and services, use [separate runtime configuration](loop-config.md). start_run, web launch, and child Loop calls read the installed version's configuration. This call's inputs take precedence; explicit bindings replace the configured selection as a whole. Existing Runs retain their creation snapshot.
+When receiving a Loop or adapting paths, agents, and services, use [separate runtime configuration](loop-config.md). start_run and child Loop calls read the installed version's configuration. This call's inputs take precedence; explicit bindings replace the configured selection as a whole. Existing Runs retain their creation snapshot.
 
 ## Task progression versus execution phases
 
@@ -24,7 +24,7 @@ python3 scripts/call.py profile
 python3 scripts/call.py list_runs --arguments '{"created_by":"tdh","query":"research","sort":"last_activity_at","limit":30,"root_only":true}'
 ```
 
-The caller's `.config/loop-anything/profile.json` stores the name; LOOP_ANYTHING_PROFILE can select a file, and Skill updates do not overwrite it. On creation, --created-by or arguments.created_by overrides it explicitly; LOOP_ANYTHING_USER_NAME overrides the saved default. Web launch remembers the entered name in that browser. Attribution organizes records without changing the objective or authorization. A corrupt optional profile does not block queries; creation warns and omits that default. Supply created_by explicitly or repair it with profile --name.
+The caller's `.config/loop-anything/profile.json` stores the name; LOOP_ANYTHING_PROFILE can select a file, and Skill updates do not overwrite it. On creation, --created-by or arguments.created_by overrides it explicitly; LOOP_ANYTHING_USER_NAME overrides the saved default. Attribution organizes records without changing the objective or authorization. A corrupt optional profile does not block queries; creation warns and omits that default. Supply created_by explicitly or repair it with profile --name.
 
 list_runs returns runs, total, groups (matching counts by person), loops (including archived versions represented in the matches), and next_offset, without execution history or result bodies. HTTP API revision 6 GET /api/runs returns this paginated object rather than a full array. limit defaults to 50, maximum 200. Keep filters unchanged and pass next_offset as offset for another page. Filters:
 

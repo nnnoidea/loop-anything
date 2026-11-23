@@ -10,13 +10,8 @@ function agentModelModeLabel(mode){
 }
 
 function renderLoopModelSummary(item){
-  const summary=$('reader-model-summary');
-  summary.hidden=!item.installedKey;
-  if(!item.installedKey)return;
-  const settings=item.models;
-  const count=Object.values(settings?.nodes||{}).filter(node=>node.override&&Object.values(node.candidates).includes('managed')).length;
-  summary.innerHTML=`<div><span>默认模型</span> <strong>${esc(settings?.default||'读取失败')}</strong>
-    ${count?`<small>${count} 个节点单独设置</small>`:''}</div><button type="button" id="open-loop-model-settings">模型设置</button>`;
+  $('open-loop-model-settings').hidden=!item.installedKey;
+  $('reader-default-model').textContent=item.models?.default||'';
 }
 
 function modelSettingsRow(id,node){

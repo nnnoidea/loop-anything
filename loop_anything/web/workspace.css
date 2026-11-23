@@ -193,8 +193,6 @@
 .run-children>summary { cursor: pointer; padding: 4px; font-size: 12px; }
 .run-pagination { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 8px 12px; font-size: 11px; }
 .run-pagination button { padding: 4px 8px; }
-#create-dialog>label { display: block; margin: 12px 0; }
-#launch-created-by { margin-left: 12px; padding: 8px; border: 1px solid #cfd8e6; border-radius: 6px; }
 
 .run-filters[open] { max-height: 44vh; overflow: auto; padding-bottom: 8px; }
 @media(max-width:650px){

@@ -18,9 +18,11 @@ test('authored overview displays saved UTF-8 HTML in an opaque sandbox without d
   assert.match(rendered,/研究流程/);
   assert.equal(JSON.stringify(ctx.item),before);
 });
-test('missing or corrupt diagram has an explicit empty/error view, not an inferred business graph',()=>{
-  ctx.item={assets:[]};assert.match(run('overviewFlowHTML(item)'),/尚未绘制/);
-  ctx.item.assets=[{path:'docs/flow.html',base64:'!!!'}];assert.match(run('overviewFlowHTML(item)'),/无法读取/);
+test('a missing diagram has an empty state and a corrupt diagram falls back to the declared nodes',()=>{
+  ctx.item={assets:[]};assert.match(run('overviewFlowHTML(item)'),/这个 Loop 还没有节点/);
+  ctx.item.loop_definition={nodes:{work:{label:'分析结果'}}};
+  ctx.item.assets=[{path:'docs/flow.html',base64:'!!!'}];
+  assert.match(run('overviewFlowHTML(item)'),/data-editor-node="work"/);
 });
 test('full transition matrix preserves each condition, parameter update and notification rule',()=>{
   ctx.config={kind:'external',lifecycle:{initial:'waiting',transitions:[{from:'waiting',event:'failed',when:{path:'attempt',op:'lt',value:3},to:'retry',parameters:{batch:4},notify:[{message:'<check>',route:'chat',reply:{event:'answer',key:'q',schema:{type:'object'}}}]},{from:'waiting',event:'failed',when:{path:'attempt',op:'gte',value:3},to:'agent'}]}};

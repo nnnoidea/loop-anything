@@ -48,21 +48,17 @@ test('node introduction is authored for users while full execution guidance stay
   assert.match(field('editor-properties').innerHTML,/完整 &lt;执行指令&gt;/);
 });
 
-test('browser shows startup requirements without selecting or launching another Agent',async()=>{
-  const fields=new Map(),calls=[],copies=[];
-  const field=id=>{if(!fields.has(id))fields.set(id,{value:'',innerHTML:'',textContent:'',disabled:false,addEventListener(){},showModal(){},close(){}});return fields.get(id);};
-  const ctx=vm.createContext({catalog:[{key:'pkg-one',package_key:'pkg-one',loop_definition:{id:'one',name:'One',defaults:{n:1}}}],$:field,esc:String,readerJSON:(_,value)=>JSON.stringify(value),document:{addEventListener(){}},
-    navigator:{clipboard:{writeText:async text=>copies.push(text)}},toast(){},
-    platformCall:async(name,payload)=>{calls.push(name);return {path:'/config.json',config:{inputs:{n:2}}};}});
-  vm.runInContext(fs.readFileSync('loop_anything/web/launch.js','utf8'),ctx);
-  await vm.runInContext('openCreate("pkg-one")',ctx);
-  assert.deepEqual(calls,['read_loop_config']);
-  assert.match(field('launch-summary').innerHTML,/"n":2/);
-  assert.match(field('launch-summary').innerHTML,/当前 Agent/);
-  field('launch-instruction').textContent='Start pkg-one in current session';
-  await vm.runInContext('startConfiguredRun()',ctx);
-  assert.deepEqual(copies,['Start pkg-one in current session']);
-  assert.deepEqual(calls,['read_loop_config']);
+test('a Loop with no authored flow lists its real nodes and opens their details',()=>{
+  const ctx=vm.createContext({esc:value=>String(value).replaceAll('<','&lt;').replaceAll('>','&gt;')});
+  const code=fs.readFileSync('loop_anything/web/loop_graph.js','utf8');
+  vm.runInContext(code.slice(code.indexOf('function readerNodeListHTML('),code.indexOf('function mapImplementationLabel(')),ctx);
+  const html=vm.runInContext(`overviewFlowHTML({loop_definition:{entry:'first',nodes:{
+    other:{label:'Other'},first:{label:'<Entry>',description:'准备数据'}
+  }}})`,ctx);
+  assert.ok(html.indexOf('data-editor-node="first"') < html.indexOf('data-editor-node="other"'));
+  assert.match(html,/&lt;Entry&gt;/);
+  assert.match(html,/准备数据/);
+  assert.doesNotMatch(html,/docs\/flow|render_flow/);
 });
 
 test('package dialog uses the existing definition without a schema-number gate',()=>{
