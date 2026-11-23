@@ -12,19 +12,15 @@ ACTIVE_STATES = ('waiting', 'checking', 'running')
 
 
 class ScheduleControls:
-    def __init__(self, database, local=True, *, registry_root=None, read_only=False):
+    def __init__(self, database, local=True):
         self.database = Path(database).resolve()
         self.local = local
-        self.registry_root = registry_root
-        self.read_only = read_only
         self.active = {}
         self.lock = threading.Lock()
         self.closed = False
 
     @property
     def registry(self):
-        if self.registry_root is not None:
-            return TaskRegistry(self.registry_root)
         directory = registry_directory(self.database) if self.local else str(self.database) + '.schedules'
         return TaskRegistry(directory)
 
@@ -37,30 +33,17 @@ class ScheduleControls:
             active_schedule = state.get('schedule') if state['status'] in ACTIVE_STATES else None
             if (active_schedule or definition).get('receiver'):
                 continue
-            runtime = {key: state[key] for key in (('status', 'next_at', 'definition_revision') if self.read_only else
-                       ('status', 'owner', 'next_at', 'last_result', 'error', 'definition_revision'))
+            runtime = {key: state[key] for key in ('status', 'owner', 'next_at', 'last_result', 'error', 'definition_revision')
                        if key in state}
-            if self.read_only and state.get('last_result'):
-                result = state['last_result']
-                runtime['last_result'] = {key: result[key] for key in ('at', 'returncode') if key in result}
             if active_schedule and state['definition_revision'] != item['revision']:
-                runtime['schedule'] = schedule_summary(active_schedule)
-                if self.read_only:
-                    runtime['schedule'].pop('description', None)
+                runtime['schedule'] = active_schedule
             execution = item['execution']
-            summary = schedule_summary(definition)
-            if self.read_only:
-                summary.pop('description', None)
-            tasks.append({'id': item['id'], 'revision': item['revision'], 'definition': summary,
+            tasks.append({'id': item['id'], 'revision': item['revision'], 'definition': schedule_summary(definition),
                           'runtime': runtime, 'execution': {'state': execution['state']} if execution else None})
         tasks.sort(key=lambda item: (item['definition']['name'].casefold(), item['id']))
-        return {'directory': '本机登记目录' if self.read_only else str(registry.root),
-                'machine': '平台所在机器' if self.read_only else socket.gethostname(),
-                'read_only': self.read_only, 'tasks': tasks}
+        return {'directory': str(registry.root), 'machine': socket.gethostname(), 'tasks': tasks}
 
     def control(self, ident, action, body):
-        if self.read_only:
-            raise Conflict('Schedules are read-only in this workspace')
         if action not in ('start', 'stop'):
             raise Invalid('Unknown schedule action')
         with self.lock:

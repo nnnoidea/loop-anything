@@ -12,40 +12,9 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from loop_anything.runtime.local_tasks import LocalRuntime, TaskRegistry
-from loop_anything.interfaces.schedules import ScheduleControls
-from loop_anything.runtime.model import Conflict
-from loop_anything.runtime.team_transport import core
 
 
 class WebSchedulesTests(unittest.TestCase):
-    def test_existing_registry_is_read_only_and_omits_private_details(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            registry = TaskRegistry(root / 'existing')
-            registry.register({'name': 'NAS backup', 'description': 'private description',
-                               'every': 600, 'command': ['secret-command', '--token=private'],
-                               'stdin': 'private input', 'cwd': '/private/path'}, 'backup')
-            core.atomic_json(registry.path('backup') / 'state.json', {
-                'status': 'failed', 'error': 'secret traceback',
-                'last_result': {'returncode': 1, 'at': 123,
-                                'stdout': 'secret output', 'stderr': 'private logs'},
-            })
-            controls = ScheduleControls(root / 'workspace.sqlite3', registry_root=registry.root, read_only=True)
-            try:
-                data = controls.list()
-                task = data['tasks'][0]
-                self.assertTrue(data['read_only'])
-                self.assertEqual(task['definition']['name'], 'NAS backup')
-                self.assertEqual(task['runtime']['last_result'], {'returncode': 1, 'at': 123})
-                encoded = json.dumps(data)
-                for secret in ('secret-command', 'private input', '/private/path',
-                               'secret traceback', 'secret output', 'private logs', str(registry.root)):
-                    self.assertNotIn(secret, encoded)
-                with self.assertRaises(Conflict):
-                    controls.control('backup', 'start', {'revision': 1, 'owner': None})
-            finally:
-                controls.close()
-
     def test_stop_accepted_between_control_polls_prevents_due_job_from_launching(self):
         with tempfile.TemporaryDirectory() as folder:
             registry = TaskRegistry(folder)
