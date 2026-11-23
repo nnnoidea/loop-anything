@@ -66,7 +66,9 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
   const previous=activeRoute,serial=++navigationSerial;
   runViewRequest?.controller.abort();
   const fullscreenEditor=previous.type==='editor'&&$('reader-flow-dialog').open;
-  routeScroll.set(routeHash(previous),fullscreenEditor?readerFlowPageTop:window.scrollY);
+  const fullscreenRun=previous.type==='run'&&$('run-graph-dialog').open;
+  const previousTop=fullscreenEditor?readerFlowPageTop:fullscreenRun?runGraphPageTop:window.scrollY;
+  routeScroll.set(routeHash(previous),previousTop);
   if(page==='communication'&&route.type==='communication'){
     if(!external)history[replace?'replaceState':'pushState'](null,'',routeHash(route));
     activeRoute=structuredClone(route);showCommunicationTab(route.tab||'agents');updateNavigationUI();window.scrollTo(0,routeScroll.get(routeHash(route))||0);return true;
@@ -119,7 +121,15 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
       selected=route.id;run=nextRun;settingsBase=null;filterNode=null;page='runs';renderRun();
     }else{page='timelines';await showWorkLibrary();}
     if(serial!==navigationSerial)return false;
-    showPage();updateNavigationUI();window.scrollTo(0,routeScroll.get(routeHash(route))||0);if(page==='runs')requestAnimationFrame(()=>{sizeTaskGraph();if(route.task&&nextRun.tasks[route.task]){locateGraphTask(route.task);if(inlineTaskDetail.matches)$('task-detail')?.scrollIntoView({block:'start'});else document.querySelector('.process-controls')?.scrollIntoView({block:'start'});}});return true;
+    showPage();
+    updateNavigationUI();
+    window.scrollTo(0,routeScroll.get(routeHash(route))||0);
+    if(page==='runs')requestAnimationFrame(()=>{
+      if(serial!==navigationSerial)return;
+      sizeTaskGraph();
+      if(route.task&&nextRun.tasks[route.task])revealRunTask(route.task);
+    });
+    return true;
   }catch(error){
     if(serial!==navigationSerial)return false;
     if(external){activeRoute={type:'catalog'};history.replaceState(null,'','#loop_definitions');page='catalog';showPage();updateNavigationUI();}
