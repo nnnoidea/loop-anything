@@ -146,7 +146,7 @@ def attempt_summary(attempt, node, records, allow_approval=False, include_conten
                   'completed_at', 'worker_active', 'activity_progress', 'child_run_id', 'child_status',
                   'communication_id')
     implementation = attempt['implementation']
-    result['implementation'] = pick(implementation, 'kind', 'terminal', 'event')
+    result['implementation'] = pick(implementation, 'kind', 'terminal', 'event', 'agent_model')
     readings, content = display_results(node, records, attempt.get('outputs'))
     result['output_readout'] = readings
     if content:

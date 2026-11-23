@@ -156,9 +156,9 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 - Activation: configured
 - Platform handles: Ships config.example.json; recipient overrides persist separately, are snapshotted for new Runs, and survive retry/restart. Sharing excludes personal overrides.
 - Author provides: Expose paths/services as startup inputs with documented templates. Recipients use read_loop_config/set_loop_config and explicit bindings after adding local candidates.
-- Configuration: `config.example.json`, `read_loop_config`, `set_loop_config`
+- Configuration: `config.example.json`, `read_loop_config`, `set_loop_config`, `read_loop_models`, `set_loop_models`
 - Limits: Does not change nodes/routes/lifecycles/Skills, probe availability, or rewrite hardcoded paths. Existing Runs ignore later configuration changes.
-- Tools: read_loop_config, set_loop_config, read_loop, put_asset, start_run
+- Tools: read_loop_config, set_loop_config, read_loop_models, set_loop_models, read_loop, put_asset, start_run
 - Reference: [references/loop-config.md](loop-config.md)
 
 ## flow_diagram

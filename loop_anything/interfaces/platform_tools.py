@@ -92,6 +92,8 @@ class PlatformTools:
             ('validate_loop', 'Validate a draft and report missing implementations separately. Validation never runs handlers.', {'draft_id': TEXT}, ['draft_id'], True),
             ('publish_loop', 'Publish a validated draft through the existing Loop package installer. auto_version=true selects a new version if already installed, preserving the Loop ID and old Runs. Returns the current draft revision. Does not start a Run.', dict(draft, auto_version=BOOL), ['draft_id', 'revision'], False),
             ('export_loop', 'Export draft definition and attached resources as a Loop ZIP. The CLI client can save the returned base64 via --output.', {'draft_id': TEXT}, ['draft_id'], True),
+            ('read_loop_models', 'Read the effective Loop default, per-node overrides, and which Agent candidates use these settings.', {'key':TEXT}, ['key'], True),
+            ('set_loop_models', 'Update only model preferences with the revision from read_loop_models. models accepts default and a nodes map of explicit overrides. Omit a node to inherit its Loop default. Applies to newly created Runs and explicit method upgrades.', {'key':TEXT,'revision':TEXT,'models':OBJ}, ['key','revision','models'], False),
             ('read_loop_config', 'Read recipient config.json with key, or the shareable config.example.json template with draft_id (exactly one). Returns path/revision and author execution targets. Missing files use the package template or generated empty overrides. No online probes.', {'key': TEXT, 'draft_id': TEXT}, [], True),
             ('set_loop_config', 'Replace recipient run configuration using the revision from read_loop_config. inputs holds this Loop startup parameters (e.g. data paths/service URLs); bindings selects candidates; implementations maps declared node IDs to candidate IDs to execution-field overrides. A new local candidate requires kind=agent/command/external and explicit bindings to select it. clear explicitly removes optional execution fields. Workflow nodes/routes/lifecycle/Skill stay in the Loop. Changes affect new Runs, never existing Runs; local values are not exported with the package.', {'key': TEXT, 'revision': TEXT, 'config': OBJ}, ['key', 'revision', 'config'], False),
             ('acquire_run','Acquire a temporary operation scope for a Run or one Task. Call finish after your changes.',{'run_id':TEXT,'task_id':TEXT},['run_id'],False),
@@ -352,6 +354,11 @@ class PlatformTools:
             from loop_anything.runtime.cc_connect import read
             return dict(self.store.notification_channels(),cc_connect=read())
         if name == 'set_notification_channels':return self.store.notification_channels(a['channels'],a['revision'])
+        if name in ('read_loop_models', 'set_loop_models'):
+            from loop_anything.packaging.configuration import read_models, write_models
+            if name == 'set_loop_models':
+                return write_models(self.store, a['key'], a['models'], a['revision'])
+            return read_models(self.store, a['key'])
         if name in ('read_loop_config', 'set_loop_config'):
             from loop_anything.packaging.configuration import read, write
             if name == 'set_loop_config':return write(self.store, a['key'], a['config'], a['revision'])

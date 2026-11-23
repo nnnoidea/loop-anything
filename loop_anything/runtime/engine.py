@@ -41,6 +41,9 @@ class Engine:
         for key in ('command','observe','resume_command'):
             if key in value and getattr(self,'team_root',None):
                 value[key]=[s.replace('{{team_root}}',self.team_root) for s in value[key]] if not value.get('executor') else value[key]
+        if value.get('kind') == 'agent' and value.get('agent_model') and value.get('command'):
+            from loop_anything.runtime.agent_models import launch_command
+            value['command']=launch_command(value['command'],value['agent_model'])
         return value
 
     @staticmethod

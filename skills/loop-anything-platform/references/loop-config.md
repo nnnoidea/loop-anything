@@ -45,6 +45,12 @@ A new local candidate for an existing node needs `kind:agent/command/external`. 
 
 The Loop declares flow_agent and the recipient can customize its execution fields in the local configuration. Edit nodes, contracts, Skills, routes, and lifecycle rules in the Loop definition. Notification outlets, Bots, and team connections use existing platform tools, not duplicate configuration here.
 
+### Agent models
+
+Open **模型设置** on an installed Loop to edit its default model or choose a model for one Agent node. The platform default is `gpt-6.1-sol`. A node override takes precedence over the Loop default. Preferences set the model argument on Codex commands launched by the platform, including such commands assigned to an executor. A manually acquired task uses the current Agent session. Named-agent dispatch uses the recipient's launch settings, and other Agent command types choose their own models.
+
+Model preferences are stored in the recipient configuration as `"agent_models": {"default":"gpt-6.1-sol","nodes":{"review":"gpt-6.2-sol"}}`. Use `read_loop_models(key)` and `set_loop_models(key,revision,models)` to edit this section while retaining the other configuration. Remove a node from `models.nodes` to inherit. A Codex flow Agent uses the Loop default or the `$flow_agent` override. Newly started Runs and explicit method upgrades capture these preferences. The Run view shows the model requested for a configured Agent execution.
+
 Save `{ "key":"pkg-...", "revision":"READ_REVISION", "config":{...} }` in a local JSON file, then:
 
 ```sh

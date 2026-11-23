@@ -10,12 +10,13 @@ def apply(store,run,key):
     if key==run['loop_key']:return
     from loop_anything.packaging.packages import load_installed
     from loop_anything.packaging.configuration import effective, path_for, read_file
+    from loop_anything.runtime.agent_models import DEFAULT_MODEL
     document,root=load_installed(store.filename,key)
     if document['loop_definition']['id']!=run['loop_definition']['id']:
         raise Invalid('Choose a version of this Loop')
     settings=read_file(document,root,path_for(store.filename,key))
     if settings.get('error'):raise Invalid(settings['error'])
-    configured=effective(document,root,settings['config'])
+    configured=effective(document,root,settings['config'],agent_model_default=DEFAULT_MODEL)
     old=copy.deepcopy(run)
     method_ref=uid('method')
     old['method_ref']=method_ref
@@ -23,7 +24,7 @@ def apply(store,run,key):
     method['settings']={'bindings':old['settings'].get('bindings',{})}
     run['loop_key']=key
     run['configuration']={k:settings[k] for k in ('path','revision','config')}
-    run['configuration']['package_root']=str(root)
+    run['configuration'].update(package_root=str(root),agent_model_default=DEFAULT_MODEL)
     run.update({k:configured[k] for k in ('loop_definition','implementations')})
     from loop_anything.runtime.flow_agent import materialize
     materialize(run,root)

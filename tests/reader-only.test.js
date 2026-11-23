@@ -6,12 +6,14 @@ const vm=require('node:vm');
 
 test('installed Loop reading loads existing assets and never creates or changes a draft',async()=>{
   const calls=[],loop={key:'pkg-one',package_key:'pkg-one',loop_definition:{nodes:{}},implementations:{}},assets=[{path:'docs/flow.html',base64:'Zmxvdw=='}];
-  const ctx=vm.createContext({catalog:[loop],platformCall:async(tool,args)=>{calls.push([tool,args]);return {loop};},api:async(path,args)=>{calls.push([path,args]);return {document:{checks:{}},assets};}});
+  const models={default:'gpt-6.1-sol',nodes:{}};
+  const ctx=vm.createContext({catalog:[loop],platformCall:async(tool,args)=>{calls.push([tool,args]);return tool==='read_loop_models'?models:{loop};},api:async(path,args)=>{calls.push([path,args]);return {document:{checks:{}},assets};}});
   const source=fs.readFileSync('loop_anything/web/editor.js','utf8');
   vm.runInContext(source.slice(source.indexOf('async function loadReader('),source.indexOf('function readerIdentity(')),ctx);
   const value=await vm.runInContext('loadReader("pkg-one")',ctx);
   assert.equal(value.installedKey,'pkg-one');assert.equal(value.assets,assets);
-  assert.deepEqual(calls.map(c=>c[0]),['read_loop','packages/read']);
+  assert.equal(value.models,models);
+  assert.deepEqual(calls.map(c=>c[0]),['read_loop','packages/read','read_loop_models']);
   assert.equal(loop.routeId,undefined);assert.equal(loop.installedKey,undefined);
 });
 

@@ -3,7 +3,7 @@
 let editor=null, savedDrafts=[], editSelection=null;
 const editorPage=document.createElement('section');editorPage.id='loop_definition-editor';editorPage.hidden=true;
 editorPage.innerHTML=`<div class="run-navigation"><button id="editor-back">← 返回 Loop 库</button><span>流程、规则与文件 · 只读</span></div>
-<div class="editor-layout"><div class="editor-left"><section class="panel"><header class="reader-summary"><div class="reader-heading"><div class="reader-identity"><h1 id="reader-title"></h1><small id="reader-version"></small></div><div class="toolbar reader-actions" role="group" aria-label="Loop 操作"><button type="button" id="reader-refresh">刷新</button><button type="button" id="reader-start" hidden>启动</button><details class="editor-more"><summary>更多</summary><div class="editor-more-actions"><button id="editor-json">查看完整定义</button><button id="reader-check">环境检查</button></div></details></div></div><p id="reader-description"></p></header><div class="editor-help"><span id="editor-hint"></span></div><div class="editor-overview-summary" id="editor-overview-summary"></div><div class="editor-view-controls"><strong class="flow-view-title">整体流程</strong><div class="canvas-tools" role="group" aria-label="画布视图"><button type="button" id="canvas-fullscreen">全屏</button></div></div><div id="editor-flow-overview"></div><div id="editor-edges-list" class="editor-edge-list"></div><div id="reader-documentation" class="reader-documentation"></div><div class="editor-report" id="editor-report"></div></section></div><aside class="panel editor-right" aria-label="节点信息与状态转移" tabindex="-1"><div class="editor-inspector-heading"><div class="panel-heading"><h2 id="property-title">节点详情</h2><button type="button" id="close-editor-detail" aria-label="关闭节点侧栏">×</button></div><div class="editor-detail-tabs" role="group" aria-label="节点查看方式"><button type="button" data-editor-detail="info" aria-pressed="true" aria-controls="editor-properties">节点信息</button><button type="button" data-editor-detail="states" aria-pressed="false" aria-controls="editor-node-states">状态转移</button></div></div><div class="editor-properties" id="editor-properties"></div><div id="editor-node-states" class="editor-properties" hidden></div></aside></div>`;
+<div class="editor-layout"><div class="editor-left"><section class="panel"><header class="reader-summary"><div class="reader-heading"><div class="reader-identity"><h1 id="reader-title"></h1><small id="reader-version"></small></div><div class="toolbar reader-actions" role="group" aria-label="Loop 操作"><button type="button" id="reader-refresh">刷新</button><button type="button" id="reader-start" hidden>启动</button><details class="editor-more"><summary>更多</summary><div class="editor-more-actions"><button id="editor-json">查看完整定义</button><button id="reader-check">环境检查</button></div></details></div></div><p id="reader-description"></p><div id="reader-model-summary" class="reader-model-summary" hidden></div></header><div class="editor-help"><span id="editor-hint"></span></div><div class="editor-overview-summary" id="editor-overview-summary"></div><div class="editor-view-controls"><strong class="flow-view-title">整体流程</strong><div class="canvas-tools" role="group" aria-label="画布视图"><button type="button" id="canvas-fullscreen">全屏</button></div></div><div id="editor-flow-overview"></div><div id="editor-edges-list" class="editor-edge-list"></div><div id="reader-documentation" class="reader-documentation"></div><div class="editor-report" id="editor-report"></div></section></div><aside class="panel editor-right" aria-label="节点信息与状态转移" tabindex="-1"><div class="editor-inspector-heading"><div class="panel-heading"><h2 id="property-title">节点详情</h2><button type="button" id="close-editor-detail" aria-label="关闭节点侧栏">×</button></div><div class="editor-detail-tabs" role="group" aria-label="节点查看方式"><button type="button" data-editor-detail="info" aria-pressed="true" aria-controls="editor-properties">节点信息</button><button type="button" data-editor-detail="states" aria-pressed="false" aria-controls="editor-node-states">状态转移</button></div></div><div class="editor-properties" id="editor-properties"></div><div id="editor-node-states" class="editor-properties" hidden></div></aside></div>`;
 document.querySelector('main').append(editorPage);
 const jsonDialog=document.createElement('dialog');jsonDialog.id='editor-json-dialog';jsonDialog.className='editor-json-modal';
 jsonDialog.innerHTML=`<div class="dialog-heading"><h2>完整定义与节点实现 · 只读</h2><button class="close-dialog" aria-label="关闭">×</button></div><textarea id="editor-json-value" aria-label="完整 Loop 定义 JSON" readonly></textarea><div class="dialog-tasks"><button id="editor-export">下载 JSON</button></div>`;
@@ -23,8 +23,11 @@ async function loadReader(id){
   const isDraft=!installed&&id.startsWith('draft-');
   const result=await platformCall('read_loop',isDraft?{draft_id:id}:{key:id});
   const item=result.loop,packageKey=item.package_key||installed?.package_key;
-  const content=packageKey?await api('packages/read',{key:packageKey}):null;
-  return {...item,...(content?{assets:content.assets,checks:content.document.checks}:{}),installedKey:isDraft?undefined:id,routeId:id,returnTo:{type:'catalog'}};
+  const [content,models]=packageKey?await Promise.all([
+    api('packages/read',{key:packageKey}),
+    platformCall('read_loop_models',{key:id}).catch(error=>({error:error.message}))
+  ]):[null,null];
+  return {...item,...(content?{assets:content.assets,checks:content.document.checks}:{}),models,installedKey:isDraft?undefined:id,routeId:id,returnTo:{type:'catalog'}};
 }
 function readerIdentity(item=editor){return item.installedKey?{key:item.installedKey}:{draft_id:item.id};}
 function openEditor(){return navigateTo({type:'editor',id:registerEditor()},{capture:false});}
@@ -39,6 +42,7 @@ function renderReaderSummary(){
   $('reader-version').textContent=`${b.id} · 版本 ${b.version}${editor.installedKey?'':` · 草稿 r${editor.revision}`}`;
   $('reader-description').textContent=b.description||'';
   $('reader-description').hidden=!b.description;
+  renderLoopModelSummary(editor);
 }
 function renderEditor(){
   renderReaderSummary();

@@ -9,6 +9,7 @@ import tempfile
 
 from loop_anything.runtime.model import Invalid, Conflict
 from loop_anything.runtime.implementations import options, validate_implementation, validate_bindings
+from loop_anything.runtime import agent_models
 
 TEMPLATE = 'config.example.json'
 FIELDS = {'command', 'observe', 'cwd', 'timeout', 'executor', 'dispatch', 'agent_cli', 'resume_command', 'terminal'}
@@ -84,8 +85,8 @@ def patch(target, changes, label):
 
 def apply(document, config):
     """Compose a Run snapshot. No mutation, online probes, shell expansion or inferred mapping."""
-    if not isinstance(config, dict) or set(config) - {'$comment', 'inputs', 'bindings', 'implementations', 'flow_agent'}:
-        raise Invalid('运行配置仅支持 inputs、bindings、implementations、flow_agent 和 $comment')
+    if not isinstance(config, dict) or set(config) - {'$comment', 'inputs', 'bindings', 'implementations', 'flow_agent', 'agent_models'}:
+        raise Invalid('运行配置仅支持 inputs、bindings、implementations、flow_agent、agent_models 和 $comment')
     for field in ('inputs', 'bindings', 'implementations', 'flow_agent'):
         if field in config and not isinstance(config[field], dict):
             raise Invalid('运行配置 ' + field + ' 必须是对象')
@@ -108,13 +109,17 @@ def apply(document, config):
         if not bp.get('flow_agent'):
             raise Invalid('Configure a decision route Agent in the Loop definition first')
         bp['flow_agent'] = patch(bp['flow_agent'],config['flow_agent'],'flow_agent')
+    if 'agent_models' in config:
+        agent_models.validate(result, config['agent_models'])
     validate_bindings(bp, candidates, config.get('bindings', {}))
     return result
 
 
-def effective(document, root, config):
+def effective(document, root, config, *, agent_model_default=None):
     from loop_anything.packaging.packages import effective_implementations, effective_definition
     result = apply(document, config)
+    if agent_model_default is not None:
+        agent_models.annotate(result, config.get('agent_models', {}), agent_model_default)
     return {'loop_definition': effective_definition(result),
             'implementations': effective_implementations(result, root),
             'bindings': copy.deepcopy(config.get('bindings', {}))}
@@ -130,6 +135,25 @@ def read(store, key):
     if document['loop_definition'].get('flow_agent'):
         saved['targets']['flow_agent'] = {k:v for k,v in document['loop_definition']['flow_agent'].items() if k in FIELDS}
     return saved
+
+
+def read_models(store, key):
+    document, _, saved = installed(store.filename, key)
+    if saved.get('error'):
+        raise Invalid(saved['error'])
+    config = saved['config']
+    return dict(agent_models.describe(apply(document, config), config.get('agent_models', {})),
+                revision=saved['revision'])
+
+
+def write_models(store, key, models, revision):
+    _, _, saved = installed(store.filename, key)
+    if saved['revision'] != revision:
+        raise Conflict('模型配置已变化，请重新打开模型设置')
+    if saved.get('error'):
+        raise Invalid(saved['error'])
+    write(store, key, dict(saved['config'], agent_models=models), revision)
+    return read_models(store, key)
 
 
 def write(store, key, config, revision):
