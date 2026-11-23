@@ -91,7 +91,6 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
     if(route.type==='loop' && !catalog.some(c=>c.key===route.key))throw new Error('找不到这个 Loop 版本，请返回 Loop 库。');
     const nextRun=route.type==='run'?await openRun(route):null;
     if(serial!==navigationSerial)return false;
-    if(document.fullscreenElement===editorPage&&routeHash(route)!==routeHash(previous))await document.exitFullscreen();
     if($('run-graph-dialog').open&&(route.type!=='run'||route.id!==previous.id))setRunGraphExpanded(false,false);
     if(!external)history[replace?'replaceState':'pushState'](null,'',routeHash(route));
     activeRoute=structuredClone(route);

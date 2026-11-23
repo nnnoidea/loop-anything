@@ -137,11 +137,33 @@ test('overview selection accepts only the current sandbox and existing node IDs'
     ctx.event={source,data};assert.equal(run('overviewNodeMessage(event,frame,nodes)'),expected);
   }
 });
+test('overview height accepts a bounded integer from the current sandbox',()=>{
+  const sender={};ctx.frame={contentWindow:sender};
+  for(const [source,data,expected] of [
+    [sender,{type:'loop-overview-height',height:1200},1200],
+    [sender,{type:'loop-overview-height',height:200000},100000],
+    [sender,{type:'loop-overview-height',height:1.5},null],
+    [sender,{type:'loop-overview-height',height:'1200'},null],
+    [sender,{type:'loop-overview-height',height:0},null],
+    [sender,{type:'loop-node-select',height:1200},null],
+    [{},{type:'loop-overview-height',height:1200},null]
+  ]){
+    ctx.event={source,data};assert.equal(run('overviewHeightMessage(event,frame)'),expected);
+  }
+});
 test('sandbox bridge binds exact unique names or explicit IDs and ignores auxiliary or ambiguous shapes',()=>{
   const make=attrs=>({attrs:{...attrs},events:{},getAttribute(k){return this.attrs[k]??null;},setAttribute(k,v){this.attrs[k]=v;},addEventListener(k,v){this.events[k]=v;},closest(){return null;}});
   const els=[make({'data-key':'训练'}),make({'data-key':'重复'}),make({'data-key':'结束'}),make({'data-loop-node':'b','data-key':'重复'}),make({'data-loop-node':'missing','data-key':'训练'})];
   const sent=[],parent={postMessage:msg=>sent.push(msg)},handlers={};
-  const sandbox=vm.createContext({parent,document:{querySelectorAll:()=>els,currentScript:{dataset:{nodes:JSON.stringify([['a','训练'],['b','重复'],['c','重复']])}}},window:{addEventListener:(name,fn)=>handlers[name]=fn}});
+  const body={scrollHeight:986,getBoundingClientRect:()=>({height:986.5})};
+  const sandbox=vm.createContext({parent,
+    ResizeObserver:class{
+      constructor(fn){handlers.resize=fn;}
+      observe(element){assert.equal(element,body);}
+    },
+    document:{body,documentElement:{clientHeight:585},querySelectorAll:()=>els,currentScript:{dataset:{nodes:JSON.stringify([['a','训练'],['b','重复'],['c','重复']])}}},
+    window:{innerHeight:600,addEventListener:(name,fn)=>handlers[name]=fn}
+  });
   vm.runInContext(fs.readFileSync('loop_anything/web/flow_bridge.js','utf8'),sandbox);
   assert.equal(els[0].attrs['data-loop-node'],'a');assert.equal(els[0].attrs.tabindex,'0');
   for(const el of [els[1],els[2],els[4]])assert.equal(el.events.click,undefined);
@@ -151,6 +173,10 @@ test('sandbox bridge binds exact unique names or explicit IDs and ignores auxili
   handlers.message({source:parent,data:{type:'loop-node-selected',node:'b'}});
   assert.equal(els[3].attrs['aria-pressed'],'true');assert.equal(els[0].attrs['aria-pressed'],'false');
   handlers.message({source:{},data:{type:'loop-node-selected',node:'a'}});assert.equal(els[0].attrs['aria-pressed'],'false');
+  handlers.resize();handlers.resize();
+  assert.equal(sent.length,3);
+  assert.equal(sent.at(-1).type,'loop-overview-height');
+  assert.equal(sent.at(-1).height,1002);
 });
 test('overview uses only the trusted external bridge under the parent CSP, with escaped node metadata',()=>{
   const html=`<html data-theme="paper"><head><meta http-equiv="Content-Security-Policy" content="script-src 'sha256-OLD'"></head><body><p>Flow</p></body></html>`;

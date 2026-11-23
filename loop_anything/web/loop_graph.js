@@ -30,6 +30,12 @@ function overviewNodeMessage(event,iframe,nodes){
   const data=event.data;
   return iframe&&event.source===iframe.contentWindow&&data?.type==='loop-node-select'&&typeof data.node==='string'&&Object.hasOwn(nodes,data.node)?data.node:null;
 }
+function overviewHeightMessage(event,iframe){
+  const data=event.data;
+  if(!iframe||event.source!==iframe.contentWindow||data?.type!=='loop-overview-height')return null;
+  if(!Number.isSafeInteger(data.height)||data.height<=0)return null;
+  return Math.min(data.height,100000);
+}
 function readerNodeListHTML(definition={}){
   const nodes=Object.entries(definition.nodes||{});
   if(!nodes.length)return '<p class="reader-no-nodes muted">这个 Loop 还没有节点。</p>';
@@ -50,13 +56,25 @@ function overviewFlowHTML(item){
     const bridgeURL=location.origin+'/flow_bridge.js';
     const policy=`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${bridgeURL}; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">`;
     // Keep overview sections stacked when opening the inspector changes the iframe width.
-    const style='<style>.am-toolbar,.am-reply-bar,.am-comment-toggle,.am-colophon{display:none!important}body{padding:16px!important}.am-sheet,.am-doc{padding:0!important}.am-grid{grid-template-columns:minmax(0,1fr)!important}.am-grid>.am-panel{grid-column:1/-1!important}.am-head{padding-inline-end:0!important}[data-loop-node][role=button]{cursor:pointer}[data-loop-node][role=button]:focus-visible{outline:3px solid #446aff;outline-offset:4px}[data-loop-node][aria-pressed=true]{filter:drop-shadow(0 0 4px #446aff)}[data-loop-node][aria-pressed=true]>:is(rect,path,polygon,ellipse){stroke:#446aff;stroke-width:3px}</style>';
+    const style=`<style>
+      html,body{height:auto!important;min-height:0!important;overscroll-behavior-y:auto!important}
+      body{margin:0!important;padding:16px!important}
+      .am-toolbar,.am-reply-bar,.am-comment-toggle,.am-colophon{display:none!important}
+      .am-sheet,.am-doc{padding:0!important}
+      .am-grid{grid-template-columns:minmax(0,1fr)!important}
+      .am-grid>.am-panel{grid-column:1/-1!important}
+      .am-head{padding-inline-end:0!important}
+      [data-loop-node][role=button]{cursor:pointer}
+      [data-loop-node][role=button]:focus-visible{outline:3px solid #446aff;outline-offset:4px}
+      [data-loop-node][aria-pressed=true]{filter:drop-shadow(0 0 4px #446aff)}
+      [data-loop-node][aria-pressed=true]>:is(rect,path,polygon,ellipse){stroke:#446aff;stroke-width:3px}
+    </style>`;
     const nodes=JSON.stringify(Object.entries(item.loop_definition?.nodes||{}).map(([id,n])=>[id,n.label||id]));
     const bridge=`<script src="${esc(bridgeURL)}" data-nodes="${esc(nodes)}" defer></script>`;
     // The host's script-src 'self' is inherited by srcdoc. Use a trusted external bridge,
     // and one viewer policy instead of the exported page's inline-script hash policy.
     const pageHTML=html.replace(/<!doctype[^>]*>/i,'').replace(/<meta\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi,tag=>/\bhttp-equiv\s*=\s*(?:"content-security-policy"|'content-security-policy'|content-security-policy(?=[\s/>]))/i.test(tag)?'':tag);
-    return `<iframe class="authored-flow" title="Loop 整体流程图" sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${esc('<!doctype html>'+policy+style+bridge+pageHTML)}"></iframe>`;
+    return `<iframe class="authored-flow" title="Loop 整体流程图" height="600" sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${esc('<!doctype html>'+policy+style+bridge+pageHTML)}"></iframe>`;
   }catch(error){return readerNodeListHTML(item.loop_definition);}
 }
 

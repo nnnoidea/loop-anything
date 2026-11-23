@@ -17,7 +17,6 @@ editorPage.innerHTML=`
       </header>
       <div class="editor-view-controls">
         <h2 id="reader-flow-title" class="flow-view-title">流程</h2>
-        <div class="canvas-tools"><button type="button" id="canvas-fullscreen">全屏</button></div>
       </div>
       <div id="editor-flow-overview"></div>
       <div id="reader-runs" class="reader-runs" hidden></div>
@@ -104,9 +103,11 @@ function renderEditor(){
   overview.innerHTML=overviewFlowHTML(editor);
   const frame=overview.querySelector('iframe');
   $('reader-flow-title').textContent=frame?'流程':'节点';
-  frame?.addEventListener('load',syncOverviewSelection);
+  if(frame){
+    if(editor.overviewHeight)frame.height=editor.overviewHeight;
+    frame.addEventListener('load',syncOverviewSelection);
+  }
   $('editor-edges-list').innerHTML=readerPlansHTML(b);
-  updateCanvasControls();
 }
 function syncOverviewSelection(){
   $('editor-flow-overview').querySelector('iframe')?.contentWindow.postMessage({type:'loop-node-selected',node:editSelection?.node||null},'*');
@@ -127,7 +128,14 @@ function selectEditor(selection){
 }
 window.addEventListener('message',event=>{
   if(page!=='editor'||!editor)return;
-  const id=overviewNodeMessage(event,$('editor-flow-overview').querySelector('iframe'),editor.loop_definition.nodes);
+  const frame=$('editor-flow-overview').querySelector('iframe');
+  const height=overviewHeightMessage(event,frame);
+  if(height!==null){
+    editor.overviewHeight=height;
+    frame.height=height;
+    return;
+  }
+  const id=overviewNodeMessage(event,frame,editor.loop_definition.nodes);
   if(id!==null)safely(()=>selectEditor({node:id}));
 });
 async function locateEditorIssue(path){
@@ -171,14 +179,5 @@ document.addEventListener('click',event=>{
   const b=event.target.closest('.editor-detail-tabs [data-editor-detail]');if(!b)return;
   setEditorDetailTab(b.dataset.editorDetail);editorPage.querySelector('.editor-right').scrollTop=0;
 });
-
-function updateCanvasControls(){
-  $('canvas-fullscreen').textContent=document.fullscreenElement===editorPage?'退出全屏':'全屏';
-  $('canvas-fullscreen').hidden=!document.fullscreenEnabled||!$('editor-flow-overview').querySelector('iframe');
-}
-document.addEventListener('click',event=>{
-  if(event.target.closest('#canvas-fullscreen'))safely(async()=>{if(document.fullscreenElement===editorPage)await document.exitFullscreen();else await editorPage.requestFullscreen();});
-});
-document.addEventListener('fullscreenchange',updateCanvasControls);
 
 const readerCheckDialog=document.createElement("dialog");readerCheckDialog.className="editor-json-modal";document.body.append(readerCheckDialog);

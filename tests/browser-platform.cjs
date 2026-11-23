@@ -48,7 +48,7 @@ async function withPlatform(check) {
     };
     const implementations = {wait: {options: {signal: {kind: 'event', event: 'measurement'}}, default: 'signal'}};
     const assets = Object.entries({
-      'docs/flow.html': '<button data-loop-node="wait">观察进度</button>',
+      'docs/flow.html': '<details open><summary>流程说明</summary><p style="height:1000px">获取结果后记录进度。</p><button data-loop-node="wait">观察进度</button></details>',
       'report.md': 'Ready'
     }).map(([path, content]) => ({path, base64: Buffer.from(content).toString('base64')}));
     const packed = await api('packages/export', {document: {loop_definition: bp, implementations}, assets});
