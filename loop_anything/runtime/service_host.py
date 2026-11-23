@@ -2,6 +2,7 @@
 import threading
 import traceback
 from loop_anything.runtime.scheduling import Scheduler
+from loop_anything.runtime.store import Store
 
 
 class ServiceHost:

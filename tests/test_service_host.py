@@ -1,11 +1,41 @@
+import tempfile
 import threading
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from loop_anything.runtime.service_host import ServiceHost
+from loop_anything.runtime.store import Store
 
 
 class ServiceHostTests(unittest.TestCase):
+    def test_run_error_pauses_only_that_run_and_records_the_cause(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / 'runs.sqlite3')
+            loop = {
+                'schema_version': 2, 'id': 'service-host', 'version': '1',
+                'handbook': {'instructions': 'Run each task independently.'},
+                'nodes': {'step': {'instructions': 'Complete the task.', 'inputs': {}, 'outputs': {}}},
+            }
+            implementations = {'step': {'options': {'default': {'kind': 'agent'}}, 'default': 'default'}}
+            key = store.publish(loop, implementations)['key']
+            failed = store.create(key, 'Failing Run')['id']
+            healthy = store.create(key, 'Healthy Run')['id']
+            engine = SimpleNamespace(store=store, work=Mock(), executors=Mock(),
+                                     tick=Mock(side_effect=[RuntimeError('Run tick failed'), None]))
+
+            with patch.object(store, 'scheduling_list', return_value=[{'id': failed}, {'id': healthy}]), \
+                    patch('loop_anything.runtime.service_host.traceback.print_exc'):
+                ServiceHost(engine).tick()
+
+            self.assertEqual([call.args[0] for call in engine.tick.call_args_list], [failed, healthy])
+            run = store.get(failed)
+            self.assertEqual(run['status'], 'paused')
+            self.assertEqual((run['history'][-1]['kind'], run['history'][-1]['message']),
+                             ('engine_error', 'Run tick failed'))
+            self.assertEqual(store.get(healthy)['status'], 'running')
+
     def test_blocked_team_transport_does_not_delay_local_work_or_runs(self):
         release = threading.Event()
         scanning = threading.Event()
