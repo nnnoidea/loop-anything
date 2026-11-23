@@ -52,7 +52,7 @@ def references(tool,a):
         if isinstance(a.get('dispatch'),dict):add('agent',a['dispatch'].get('agent_id'))
     if tool=='wait_for':
         for source in a.get('sources',{}).values():
-            if isinstance(source,dict):add('run' if source.get('kind')=='task' else source.get('kind'),source.get('id'))
+            if isinstance(source,dict) and source.get('kind')!='schedule':add('run' if source.get('kind')=='task' else source.get('kind'),source.get('id'))
     if tool=='communication_execute' and isinstance(a.get('arguments'),dict):refs+=references(a.get('tool'),a['arguments'])
     return list(dict.fromkeys(refs))
 

@@ -34,7 +34,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
     from loop_anything.interfaces.platform_tools import PlatformTools
     from loop_anything.interfaces.schedules import ScheduleControls
     platform_tools = PlatformTools(store)
-    space=getattr(engine,'space','local')
+    space=getattr(store,'space','local')
     schedules = ScheduleControls(store.filename, local=space=='local')
     from loop_anything.runtime.tool_client import module
     personal_spaces=module('spaces')

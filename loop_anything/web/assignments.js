@@ -8,38 +8,45 @@ function assignmentStatus(state,labels=assignmentStates){
   return `<span class="assignment-state" data-state="${esc(state)}">${esc(labels[state]||state)}</span>`;
 }
 function assignmentLine(item){
+  if(item.state==='idle'&&item.wait_errors?.length)return '等待受阻 · '+item.wait_errors[0].error;
   const current=item.steps.find(s=>s&&['active','waiting','needs_input'].includes(s.status));
   return current?[current.title,current.note].filter(Boolean).join(' · '):item.summary.split('\n')[0]||assignmentStates[item.state];
 }
 function replyButton(item){
+  if(item.state==='unknown')return item.can_recover?`<button data-recover-assignment="${esc(item.id)}">确认停止并继续</button>`:'<span class="muted small">原进程仍在运行</span>';
   return ['failed','needs_input'].includes(item.state)?`<button data-assignment-reply="${esc(item.id)}">${item.state==='needs_input'?'补充说明':'重新交给 Agent'}</button>`:'';
 }
 function planMarkup(items){
   if(!items.length)return '<div class="assignment-empty"><h2>还没有托管规划</h2><p>例如，等评测结束后比较基线，分数提升就安排下一轮。</p></div>';
   const chosen=items.find(item=>item.id===activeRoute.id)||items[0];
   const steps=chosen.steps.filter(s=>s&&typeof s.title==='string');
+  const blocked=chosen.state==='idle'&&chosen.wait_errors?.length;
   const list=items.map(item=>`<a class="plan-option ${chosen.id===item.id?'selected':''}" href="${esc(routeHash({type:'plans',id:item.id}))}" data-route-link><strong>${esc(item.title)}</strong><small>${esc(assignmentLine(item))}</small></a>`).join('');
   return `<div class="plans-layout"><nav class="plans-list" aria-label="已有规划">${list}</nav><article class="assignment-detail">
-    <header>${assignmentStatus(chosen.state)}<span class="muted small">${esc(chosen.model)}</span></header>
+    <header>${blocked?assignmentStatus('blocked',{blocked:'等待受阻'}):assignmentStatus(chosen.state)}<span class="muted small">${esc(chosen.model)}</span></header>
     <h2>${esc(chosen.title)}</h2>
     ${steps.length?`<ol class="plan-steps">${steps.map(s=>`<li data-step="${esc(s.status)}"><div><strong>${esc(s.title)}</strong>${assignmentStatus(s.status,stepStates)}</div>${s.note?`<p>${esc(s.note)}</p>`:''}${typeof s.run_id==='string'?navLink({type:'run',id:s.run_id,task:s.task_id},'查看对应 Run →'):''}</li>`).join('')}</ol>`:`<p class="muted">${chosen.state==='running'||chosen.state==='queued'?'正在准备规划，Agent 提交步骤后会显示在这里。':'暂无已提交的步骤。'}</p>`}
+    ${blocked?chosen.wait_errors.map(w=>`<p class="assignment-error"><strong>${esc(w.message||'等待条件')}</strong> · ${esc(w.error)}</p>`).join(''):''}
     ${chosen.state==='needs_input'&&chosen.summary?`<p>${esc(chosen.summary)}</p>`:''}
     ${chosen.error?`<p class="assignment-error">${esc(chosen.error)}</p>`:''}
     <footer>${replyButton(chosen)}${navLink({type:'timeline',id:chosen.timeline_id},'查看 Timeline →')}</footer></article></div>`;
 }
 function reviewMarkup(items){
   if(!items.length)return '<div class="assignment-empty"><h3>还没有回顾报告</h3><p>选择一个 Loop 和时间范围，查看运行情况、耗时和反复出现的问题。</p></div>';
-  const latest=new Map(),reports=new Map();
+  const latest=new Map(),sessions=new Map(),reports=new Map();
   for(const item of items){
     const key=item.scope.loop_id;
     if(!latest.has(key))latest.set(key,item);
-    if(item.summary&&!reports.has(key))reports.set(key,item);
+    if(item.id&&!sessions.has(key))sessions.set(key,item);
+    if(item.summary&&(!reports.has(key)||item.reported_at>reports.get(key).reported_at))reports.set(key,item);
   }
-  return [...latest].map(([id,item])=>{
+  return [...latest].map(([id,recent])=>{
+    const session=sessions.get(id);
+    const item=session&&['queued','running','needs_input','unknown'].includes(session.state)?session:recent;
     const report=reports.get(id);
     return `<article class="review-row"><div><header><h3>${esc(item.title)}</h3>${assignmentStatus(item.state)}</header>
-      <small class="muted">${esc(runDate(item.at))} · 本次范围 ${esc(item.count)} 个 Run</small>
-      ${report?`<p>${report.id===item.id?'':'上次回顾 · '}${esc(report.summary.split('\n')[0])}</p>`:''}${item.error?`<p class="assignment-error">${esc(item.error)}</p>`:''}</div>
+      <small class="muted">${esc(runDate(item.at))}${item.count==null?'':' · 本次范围 '+esc(item.count)+' 个 Run'}</small>
+      ${report?`<p>${report===item?'':'最新报告 · '}${esc(report.summary.split('\n')[0])}</p>`:''}${item.error?`<p class="assignment-error">${esc(item.error)}</p>`:''}</div>
       <footer>${report?navLink({type:'timeline',id:report.timeline_id},'查看报告 →'):''}${replyButton(item)}<button data-review-loop="${esc(id)}">发起回顾</button></footer></article>`;
   }).join('');
 }
@@ -126,6 +133,10 @@ $('assignment-form').onsubmit=async event=>{
 };
 document.addEventListener('click',event=>{
   const b=event.target.closest('button');if(!b)return;
+  if(b.dataset.recoverAssignment&&confirm('已确认原 Agent 进程停止？平台将读取已有进度并继续这次安排。')){
+    b.disabled=true;
+    safely(async()=>{try{await api('assignments/'+encodeURIComponent(b.dataset.recoverAssignment)+'/reply',{confirmed_stopped:true,text:''});await refreshAssignments(true);}finally{b.disabled=false;}});
+  }
   if(b.dataset.reviewLoop)openAssignment('review',b.dataset.reviewLoop);
   if(b.dataset.assignmentReply)openAssignment('reply',b.dataset.assignmentReply);
   if(b.matches('#assignment-dialog .close-dialog'))$('assignment-dialog').close();

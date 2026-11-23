@@ -255,7 +255,7 @@ def main():
             initial_run = {'key': args.key, 'title': args.title, 'created_by':args.created_by, 'inputs': read(args.inputs) if args.inputs else {}, 'constraints': args.authorization, 'request_id': args.request_id, **({'session_id':args.session_id,'session_token':args.session_token} if args.session_id or args.session_token else {}), **({'timeline_id':args.timeline_id} if args.timeline_id else {}), **({'continue_run_id':args.continue_run_id} if args.continue_run_id else {}), **({'bindings': read(args.bindings)} if args.bindings else {})}
         from loop_anything.runtime.engine import Engine
         engine = Engine(store)
-        engine.space=args.space
+        store.space=args.space
         mailbox=None
         if getattr(args,'public_url',None):engine.platform_url=args.public_url
         if team_dir:

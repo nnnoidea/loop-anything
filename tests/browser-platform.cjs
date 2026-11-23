@@ -12,11 +12,11 @@ async function withPlatform(check) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'platform-ui-'));
   const env = {...process.env, LOOP_ANYTHING_IDENTITY_DIR: path.join(root, 'identity'),
     LOOP_ANYTHING_SPACES: path.join(root, 'spaces.json')};
-  const server = spawn('python3', ['-m', 'loop_anything', '--db', path.join(root, 'db'),
-    'serve', '--port', '0', '--allow-sleep'], {env, stdio: ['ignore', 'pipe', 'inherit']});
-  let browser;
-  try {
-    const url = await new Promise((resolve, reject) => {
+  let browser, server;
+  function startServer(port) {
+    server = spawn('python3', ['-m', 'loop_anything', '--db', path.join(root, 'db'),
+      'serve', '--port', port, '--allow-sleep'], {env, stdio: ['ignore', 'pipe', 'inherit']});
+    return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Platform startup timed out')), 15000);
       let output = '';
       server.stdout.on('data', chunk => {
@@ -26,6 +26,15 @@ async function withPlatform(check) {
       });
       server.once('exit', code => {clearTimeout(timeout); reject(new Error('Platform exited: ' + code));});
     });
+  }
+  try {
+    const url = await startServer('0');
+    async function restartAfterCrash() {
+      const exited = once(server,'exit');
+      server.kill('SIGKILL');
+      await exited;
+      assert.equal(await startServer(new URL(url).port),url);
+    }
 
     async function api(route, data) {
       const options = data === undefined ? {} : {
@@ -68,7 +77,7 @@ async function withPlatform(check) {
     page.setDefaultTimeout(10000);
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
-    await check({url, api, tool, key, page, startRun});
+    await check({url, api, tool, key, page, startRun, restartAfterCrash});
     assert.deepEqual(errors, []);
   } finally {
     if (browser) await browser.close();

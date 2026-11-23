@@ -42,8 +42,9 @@ def definitions():
          dict(page,revision=N),['timeline_id'],True),
         ('update_timeline','Edit objective/constraints at the read revision. Follow the returned notice: inspect the whole Timeline, especially running tasks, and report to the user. Does NOT pause, cancel, invalidate, or reschedule any work.',
          {'timeline_id':T,'revision':N,'change':O,'message':TEXT},['timeline_id','revision','change'],False),
-        ('append_timeline','Append a note, progress or decision. Stable key deduplicates. References are evidence, not execution commands.',
-         {'timeline_id':T,'key':T,'text':TEXT,'kind':{'enum':['note','progress','decision']},'refs':{'type':'array','items':O}},
+        ('append_timeline','Append a note, progress or decision. Stable key deduplicates. References identify evidence. To publish a Loop review to RSI from any entry point, supply review={loop_id,run_count}.',
+         {'timeline_id':T,'key':T,'text':TEXT,'kind':{'enum':['note','progress','decision']},'refs':{'type':'array','items':O},
+          'review':object_schema({'loop_id':T,'run_count':N},['loop_id'])},
          ['timeline_id','key','text'],False),
         ('register_work_session','Register this exact server Agent session and actual Agent PID, with implementation and resumable native identity. Does not start a Run or launch another Agent. Retain returned session token.',
          {'native_session':O,'implementation':O,'process_id':{'type':'integer','minimum':2}},['native_session','implementation','process_id'],False),
@@ -53,7 +54,7 @@ def definitions():
          ['run_id','task_id','operation','reason'],False),
         ('resume_work_session','Explicitly retry a failed/unknown wake after confirming the previous process stopped. Does not acknowledge pending events.',
          dict(SESSION,confirmed_stopped={'const':True}),[*SESSION,'confirmed_stopped'],False),
-        ('wait_for','Persist a wait for named Run/Task/monitor sources and a deterministic condition. source={kind:run|task|monitor,id,task_id?,max_age?}; condition reads sources by alias using path/op/args. A run source follows its Timeline current Run across continuation; a task source observes that exact Task and its committed output versions. For a managed plan, use message to describe the trigger and what to do after waking. Keeps this exact session. Finish active Run turns and exit the Agent process so it can be resumed. Does not create a Loop.',
+        ('wait_for','Persist a wait for named Run/Task/monitor/schedule sources and a deterministic condition. source={kind:run|task|monitor|schedule,id,task_id?,max_age?}; condition reads sources by alias using path/op/args. A run source follows its Timeline current Run across continuation; a task source observes that exact Task and its committed output versions. A schedule source reads the current platform host registry and exposes status, terminal, last_result and error. For a managed plan, use message to describe the trigger and what to do after waking. Keeps this exact session. Finish active Run turns and exit the Agent process so it can be resumed. Does not create a Loop.',
          dict(SESSION,timeline_id=T,key=T,sources=O,condition=O,message=TEXT),[*SESSION,'timeline_id','key','sources','condition'],False),
         ('read_wait','Read state, evidence or query error of a wait.',{'wait_id':T},['wait_id'],True),
         ('cancel_wait','Cancel your wait, without cancelling observed Runs or monitors.',dict(SESSION,wait_id=T),[*SESSION,'wait_id'],False),
@@ -118,7 +119,7 @@ def call(store,name,a):
         if name=='create_timeline':return {'timeline':timelines.create(db,**a)}
         if name=='update_timeline':return timelines.update(db,a['timeline_id'],a['revision'],a['change'],a.get('message',''))
         if name=='append_timeline':
-            return {'entry':timelines.append(db,a['timeline_id'],a['key'],a['text'],a.get('kind','note'),a.get('refs'),actor='agent')}
+            return {'entry':timelines.append(db,a['timeline_id'],a['key'],a['text'],a.get('kind','note'),a.get('refs'),actor='agent',review=a.get('review'))}
         if name=='list_monitor_scripts':return {'scripts':work.rows(db,'monitor_script')}
         if name=='list_monitors':return {'monitors':[v for v in work.rows(db,'monitor') if not a.get('run_id') or v.get('run_id')==a['run_id']]}
         if name=='read_monitor':return {'monitor':work.get(db,'monitor',a['monitor_id'])}
@@ -157,8 +158,7 @@ def call(store,name,a):
         if name=='read_work_session':
             return {'session':work.public_session(session),'waits':[v for v in work.rows(db,'wait') if v['session_id']==session['id']]}
         if name=='resume_work_session':
-            if work.alive(session.get('process_id')):raise Conflict('Original session process is still alive')
-            session.update(state='idle',wake=None,error=None,process_id=None)
+            work.retry_session(session,a['confirmed_stopped'])
             work.put(db,'session',session);return {'session':work.public_session(session)}
         if name in ('cancel_wait','acknowledge_wait'):
             value=work.get(db,'wait',a['wait_id'])

@@ -65,6 +65,15 @@ def alive(pid):
     return True
 
 
+def retry_session(session, confirmed_stopped=False):
+    if session.get('assignment') and session['state'] not in ('failed','unknown','needs_input'):
+        raise Conflict('当前工作没有等待重试或补充说明')
+    if session['state']=='unknown' and not confirmed_stopped:
+        raise Conflict('请先确认原 Agent 进程已停止')
+    if alive(session.get('process_id')):raise Conflict('原 Agent 进程仍在运行')
+    session.update(state='queued' if session.get('assignment') else 'idle',wake=None,error=None,process_id=None)
+
+
 def register_session(store, a):
     from loop_anything.runtime.native_sessions import resume_config
     from loop_anything.runtime.implementations import validate_implementation
@@ -249,7 +258,12 @@ def observe(store, source):
         return observe_in_db(store,db,source)
 
 
-def observe_in_db(store,db,source,retained=None):
+def schedule_directory(store):
+    from loop_anything.runtime.local_tasks import registry_directory
+    return registry_directory(store.filename,local=getattr(store,'space','local')=='local')
+
+
+def observe_in_db(store,db,source,retained=None,registry=None):
     kind=source['kind']
     if retained:
         ident=timelines.get(db,retained['timeline_id'])['active_run_id'] if kind=='run' else None
@@ -262,9 +276,16 @@ def observe_in_db(store,db,source,retained=None):
                 values[key]=json.loads(row[0])['value']
             return dict(retained['state'],**{field:values})
         source=dict(source,id=ident)
+    if kind=='schedule':
+        from loop_anything.runtime.local_tasks import TaskRegistry
+        state=TaskRegistry(registry or schedule_directory(store)).show(source['id'])['runtime']
+        return dict(status=state['status'],terminal=state['status'] in ('completed','failed','expired','stopped'),
+                    last_result=state.get('last_result'),error=state.get('error') or state.get('notice'))
     if kind=='monitor':
         value=get(db,'monitor',source['id'])
         sample=value.get('sample')
+        if not sample and value['status']=='running' and not value.get('error'):
+            return None  # The first sample is still pending.
         if not sample or value.get('error'):raise Invalid(value.get('error') or 'No monitor sample yet')
         if (value['status']!='completed' or 'max_age' in source) and time.time()-sample['at']>source.get('max_age',value['interval']*2+value['script']['script'].get('timeout',60)):
             raise Invalid('Monitor sample is stale')
@@ -280,7 +301,7 @@ def observe_in_db(store,db,source,retained=None):
         if task is None:raise Invalid('Unknown observed Task')
         return dict(status=task['status'],revision=task['revision'],
                     outputs={port:record['value'] for port,record in timelines.output_records(run,task).items()})
-    raise Invalid('Wait source must be run, task or monitor')
+    raise Invalid('Wait source must be run, task, monitor or schedule')
 
 
 def register_wait(store,a):
@@ -288,7 +309,7 @@ def register_wait(store,a):
     if not a['sources']:raise Invalid('Wait needs sources')
     validate_expression(a['condition'])
     for alias,source in a['sources'].items():
-        if not isinstance(source,dict) or set(source)-{'kind','id','task_id','max_age'} or source.get('kind') not in ('run','task','monitor') or not source.get('id'):
+        if not isinstance(source,dict) or set(source)-{'kind','id','task_id','max_age'} or source.get('kind') not in ('run','task','monitor','schedule') or not source.get('id'):
             raise Invalid('Invalid wait source')
         if 'max_age' in source and (type(source['max_age']) not in (int,float) or source['max_age']<=0 or not math.isfinite(source['max_age'])):raise Invalid('Invalid max_age')
     with transaction(store) as db:
@@ -303,6 +324,8 @@ def register_wait(store,a):
         value=dict(id=ident,session_id=session['id'],timeline_id=a['timeline_id'],sources=a['sources'],
                    condition=a['condition'],message=a.get('message',''),fingerprint=fingerprint,
                    state='waiting',created_at=time.time(),next_at=0,error=None)
+        if any(source['kind']=='schedule' for source in value['sources'].values()):
+            value['schedule_directory']=session.get('assignment',{}).get('schedule_directory') or schedule_directory(store)
         put(db,'wait',value)
         description='已登记等待' + (' · '+a['message'] if a.get('message') else '')
         timelines.append(db,a['timeline_id'],ident,description,'action',[{'wait_id':ident}],actor='platform')
@@ -324,6 +347,9 @@ def poll_wait(store, ident, *, changes_only=False):
                 return current
         deadlines=[]
         for source in current['sources'].values():
+            if source['kind']=='schedule':
+                # The standalone scheduler persists to its registry independently of DB events.
+                deadlines.append(time.time()+2)
             if source['kind']!='monitor':continue
             try:monitor=get(db,'monitor',source['id'])
             except Invalid:continue
@@ -331,9 +357,9 @@ def poll_wait(store, ident, *, changes_only=False):
                 expiry=monitor['sample']['at']+source.get('max_age',2*monitor['interval']+monitor['script']['script'].get('timeout',60))
                 if expiry>time.time():deadlines.append(expiry)
         try:
-            evidence={alias:observe_in_db(store,db,source,current.get('retained_sources',{}).get(alias))
+            evidence={alias:observe_in_db(store,db,source,current.get('retained_sources',{}).get(alias),current.get('schedule_directory'))
                       for alias,source in current['sources'].items()}
-            result=evaluate(current['condition'],evidence)
+            result=all(source is not None for source in evidence.values()) and evaluate(current['condition'],evidence)
             if type(result) is not bool:raise Invalid('Wait condition must return boolean')
             error=None
         except (Invalid,KeyError,IndexError,TypeError,ValueError) as exc:
@@ -464,6 +490,8 @@ class WorkRuntime:
             if assignment:
                 from loop_anything.runtime import web_assignments
                 from pathlib import Path
+                if assignment['kind']=='plan':
+                    context['schedule_directory']=assignment.get('schedule_directory') or schedule_directory(self.store)
                 config,prompt=web_assignments.launch(session,context)
                 directory=Path(self.store.filename).resolve().parent/'agent-work'/ident
                 directory.mkdir(parents=True,exist_ok=True)

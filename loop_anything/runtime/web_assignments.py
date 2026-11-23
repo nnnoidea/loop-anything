@@ -9,6 +9,20 @@ from loop_anything.runtime.model import Conflict, Invalid, digest
 from loop_anything.runtime.store import uid
 
 
+def latest_reports(db, loop_id=None):
+    # Report identity belongs to the Timeline entry, independent of who started the check.
+    where = " AND json_extract(document,'$.review.loop_id')=?" if loop_id else ""
+    return db.execute("""WITH ranked AS (
+        SELECT timeline_id,key,json_extract(document,'$.review.loop_id') AS loop_id,
+               json_extract(document,'$.review.run_count') AS count,json_extract(document,'$.text') AS summary,
+               json_extract(document,'$.at') AS at,
+               row_number() OVER(PARTITION BY json_extract(document,'$.review.loop_id')
+                                 ORDER BY json_extract(document,'$.at') DESC,rowid DESC) AS rank
+        FROM work_entries WHERE json_type(document,'$.review.loop_id')='text'
+          AND json_extract(document,'$.source_timeline_id')=timeline_id"""+where+""")
+        SELECT * FROM ranked WHERE rank=1""",(loop_id,) if loop_id else ())
+
+
 def start(store, args):
     kind = args.get('kind')
     model = args.get('model', DEFAULT_MODEL)
@@ -45,12 +59,14 @@ def start(store, args):
             prior=db.execute("""SELECT json_extract(document,'$.assignment.timeline_id') FROM work_objects
                 WHERE kind='session' AND json_extract(document,'$.assignment.kind')='review'
                 AND json_extract(document,'$.assignment.scope.loop_id')=? LIMIT 1""",(loop['id'],)).fetchone()
-            timeline=prior[0] if prior else None
+            report=latest_reports(db,loop['id']).fetchone()
+            timeline=report['timeline_id'] if report else prior[0] if prior else None
         if timeline is None:
             objective=title if kind=='plan' else '持续回顾并优化 '+title
             timeline=timelines.create(db,objective=objective,title=title[:80] if kind=='plan' else objective)['id']
         assignment=dict(kind=kind,title=title,timeline_id=timeline,model=model,scope=scope,request=args)
         if kind=='review':assignment['count']=sample['total']
+        else:assignment['schedule_directory']=work.schedule_directory(store)
         work.put(db,'session',dict(id=ident,token=uid('session-token'),state='queued',process_id=None,wake=None,
                                    created_at=time.time(),assignment=assignment,native_session=None))
     return {'id':ident,'timeline_id':timeline}
@@ -67,7 +83,7 @@ def progress(db,session):
     entry=json.loads(row[0]) if row else {}
     steps=entry['refs'][0]['steps'] if entry and a['kind']=='plan' else []
     steps=[s for s in steps if isinstance(s,dict) and isinstance(s.get('title'),str)]
-    return entry.get('text',''),steps
+    return entry.get('text',''),steps,entry.get('at')
 
 
 def overview(store,kind):
@@ -75,29 +91,49 @@ def overview(store,kind):
     with store.connection() as db:
         db.execute('BEGIN')
         items=[]
+        wait_errors={}
+        if kind=='plan':
+            for wait in db.execute("""SELECT json_extract(document,'$.session_id'),json_extract(document,'$.message'),
+                       json_extract(document,'$.error') FROM work_objects WHERE kind='wait' AND
+                       json_extract(document,'$.state')='waiting' AND json_extract(document,'$.error') IS NOT NULL"""):
+                wait_errors.setdefault(wait[0],[]).append(dict(message=wait[1],error=wait[2]))
         for row in db.execute("""SELECT id,json_extract(document,'$.assignment') AS assignment,
                 json_extract(document,'$.state') AS state,json_extract(document,'$.created_at') AS at,
-                json_extract(document,'$.error') AS error FROM work_objects WHERE kind='session'
+                json_extract(document,'$.error') AS error,json_extract(document,'$.process_id') AS pid FROM work_objects WHERE kind='session'
                 AND json_extract(document,'$.assignment.kind')=? ORDER BY json_extract(document,'$.created_at') DESC""",(kind,)):
             a=json.loads(row['assignment'])
-            summary,steps=progress(db,dict(assignment=a,id=row['id']))
+            summary,steps,reported_at=progress(db,dict(assignment=a,id=row['id']))
             items.append(dict(id=row['id'],title=a['title'],timeline_id=a['timeline_id'],model=a['model'],
                               state=row['state'],at=row['at'],error=row['error'],
                               summary=(summary.splitlines() or [''])[0] if kind=='review' else summary,
-                              steps=steps,count=a.get('count'),scope=a['scope']))
+                              steps=steps,count=a.get('count'),scope=a['scope'],reported_at=reported_at,
+                              wait_errors=wait_errors.get(row['id'],[]),
+                              can_recover=row['state']=='unknown' and not work.alive(row['pid'])))
+        if kind=='review':
+            web_keys={(item['timeline_id'],item['id']+':report') for item in items}
+            for report in latest_reports(db):
+                if (report['timeline_id'],report['key']) in web_keys:continue
+                lid=report['loop_id']
+                loop=db.execute("SELECT json_extract(document,'$.name') FROM loop_definitions WHERE json_extract(document,'$.id')=? LIMIT 1",(lid,)).fetchone()
+                items.append(dict(id=None,title=(loop[0] if loop else None) or lid,timeline_id=report['timeline_id'],
+                                  state='completed',at=report['at'],reported_at=report['at'],count=report['count'],
+                                  scope={'loop_id':lid},summary=(report['summary'].splitlines() or [''])[0]))
+            items.sort(key=lambda item:item['at'],reverse=True)
         return {'items':items}
 
 
 def follow_up(store, ident, args):
-    message=args.get('text')
-    if not isinstance(message,str) or not message.strip():raise Invalid('请填写补充说明')
+    message=args.get('text','')
+    if not isinstance(message,str):raise Invalid('请填写补充说明')
     with work.transaction(store) as db:
         session=work.get(db,'session',ident)
-        if 'assignment' not in session or session['state'] not in ('needs_input','failed'):
-            raise Conflict('当前状态无法提交补充说明，请刷新')
-        a=session['assignment']
-        timelines.append(db,a['timeline_id'],uid('reply'),message.strip(),'decision',actor='user')
-        session.update(reply=message.strip(),state='queued',error=None)
+        if 'assignment' not in session:raise Conflict('该会话没有网页规划或回顾')
+        recovering=session['state']=='unknown'
+        work.retry_session(session,args.get('confirmed_stopped') is True)
+        if not recovering and not message.strip():raise Invalid('请填写补充说明')
+        if message.strip():
+            timelines.append(db,session['assignment']['timeline_id'],uid('reply'),message.strip(),'decision',actor='user')
+        session['reply']=message.strip() or '原进程已确认停止。请核对已有进度和已登记的安排后接着做。'
         work.put(db,'session',session)
     return {'id':ident}
 
@@ -110,6 +146,7 @@ def launch(session,context):
     if a['scope']:context.update({k:a['scope'][k] for k in ('loop_id','loop_key') if k in a['scope']})
     context['assignment']={'kind':a['kind'],'objective':a['title'],'reply':session.get('reply'),
                            'report_key':session['id']+':report'}
+    if a['kind']=='review':context['assignment']['review']={'loop_id':a['scope']['loop_id'],'run_count':a['count']}
     base=['codex','exec']
     native=session.get('native_session')
     if native:base+=['resume']
@@ -131,16 +168,19 @@ PLAN="""Carry out the arrangement, not just an outline. To display the plan, cal
 initially, at each meaningful change and before exiting. Use a distinct stable key for each update, a short text
 describing what is happening, and refs=[{"steps":[{"title":"…","status":"active","note":"…"}]}].
 Send the full current ordered step list each time. Status is pending, active, waiting, needs_input, done or skipped.
-Include the actual wait condition or decision in note. When relevant add the real run_id and optional task_id to the step. Register wait_for when required, then exit; only mark done
+Include the actual wait condition or decision in note. When relevant add the real run_id and optional task_id to the step. When handing a later step to the local scheduler, use the supplied schedule_directory for registration and start.
+Register wait_for on the returned schedule ID (kind=schedule; condition alias.terminal == true for a one-off).
+On wake inspect last_result, status and error. Never start another copy just to resume the plan.
+Register wait_for when required, then exit; only mark done
 when evidenced. If clarification or consent is needed, use needs_input, write the question and exit."""
 REVIEW="""Perform the full review now. Use list_runs with the supplied scope, follow every page, then query_run_facts
-and drill down for evidence. Save the report with append_timeline(kind=progress,key=assignment.report_key) on the
+and drill down for evidence. Save the report with append_timeline(kind=progress,key=assignment.report_key,review=assignment.review) on the
 supplied optimization timeline. Put the main conclusion on the first line and include scope, findings and evidence
 in the report. Reuse past facts when appropriate. Do not change the Loop."""
 
 
 def finished(db,session):
-    summary,steps=progress(db,session)
+    summary,steps,_=progress(db,session)
     if session['assignment']['kind']=='review' and summary.strip():return 'completed',None
     statuses=[s.get('status') for s in steps if isinstance(s,dict) and s.get('title')]
     if statuses and all(s in ('done','skipped') for s in statuses):return 'completed',None

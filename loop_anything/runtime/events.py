@@ -61,6 +61,7 @@ def position(db):
 def wait_changed(db,wait,since):
     for alias,source in wait['sources'].items():
         kind,ident=source['kind'],source['id']
+        if kind=='schedule':continue  # Registry reads are driven by the wait's next_at.
         if kind=='monitor':
             where="kind='monitor' AND subject=?"
             args=[ident]

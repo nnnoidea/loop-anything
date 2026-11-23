@@ -54,7 +54,7 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 ## work_waits
 
 - Activation: operator
-- Platform handles: Checks cross-Run and monitor conditions and resumes the exact native server session with evidence.
+- Platform handles: Checks Run, Task, monitor and scheduled task conditions and resumes the exact native server session with evidence.
 - Author provides: For 规划托管, register the current branch trigger with wait_for, explain the next action in message, finish scopes and exit. Use a script check for external signals. When no reliable trigger exists, agree any repeated Agent inspections with the user before scheduling. Acknowledge handled events.
 - Configuration: `wait_for`, `cancel_wait`, `acknowledge_wait`
 - Limits: Active or unknown processes are never resumed concurrently. Failed or unavailable sessions need explicit recovery.

@@ -11,7 +11,7 @@
 .assignment-detail h2{margin:14px 0;overflow-wrap:anywhere;font-size:1.25rem}.assignment-detail footer,.review-row footer{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
 .assignment-state{font-size:.8rem;background:#edf1f6;color:#42536a;border-radius:14px;padding:2px 9px}
 .assignment-state:is([data-state=active],[data-state=running]){background:#eaf0ff;color:#284fbe}
-.assignment-state:is([data-state=waiting],[data-state=needs_input],[data-state=failed],[data-state=unknown]){background:#fff1dc;color:#81541c}
+.assignment-state:is([data-state=waiting],[data-state=needs_input],[data-state=failed],[data-state=unknown],[data-state=blocked]){background:#fff1dc;color:#81541c}
 .assignment-state:is([data-state=completed],[data-state=done]){background:#dcf4e9;color:#136547}
 .plan-steps{padding-left:24px;margin:18px 0}.plan-steps li{padding:7px 4px}.plan-steps li::marker{color:#718298}.plan-steps li:is([data-step=active],[data-step=waiting],[data-step=needs_input]){background:#f5f7fc;border-radius:6px;padding-inline:9px}
 .plan-steps li[data-step=pending]{color:#65738a}.assignment-page a:not(.plan-option){color:var(--blue);text-underline-offset:3px}

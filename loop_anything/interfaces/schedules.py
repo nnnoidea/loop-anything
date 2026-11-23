@@ -21,7 +21,7 @@ class ScheduleControls:
 
     @property
     def registry(self):
-        directory = registry_directory(self.database) if self.local else str(self.database) + '.schedules'
+        directory = registry_directory(self.database,local=self.local)
         return TaskRegistry(directory)
 
     def list(self):

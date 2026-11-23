@@ -276,9 +276,10 @@ class LocalRuntime:
         self.locks=[]
 
 
-def registry_directory(database):
+def registry_directory(database, *, local=True):
     from loop_anything.runtime.tool_client import module
-    return module('spaces').read()['local_registry'] or str(Path(database).resolve())+'.schedules'
+    personal = module('spaces').read()['local_registry'] if local else None
+    return personal or str(Path(database).resolve())+'.schedules'
 
 
 def main(argv):

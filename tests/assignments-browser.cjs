@@ -3,8 +3,12 @@
 const {withPlatform,assert}=require('./browser-platform.cjs');
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os');
 const dir=fs.mkdtempSync(path.join(os.tmpdir(),'planning-agent-'));
+const sample=path.join(dir,'gpu.json');
+const monitor=path.join(dir,'monitor.py');
+fs.writeFileSync(monitor,'from pathlib import Path\nimport sys\nsample=Path(sys.argv[1])\nif not sample.exists(): sys.exit("采集失败")\nprint(sample.read_text())\n');
 fs.writeFileSync(path.join(dir,'codex'),`#!/usr/bin/env python3
-import json,sys,subprocess
+import json,sys,subprocess,datetime,time
+from pathlib import Path
 a=json.loads(sys.stdin.read().strip().splitlines()[-1])
 print(json.dumps({'type':'thread.started','thread_id':'12000000-0000-4000-8000-000000000001'}),flush=True)
 def call(tool,**args):
@@ -17,7 +21,48 @@ task=a['assignment']
 if task['kind']=='review':
     runs=call('list_runs',**a['scope'],view='revisions')['runs']
     facts=call('query_run_facts',source='runs',run_ids=[r['id'] for r in runs],group_by=['status'])
-    append(task['report_key'],'本次检查了 '+str(len(runs))+' 个 Run。',[])
+    call('append_timeline',timeline_id=a['timeline_id'],kind='progress',key=task['report_key'],text='本次检查了 '+str(len(runs))+' 个 Run。',review=task['review'])
+elif task['objective']=='重启后接着做':
+    if task.get('reply'):
+        assert 'resume' in sys.argv and '12000000-0000-4000-8000-000000000001' in sys.argv
+        old=call('read_work_timeline',timeline_id=a['timeline_id'])
+        assert any(e['key']=='saved' for e in old['entries'])
+        append('continued','已从保存的进度继续',[{'steps':[{'title':'核对结果','status':'done'}]}])
+    else:
+        append('saved','核对中',[{'steps':[{'title':'核对结果','status':'active'}]}])
+        for _ in range(450):
+            if (Path(sys.argv[0]).parent/'exit-original').exists():break
+            time.sleep(.1)
+elif task['objective']=='等待 GPU 样本':
+    if a['waits']:
+        wait=a['waits'][0]
+        assert wait['evidence']['gpu']['data']['free']==8
+        call('acknowledge_wait',session_id=a['session_id'],session_token=a['session_token'],wait_id=wait['id'])
+        append('capacity','资源就绪',[{'steps':[{'title':'可用 GPU 已达 8 张','status':'done'}]}])
+    else:
+        here=Path(sys.argv[0]).parent
+        m=call('start_monitor',request_id='gpu',interval=1,script={'command':[sys.executable,str(here/'monitor.py'),str(here/'gpu.json')]})['monitor']
+        call('wait_for',timeline_id=a['timeline_id'],session_id=a['session_id'],session_token=a['session_token'],key='gpu',
+             sources={'gpu':{'kind':'monitor','id':m['id']}},condition={'op':'ge','args':[{'path':'gpu.data.free'},8]},message='等待 8 张 GPU')
+        append('wait','检查资源',[{'steps':[{'title':'检查 GPU 资源','status':'waiting'}]}])
+elif task['objective']=='到点采集再继续':
+    if a['waits']:
+        wait=a['waits'][0]
+        assert wait['evidence']['job']['last_result']['stdout'].strip()=='42'
+        assert wait['evidence']['job']['status']=='completed'
+        call('acknowledge_wait',session_id=a['session_id'],session_token=a['session_token'],wait_id=wait['id'])
+        append('done','定时任务已交回结果',[{'steps':[{'title':'采集结果 42','status':'done'}]}])
+    else:
+        root=str(Path(a['platform_client']).resolve().parents[3])
+        registry=a['schedule_directory']
+        cli=[sys.executable,'-m','loop_anything','client','local','--root',registry]
+        definition=Path.cwd()/'job.json'
+        definition.write_text(json.dumps({'name':'定时采集','at':(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(seconds=5)).isoformat(),'command':[sys.executable,'-c','print(42)']}))
+        job=json.loads(subprocess.check_output(cli+['register',str(definition)],cwd=root))['id']
+        subprocess.Popen(cli+['start',job],cwd=root,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+        call('wait_for',timeline_id=a['timeline_id'],session_id=a['session_id'],session_token=a['session_token'],key='at',
+             sources={'job':{'kind':'schedule','id':job}},condition={'op':'eq','args':[{'path':'job.terminal'},True]},message='等定时采集')
+        append('plan','等待定时任务',[{'steps':[{'title':'定时采集','status':'waiting'}]}])
 elif task['objective']=='等待用户选择':
     if task.get('reply'):
         assert 'resume' in sys.argv
@@ -36,7 +81,7 @@ else:
     append('plan','等待测试 Run 暂停',[{'steps':[{'title':'确定范围','status':'done'},{'title':'等待暂停','status':'waiting','note':'等待用户暂停 Run'}]}])
 `,{mode:0o755});
 process.env.PATH=dir+path.delimiter+process.env.PATH;
-withPlatform(async({page,api,url,startRun})=>{
+withPlatform(async({page,api,tool,url,startRun,restartAfterCrash})=>{
   const {turn}=await startRun('规划页面验收');
   await page.goto(url+'/#plans');
   await page.getByRole('button',{name:'新建规划',exact:true}).click();
@@ -59,6 +104,36 @@ withPlatform(async({page,api,url,startRun})=>{
   await page.getByLabel('补充说明',{exact:true}).fill('已确认');
   await page.getByRole('button',{name:'提交',exact:true}).click();
   await plan.getByText('已确认',{exact:true}).waitFor({timeout:20000});
+  await page.getByRole('button',{name:'新建规划',exact:true}).click();
+  await page.getByLabel('想安排什么？').fill('到点采集再继续');
+  await page.getByRole('button',{name:'开始托管'}).click();
+  await plan.locator('li[data-step=waiting]').getByText('定时采集',{exact:true}).waitFor();
+  await plan.getByText('采集结果 42',{exact:true}).waitFor({timeout:25000});
+  await page.getByRole('button',{name:'新建规划',exact:true}).click();
+  await page.getByLabel('想安排什么？').fill('等待 GPU 样本');
+  await page.getByRole('button',{name:'开始托管'}).click();
+  await plan.getByText('等待受阻',{exact:true}).waitFor({timeout:20000});
+  await plan.locator('.assignment-error').filter({hasText:'采集失败'}).waitFor();
+  fs.writeFileSync(sample,JSON.stringify({free:4}));
+  await plan.getByText('等待条件',{exact:true}).waitFor({timeout:15000});
+  assert.equal(await plan.locator('.assignment-error').count(),0);
+  fs.writeFileSync(sample,JSON.stringify({free:8,done:true}));
+  await plan.getByText('可用 GPU 已达 8 张',{exact:true}).waitFor({timeout:15000});
+  await page.getByRole('button',{name:'新建规划',exact:true}).click();
+  await page.getByLabel('想安排什么？').fill('重启后接着做');
+  await page.getByRole('button',{name:'开始托管'}).click();
+  await plan.getByText('核对结果',{exact:true}).waitFor();
+  const original=await plan.getByRole('link',{name:'查看 Timeline →'}).getAttribute('href');
+  await restartAfterCrash();
+  await page.reload();
+  await plan.getByText('原进程仍在运行').waitFor();
+  fs.writeFileSync(path.join(dir,'exit-original'),'');
+  const recover=plan.getByRole('button',{name:'确认停止并继续'});
+  await recover.waitFor({timeout:15000});
+  page.once('dialog',dialog=>dialog.accept());
+  await recover.click();
+  await plan.locator('li[data-step=done]').getByText('核对结果',{exact:true}).waitFor({timeout:20000});
+  assert.equal(await plan.getByRole('link',{name:'查看 Timeline →'}).getAttribute('href'),original);
   await page.locator('#loop_definitions-nav').click();
   await page.getByRole('link',{name:'RSI for loop',exact:true}).click();
   await page.getByRole('button',{name:'发起回顾',exact:true}).first().click();
@@ -81,11 +156,19 @@ withPlatform(async({page,api,url,startRun})=>{
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
   if(process.env.ASSIGNMENT_SCREENSHOTS)await page.screenshot({path:path.join(process.env.ASSIGNMENT_SCREENSHOTS,'mobile.png')});
   await page.getByRole('link',{name:/查看报告/}).click();
+  await page.locator('#work-focus').getByText('本次检查了 1 个 Run。').first().waitFor();
   assert.equal(page.url(),reportURL);
+  const timeline_id=reportURL.split('/').at(-1);
+  const published=await tool('append_timeline',{timeline_id,key:'timed-report',kind:'progress',text:'定时回顾发现新问题',review:{loop_id:'browser',run_count:1}});
+  assert.equal(published.entry?.text,'定时回顾发现新问题',JSON.stringify(published));
+  await tool('append_timeline',{timeline_id,key:'discussion',kind:'note',text:'继续讨论'});
+  assert.equal((await api('assignments/review')).items[0].summary,'定时回顾发现新问题');
+  await page.goto(url+'/#rsi');
+  await page.locator('.review-row').getByText(/定时回顾发现新问题/).waitFor();
   await page.goto(url+'/#loop_definitions');
   await page.locator('.catalog-card [data-loop],.catalog-card[data-loop]').first().click();
   await page.getByRole('link',{name:/查看此 Loop 的 Run/}).click();
   await page.locator('#run-list [data-run="'+turn.run_id+'"]').waitFor();
   assert.equal(await page.locator('#runs-loop').inputValue(),'browser');
-  console.log('Plan launch, selected model, step display, wait/resume, RSI scope and report, filtered Runs passed.');
+  console.log('Plan launch, model, monitor failure/recovery, schedule wake, recovery after server crash and RSI reports passed.');
 }).catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>fs.rmSync(dir,{recursive:true,force:true}));

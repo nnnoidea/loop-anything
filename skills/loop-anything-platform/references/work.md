@@ -60,6 +60,8 @@ A user can give a one-off arrangement that calls existing Loops. Keep the goal a
 - If there is no reliable signal, first offer a concrete one (a user reply or a ready file, for example). If repeated Agent inspection is the viable fallback, explain the gap and offer manual continuation or polling with a specific cadence and stopping condition. Record the pending choice on the Timeline and wait for the reply before registering or starting the polling job. Do not start a sleep/read loop inside an Agent. A user's explicit instructions such as “每半小时检查一次，直到今晚八点” already supply the decision.
 - Record the agreed fallback on the Timeline with append_timeline(kind=decision). Apply the agreed interval and stop condition through the existing scheduler; a wall-clock cutoff maps to until, with the user's timezone. A single command timeout governs one invocation. [Local schedules](../../loop-anything-local/SKILL.md) describes the runner.
 
+When a later plan step depends on a scheduled action, register and start it once in the host registry (`loop-anything client local --root <schedule_directory> …` for a web plan). Keep its ID. The scheduler’s `start` runs in the foreground: launch it as a separate host process with its own output, so the Agent can exit immediately. Before exiting use the existing `wait_for` with `sources={"job":{"kind":"schedule","id":"SCHEDULE_ID"}}` and `condition={"op":"eq","args":[{"path":"job.terminal"},true]}` for a one-off job. The platform observes the registry while the Agent is away. On wake inspect `job.status`, `job.last_result`, and `job.error`, acknowledge the wait, and continue. For a recurring schedule select the relevant result or stop condition. A registered schedule must be explicitly started. Use a stable schedule ID for retries.
+
 ## Wait without a business Loop
 
 wait_for takes your session identity, timeline_id, stable key, sources, condition
@@ -67,6 +69,7 @@ and optional message for continuation. A source is:
 - {kind:run,id:run_id}: status/revision/records
 - {kind:task,id:run_id,task_id}: status/revision/outputs
 - {kind:monitor,id:monitor_id,max_age?:seconds}: status/at/data/call_id
+- {kind:schedule,id:schedule_id}: status/terminal/last_result/error
 
 Conditions use the existing deterministic path/op/args vocabulary. For example,
 sources={experiment:{kind:run,id:...}} and

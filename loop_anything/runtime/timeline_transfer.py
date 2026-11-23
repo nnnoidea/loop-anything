@@ -11,7 +11,7 @@ MAX_BYTES = 20 * 1024 * 1024
 FORMAT = 'loop-anything-timeline'
 STATE_FIELDS = ('type','id','revision','value','refs','run_id','task_id','execution_id','at','intent_revision')
 RESULT_FIELDS = ('id','revision','type','value','summary','producer','tasks','source_run_id','at','sources')
-ENTRY_FIELDS = ('source_timeline_id','key','sequence','text','kind','refs','actor','at')
+ENTRY_FIELDS = ('source_timeline_id','key','sequence','text','kind','refs','actor','at','review')
 NOTICE = '已导入任务进度。请让 Agent 读取目标、限制和当前状态，使用本平台的相关 Loop 继续。原平台的进程和执行权限未迁移，外部文件仍需可访问。'
 
 
@@ -96,7 +96,7 @@ def import_timeline(store, document, request_id):
         try:
             for row in entries:
                 entry=pick(row,ENTRY_FIELDS);entry.setdefault('refs',[]);entry.setdefault('actor','import');entry.setdefault('at',value['created_at'])
-                entry['fingerprint']=digest({k:entry[k] for k in ('text','kind','refs','actor')})
+                entry['fingerprint']=digest({k:entry[k] for k in ('text','kind','refs','actor','review') if k in entry})
                 db.execute('INSERT INTO work_entries VALUES (?,?,?,?)',(ident,entry['key'],entry['sequence'],json.dumps(entry,ensure_ascii=False)))
             for row in state:
                 r=pick(row,STATE_FIELDS);r.setdefault('refs',[]);r.setdefault('run_id',None);r.setdefault('at',value['created_at'])

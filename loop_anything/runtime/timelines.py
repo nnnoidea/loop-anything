@@ -15,6 +15,8 @@ def initialize(db):
         CREATE TABLE IF NOT EXISTS work_entries(timeline_id TEXT NOT NULL, key TEXT NOT NULL,
             sequence INTEGER NOT NULL, document TEXT NOT NULL, PRIMARY KEY(timeline_id,key));
         CREATE INDEX IF NOT EXISTS work_entry_at ON work_entries(timeline_id,json_extract(document,'$.at') DESC);
+        CREATE INDEX IF NOT EXISTS work_review_at ON work_entries(json_extract(document,'$.review.loop_id'),json_extract(document,'$.at') DESC)
+            WHERE json_type(document,'$.review.loop_id')='text';
     ''')
 
 
@@ -38,11 +40,12 @@ def create(db, objective='', constraints='', title='', ident=None):
     return value
 
 
-def append(db, ident, key, text, kind='note', refs=None, actor='agent'):
+def append(db, ident, key, text, kind='note', refs=None, actor='agent', review=None):
     get(db, ident)
     if not isinstance(key, str) or not key or not isinstance(text, str): raise Invalid('Entry needs key and text')
     if kind not in ('note', 'progress', 'decision', 'action', 'change'): raise Invalid('Unknown entry kind')
     body = dict(text=text, kind=kind, refs=refs or [], actor=actor)
+    if review is not None:body['review']=review
     old = db.execute('SELECT document FROM work_entries WHERE timeline_id=? AND key=?', (ident,key)).fetchone()
     if old:
         entry=json.loads(old[0])
