@@ -44,7 +44,8 @@ class Store:
             business_state.initialize(db)
             from loop_anything.runtime.work import initialize as initialize_work
             initialize_work(db)
-            from loop_anything.runtime import events, observations
+            from loop_anything.runtime import events, observations, shared_resources
+            shared_resources.initialize(db)
             events.initialize(db)
             observations.initialize(db)
             from loop_anything.runtime.run_library import initialize
@@ -175,8 +176,9 @@ class Store:
                 failures = [c['target'] for c in readiness['checks'] if c['status'] == 'fail' and c['kind'] in ('manifest', 'asset')]
                 raise Invalid('Package is installed but not ready; run smoke and resolve: ' + ', '.join(failures))
             from loop_anything.packaging.configuration import read_file, path_for, effective
+            from loop_anything.runtime.agent_models import DEFAULT_MODEL
             configuration = read_file(document, root, path_for(self.filename, key))
-            configured = effective(document, root, configuration['config'])
+            configured = effective(document, root, configuration['config'], agent_model_default=DEFAULT_MODEL)
             item = dict(item, **{k: configured[k] for k in ('loop_definition', 'implementations')})
             if bindings is None:
                 bindings = configured['bindings']
@@ -194,7 +196,8 @@ class Store:
                'created_by': created_by, 'metadata_revision': 0, 'archived_at': None,
                'executions': [], 'events': [], 'history': []}
         if configuration is not None:
-            run['configuration'] = dict({k: copy.deepcopy(configuration[k]) for k in ('path', 'revision', 'config')}, package_root=str(root))
+            run['configuration'] = dict({k: copy.deepcopy(configuration[k]) for k in ('path', 'revision', 'config')},
+                                        package_root=str(root), agent_model_default=DEFAULT_MODEL)
         if inherit_conversation:run['notification_conversation_id']=conversation_id
         from loop_anything.runtime.timeline_runtime import initialize_run
         from loop_anything.runtime.flow_agent import materialize
@@ -294,7 +297,8 @@ class Store:
             from loop_anything.packaging.configuration import effective
             package = db.execute('SELECT document FROM loop_packages WHERE key=?', (run['loop_key'],)).fetchone()
             snapshot = run['configuration']
-            configured = effective(json.loads(package[0]), snapshot['package_root'], snapshot['config'])
+            configured = effective(json.loads(package[0]), snapshot['package_root'], snapshot['config'],
+                                   agent_model_default=snapshot.get('agent_model_default'))
             run.update({k: configured[k] for k in ('loop_definition', 'implementations')})
         from loop_anything.runtime.collaboration import materialize as materialize_collaboration
         materialize_collaboration(run)

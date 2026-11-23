@@ -1,5 +1,5 @@
 'use strict';
-// Runs inside the opaque iframe. Its only platform action is selecting a known node.
+// Runs inside the opaque iframe and reports node selections and content height.
 function bindOverviewNodes(nodes){
   const ids=new Set(nodes.map(([id])=>id)),aliases=new Map();
   for(const [id,label] of nodes)for(const alias of new Set([id,label].filter(Boolean))){
@@ -25,5 +25,20 @@ function bindOverviewNodes(nodes){
   });
 }
 
+function reportOverviewHeight(){
+  const body=document.body;
+  let reported=0;
+  const observer=new ResizeObserver(()=>{
+    const height=Math.max(body.scrollHeight,body.getBoundingClientRect().height);
+    const scrollbar=window.innerHeight-document.documentElement.clientHeight;
+    const total=Math.ceil(height+scrollbar);
+    if(total===reported)return;
+    reported=total;
+    parent.postMessage({type:'loop-overview-height',height:total},'*');
+  });
+  observer.observe(body,{box:'border-box'});
+}
+
 // Loaded by the sandboxed overview only; no API calls or platform DOM access.
 bindOverviewNodes(JSON.parse(document.currentScript.dataset.nodes));
+reportOverviewHeight();

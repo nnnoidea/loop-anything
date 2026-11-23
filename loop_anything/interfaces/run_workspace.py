@@ -146,7 +146,7 @@ def attempt_summary(attempt, node, records, allow_approval=False, include_conten
                   'completed_at', 'worker_active', 'activity_progress', 'child_run_id', 'child_status',
                   'communication_id')
     implementation = attempt['implementation']
-    result['implementation'] = pick(implementation, 'kind', 'terminal', 'event')
+    result['implementation'] = pick(implementation, 'kind', 'terminal', 'event', 'agent_model')
     readings, content = display_results(node, records, attempt.get('outputs'))
     result['output_readout'] = readings
     if content:
@@ -283,7 +283,7 @@ def read_workspace(store, runtime, run_id, query):
     waiting = next((e for e in run['executions'] if e['id'] == selected_execution and
                     e['implementation']['kind'] in ('approval', 'event') and e['status'] in ('approval', 'waiting')), None)
     view['loop_definition'] = dict(pick(loop, 'id', 'name', 'version'),
-                                   nodes={key: pick(node, 'label', 'readout', 'outputs') for key, node in nodes.items()},
+                                   nodes={key: pick(node, 'label', 'description', 'readout', 'outputs') for key, node in nodes.items()},
                                    records=output_schemas(loop, nodes[waiting['node']]) if waiting else {})
     view['tasks'] = {ident: task_summary(task) for ident, task in run['tasks'].items()}
     for ident, task in run['tasks'].items():

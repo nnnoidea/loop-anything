@@ -22,3 +22,8 @@
 #schedules-list .card-title{overflow-wrap:anywhere}
 #schedules-list details{width:100%;margin-top:14px}
 #schedules-list pre{max-height:320px;overflow:auto}
+
+.node-purpose{margin:0 0 16px;padding:12px 14px;border-left:3px solid var(--blue);border-radius:0 8px 8px 0;background:#f2f6ff}
+.node-purpose h3{margin:0 0 5px;font-size:13px}
+.node-purpose p{margin:0;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}
+.task-detail .node-purpose{margin-top:12px}

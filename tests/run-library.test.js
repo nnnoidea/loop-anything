@@ -35,7 +35,7 @@ test('archived Loop remains readable from its Run even when hidden from catalog'
   vm.runInContext(editor.slice(editor.indexOf('async function loadReader('),editor.indexOf('function readerIdentity(')),ctx);
   const result=await vm.runInContext('loadReader("pkg-archived")',ctx);
   assert.equal(calls[0][1].key,'pkg-archived');assert.equal(result.installedKey,'pkg-archived');
-  assert.deepEqual(calls.map(c=>c[0]),['read_loop','packages/read']);
+  assert.deepEqual(calls.map(c=>c[0]),['read_loop','packages/read','read_loop_models']);
 });
 
 test('specific Loop, status, person and date filters include matching children',()=>{

@@ -2,6 +2,12 @@
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pretty = value => JSON.stringify(value, null, 2);
+
+function nodePurposeHTML(node){
+  const description=typeof node?.description==='string'?node.description.trim():'';
+  if(!description)return '';
+  return `<section class="node-purpose"><h3>职责与目的</h3><p>${esc(description)}</p></section>`;
+}
 // getRandomValues also works on ordinary HTTP inside the team network.
 const randomKey = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('');
 const labels = {planned:'已安排',waiting_user:'等待用户',stale:'待核实',continued:'已接续',waiting_configuration:'等待配置',skipped:'已跳过',running:'运行中',ready:'待执行',executing:'执行中',waiting:'等待中',completed:'已完成',paused:'已暂停',terminated:'已终止',cancelled:'已取消',fault:'执行失败',retrying:'等待重试',blocked:'输入未就绪',decision:'等待 Agent',approval:'等待确认',unresolved:'转移待决策'};
@@ -104,8 +110,8 @@ function showPage() {
   $('settings-page').hidden=page!=='settings';
   $('monitoring-page').hidden=page!=='monitors';
   $('schedules-page').hidden=page!=='schedules';
+  $('resources-page').hidden=page!=='resources';
   if($('communication-page'))$('communication-page').hidden=page!=='communication';
-  if($('launch-page'))$('launch-page').hidden=page!=='launch';
   $('workspace').hidden = page !== 'runs' || !run;
   $('runs-page').hidden=page!=='run-list';
   $('timelines-page').hidden=page!=='timelines';
@@ -210,12 +216,9 @@ document.addEventListener('click',event=>safely(async()=>{
   if(d.tab){activeTab=d.tab;renderInspect();if(button.closest('#attention'))document.querySelector('.run-tabs').scrollIntoView({block:'start'});return;}
   if(d.retryRunView!==undefined){runViewFailure=null;renderInspect();await refreshRunWorkspace();return;}
   if(d.historyOffset!==undefined){runHistoryOffset=Number(d.historyOffset);renderInspect();return;}
-  if(d.create){await openCreate(d.create);return;}
   if(d.validate){const c=catalog.find(x=>x.key===d.validate);const r=await api('validate',c);toast(r.valid?'验证通过 · '+r.warnings.join('；'):r.errors.join('；'));return;}
   const runId=run?.id;
   switch(button.id){
-    case 'new-run':await openCreate();break;
-    case 'empty-create':await navigateTo({type:'catalog'});break;
     case 'loop_definitions-nav':await navigateTo({type:'catalog'});break;
     case 'clear-filter':filterNode=null;renderInspect();break;
     case 'node-contract':$('detail-title').textContent=nodeLabel(filterNode)+' · Contract';$('detail-content').innerHTML=`<pre>${esc(pretty(run.loop_definition.nodes[filterNode]))}</pre>`;$('detail-dialog').showModal();break;

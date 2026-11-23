@@ -291,90 +291,141 @@ function taskDependencyGraph(items,filtered){
     ||business.items.find(i=>['executing','waiting','waiting_user','ready','blocked'].includes(i.tasks.status));
   const cards=groups.map(node=>place(layout.positions.get(node.id),node.content)).join('');
   const legend=showTaskOrigins?'蓝色执行依赖 · 紫色任务安排 · 红色异常来源':'蓝线表示执行依赖';
-  return `<div class="graph-tools"><div class="graph-context"><span class="graph-legend">${legend}${graph.nodes.some(n=>n.card)?' · 轮次框对外连线已合并':''}</span><label class="graph-origin-toggle"><input id="graph-show-origins" type="checkbox" ${showTaskOrigins?'checked':''}> 显示安排和异常关系</label></div><div class="graph-actions">${current?`<button data-graph-current="${esc(current.tasks.id)}">定位当前</button>`:''}<button data-graph-zoom="out" aria-label="缩小依赖图">−</button><button id="graph-scale" data-graph-zoom="actual" aria-label="恢复实际大小"></button><button data-graph-zoom="in" aria-label="放大依赖图">＋</button><button data-graph-zoom="fit">${mobile?'适应宽度':'适应画布'}</button><button data-graph-expand>全屏查看</button></div></div><div class="dependency-scroll" data-graph-run="${esc(run.id)}" tabindex="0" aria-label="节点图画布"><div class="process-extent"><div class="process-canvas" style="width:${layout.width}px;height:${layout.height}px">${taskGraphSVG(layout,links,mobile,true)}${cards}</div></div></div>`;
+  const zoom=graphRun===run.id?graphScale??1:1;
+  return `<div class="run-task-graph">
+    <div class="graph-tools">
+      <div class="graph-context">
+        <span class="graph-legend">${legend}${graph.nodes.some(n=>n.card)?' · 轮次框对外连线已合并':''}</span>
+        <label class="graph-origin-toggle"><input id="graph-show-origins" type="checkbox" ${showTaskOrigins?'checked':''}> 显示安排和异常关系</label>
+        ${current?`<button data-graph-current="${esc(current.tasks.id)}">定位当前</button>`:''}
+      </div>
+      <div class="graph-actions" role="group" aria-label="节点图查看">
+        <button data-graph-zoom="out" aria-label="缩小依赖图" title="缩小">−</button>
+        <button id="graph-scale" data-graph-zoom="actual" aria-label="恢复实际大小" title="恢复原始大小">${Math.round(zoom*100)}%</button>
+        <button data-graph-zoom="in" aria-label="放大依赖图" title="放大">+</button>
+        <button data-graph-zoom="fit">适应宽度</button><button data-graph-expand>全屏</button>
+      </div>
+    </div>
+    <div class="dependency-scroll" data-graph-run="${esc(run.id)}" tabindex="0" aria-label="节点图画布">
+      <div class="process-extent" style="width:${layout.width*zoom}px;height:${layout.height*zoom}px">
+        <div class="process-canvas" style="width:${layout.width}px;height:${layout.height}px;transform:scale(${zoom})">${taskGraphSVG(layout,links,mobile,true)}${cards}</div>
+      </div>
+    </div>
+  </div>`;
 }
 let graphScale=null,graphRun=null;
 function sizeTaskGraph(mode){
-  const canvas=document.querySelector('.process-canvas'),scroll=canvas?.closest('.dependency-scroll');if(!canvas || !canvas.offsetWidth || !canvas.offsetHeight || scroll.clientWidth<=24 || scroll.clientHeight<=24)return;
+  const canvas=document.querySelector('.process-canvas'),scroll=canvas?.closest('.dependency-scroll');
+  if(!run||!canvas||!canvas.offsetWidth||scroll.clientWidth<=24)return;
   if(graphRun!==run.id){graphScale=null;graphRun=run.id;}
-  const widthFit=Math.min(1,(scroll.clientWidth-24)/canvas.offsetWidth);
-  const mobile=mobileTaskGraph.matches;
-  const natural=mobile?widthFit:1;
-  const fit=mobile?widthFit:Math.min(widthFit,(scroll.clientHeight-24)/canvas.offsetHeight);
-  if(mode==='fit')graphScale=mobile?null:fit;
-  else if(mode==='actual')graphScale=null;
-  else if(mode==='in')graphScale=Math.min(1.5,(graphScale??natural)+.15);
-  else if(mode==='out')graphScale=Math.max(mobile ? 0.6 : 0.2,(graphScale??natural)-.15);
+  const style=getComputedStyle(scroll);
+  const padding=parseFloat(style.paddingLeft)+parseFloat(style.paddingRight);
+  const widthFit=Math.min(1,(scroll.clientWidth-padding)/canvas.offsetWidth);
+  const natural=mobileTaskGraph.matches?widthFit:1;
+  const previous=graphScale??natural;
+  const minimum=Math.min(.5,widthFit,previous);
+  const anchor=mode?graphAnchor(scroll):null;
+  if(mode==='fit')graphScale=widthFit;
+  else if(mode==='actual')graphScale=1;
+  else if(mode==='in')graphScale=Math.min(2,previous+.25);
+  else if(mode==='out')graphScale=Math.max(minimum,previous-.25);
   const scale=graphScale??natural;
   canvas.style.transform=`scale(${scale})`;
-  canvas.parentElement.style.width=canvas.offsetWidth*scale+taskDetailOverlayWidth()+'px';
+  canvas.parentElement.style.width=canvas.offsetWidth*scale+'px';
   canvas.parentElement.style.height=canvas.offsetHeight*scale+'px';
-  $('graph-scale').textContent=Math.round(scale*100)+'%';
+  scroll.closest('.process-layout').style.setProperty('--graph-toolbar-height',scroll.previousElementSibling.offsetHeight+'px');
+  const percent=$('graph-scale');
+  percent.textContent=Math.round(scale*100)+'%';
+  percent.setAttribute('aria-label','恢复实际大小，当前 '+percent.textContent);
+  scroll.parentElement.querySelector('[data-graph-zoom="out"]').disabled=scale<=minimum;
+  scroll.parentElement.querySelector('[data-graph-zoom="in"]').disabled=scale>=2;
+  if(anchor)restoreGraphAnchor(scroll,anchor);
 }
 function graphElement(attribute,value){
   return document.querySelector(`.process-canvas [${attribute}="${CSS.escape(value)}"]`);
 }
-function taskDetailOverlayWidth(){
-  const detail=$('task-detail');
-  return detail&&!detail.hidden&&!inlineTaskDetail.matches?detail.offsetWidth:0;
+function runGraphVerticalScroller(){
+  return $('run-graph-dialog').open?$('run-graph-content'):window;
 }
-function positionGraph(target,previous){
+function graphViewport(scroll){
+  const host=runGraphVerticalScroller();
+  const view=host===window?{top:0,bottom:window.innerHeight}:host.getBoundingClientRect();
+  const {left}=scroll.getBoundingClientRect();
+  return {left,right:left+scroll.clientWidth,
+    top:view.top+scroll.previousElementSibling.offsetHeight,bottom:view.bottom};
+}
+function positionGraph(target,previous,keepVertical=false){
   const scroll=target?.closest('.dependency-scroll');
   if(!scroll)return;
-  const viewport=scroll.getBoundingClientRect(),bounds=target.getBoundingClientRect();
-  const offset=previous||{x:(viewport.width-taskDetailOverlayWidth()-bounds.width)/2,y:(viewport.height-bounds.height)/2};
-  scroll.scrollBy(bounds.left-viewport.left-offset.x,bounds.top-viewport.top-offset.y);
+  const viewport=graphViewport(scroll),bounds=target.getBoundingClientRect();
+  const point=previous||{x:Math.max(viewport.left,(viewport.left+viewport.right-bounds.width)/2),
+    y:Math.max(viewport.top,(viewport.top+viewport.bottom-bounds.height)/2)};
+  if(!keepVertical||bounds.left<viewport.left||bounds.right>viewport.right){
+    scroll.scrollBy({left:bounds.left-point.x,behavior:'instant'});
+  }
+  if(!keepVertical)runGraphVerticalScroller().scrollBy({top:bounds.top-point.y,behavior:'instant'});
 }
 function locateGraphTask(id){
   positionGraph(graphElement('data-task-row',id));
 }
-function taskIsInView(id,scroll){
-  const card=id&&graphElement('data-task-row',id);
-  if(!card||!scroll)return false;
-  const bounds=card.getBoundingClientRect(),viewport=scroll.getBoundingClientRect();
-  return bounds.left>=viewport.left&&bounds.right<=viewport.right-taskDetailOverlayWidth()&&
-    bounds.top>=viewport.top&&bounds.bottom<=viewport.bottom;
+let runTaskReturn=null;
+function revealRunTask(id,keepPosition=false){
+  if(!run||selectedTask!==id)return;
+  const card=graphElement('data-task-row',id);
+  positionGraph(card,null,keepPosition);
+  if(!inlineTaskDetail.matches)return;
+  const host=runGraphVerticalScroller();
+  runTaskReturn=card?{id,runId:run.id,host,top:host===window?window.scrollY:host.scrollTop}:null;
+  const detail=$('task-detail');
+  detail?.scrollIntoView({block:'start'});
+  detail?.querySelector('[data-close-task]')?.focus({preventScroll:true});
 }
-let runGraphPageTop=0;
+function graphAnchor(scroll){
+  const canvas=scroll.querySelector('.process-canvas'),view=graphViewport(scroll);
+  const bounds=canvas.getBoundingClientRect(),scale=bounds.width/canvas.offsetWidth||1;
+  return {x:((view.left+view.right)/2-bounds.left)/scale,y:Math.max(0,view.top-bounds.top)/scale};
+}
+function restoreGraphAnchor(scroll,anchor){
+  const canvas=scroll.querySelector('.process-canvas'),view=graphViewport(scroll);
+  const bounds=canvas.getBoundingClientRect(),scale=bounds.width/canvas.offsetWidth||1;
+  scroll.scrollBy({left:bounds.left+anchor.x*scale-(view.left+view.right)/2,behavior:'instant'});
+  if(anchor.y)runGraphVerticalScroller().scrollBy({top:bounds.top+anchor.y*scale-view.top,behavior:'instant'});
+}
+let runGraphPageTop=0,runGraphPageLeft=0;
 function setRunGraphExpanded(open,restoreFocus=true){
   const dialog=$('run-graph-dialog');
   if(dialog.open===open)return;
   const scroll=document.querySelector('.dependency-scroll');
   if(open&&!scroll)return;
-  const scale=scroll&&graphScaleValue(scroll);
-  const center=scroll&&{
-    x:(scroll.scrollLeft+scroll.clientWidth/2)/scale,y:(scroll.scrollTop+scroll.clientHeight/2)/scale
-  };
-  const visibleTask=taskIsInView(selectedTask,scroll)?selectedTask:null;
+  const anchor=open?graphAnchor(scroll):null;
+  const viewedRun=run?.id;
   $('run-graph-title').textContent=run?.title||'运行过程';
   if(open){
     runGraphPageTop=window.scrollY;
+    runGraphPageLeft=scroll.scrollLeft;
     dialog.classList.remove('show-filters');
     dialog.querySelector('[data-graph-filters]').setAttribute('aria-expanded','false');
     $('run-graph-content').append($('inspect'));
     dialog.showModal();
+    $('run-graph-content').scrollTop=0;
   }else{
     $('run-inspect-home').append($('inspect'));
     dialog.close();
+    if(!restoreFocus)return;
   }
   requestAnimationFrame(()=>{
+    if(run?.id!==viewedRun||dialog.open!==open)return;
     const canvasScroll=document.querySelector('.dependency-scroll');
-    if(!canvasScroll)return;
     sizeTaskGraph();
-    if(center){
-      const updated=graphScaleValue(canvasScroll);
-      canvasScroll.scrollTo(center.x*updated-canvasScroll.clientWidth/2,center.y*updated-canvasScroll.clientHeight/2);
-    }
-    if(visibleTask===selectedTask&&visibleTask&&!taskIsInView(visibleTask,canvasScroll))locateGraphTask(visibleTask);
-    if(!open&&restoreFocus){
-      window.scrollTo(0,runGraphPageTop);
-      canvasScroll.closest('.process-body').querySelector('[data-graph-expand]')?.focus({preventScroll:true});
+    if(open){
+      if(canvasScroll)restoreGraphAnchor(canvasScroll,anchor);
+    }else{
+      if(canvasScroll)canvasScroll.scrollLeft=runGraphPageLeft;
+      window.scrollTo({top:runGraphPageTop,behavior:'instant'});
+      const focus=document.querySelector('[data-graph-expand]')||document.querySelector('.process-controls .selected');
+      focus?.focus({preventScroll:true});
     }
   });
-}
-function graphScaleValue(scroll){
-  const canvas=scroll.querySelector('.process-canvas');
-  return canvas.getBoundingClientRect().width/canvas.offsetWidth||1;
 }
 $('run-graph-dialog').addEventListener('cancel',event=>{
   event.preventDefault();setRunGraphExpanded(false);
@@ -485,6 +536,8 @@ function taskDetails(item,pending,detailError){
   ].filter(Boolean);
   return `<div class="task-detail-heading"><h2>${esc(taskLabel(t))}</h2>${taskBadge(item)}</div>
     ${item.round||t.spec.ref?`<p class="task-detail-reference small muted">${esc([item.round,t.spec.ref].filter(Boolean).join(' · '))}</p>`:''}
+    ${nodePurposeHTML(run.loop_definition.nodes[t.spec.node])}
+    ${attempt?.implementation.agent_model?`<p class="task-agent-model small muted">模型 <strong>${esc(attempt.implementation.agent_model)}</strong></p>`:''}
     ${request?`<div class="wait-description"><strong>等待用户处理</strong><p>${esc(request)}</p></div>`:''}
     ${detailError?runViewErrorHTML(detailError):''}
     ${cancelled?`<section class="task-cancellation"><h3>取消原因</h3><p>${esc(taskSummary(item))}</p></section>`:
@@ -500,7 +553,8 @@ function taskDetails(item,pending,detailError){
 function renderTaskHistory(detailError){
   if(run.superseded_by && !Object.keys(run.tasks).length)return '<p class="empty-inline">这次历史运行没有节点记录。</p>';
   const scroll=document.querySelector('.dependency-scroll'),detail=$('task-detail');
-  const position=scroll?.dataset.graphRun===run.id?{left:scroll.scrollLeft,top:scroll.scrollTop}:null;
+  const viewedRun=run.id,host=runGraphVerticalScroller();
+  const position=scroll?.dataset.graphRun===viewedRun?{left:scroll.scrollLeft,top:host===window?window.scrollY:host.scrollTop}:null;
   const sameDetail=detail?.dataset.run===run.id&&detail.dataset.task===selectedTask;
   const detailTop=sameDetail?detail.scrollTop:0;
   const openSections=new Set(sameDetail
@@ -509,12 +563,14 @@ function renderTaskHistory(detailError){
   const focusedRound=scroll?.contains(focused)?focused.dataset.roundToggle:undefined;
   const focusedTask=scroll?.contains(focused)&&focused.matches('.task-card-main')?focused.dataset.taskFocus:undefined;
   const focusedExpand=focused?.matches('[data-graph-expand]');
+  const focusedZoom=focused?.dataset.graphZoom;
   requestAnimationFrame(()=>{
+    if(run?.id!==viewedRun)return;
     sizeTaskGraph();
-    if(position)document.querySelector('.dependency-scroll')?.scrollTo(position);
-    else if(!selectedTask){
-      const current=document.querySelector('[data-graph-current]');
-      if(current)locateGraphTask(current.dataset.graphCurrent);
+    const updated=document.querySelector('.dependency-scroll');
+    if(position&&updated?.dataset.graphRun===viewedRun&&runGraphVerticalScroller()===host){
+      updated.scrollLeft=position.left;
+      host.scrollTo({top:position.top,behavior:'instant'});
     }
     const currentDetail=$('task-detail');
     if(currentDetail?.dataset.task===selectedTask){
@@ -524,6 +580,7 @@ function renderTaskHistory(detailError){
     if(focusedRound!==undefined)graphElement('data-round-toggle',focusedRound)?.focus({preventScroll:true});
     if(focusedTask)graphElement('data-task-row',focusedTask)?.querySelector('.task-card-main')?.focus({preventScroll:true});
     if(focusedExpand)document.querySelector('[data-graph-expand]')?.focus({preventScroll:true});
+    if(focusedZoom)document.querySelector(`[data-graph-zoom="${CSS.escape(focusedZoom)}"]`)?.focus({preventScroll:true});
   });
   taskChanges=new Set(run.changed_tasks??run.history.filter(h=>h.detail?.before&&h.detail?.tasks).map(h=>h.detail.tasks));
   const all=TaskHistory.rows(run),business=all.filter(i=>!i.tasks.origin?.flow_agent);
@@ -563,20 +620,21 @@ document.addEventListener('click',event=>safely(async()=>{
     const open=$('run-graph-dialog').classList.toggle('show-filters');
     el.setAttribute('aria-expanded',String(open));
     sizeTaskGraph();
+    if(open)$('run-process-controls')?.scrollIntoView({block:'start'});
     return;
   }
   if(d.roundToggle!==undefined){
-    const round=d.roundToggle,scroll=el.closest('.dependency-scroll').getBoundingClientRect(),rect=el.getBoundingClientRect();
-    const offset={x:rect.left-scroll.left,y:rect.top-scroll.top};
+    const round=d.roundToggle,rect=el.getBoundingClientRect();
+    const point={x:rect.left,y:rect.top};
     if(el.getAttribute('aria-expanded')==='true'){
       expandedRounds.delete(round);
       if(selectedTask&&el.closest('[data-round-frame]')?.contains(graphElement('data-task-row',selectedTask))){
-        selectedTask=null;syncRunTaskRoute();
+        selectedTask=null;runTaskReturn=null;syncRunTaskRoute();
       }
     }else expandedRounds.add(round);
     rememberRounds();
     inspectSignature='';renderInspect();
-    requestAnimationFrame(()=>positionGraph(graphElement('data-round-toggle',round),offset));
+    requestAnimationFrame(()=>positionGraph(graphElement('data-round-toggle',round),point));
     return;
   }
   if(d.focusGroup){
@@ -588,22 +646,28 @@ document.addEventListener('click',event=>safely(async()=>{
   if(d.taskFocus){
     const id=d.taskFocus;
     if(!run.tasks[id])return;
+    const keepPosition=!!el.closest('.dependency-scroll');
     if(!el.closest('[data-task-row]')){filterNode=null;taskRound='';taskSearch='';taskStatus='';}
     selectedTask=id;syncRunTaskRoute();
     inspectSignature='';renderInspect();
-    requestAnimationFrame(()=>{locateGraphTask(id);if(inlineTaskDetail.matches)$('task-detail')?.scrollIntoView({block:'start'});});
+    requestAnimationFrame(()=>revealRunTask(id,keepPosition));
   }
   else if(d.graphCurrent){locateGraphTask(d.graphCurrent);graphElement('data-task-row',d.graphCurrent)?.querySelector('.task-card-main')?.focus({preventScroll:true});}
   else if(d.graphZoom)sizeTaskGraph(d.graphZoom);
   else if(d.taskOrder){taskOrder=d.taskOrder;inspectSignature='';renderInspect();if(selectedTask)requestAnimationFrame(()=>locateGraphTask(selectedTask));}
   else if(d.closeTask!==undefined){
-    const id=selectedTask;selectedTask=null;syncRunTaskRoute();inspectSignature='';renderInspect();
+    const id=selectedTask,position=runTaskReturn,runId=run.id;
+    selectedTask=null;runTaskReturn=null;syncRunTaskRoute();inspectSignature='';renderInspect();
     requestAnimationFrame(()=>{
+      if(run?.id!==runId)return;
       const card=document.querySelector(`.process-body [data-task-row="${CSS.escape(id)}"]`);
-      positionGraph(card);
       const button=card?.querySelector('.task-card-main')||document.querySelector('.dependency-scroll');
       button?.focus({preventScroll:true});
-      if(inlineTaskDetail.matches)document.querySelector('#run-graph-dialog[open] .graph-tools, #run-inspect-home .process-controls')?.scrollIntoView({block:'start'});
+      if(!inlineTaskDetail.matches)return;
+      if(position?.id===id&&position.runId===run.id&&position.host===runGraphVerticalScroller()){
+        position.host.scrollTo({top:position.top,behavior:'instant'});
+      }else if(card?.closest('.dependency-scroll'))positionGraph(card);
+      else card?.scrollIntoView({block:'nearest'});
     });
   }
   else if(d.taskCancel)openTaskEdit('cancel',d.taskCancel);

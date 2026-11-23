@@ -7,6 +7,7 @@ const ctx=vm.createContext({location:{origin:'http://127.0.0.1:8769'},document:{
 for(const name of ['loop_graph','lifecycle'])vm.runInContext(fs.readFileSync(`loop_anything/web/${name}.js`,'utf8'),ctx);
 const run=code=>vm.runInContext(code,ctx);
 ctx.atob=atob;ctx.TextDecoder=TextDecoder;
+ctx.randomKey=()=> 'fixtureNonce';
 test('authored overview displays saved UTF-8 HTML in an opaque sandbox without deriving routes',()=>{
   const html='<html><body><h1>研究流程</h1><script>parent.document.body.remove()</script></body></html>';
   ctx.item={assets:[{path:'docs/flow.html',base64:Buffer.from(html).toString('base64')}]};
@@ -18,9 +19,11 @@ test('authored overview displays saved UTF-8 HTML in an opaque sandbox without d
   assert.match(rendered,/研究流程/);
   assert.equal(JSON.stringify(ctx.item),before);
 });
-test('missing or corrupt diagram has an explicit empty/error view, not an inferred business graph',()=>{
-  ctx.item={assets:[]};assert.match(run('overviewFlowHTML(item)'),/尚未绘制/);
-  ctx.item.assets=[{path:'docs/flow.html',base64:'!!!'}];assert.match(run('overviewFlowHTML(item)'),/无法读取/);
+test('a missing diagram has an empty state and a corrupt diagram falls back to the declared nodes',()=>{
+  ctx.item={assets:[]};assert.match(run('overviewFlowHTML(item)'),/这个 Loop 还没有节点/);
+  ctx.item.loop_definition={nodes:{work:{label:'分析结果'}}};
+  ctx.item.assets=[{path:'docs/flow.html',base64:'!!!'}];
+  assert.match(run('overviewFlowHTML(item)'),/data-editor-node="work"/);
 });
 test('full transition matrix preserves each condition, parameter update and notification rule',()=>{
   ctx.config={kind:'external',lifecycle:{initial:'waiting',transitions:[{from:'waiting',event:'failed',when:{path:'attempt',op:'lt',value:3},to:'retry',parameters:{batch:4},notify:[{message:'<check>',route:'chat',reply:{event:'answer',key:'q',schema:{type:'object'}}}]},{from:'waiting',event:'failed',when:{path:'attempt',op:'gte',value:3},to:'agent'}]}};
@@ -135,11 +138,33 @@ test('overview selection accepts only the current sandbox and existing node IDs'
     ctx.event={source,data};assert.equal(run('overviewNodeMessage(event,frame,nodes)'),expected);
   }
 });
+test('overview height accepts a bounded integer from the current sandbox',()=>{
+  const sender={};ctx.frame={contentWindow:sender};
+  for(const [source,data,expected] of [
+    [sender,{type:'loop-overview-height',height:1200},1200],
+    [sender,{type:'loop-overview-height',height:200000},100000],
+    [sender,{type:'loop-overview-height',height:1.5},null],
+    [sender,{type:'loop-overview-height',height:'1200'},null],
+    [sender,{type:'loop-overview-height',height:0},null],
+    [sender,{type:'loop-node-select',height:1200},null],
+    [{},{type:'loop-overview-height',height:1200},null]
+  ]){
+    ctx.event={source,data};assert.equal(run('overviewHeightMessage(event,frame)'),expected);
+  }
+});
 test('sandbox bridge binds exact unique names or explicit IDs and ignores auxiliary or ambiguous shapes',()=>{
   const make=attrs=>({attrs:{...attrs},events:{},getAttribute(k){return this.attrs[k]??null;},setAttribute(k,v){this.attrs[k]=v;},addEventListener(k,v){this.events[k]=v;},closest(){return null;}});
   const els=[make({'data-key':'训练'}),make({'data-key':'重复'}),make({'data-key':'结束'}),make({'data-loop-node':'b','data-key':'重复'}),make({'data-loop-node':'missing','data-key':'训练'})];
   const sent=[],parent={postMessage:msg=>sent.push(msg)},handlers={};
-  const sandbox=vm.createContext({parent,document:{querySelectorAll:()=>els,currentScript:{dataset:{nodes:JSON.stringify([['a','训练'],['b','重复'],['c','重复']])}}},window:{addEventListener:(name,fn)=>handlers[name]=fn}});
+  const body={scrollHeight:986,getBoundingClientRect:()=>({height:986.5})};
+  const sandbox=vm.createContext({parent,
+    ResizeObserver:class{
+      constructor(fn){handlers.resize=fn;}
+      observe(element){assert.equal(element,body);}
+    },
+    document:{body,documentElement:{clientHeight:585},querySelectorAll:()=>els,currentScript:{dataset:{nodes:JSON.stringify([['a','训练'],['b','重复'],['c','重复']])}}},
+    window:{innerHeight:600,addEventListener:(name,fn)=>handlers[name]=fn}
+  });
   vm.runInContext(fs.readFileSync('loop_anything/web/flow_bridge.js','utf8'),sandbox);
   assert.equal(els[0].attrs['data-loop-node'],'a');assert.equal(els[0].attrs.tabindex,'0');
   for(const el of [els[1],els[2],els[4]])assert.equal(el.events.click,undefined);
@@ -149,12 +174,19 @@ test('sandbox bridge binds exact unique names or explicit IDs and ignores auxili
   handlers.message({source:parent,data:{type:'loop-node-selected',node:'b'}});
   assert.equal(els[3].attrs['aria-pressed'],'true');assert.equal(els[0].attrs['aria-pressed'],'false');
   handlers.message({source:{},data:{type:'loop-node-selected',node:'a'}});assert.equal(els[0].attrs['aria-pressed'],'false');
+  handlers.resize();handlers.resize();
+  assert.equal(sent.length,3);
+  assert.equal(sent.at(-1).type,'loop-overview-height');
+  assert.equal(sent.at(-1).height,1002);
 });
 test('overview uses only the trusted external bridge under the parent CSP, with escaped node metadata',()=>{
   const html=`<html data-theme="paper"><head><meta http-equiv="Content-Security-Policy" content="script-src 'sha256-OLD'"></head><body><p>Flow</p></body></html>`;
   ctx.item={loop_definition:{nodes:{'n"<':{label:'</script><script>alert(1)</script>'}}},assets:[{path:'docs/flow.html',base64:Buffer.from(html).toString('base64')}]};
-  const rendered=run('overviewFlowHTML(item)');
+  const rendered=run(`location.origin='http://[::1]:9000'; overviewFlowHTML(item)`);
+  ctx.location.origin='http://127.0.0.1:8769';
   assert.match(rendered,/flow_bridge.js/);assert.doesNotMatch(rendered,/sha256-OLD|script-src &#39;unsafe-inline&#39;|<script>/);
+  assert.match(rendered,/script-src &#39;nonce-fixtureNonce&#39;/);
+  assert.match(rendered,/script nonce=&quot;fixtureNonce&quot; src=&quot;http:\/\/\[::1\]:9000\/flow_bridge\.js/);
   assert.match(rendered,/data-theme=&quot;paper&quot;/);assert.match(rendered,/data-nodes=/);
 });
 

@@ -1,6 +1,5 @@
 'use strict';
 // Packaging uses the same server codec as the CLI. Selecting a file never runs it.
-editorPage.querySelector('.editor-more-actions').insertAdjacentHTML('beforeend','<button id="loop-package">下载与导入</button>');
 $('catalog-page').querySelector('.toolbar').insertAdjacentHTML('beforeend','<button id="import-loop-package">导入 Loop 包</button>');
 const packageDialog=document.createElement('dialog');packageDialog.id='package-dialog';packageDialog.className='editor-json-modal';
 packageDialog.innerHTML=`<div class="dialog-heading"><h2>分享与安装 Loop</h2><button class="close-dialog" aria-label="关闭">×</button></div>
@@ -44,9 +43,8 @@ $('package-upload').addEventListener('change',event=>safely(async()=>{
 }));
 document.addEventListener('click',event=>safely(async()=>{
   const button=event.target.closest('button');if(!button)return;
-  if(button.dataset.packageSmoke){await openLoop(button.dataset.packageSmoke,'prepare');return;}
   switch(button.id){
-    case 'loop-package':button.closest('details').open=false;showPackage(true);break;
+    case 'loop-package':showPackage(true);break;
     case 'import-loop-package':showPackage(false);break;
     case 'package-export':{const result=editor.installedKey?await api('packages/export',await api('packages/read',{key:editor.installedKey})):await platformCall('export_loop',{draft_id:editor.id});downloadPackage(result.base64,editor.loop_definition.id);$('package-result').textContent='已导出，未启动任何任务。';break;}
     case 'package-edit':{
@@ -56,8 +54,8 @@ document.addEventListener('click',event=>safely(async()=>{
       packageDialog.close();openEditor();break;}
     case 'package-install':{
       if(!uploadedPackage)return;const installed=await api('packages/install',{base64:uploadedPackage.encoded});
-      await loadCatalog();packageDialog.close();await openLoop(installed.key,'prepare');
-      toast('已安装，未启动。可以查看流程或启动。');break;}
+      await loadCatalog();packageDialog.close();await openLoop(installed.key);
+      toast('已安装 Loop');break;}
   }
 }));
 
@@ -75,14 +73,12 @@ document.addEventListener('click',event=>safely(async()=>{
 
 // Recipient settings stay outside the shared workflow. The web exposes reading/download;
 // the existing Agent tools edit the JSON with a revision, without another configuration editor.
-editorPage.querySelector('.editor-more-actions').insertAdjacentHTML('beforeend','<button id="loop-config-template">运行配置模板</button>');
 const loopConfigDialog=document.createElement('dialog');loopConfigDialog.className='editor-json-modal loop-config-modal';document.body.append(loopConfigDialog);
 let viewedLoopConfig=null;
 document.addEventListener('click',event=>safely(async()=>{
   const button=event.target.closest('button');if(!button)return;
   if(button.dataset.loopConfig||button.id==='loop-config-template'){
     const draft=button.id==='loop-config-template'&&!editor.installedKey;
-    if(button.id==='loop-config-template')button.closest('details').open=false;
     const args=draft?{draft_id:editor.id}:{key:button.dataset.loopConfig||editor.installedKey};
     const result=await platformCall('read_loop_config',args);
     viewedLoopConfig={text:result.raw??pretty(result.config),name:draft?'config.example.json':(button.dataset.loopConfig||editor.installedKey)+'.json'};

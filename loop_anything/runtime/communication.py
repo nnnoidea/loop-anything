@@ -1266,7 +1266,7 @@ class Communication:
         context.update({k:row['context'][k] for k in ('handbook','inputs','scope_task','loop_key','node_id','parameters','resource_root','assistance_results','assistance_resume','flow_trigger') if k in row['context']})
         task_info=row['context'].get('task')
         if not isinstance(task_info,dict):task_info={}
-        context.update({k:task_info.get(k) for k in ('skills','instructions')})
+        context.update({k:task_info.get(k) for k in ('skills','instructions','resources')})
         prompt = ('You are executing a named Agent request. Use the supplied client to report progress and structured results; '
                   'When assistance_resume is present, continue the exact saved CLI session and use assistance_results. All earlier platform tokens are obsolete; use only this fresh context. '
                   'read_assistance defaults to compact status and results; request include_logs only for diagnosis, then advance after/offset from log_cursor/log_offset within max_chars. Do not replay full logs or request histories. '
@@ -1275,6 +1275,7 @@ class Communication:
                   'then TOOL --arguments JSON. For assistance call complete with {"result":...}. For node_execution call '
                   'the source read_task/report_task/finish tools using source_call {"tool":...,"arguments":...}; '
                   'then call complete with {"result":{}} after source finish is accepted. Read source context only as authorized. '
+                  'The resources field lists shared resources declared for this node. Read the selected resource’s Skill before using its location. '
                   'The dispatch_skill exposes the shared lightweight publishing protocol. For optional help on this executor, call communication_status/request_assistance/read_assistance through this scoped client. These use the executor local directory or this request group. Source calls return a call handle: only state=completed confirms acceptance; poll source_result if pending. '
                   'For a node waiting on assistance, call source wait_assistance with task_id/request_ids/seconds, then source finish and complete with an empty result. The platform continues the same Task with replies; do not keep a CLI occupied just to poll. '
                   'read_context reads associated Loop/task context without granting writes, including for assistance; it may return a pending call handle. '

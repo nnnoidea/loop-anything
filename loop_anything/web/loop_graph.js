@@ -30,24 +30,54 @@ function overviewNodeMessage(event,iframe,nodes){
   const data=event.data;
   return iframe&&event.source===iframe.contentWindow&&data?.type==='loop-node-select'&&typeof data.node==='string'&&Object.hasOwn(nodes,data.node)?data.node:null;
 }
+function overviewHeightMessage(event,iframe){
+  const data=event.data;
+  if(!iframe||event.source!==iframe.contentWindow||data?.type!=='loop-overview-height')return null;
+  if(!Number.isSafeInteger(data.height)||data.height<=0)return null;
+  return Math.min(data.height,100000);
+}
+function readerNodeListHTML(definition={}){
+  const nodes=Object.entries(definition.nodes||{});
+  if(!nodes.length)return '<p class="reader-no-nodes muted">这个 Loop 还没有节点。</p>';
+  nodes.sort(([left],[right])=>Number(right===definition.entry)-Number(left===definition.entry));
+  return `<ul class="reader-node-list">${nodes.map(([id,node])=>`
+    <li><button type="button" data-editor-node="${esc(id)}"><strong>${esc(node.label||id)}</strong>
+      ${id===definition.entry?'<span>入口</span>':''}
+      ${node.description?`<small>${esc(node.description)}</small>`:''}
+    </button></li>`).join('')}</ul>`;
+}
 // Agent-authored explanatory page; execution still comes from the Loop definition.
 function overviewFlowHTML(item){
   const asset=(item.assets||[]).find(a=>a.path==='docs/flow.html');
-  if(!asset)return '<div class="flow-empty"><h3>尚未绘制整体流程</h3><p>让构建 Agent 根据节点、说明与脚本绘制流程图，保存后即可在这里查看。</p><p class="small muted">平台 Skill 提供现成模板和 render_flow.py；也可通过包文件保存 docs/flow.html。</p></div>';
+  if(!asset)return readerNodeListHTML(item.loop_definition);
   try{
     const html=new TextDecoder('utf-8',{fatal:true}).decode(Uint8Array.from(atob(asset.base64),c=>c.charCodeAt(0)));
     // Opaque-origin sandbox: an imported page cannot access platform cookies, DOM or APIs.
     const bridgeURL=location.origin+'/flow_bridge.js';
-    const policy=`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${bridgeURL}; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">`;
+    // CSP host sources cannot express an IPv6 address. Authorize only the bridge element.
+    const nonce=randomKey();
+    const policy=`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">`;
     // Keep overview sections stacked when opening the inspector changes the iframe width.
-    const style='<style>.am-toolbar,.am-reply-bar,.am-comment-toggle,.am-colophon{display:none!important}body{padding:16px!important}.am-sheet,.am-doc{padding:0!important}.am-grid{grid-template-columns:minmax(0,1fr)!important}.am-grid>.am-panel{grid-column:1/-1!important}.am-head{padding-inline-end:0!important}[data-loop-node][role=button]{cursor:pointer}[data-loop-node][role=button]:focus-visible{outline:3px solid #446aff;outline-offset:4px}[data-loop-node][aria-pressed=true]{filter:drop-shadow(0 0 4px #446aff)}[data-loop-node][aria-pressed=true]>:is(rect,path,polygon,ellipse){stroke:#446aff;stroke-width:3px}</style>';
+    const style=`<style>
+      html,body{height:auto!important;min-height:0!important;overscroll-behavior-y:auto!important}
+      body{margin:0!important;padding:16px!important}
+      .am-toolbar,.am-reply-bar,.am-comment-toggle,.am-colophon{display:none!important}
+      .am-sheet,.am-doc{padding:0!important}
+      .am-grid{grid-template-columns:minmax(0,1fr)!important}
+      .am-grid>.am-panel{grid-column:1/-1!important}
+      .am-head{padding-inline-end:0!important}
+      [data-loop-node][role=button]{cursor:pointer}
+      [data-loop-node][role=button]:focus-visible{outline:3px solid #446aff;outline-offset:4px}
+      [data-loop-node][aria-pressed=true]{filter:drop-shadow(0 0 4px #446aff)}
+      [data-loop-node][aria-pressed=true]>:is(rect,path,polygon,ellipse){stroke:#446aff;stroke-width:3px}
+    </style>`;
     const nodes=JSON.stringify(Object.entries(item.loop_definition?.nodes||{}).map(([id,n])=>[id,n.label||id]));
-    const bridge=`<script src="${esc(bridgeURL)}" data-nodes="${esc(nodes)}" defer></script>`;
+    const bridge=`<script nonce="${nonce}" src="${esc(bridgeURL)}" data-nodes="${esc(nodes)}" defer></script>`;
     // The host's script-src 'self' is inherited by srcdoc. Use a trusted external bridge,
     // and one viewer policy instead of the exported page's inline-script hash policy.
     const pageHTML=html.replace(/<!doctype[^>]*>/i,'').replace(/<meta\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi,tag=>/\bhttp-equiv\s*=\s*(?:"content-security-policy"|'content-security-policy'|content-security-policy(?=[\s/>]))/i.test(tag)?'':tag);
-    return `<iframe class="authored-flow" title="Loop 整体流程图" sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${esc('<!doctype html>'+policy+style+bridge+pageHTML)}"></iframe>`;
-  }catch(error){return '<p class="view-description">流程图文件无法读取，请更新 docs/flow.html。</p>';}
+    return `<iframe class="authored-flow" title="Loop 整体流程图" height="600" sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${esc('<!doctype html>'+policy+style+bridge+pageHTML)}"></iframe>`;
+  }catch(error){return readerNodeListHTML(item.loop_definition);}
 }
 
 function mapImplementationLabel(item,id,bindings){

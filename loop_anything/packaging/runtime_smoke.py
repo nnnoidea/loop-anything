@@ -75,7 +75,10 @@ def runtime_smoke(document, root, *, timeout=30, node_id=None, implementation_id
     if not isinstance(cases, list) or any(not isinstance(c, dict) for c in cases):
         raise Invalid('cases must be an array of lifecycle examples')
     from loop_anything.packaging.configuration import apply
+    from loop_anything.runtime.agent_models import DEFAULT_MODEL, annotate, launch_command
     execution_document = apply(document, configuration) if configuration is not None else document
+    if configuration is not None:
+        annotate(execution_document, configuration.get('agent_models', {}), DEFAULT_MODEL)
     implementations = effective_implementations(execution_document, root)
     if execution_document['loop_definition'].get('flow_agent'):
         from loop_anything.runtime.flow_agent import NODE, effective
@@ -131,7 +134,8 @@ def runtime_smoke(document, root, *, timeout=30, node_id=None, implementation_id
                             import uuid
                             session.native_id = str(uuid.uuid4())
                             session.check = lambda: 'finished' if marker in session.output_tail else None
-                        result = run_command(config['command'], prompt, min(timeout, config.get('timeout', timeout)), config.get('cwd'), **({'session':session} if session else {}))
+                        command = launch_command(config['command'], config.get('agent_model'))
+                        result = run_command(command, prompt, min(timeout, config.get('timeout', timeout)), config.get('cwd'), **({'session':session} if session else {}))
                         if result.returncode:
                             raise Invalid('Agent exited ' + str(result.returncode) + ': ' + result.stderr[-1500:])
                         if marker not in result.stdout:

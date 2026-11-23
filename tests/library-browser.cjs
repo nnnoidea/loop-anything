@@ -1,35 +1,101 @@
-// Read the author's package and prepare a launch in the calling Agent.
+// Readers see the workflow and model first, with authoring assets available on demand.
 const {withPlatform, assert} = require('./browser-platform.cjs');
 
-withPlatform(async ({url, page, key, api}) => {
+withPlatform(async ({url, page, key, api, startRun}) => {
   await page.goto(url + '/#loop_definitions');
+  await page.locator('.catalog-card').first().waitFor();
+  assert.equal(await page.getByRole('button', {name:'启动', exact:true}).count(),0);
   await page.locator('[data-loop="' + key + '"]').first().click();
   await page.locator('#reader-title').filter({hasText: '阅读与运行'}).waitFor();
   assert.equal(await page.locator('#reader-description').innerText(), '记录 <b>实验结果</b>');
   assert.equal(await page.locator('#reader-description b').count(), 0);
-  await page.frameLocator('.authored-flow').locator('[data-loop-node="wait"]').click();
-  await page.locator('#editor-properties .reader-prose').filter({hasText: '观察用户提交的结果'}).waitFor();
+  await page.locator('.reader-heading').getByRole('button', {name:'模型设置',exact:true}).click();
+  assert.equal(await page.getByLabel('Loop 默认模型').inputValue(), 'gpt-6.1-sol');
+  await page.getByRole('button', {name: '取消', exact: true}).click();
+  assert.equal(await page.getByRole('button', {name:'启动', exact:true}).count(),0);
+  assert.equal(await page.locator('#reader-technical').getAttribute('open'),null);
+  assert.equal(await page.locator('#loop-package').isVisible(),false);
+  const frame=page.locator('.authored-flow');
+  const flow=page.frameLocator('.authored-flow');
+  await page.locator('.authored-flow:not([height="600"])').waitFor();
+  const expandedHeight=Number(await frame.getAttribute('height'));
+  assert(expandedHeight>1000);
+  assert(await flow.locator('body').evaluate(()=>document.scrollingElement.scrollHeight<=innerHeight));
+  const node=flow.locator('[data-loop-node="wait"]');
+  const zoomIn=page.getByRole('button',{name:'放大流程图',exact:true});
+  const zoomOut=page.getByRole('button',{name:'缩小流程图',exact:true});
+  const reset=page.locator('#reader-flow-zoom-reset');
+  const originalWidth=(await node.boundingBox()).width;
+  await zoomIn.click();
+  assert.equal(await reset.innerText(),'125%');
+  assert((await node.boundingBox()).width>originalWidth*1.2);
+  await zoomOut.click();
+  await zoomOut.click();
+  assert.equal(await reset.innerText(),'75%');
+  assert((await node.boundingBox()).width<originalWidth*.8);
+  await reset.click();
+  assert.equal(await reset.innerText(),'100%');
+  await flow.getByText('流程说明',{exact:true}).click();
+  await page.locator(`.authored-flow:not([height="${expandedHeight}"])`).waitFor();
+  const compactHeight=Number(await frame.getAttribute('height'));
+  assert(compactHeight<expandedHeight);
+  await flow.getByText('流程说明',{exact:true}).click();
+  await page.locator(`.authored-flow[height="${expandedHeight}"]`).waitFor();
+  const box=await frame.boundingBox();
+  await page.mouse.move(box.x+box.width/2,box.y+40);
+  const beforeScroll=await page.evaluate(()=>window.scrollY);
+  await page.mouse.wheel(0,400);
+  const afterScroll=await page.evaluate(()=>new Promise(resolve=>{
+    requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(window.scrollY)));
+  }));
+  assert(afterScroll>beforeScroll);
+  assert.equal(await flow.locator('body').evaluate(()=>window.scrollY),0);
+  await page.getByRole('button',{name:'全屏',exact:true}).click();
+  await page.getByRole('button',{name:'退出全屏',exact:true}).waitFor();
+  assert(await page.locator('#reader-flow-dialog[open] .authored-flow').isVisible());
+  await node.click();
+  await page.locator('#editor-properties .node-purpose').waitFor();
+  await page.locator('#close-editor-detail').click();
+  await page.getByRole('button',{name:'退出全屏',exact:true}).click();
+  await page.getByRole('button',{name:'全屏',exact:true}).waitFor();
+  assert.equal(await page.locator('#reader-flow-dialog').getAttribute('open'),null);
+  assert(Math.abs(await page.evaluate(()=>window.scrollY)-afterScroll)<=2);
+  await node.click();
+  await page.locator('#editor-properties .node-purpose').filter({hasText: '观察用户提交的结果'}).waitFor();
   await page.getByRole('button', {name: '状态转移', exact: true}).click();
   assert(await page.locator('#editor-node-states').isVisible());
   await page.locator('#close-editor-detail').click();
 
-  await page.locator('.editor-more summary').click();
+  await page.locator('#reader-technical > summary').click();
   await page.locator('#loop-package').click();
   const download = page.waitForEvent('download');
   await page.locator('#package-export').click();
   assert((await download).suggestedFilename().endsWith('.loop.zip'));
   await page.locator('#package-dialog .close-dialog').click();
-  await page.locator('#reader-start').click();
-  await page.locator('#create-dialog[open]').waitFor();
-  assert((await page.locator('#launch-instruction').innerText()).includes(key));
-  assert.equal(await page.locator('#launch-start').innerText(), '复制启动要求');
   assert.equal((await api('runs')).total, 0);
-  await page.getByRole('button', {name: '取消', exact: true}).click();
 
-  await page.locator('#editor-back').click();
+  await page.locator('#breadcrumbs').getByRole('link',{name:'Loop 库',exact:true}).click();
   await page.locator('.catalog-card').first().waitFor();
-  await page.setViewportSize({width: 420, height: 840});
+  await page.setViewportSize({width: 390, height: 740});
   await page.locator('[data-loop="' + key + '"]').first().click();
-  assert(await page.locator('#reader-start').isVisible());
+  const modelButton=page.getByRole('button',{name:'模型设置',exact:true});
+  await modelButton.waitFor();
+  await page.evaluate(()=>window.scrollTo({top:0,behavior:'instant'}));
+  assert(await modelButton.evaluate(el=>{
+    const {top,bottom}=el.getBoundingClientRect();
+    return top>=0&&bottom<360;
+  }));
+  assert(await page.locator('.authored-flow').evaluate(el=>{
+    const {top}=el.getBoundingClientRect();
+    return top>=0&&top<450;
+  }));
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  const {turn}=await startRun('运行记录验收');
+  await page.reload();
+  await page.locator(`#reader-runs a[href="#run/${turn.run_id}"]`).click();
+  await page.locator('#workspace').waitFor();
+  assert.equal(new URL(page.url()).hash,'#run/'+turn.run_id);
+  await page.goto(url+'/#work/runs');
+  await page.locator('#runs-page').waitFor();
+  assert.equal(await page.getByRole('button', {name:'启动 Run', exact:true}).count(),0);
 }).catch(error => {console.error(error); process.exitCode = 1;});
