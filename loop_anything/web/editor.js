@@ -15,10 +15,18 @@ editorPage.innerHTML=`
         </div>
         <p id="reader-description"></p>
       </header>
-      <div class="editor-view-controls">
-        <h2 id="reader-flow-title" class="flow-view-title">流程</h2>
-      </div>
-      <div id="editor-flow-overview"></div>
+      <section class="reader-flow" aria-labelledby="reader-flow-title">
+        <div class="editor-view-controls" id="reader-flow-heading">
+          <h2 id="reader-flow-title" class="flow-view-title">流程</h2>
+          <div id="reader-flow-tools" class="reader-flow-tools" role="group" aria-label="流程图查看" hidden>
+            <button type="button" id="reader-flow-zoom-out" aria-label="缩小流程图" title="缩小">−</button>
+            <button type="button" id="reader-flow-zoom-reset" aria-label="恢复原始大小" title="恢复原始大小">100%</button>
+            <button type="button" id="reader-flow-zoom-in" aria-label="放大流程图" title="放大">+</button>
+            <button type="button" id="reader-flow-fullscreen">全屏</button>
+          </div>
+        </div>
+        <div id="editor-flow-overview"></div>
+      </section>
       <div id="reader-runs" class="reader-runs" hidden></div>
       <details id="reader-technical">
         <summary>技术资料</summary>
@@ -50,7 +58,12 @@ editorPage.innerHTML=`
     <div id="editor-node-states" class="editor-properties" hidden></div>
   </aside>
 </div>`;
-document.querySelector('main').append(editorPage);
+const editorHome=document.querySelector('main');
+editorHome.append(editorPage);
+const readerFlowDialog=document.createElement('dialog');
+readerFlowDialog.id='reader-flow-dialog';
+readerFlowDialog.setAttribute('aria-labelledby','reader-flow-title');
+document.body.append(readerFlowDialog);
 const jsonDialog=document.createElement('dialog');jsonDialog.id='editor-json-dialog';jsonDialog.className='editor-json-modal';
 jsonDialog.innerHTML=`<div class="dialog-heading"><h2>完整定义与节点实现 · 只读</h2><button class="close-dialog" aria-label="关闭">×</button></div><textarea id="editor-json-value" aria-label="完整 Loop 定义 JSON" readonly></textarea><div class="dialog-tasks"><button id="editor-export">下载 JSON</button></div>`;
 document.body.append(jsonDialog);
@@ -102,13 +115,66 @@ function renderEditor(){
   const overview=$('editor-flow-overview');
   overview.innerHTML=overviewFlowHTML(editor);
   const frame=overview.querySelector('iframe');
+  overview.classList.toggle('has-authored-flow',!!frame);
   $('reader-flow-title').textContent=frame?'流程':'节点';
+  $('reader-flow-tools').hidden=!frame;
   if(frame){
-    if(editor.overviewHeight)frame.height=editor.overviewHeight;
+    setReaderFlowHeight(frame,editor.overviewHeight||Number(frame.height));
+    setReaderFlowZoom(editor.overviewZoom??1);
     frame.addEventListener('load',syncOverviewSelection);
   }
   $('editor-edges-list').innerHTML=readerPlansHTML(b);
 }
+function setReaderFlowHeight(frame,height){
+  editor.overviewHeight=height;
+  frame.height=height;
+  frame.parentElement.style.setProperty('--flow-height',height+'px');
+}
+function readerFlowOffset(){
+  const heading=$('reader-flow-heading').getBoundingClientRect();
+  const flow=$('editor-flow-overview').getBoundingClientRect();
+  return Math.max(0,heading.bottom-flow.top);
+}
+function setReaderFlowZoom(requested){
+  const previous=editor.overviewZoom??1;
+  const zoom=Math.max(.5,Math.min(2,requested));
+  const offset=zoom===previous?0:readerFlowOffset();
+  editor.overviewZoom=zoom;
+  $('editor-flow-overview').style.setProperty('--flow-zoom',zoom);
+  const reset=$('reader-flow-zoom-reset');
+  reset.textContent=Math.round(zoom*100)+'%';
+  reset.setAttribute('aria-label','恢复原始大小，当前 '+reset.textContent);
+  $('reader-flow-zoom-out').disabled=zoom===.5;
+  $('reader-flow-zoom-in').disabled=zoom===2;
+  if(offset){
+    const scroll=readerFlowDialog.open?readerFlowDialog:window;
+    scroll.scrollBy({top:offset*(zoom/previous-1),behavior:'instant'});
+  }
+}
+let readerFlowPageTop=0;
+function setReaderFlowFullscreen(open,restorePosition=true){
+  const button=$('reader-flow-fullscreen');
+  if(open){
+    const offset=readerFlowOffset();
+    readerFlowPageTop=window.scrollY;
+    button.textContent='退出全屏';
+    readerFlowDialog.append(editorPage);
+    readerFlowDialog.showModal();
+    readerFlowDialog.scrollTop=offset;
+    button.focus({preventScroll:true});
+  }else{
+    button.textContent='全屏';
+    editorHome.append(editorPage);
+    readerFlowDialog.close();
+    if(!restorePosition)return;
+    window.scrollTo({top:readerFlowPageTop,behavior:'instant'});
+    button.focus({preventScroll:true});
+  }
+}
+readerFlowDialog.addEventListener('cancel',event=>{
+  event.preventDefault();
+  setReaderFlowFullscreen(false);
+});
 function syncOverviewSelection(){
   $('editor-flow-overview').querySelector('iframe')?.contentWindow.postMessage({type:'loop-node-selected',node:editSelection?.node||null},'*');
 }
@@ -131,8 +197,7 @@ window.addEventListener('message',event=>{
   const frame=$('editor-flow-overview').querySelector('iframe');
   const height=overviewHeightMessage(event,frame);
   if(height!==null){
-    editor.overviewHeight=height;
-    frame.height=height;
+    setReaderFlowHeight(frame,height);
     return;
   }
   const id=overviewNodeMessage(event,frame,editor.loop_definition.nodes);
@@ -156,7 +221,10 @@ document.addEventListener('click',event=>safely(async()=>{
   if(d.inputLocation){await locateEditorIssue(JSON.parse(d.inputLocation));return;}
   if(d.openDraft){await navigateTo({type:'editor',id:d.openDraft});return;}
   switch(el.id){
-
+    case 'reader-flow-zoom-out':setReaderFlowZoom(editor.overviewZoom-.25);break;
+    case 'reader-flow-zoom-in':setReaderFlowZoom(editor.overviewZoom+.25);break;
+    case 'reader-flow-zoom-reset':setReaderFlowZoom(1);break;
+    case 'reader-flow-fullscreen':setReaderFlowFullscreen(!readerFlowDialog.open);break;
     case 'reader-refresh':{const id=editor.routeId,tab=editor.detailTab;editor=await loadReader(id);editor.detailTab=tab;editorSessions.set(id,{editor,selection:editSelection});if(editSelection?.node&&!editor.loop_definition.nodes[editSelection.node])editSelection=null;populateMeta();renderEditor();renderProperties();break;}
     case 'reader-check':{const report=await api('packages/smoke',{key:editor.installedKey});preflightCache.set(editor.installedKey,report);readerCheckDialog.innerHTML='<div class="dialog-heading"><h2>环境检查 · 只读</h2><button class="close-dialog">×</button></div>'+checkHTML(report);readerCheckDialog.showModal();break;}
     case 'editor-json':$('editor-json-value').value=pretty({loop_definition:editor.loop_definition,implementations:editor.implementations});jsonDialog.showModal();break;

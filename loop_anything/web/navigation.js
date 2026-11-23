@@ -65,7 +65,8 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
   pendingRunNavigation=null;
   const previous=activeRoute,serial=++navigationSerial;
   runViewRequest?.controller.abort();
-  routeScroll.set(routeHash(previous),window.scrollY);
+  const fullscreenEditor=previous.type==='editor'&&$('reader-flow-dialog').open;
+  routeScroll.set(routeHash(previous),fullscreenEditor?readerFlowPageTop:window.scrollY);
   if(page==='communication'&&route.type==='communication'){
     if(!external)history[replace?'replaceState':'pushState'](null,'',routeHash(route));
     activeRoute=structuredClone(route);showCommunicationTab(route.tab||'agents');updateNavigationUI();window.scrollTo(0,routeScroll.get(routeHash(route))||0);return true;
@@ -91,6 +92,7 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
     if(route.type==='loop' && !catalog.some(c=>c.key===route.key))throw new Error('找不到这个 Loop 版本，请返回 Loop 库。');
     const nextRun=route.type==='run'?await openRun(route):null;
     if(serial!==navigationSerial)return false;
+    if(fullscreenEditor&&(route.type!=='editor'||previous.id!==route.id))setReaderFlowFullscreen(false,false);
     if($('run-graph-dialog').open&&(route.type!=='run'||route.id!==previous.id))setRunGraphExpanded(false,false);
     if(!external)history[replace?'replaceState':'pushState'](null,'',routeHash(route));
     activeRoute=structuredClone(route);
