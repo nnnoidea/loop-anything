@@ -158,6 +158,10 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 from loop_anything.capabilities import service_info
                 self.send({'workspace_id':engine.communication.settings()['instance_id'], 'service': service_info(), 'space':space, 'system': platform.system(), 'database': str(Path(store.filename).resolve()),
                            'keep_awake': power_status()})
+            elif parts == ['api', 'resources']:
+                self.send(platform_tools.call('list_resources', {}))
+            elif len(parts) == 3 and parts[:2] == ['api', 'resources']:
+                self.send(platform_tools.call('read_resource', {'resource_id': parts[2]}))
             elif parts == ['api', 'catalog']:
                 self.send([dict(item, timeline_guide=timeline_guide) for item in store.catalog(query.get('include_archived')=='true')])
             elif parts == ['api', 'drafts']:
@@ -245,7 +249,7 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 self.send({'snapshot': run, 'execution_id': execution['id'], 'token': execution.get('token'),
                            'settings_revision': execution['settings_revision'], 'output_contract': node_for(run, execution['node'])['outputs']})
             else:
-                filename = {name: name for name in ('spaces.js', 'workbench.css', 'monitoring.js', 'monitoring.css', 'work.js', 'schedules.js', 'communication.js', 'communication.css', 'terminal.js', 'terminal.css', 'xterm.js', 'xterm-fit.js', 'xterm.css', 'app.js', 'notifications.js', 'lifecycle.js', 'loop_graph.js', 'flow_bridge.js', 'settings.js', 'forms.js', 'workspace.js', 'authoring.js', 'workspace.css', 'launch.js', 'task_history.js', 'style.css', 'graph.css', 'editor.js', 'editor.css', 'packages.js', 'library.js', 'library.css', 'navigation.js', 'run_library.js')}.get('/'.join(parts))
+                filename = {name: name for name in ('shared_resources.js', 'shared_resources.css', 'spaces.js', 'workbench.css', 'monitoring.js', 'monitoring.css', 'work.js', 'schedules.js', 'communication.js', 'communication.css', 'terminal.js', 'terminal.css', 'xterm.js', 'xterm-fit.js', 'xterm.css', 'app.js', 'notifications.js', 'lifecycle.js', 'loop_graph.js', 'flow_bridge.js', 'settings.js', 'forms.js', 'workspace.js', 'authoring.js', 'workspace.css', 'launch.js', 'task_history.js', 'style.css', 'graph.css', 'editor.js', 'editor.css', 'packages.js', 'library.js', 'library.css', 'navigation.js', 'run_library.js')}.get('/'.join(parts))
                 if parts == ['']:
                     filename = 'index.html'
                 if not filename:

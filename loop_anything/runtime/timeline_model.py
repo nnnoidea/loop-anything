@@ -109,6 +109,11 @@ def validate_v2(bp, implementations):
                 location = ['nodes', name, 'details']
                 validate(node['details'])
                 location = ['nodes', name]
+            if 'resources' in node:
+                from loop_anything.runtime.shared_resources import REFERENCES
+                location = ['nodes', name, 'resources']
+                contract(node['resources'], REFERENCES, 'Node resource IDs')
+                location = ['nodes', name]
             if 'completion_checks' in node:
                 raise Invalid('Use assertions with eq for node completion checks')
             if 'terminal' in node:

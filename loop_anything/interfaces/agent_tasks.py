@@ -661,6 +661,7 @@ class RunTools:
                 raise Invalid('Unknown business Task')
             node = node_for(run, tasks['spec']['node'])
             from loop_anything.runtime.timelines import task_resources
+            from loop_anything.runtime.shared_resources import resolve as resolve_resources
             resource_key,_=task_resources(run,tasks['spec']['node'])
             values, sources, missing = self.runtime.resolve_inputs(run, tasks)
             from loop_anything.runtime.lifecycle import definition
@@ -679,6 +680,7 @@ class RunTools:
                     'node_id':run['retained_nodes'][tasks['spec']['node']]['node_id'] if tasks['spec']['node'] in run.get('retained_nodes',{}) else tasks['spec']['node'],
                     'instructions': node['instructions'], 'routes': node.get('routes', []),
                     'skills': [resolve_skill(self.store.filename, resource_key, skill) for skill in node.get('skills', [])],
+                    'resources': resolve_resources(self.store, node),
                     'settings_schema': node.get('agent_settings_schema'),
                     'assertions': node.get('assertions', []),
                     'outputs': {p: run['loop_definition']['records'][s['record_type']] for p, s in node['outputs'].items()},

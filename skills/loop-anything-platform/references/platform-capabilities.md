@@ -17,6 +17,7 @@ During design discussion, proactively select features relevant to the user goal 
 | A team shares NAS and machines change often | Use one server and unified clients | The server keeps state machines/runtime facts; clients edit/run through NAS/HTTP tools and can explicitly start local receiving or personal jobs. | [Team service](#team_service), [execution](#headless_execution) |
 | Local timers or conditions should awaken an agent | Independent local scheduling | Register a timer/condition without building a Loop. Keep definitions; start only on explicit request. A different machine can inspect them without restarting them. | [Local scheduling](#local_scheduling) |
 | Multiple specialties, stage-specific methods, or a long handbook | Separate Loop and node Skills/instructions | Keep shared objectives/rules at Loop level and node methods/tools/contracts at their relevant nodes, read on demand. For example, share experiment goals while separating training operations from evaluation methods. | [Author Skills](#author_skills) |
+| Multiple Loops consult the same reference or knowledge base | Shared resources with their own usage Skills | Register the resource once, then declare its ID on the nodes that can benefit from it. Let the node decide when to query. | [Shared resources](shared-resources.md) |
 | Analysis occasionally needs papers or specialist advice | Temporary named helpers | Keep required steps in the main workflow. Request optional help during execution, suspend if needed, and resume the original session with results. | [Assistance](#agent_communication), [session resume](#assistance_session_resume) |
 | Research/debugging reveals new information or direction | Revise future work during a Run | Preserve existing facts/results and adjust future Tasks, parameters, or dependencies. The first plan need not enumerate every path. | [Task edits](#task_edits), [Run control](#run_control) |
 
@@ -69,6 +70,16 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 - Limits: Run-local overrides follow existing work on its original platform.
 - Tools: read_observations, update_run_method, refresh_observation
 - Reference: [references/observations.md](observations.md)
+
+## shared_resources
+
+- Activation: declared
+- Platform handles: Resolves shared resource IDs from the workspace directory and makes their location and usage Skill available to the referencing task.
+- Author provides: The platform operator registers the address and Skill on the database host with set-resource. Declare IDs on the nodes that can use them. Apply the resource Skill when its information is relevant to the task.
+- Configuration: `list_resources`, `read_resource`, `put_node.resources`, `read_task.resources`
+- Limits: A registration is metadata. The execution machine needs access to the registered paths or URLs. Missing IDs are reported explicitly; an optional resource decision stays with the node.
+- Tools: list_resources, read_resource, put_node, read_task
+- Reference: [references/shared-resources.md](shared-resources.md)
 
 ## shared_monitoring
 

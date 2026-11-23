@@ -90,6 +90,8 @@ def main():
     tool.add_argument('--request-id', help='Stable invocation/receipt ID for safe retries')
     tool.add_argument('--wait', type=float, default=30)
     tool.add_argument('--output', help='Save an export result instead of printing base64')
+    resource = commands.add_parser('set-resource', help='Register or update a shared resource on the database host')
+    resource.add_argument('registration', help='JSON resource registration with its expected revision')
     skills = commands.add_parser('skills', help='Export the platform Skill')
     skills.add_argument('--url', default=DEFAULT_URL)
     skills.add_argument('--only',choices=['local'],help='Export only standalone local scheduling, without a platform connection')
@@ -189,6 +191,13 @@ def main():
         print(json.dumps({'file': str(Path(args.output).resolve())}))
         return
     from loop_anything.runtime.store import Store
+    if args.command == 'set-resource':
+        if not explicit_db or not Path(args.db).is_file():
+            parser.error('set-resource requires --db pointing to an existing platform database')
+        from loop_anything.runtime.shared_resources import set_resource
+        result = set_resource(Store(args.db), read(args.registration))
+        print(json.dumps({'resource': result}, ensure_ascii=False, indent=2))
+        return
     team_dir=Path(args.team_dir).expanduser().resolve() if getattr(args,'team_dir',None) else None
     if getattr(args,'no_web',False) and not team_dir:parser.error('--no-web requires --team-dir')
     if team_dir:

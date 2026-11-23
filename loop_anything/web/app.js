@@ -104,6 +104,7 @@ function showPage() {
   $('settings-page').hidden=page!=='settings';
   $('monitoring-page').hidden=page!=='monitors';
   $('schedules-page').hidden=page!=='schedules';
+  $('resources-page').hidden=page!=='resources';
   if($('communication-page'))$('communication-page').hidden=page!=='communication';
   if($('launch-page'))$('launch-page').hidden=page!=='launch';
   $('workspace').hidden = page !== 'runs' || !run;

@@ -785,12 +785,14 @@ class TimelineRuntime:
                                        owner_for(snapshot, e['token']).get('scope_task'))
                 request_text = process_prompt(implementation,context,implementation.get('prompt',DEFAULTS['task']),2)
             else:
+                from loop_anything.runtime.shared_resources import resolve as resolve_resources
                 node = node_for(snapshot, e['node'])
                 request = {'workspace_id':self.engine.communication.settings()['instance_id'],'run_id': run_id, 'execution_id': e['id'], 'task_id': e['task_id'], 'token': e['token'],
                            'attempt': e['attempt'], 'task_revision': e.get('task_revision'),
                            'inputs': e['inputs'], 'parameters': e['parameters'], 'external_id': e.get('external_id'),
                            'timeline': snapshot, 'handbook': snapshot['loop_definition']['handbook'],
                            'node_instructions': node['instructions'], 'output_contract': node['outputs'],
+                           'resources': resolve_resources(self.store, node),
                            'platform_url': getattr(self.engine, 'platform_url', None),
                            'report_client': str(platform_skill_directory() / 'scripts/report.py'),
                            'lifecycle': lifecycle_definition(implementation), 'state': e.get('lifecycle_state'),

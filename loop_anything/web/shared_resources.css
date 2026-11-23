@@ -1,0 +1,33 @@
+#resources-page{max-width:1140px;margin:0 auto}
+.resources-content{padding:0 clamp(18px,3vw,34px) 34px}
+.resource-list,.resource-preview-section ul,.node-resource-links{list-style:none;margin:0;padding:0}
+.resource-list{display:grid;gap:12px}
+.resource-list li,.resource-panel{background:white;border:1px solid var(--line);border-radius:12px;padding:20px 24px;overflow-wrap:anywhere}
+.resource-list li>div{display:flex;align-items:center;gap:12px}
+.resource-list h2,.resource-panel h2{font-size:16px;margin:0}
+.resource-list p,.resource-title p,.resource-panel p{line-height:1.7;margin:8px 0 0;white-space:pre-line}
+.resource-kind{font-size:12px;color:var(--muted);flex:none}
+.resource-detail{display:grid;gap:16px}
+.resource-title h2{margin:0;overflow-wrap:anywhere}
+.resource-facts{margin:18px 0 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+.resource-facts div{background:var(--canvas);padding:12px 14px;border-radius:8px}
+.resource-facts dt,.resource-access dt{color:var(--muted);font-size:13px}
+.resource-facts dd{margin:4px 0 0;font-size:20px;font-weight:650}
+.resource-preview-section{margin-top:20px}
+.resource-preview-section h3{margin:0;font-size:14px}
+.resource-preview-section li{border-bottom:1px solid var(--line);padding:12px 0}
+.resource-preview-section li:last-child{border:0;padding-bottom:0}
+.resource-preview-section li p{margin-top:4px}
+.resource-preview-section details{margin-top:7px;color:var(--muted)}
+.resource-preview-section summary{cursor:pointer;width:fit-content}
+.resource-access dl{margin:14px 0 0;display:grid;gap:12px}
+.resource-access dl>div{display:grid;grid-template-columns:76px minmax(0,1fr);align-items:baseline;gap:8px}
+.resource-access dd{margin:0}
+.resource-access small{display:block;color:var(--muted);margin-top:4px}
+.resource-access button{font-size:12px;padding:3px 8px}
+.node-resource-links{display:flex;flex-wrap:wrap;gap:8px;overflow-wrap:anywhere}
+
+@media(max-width:650px){
+  .resource-list li,.resource-panel{padding:16px}
+  .resource-access dl>div{grid-template-columns:1fr;gap:5px}
+}

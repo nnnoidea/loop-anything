@@ -14,9 +14,9 @@ def sibling(name):
 
 # Only these operations may begin independent work without a known resource/work.
 # Every other tool fails closed; adding a tool never silently enables default routing.
-INDEPENDENT=set('import_timeline check list read_capabilities read_cc_connect read_notification_channels list_loops create_loop list_runs communication_workspace communication_status list_executors read_monitor_dashboard create_timeline list_timelines register_work_session list_monitor_scripts list_monitors start_collaboration request_assistance'.split())
+INDEPENDENT=set('import_timeline check list read_capabilities read_cc_connect read_notification_channels list_loops list_resources create_loop list_runs communication_workspace communication_status list_executors read_monitor_dashboard create_timeline list_timelines register_work_session list_monitor_scripts list_monitors start_collaboration request_assistance'.split())
 # Only tools declared read-only may look up an unseen resource on a verified platform.
-READ_ONLY=set('read_observations communication_status communication_workspace export_loop export_timeline list_executors list_loops list_monitor_scripts list_monitors list_runs list_timelines next_tasks preview_plan read_assistance read_business_state read_capabilities read_cc_connect read_execution_session read_executor_call read_loop read_loop_config read_monitor read_monitor_dashboard read_monitor_history read_notification_channels read_plans read_record read_run read_run_request read_task read_timeline read_wait read_work_result read_work_results read_work_session read_work_timeline resolve_refs test_loop validate_loop validate_parameters'.split())
+READ_ONLY=set('read_observations communication_status communication_workspace export_loop export_timeline list_executors list_loops list_resources list_monitor_scripts list_monitors list_runs list_timelines next_tasks preview_plan read_assistance read_business_state read_capabilities read_cc_connect read_execution_session read_executor_call read_loop read_loop_config read_monitor read_monitor_dashboard read_monitor_history read_notification_channels read_plans read_record read_resource read_run read_run_request read_task read_timeline read_wait read_work_result read_work_results read_work_session read_work_timeline resolve_refs test_loop validate_loop validate_parameters'.split())
 RETRYABLE_HTTP=READ_ONLY | {'list','import_timeline'}
 KNOWN_TOOLS=READ_ONLY | set('acquire_run update_run_method refresh_observation acknowledge_wait add_task append_timeline archive_loop build_plan cancel_wait change_settings change_task check command communication_config communication_execute complete configure_cc_connect confirm_executor_stopped connect_steps control_assistance control_execution_session copy_loop create_loop create_timeline defer_task delete_loop edit_tasks executor_poll executor_report finish import_timeline list native_session notify progress publish_loop put_asset put_node put_step read_asset read_context register_agent_session register_monitor register_work_session remove_node remove_step report_task request_assistance resolve_continuation resolve_request restart_monitor result resume_work_session send_event set_implementation set_loop set_loop_config set_notification_channels smoke_runtime source_call source_result start_collaboration start_monitor start_run stop_monitor submit_run_request update_timeline wait_assistance wait_for'.split())
 LOOP_KEYS=set('update_run_method preview_plan validate_parameters test_loop archive_loop delete_loop smoke_runtime read_loop copy_loop read_loop_config set_loop_config start_run'.split())
@@ -24,7 +24,7 @@ WORK_SESSIONS=set('start_run read_work_session resume_work_session wait_for canc
 NEW_REQUESTS=set('import_timeline start_run start_collaboration request_assistance submit_run_request start_monitor'.split())
 FIELDS={'run_id':'run','continue_run_id':'run','parent_run_id':'run','collaboration_id':'run',
         'timeline_id':'timeline','draft_id':'draft','monitor_id':'monitor','wait_id':'wait',
-        'script_id':'script','group_id':'group','agent_id':'agent','context_id':'context',
+        'script_id':'script','resource_id':'resource','group_id':'group','agent_id':'agent','context_id':'context',
         'space_id':'space','binding_id':'binding','loop_key':'loop','loop_id':'loop_id','executor':'executor','call_id':'call'}
 LIST_FIELDS={'run_ids':'run','request_ids':'request'}
 EXECUTOR_CALLS={'read_executor_call','executor_report','confirm_executor_stopped','source_result'}
@@ -69,7 +69,7 @@ def resources(tool,result):
     if tool == 'read_run':
         for task in result.get('tasks', []):
             row(task.get('continuation_source'))
-    wrappers={'run':'run','timeline':'timeline','draft':'draft','session':'session','monitor':'monitor','wait':'wait','call':'call','script':'script','request':'request'}
+    wrappers={'run':'run','timeline':'timeline','draft':'draft','session':'session','monitor':'monitor','wait':'wait','call':'call','script':'script','request':'request','resource':'resource'}
     for field,kind in wrappers.items():
         row(result.get(field),kind)
         if field=='call' and isinstance(result.get(field),dict):row(result[field].get('metadata'))

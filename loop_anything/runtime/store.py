@@ -44,7 +44,8 @@ class Store:
             business_state.initialize(db)
             from loop_anything.runtime.work import initialize as initialize_work
             initialize_work(db)
-            from loop_anything.runtime import events, observations
+            from loop_anything.runtime import events, observations, shared_resources
+            shared_resources.initialize(db)
             events.initialize(db)
             observations.initialize(db)
             from loop_anything.runtime.run_library import initialize

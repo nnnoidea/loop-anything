@@ -6,7 +6,7 @@ from loop_anything.packaging.packages import resolve_skill
 from loop_anything.runtime.model import Invalid
 
 DEFAULTS = {
-    'task': """Loop Anything has work for you. This session handles its current Run tasks only; do not use it to edit the reusable Loop definition. Loop construction belongs to a separate external Agent or source-file editing. Follow the author handbook and node Skills in the context. If the author provides wrapper scripts, use those entry points.
+    'task': """Loop Anything has work for you. This session handles its current Run tasks only; do not use it to edit the reusable Loop definition. Loop construction belongs to a separate external Agent or source-file editing. Follow the author handbook and node Skills in the context. If the author provides wrapper scripts, use those entry points. The resources field lists this node’s declared shared resources. Read the selected resource’s Skill before using its location.
 For direct platform calls, use python3 PLATFORM_CLIENT TOOL --arguments JSON with the context's platform_client. The process automatically carries an immutable work/platform binding; do not select or reconstruct a URL. Returned work_id identifies work when a separate Agent continues it; include run_id and token for Run tools. Discovery tools use their own schema. Call read_capabilities to find existing mechanisms and references before writing helpers. The platform_guide is available when needed.
 When using platform tools directly, read the wake-up task with read_task and inspect the relevant Timeline state. Reads do not reserve work or create a separate decision snapshot. scope_task=null grants global permission, otherwise modify only that Task and descendants. Report completed with report_task using your execution identity, a stable report_id and envelope containing declared outputs; arranging future work does not complete the current task. Check ok=true and, for reports, accepted=true after each call. After completing or deferring your task and handling in-scope issues, call finish (or the author's wrapper that does so). Exit only after finish succeeds. Ready descendants can remain for Engine dispatch. Reports preserve the inputs and sources captured for their execution.
 Declared node routes expand plans automatically from accepted events and mapped output parameters. Read routes with read_task, provide their required outputs, and inspect report receipt.routes; do not separately arrange the same work.
@@ -55,6 +55,14 @@ def receiver_context(value, team_root=None, mounted_root=None, resource_root=Non
                 url,sep,scope=value[key][6:].partition('#');value[key]='nas://'+mount(url)+sep+scope
         for skill in [value.get('handbook'),*(value.get('skills') or [])]:
             if isinstance(skill,dict) and 'resolved_path' in skill:skill['resolved_path']=mount(skill['resolved_path'])
+        scopes = [value]
+        if value.get('kind') == 'node_execution':
+            scopes.append(value['context'].get('task') or {})
+        for scope in scopes:
+            for resource in scope.get('resources') or []:
+                for field in ('location', 'skill'):
+                    if resource.get(field + '_kind') == 'path':
+                        resource[field] = mount(resource[field])
     if resource_root:
         from loop_anything.packaging.packages import member_path
         # Only declared instruction references move; arbitrary business text/paths stay intact.
@@ -90,9 +98,11 @@ def author_context(store, key, definition, node_id=None, resources=None):
                'dispatch_skill': str(root.parent / 'loop-anything-dispatch/SKILL.md'),
                'handbook': skill(handbook)}
     if node_id:
+        from loop_anything.runtime.shared_resources import resolve as resolve_resources
         node = definition['nodes'][node_id]
         context.update(node_id=node_id, instructions=node['instructions'],
-                       skills=[skill(s) for s in node.get('skills', [])], routes=node.get('routes', []))
+                       skills=[skill(s) for s in node.get('skills', [])], routes=node.get('routes', []),
+                       resources=resolve_resources(store, node))
     return context
 
 

@@ -11,6 +11,7 @@ function routeHash(route){
   if(route.type==='run-list')return '#work/runs';
   if(route.type==='monitors')return '#work/monitors';
   if(route.type==='schedules')return '#work/schedules';
+  if(route.type==='resources')return '#resources'+(route.id?'/'+encodeURIComponent(route.id):'');
   if(route.type==='catalog')return '#loop_definitions';
   if(route.type==='loop')return '#loop/'+encodeURIComponent(route.key)+'/'+(route.tab || 'overview');
   if(route.type==='editor')return '#edit/'+encodeURIComponent(route.id)+(route.node?'/node/'+encodeURIComponent(route.node)+(route.implementation?'/implementation/'+encodeURIComponent(route.implementation):''):'');
@@ -29,6 +30,7 @@ function parseRoute(hash){
     if(type)return {type};
   }
   if(!parts[0])return {type:'home'};
+  if(parts[0]==='resources')return {type:'resources',...(parts[1]?{id:decodeURIComponent(parts[1])}:{})};
   if(parts[0]==='loop_definitions')return {type:'catalog'};
   if(parts[0]==='loop')return {type:'loop',key:decodeURIComponent(parts[1] || ''),tab:['overview','flow','prepare'].includes(parts[2])?parts[2]:'overview'};
   if(parts[0]==='prepare')return {type:'prepare',id:decodeURIComponent(parts[1] || '')};
@@ -102,6 +104,7 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
     else if(route.type==='run-list'){page='run-list';await refreshRunLibrary();}
     else if(route.type==='monitors'){page='monitors';refreshMonitoring(true);}
     else if(route.type==='schedules'){page='schedules';refreshSchedules();}
+    else if(route.type==='resources'){page='resources';await openSharedResources(route,serial);}
     else if(route.type==='catalog'){page='catalog';await loadCatalog();}
     else if(route.type==='loop'){await openLoop(route.key);}
     else if(route.type==='prepare'){page='catalog';await loadCatalog();toast('请重新从 Loop 页面启动；旧准备记录保留。');}
@@ -131,9 +134,10 @@ function relatedRunsHTML(key){return relatedRunRows(key);}
 function updateNavigationUI(){
   $('run-list').querySelectorAll('[data-run]').forEach(b=>b.classList.toggle('chosen',page==='runs'&&b.dataset.run===selected));
   $('settings-nav').classList.toggle('active',page==='settings');
+  $('resources-nav').classList.toggle('active',page==='resources');
   $('communication-nav').classList.toggle('active',page==='communication');
   const workPage=['timelines','timeline','run-list','runs','monitors','schedules'].includes(page);
-  const crumbs=workPage?[navLink({type:'timelines'},'工作台')]:page==='settings'?['设置']:page==='communication'?['Agent 通信']:[navLink({type:'catalog'},'Loop 库')];
+  const crumbs=workPage?[navLink({type:'timelines'},'工作台')]:page==='settings'?['设置']:page==='communication'?['Agent 通信']:page==='resources'?(activeRoute.id?[navLink({type:'resources'},'共享资源'),esc($('shared-resource-title')?.textContent||activeRoute.id)]:['共享资源']):[navLink({type:'catalog'},'Loop 库')];
   if(page==='settings')crumbs.push(settingsLabels[activeRoute.tab||'general']);
   else if(page==='communication'){crumbs.push({agents:'Agent',requests:'协作请求'}[activeRoute.tab||'agents']);}
   else if(page==='timelines'){crumbs.push('Timeline');}
