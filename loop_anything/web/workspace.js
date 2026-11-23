@@ -398,15 +398,36 @@ function resultAttempt(attempts,current){
   const hasResult=e=>e?.output_readout?.length||e?.has_result_content;
   return hasResult(current)?current:attempts.findLast(hasResult);
 }
-function readingsHTML(readings,className='node-facts'){
-  return `<dl class="${className}">${readings.map(r=>`<div><dt>${esc(r.label)}</dt><dd>${esc(readingValue(r.value))}${r.unit?' '+esc(r.unit):''}</dd></div>`).join('')}</dl>`;
+function durationValue(seconds){
+  const hours=Math.floor(seconds/3600),minutes=Math.floor(seconds/60)%60;
+  if(hours)return `${hours} 小时 ${minutes} 分钟`;
+  return minutes?`${minutes} 分 ${seconds%60} 秒`:`${seconds} 秒`;
 }
-function taskResultHTML(attempt,current,pending){
+function readingsHTML(readings,className='node-facts'){
+  return `<dl class="${className}">${readings.map(r=>`<div><dt>${esc(r.label)}</dt><dd>${esc(r.format==='duration'?durationValue(r.value):readingValue(r.value))}${r.unit?' '+esc(r.unit):''}</dd></div>`).join('')}</dl>`;
+}
+function nodeDetailsHTML(task,pending){
+  const details=task.node_details;
+  if(!details)return pending&&task.has_node_details?'<p class="muted small" role="status">正在读取节点信息…</p>':'';
+  const sections=details.sections.map(({label,items,supplementary})=>{
+    const content=items.length===1?`<p>${esc(items[0])}</p>`:`<ul>${items.map(item=>`<li>${esc(item)}</li>`).join('')}</ul>`;
+    return supplementary
+      ?`<details class="node-result-text" data-node-section="${esc(label)}"><summary>${esc(label)}</summary>${content}</details>`
+      :`<div class="node-result-text"><h4>${esc(label)}</h4>${content}</div>`;
+  }).join('');
+  return `<section class="node-result node-business-details"><h3>${esc(details.title)}</h3>
+    ${details.facts.length?readingsHTML(details.facts,'node-facts node-business-facts'):''}
+    ${details.note?`<p class="small muted">${esc(details.note)}</p>`:''}
+    ${sections}
+  </section>`;
+}
+function taskResultHTML(attempt,current,pending,details){
   if(!attempt)return '';
   const readings=attempt.output_readout||[], fields=attempt.result_content||[];
-  const texts=fields.filter(field=>field.text), files=fields.filter(field=>field.file);
-  if(!readings.length&&!fields.length&&!pending)return '';
-  return `<section class="node-result"><h3>${attempt===current?'结果':'上一次结果'}</h3>
+  const shown=new Set(details?.sections.flatMap(section=>section.items)||[]);
+  const texts=fields.filter(field=>field.text&&!shown.has(field.text)), files=fields.filter(field=>field.file);
+  if(!readings.length&&!texts.length&&!files.length&&!pending)return '';
+  return `<section class="node-result"><h3>${attempt!==current?'上一次结果':readings.length&&!texts.length?'结果指标':'结果'}</h3>
     ${readings.length?readingsHTML(readings,'node-facts node-result-readings'):''}
     ${texts.map(f=>`<div class="node-result-text">${texts.length>1?`<h4>${esc(f.label)}</h4>`:''}<p>${esc(f.text)}</p></div>`).join('')}
     ${files.length?`<ul class="node-result-files">${files.map(f=>`<li>${resultFileLink(f.file,attempt,f.label)}</li>`).join('')}</ul>`:''}
@@ -427,7 +448,7 @@ function taskNeedsDetail(id){
   if(!task)return false;
   const attempts=run.executions.filter(e=>e.task_id===id);
   const attempt=attempts.find(e=>e.id===task.execution_id)||attempts.at(-1);
-  return (task.status!=='cancelled'&&needsReplyData(attempt))||Boolean(resultAttempt(attempts,attempt)?.has_result_content);
+  return task.has_node_details||(task.status!=='cancelled'&&needsReplyData(attempt))||Boolean(resultAttempt(attempts,attempt)?.has_result_content);
 }
 function taskFlowHTML(item){
   const id=item.tasks.id,edges=TaskHistory.links(run),incoming=edges.filter(e=>e.to===id),outgoing=edges.filter(e=>e.from===id);
@@ -462,7 +483,7 @@ function taskDetails(item,pending,detailError){
     `<button data-task-assistance="${esc(t.id)}">查看外援请求</button>`
   ].filter(Boolean);
   return `<div class="task-detail-heading"><h2>${esc(taskLabel(t))}</h2>${taskBadge(item)}</div>
-    ${item.round||t.spec.ref?`<p class="small muted">${esc([item.round,t.spec.ref].filter(Boolean).join(' · '))}</p>`:''}
+    ${item.round||t.spec.ref?`<p class="task-detail-reference small muted">${esc([item.round,t.spec.ref].filter(Boolean).join(' · '))}</p>`:''}
     ${request?`<div class="wait-description"><strong>等待用户处理</strong><p>${esc(request)}</p></div>`:''}
     ${detailError?runViewErrorHTML(detailError):''}
     ${cancelled?`<section class="task-cancellation"><h3>取消原因</h3><p>${esc(taskSummary(item))}</p></section>`:
@@ -471,14 +492,18 @@ function taskDetails(item,pending,detailError){
        ${t.assistance_wait?'<p class="small muted">正在等待外援回复。</p>':''}
        ${progress.length&&result!==attempt?readingsHTML(progress):''}`}
     ${childRunLink(attempt)}
-    ${taskResultHTML(result,attempt,pending&&!detailError&&result?.has_result_content)}
-    ${actions.length?`<div class="toolbar">${actions.join('')}</div>`:''}${taskFlowHTML(item)}`;
+    ${nodeDetailsHTML(t,pending&&!detailError)}
+    ${taskResultHTML(result,attempt,pending&&!detailError&&!t.has_node_details&&result?.has_result_content,result===attempt&&t.node_details)}
+    ${taskFlowHTML(item)}${actions.length?`<div class="toolbar">${actions.join('')}</div>`:''}`;
 }
 function renderTaskHistory(detailError){
   if(run.superseded_by && !Object.keys(run.tasks).length)return '<p class="empty-inline">这次历史运行没有节点记录。</p>';
   const scroll=document.querySelector('.dependency-scroll'),detail=$('task-detail');
   const position=scroll?.dataset.graphRun===run.id?{left:scroll.scrollLeft,top:scroll.scrollTop}:null;
-  const detailTop=detail?.dataset.task===selectedTask?detail.scrollTop:0;
+  const sameDetail=detail?.dataset.run===run.id&&detail.dataset.task===selectedTask;
+  const detailTop=sameDetail?detail.scrollTop:0;
+  const openSections=new Set(sameDetail
+    ?[...detail.querySelectorAll('[data-node-section][open]')].map(section=>section.dataset.nodeSection):[]);
   const focused=document.activeElement;
   const focusedRound=scroll?.contains(focused)?focused.dataset.roundToggle:undefined;
   const focusedTask=scroll?.contains(focused)&&focused.matches('.task-card-main')?focused.dataset.taskFocus:undefined;
@@ -490,7 +515,11 @@ function renderTaskHistory(detailError){
       const current=document.querySelector('[data-graph-current]');
       if(current)locateGraphTask(current.dataset.graphCurrent);
     }
-    if(detailTop)$('task-detail')?.scrollTo(0,detailTop);
+    const currentDetail=$('task-detail');
+    if(currentDetail?.dataset.task===selectedTask){
+      for(const section of currentDetail.querySelectorAll('[data-node-section]'))section.open=openSections.has(section.dataset.nodeSection);
+      if(detailTop)currentDetail.scrollTo(0,detailTop);
+    }
     if(focusedRound!==undefined)graphElement('data-round-toggle',focusedRound)?.focus({preventScroll:true});
     if(focusedTask)graphElement('data-task-row',focusedTask)?.querySelector('.task-card-main')?.focus({preventScroll:true});
     if(focusedExpand)document.querySelector('[data-graph-expand]')?.focus({preventScroll:true});
@@ -511,7 +540,7 @@ function renderTaskHistory(detailError){
   const groups=[{round:'已开始',items:visible.filter(i=>i.started!==null)},{round:'尚未开始',items:visible.filter(i=>i.started===null&&!['completed','skipped','cancelled','stale'].includes(i.tasks.status))},{round:'未执行且已结束',items:visible.filter(i=>i.started===null&&['completed','skipped','cancelled','stale'].includes(i.tasks.status))}];
   const filtered=Boolean(filterNode||taskStatus||query);
   return `<div class="task-heading"><div><h2>节点进度</h2><p class="muted small">${business.length} 项任务${rounds.length?' · '+rounds.length+' 轮':''}${all.length>business.length?' · '+(all.length-business.length)+' 次流程决策':''}</p></div></div><div class="process-controls" id="run-process-controls"><div class="segmented">${[['graph','节点图'],['time','时间顺序']].map(([id,label])=>`<button data-task-order="${id}" class="${taskOrder===id?'selected':''}" aria-pressed="${taskOrder===id}">${label}</button>`).join('')}</div>${rounds.length?`<label class="task-round-filter"><select id="task-round" aria-label="筛选轮次"><option value="">全部轮次</option>${rounds.map(r=>'<option value="'+esc(r)+'" '+(r===taskRound?'selected':'')+'>'+esc(r)+'</option>').join('')}</select></label>`:''}<label class="task-search-label"><span class="sr-only">查找任务</span><input id="task-search" placeholder="查找任务…" type="search" value="${esc(taskSearch)}"></label><label class="task-status-label"><span class="sr-only">任务状态</span><select id="task-status"><option value="">全部状态</option>${[...new Set(all.map(i=>i.tasks.status))].map(s=>`<option value="${esc(s)}" ${taskStatus===s?'selected':''}>${esc(labels[s]||s)}</option>`).join('')}</select></label>${filterNode?'<button id="clear-task-filter">清除节点筛选</button>':''}</div>
-  <div class="process-layout"><section class="process-body">${visible.length?(taskOrder==='graph'?taskDependencyGraph(visible,filtered):groups.filter(g=>g.items.length).map(g=>`<details class="task-group" open><summary>${g.round} · ${g.items.length}</summary><div class="process-list">${g.items.map(taskCard).join('')}</div></details>`).join('')):'<p class="empty-inline">没有符合条件的任务</p>'}</section><aside id="task-detail" class="task-detail" ${selected?`data-task="${esc(selectedTask)}"`:'hidden'}>${selected?`<button class="close-task-detail" data-close-task aria-label="关闭节点详情">×</button><div id="task-detail-body">${taskDetails(selected,detailPending,detailError)}</div>`:''}</aside></div>`;
+  <div class="process-layout"><section class="process-body">${visible.length?(taskOrder==='graph'?taskDependencyGraph(visible,filtered):groups.filter(g=>g.items.length).map(g=>`<details class="task-group" open><summary>${g.round} · ${g.items.length}</summary><div class="process-list">${g.items.map(taskCard).join('')}</div></details>`).join('')):'<p class="empty-inline">没有符合条件的任务</p>'}</section><aside id="task-detail" class="task-detail" ${selected?`data-run="${esc(run.id)}" data-task="${esc(selectedTask)}"`:'hidden'}>${selected?`<button class="close-task-detail" data-close-task aria-label="关闭节点详情">×</button><div id="task-detail-body">${taskDetails(selected,detailPending,detailError)}</div>`:''}</aside></div>`;
 }
 const editDialog=document.createElement('dialog');editDialog.id='task-edit-dialog';editDialog.innerHTML='<div class="dialog-heading"><h2 id="task-edit-title"></h2><button class="close-dialog" aria-label="关闭">×</button></div><div id="task-edit-error" role="alert"></div><form id="task-edit-form"><div id="task-edit-fields"></div><div class="dialog-tasks"><button type="button" class="close-dialog">取消</button><button type="submit" class="primary" id="task-edit-submit">确认操作</button></div></form>';document.body.append(editDialog);
 function openTaskEdit(kind,id=null){

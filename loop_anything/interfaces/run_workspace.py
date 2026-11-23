@@ -4,6 +4,7 @@ import json
 import re
 
 from loop_anything.interfaces.agent_tasks import task_list
+from loop_anything.interfaces.research_node_details import detail_kind, merlin_runtime, node_details
 from loop_anything.interfaces.run_results import display_results
 from loop_anything.runtime.model import Invalid
 from loop_anything.runtime.timeline_plan import task_dependencies
@@ -252,6 +253,14 @@ def read_workspace(store, runtime, run_id, query):
                       FROM timeline_parts WHERE run_id=? AND section='history'
                       AND json_type(document, '$.detail.tasks')='text'
                       AND json_type(document, '$.detail.before') NOT IN ('null', 'false')""", (run_id,))] if tab == 'task-history' else []
+        kinds = {node: detail_kind(run, node) for node in run['loop_definition']['nodes']}
+        task = run['tasks'].get(task_id)
+        kind = kinds.get(task['spec']['node']) if task else None
+        attempt = next((e for e in run['executions'] if e['id'] == task.get('execution_id')), None) if kind else None
+        details = None
+        if kind and attempt:
+            elapsed = merlin_runtime(db, run_id, attempt) if kind in ('train_model', 'run_prediction') else None
+            details = node_details(kind, attempt, elapsed)
 
     view = pick(run, 'id', 'title', 'revision', 'status', 'timeline_id', 'loop_key', 'created_by',
                 'archived_at', 'last_activity_at', 'superseded_by', 'identity_read_only', 'follow_loop_updates')
@@ -280,12 +289,17 @@ def read_workspace(store, runtime, run_id, query):
                                    nodes={key: pick(node, 'label', 'readout', 'outputs') for key, node in nodes.items()},
                                    records=output_schemas(loop, nodes[waiting['node']]) if waiting else {})
     view['tasks'] = {ident: task_summary(task) for ident, task in run['tasks'].items()}
+    for ident, task in run['tasks'].items():
+        if task.get('execution_id') and kinds.get(task['spec']['node']):
+            view['tasks'][ident]['has_node_details'] = True
+    if details:
+        view['tasks'][task_id]['node_details'] = details
     for ident, reason in reasons.items():
         view['tasks'][ident]['cancellation_reason'] = reason
     view['executions'] = [attempt_summary(e, nodes.get(e['node'], {}), loop['records'],
                                           allow_approval=e['id'] == selected_execution, include_content=e['task_id'] == task_id)
                           for e in run['executions']]
-    if waiting or any(e.get('result_content') for e in view['executions']):
+    if kind or waiting or any(e.get('result_content') for e in view['executions']):
         view['workspace_view']['task'] = task_id
     view.update(notifications=[], events=[], hook_firings=[])
     if tab == 'hooks':
