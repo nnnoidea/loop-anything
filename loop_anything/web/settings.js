@@ -1,7 +1,7 @@
 'use strict';
 // Record-driven workspace. No domain-specific approval or event handling.
 Object.assign(labels,{waiting_user:'等待用户',planned:'已规划',held:'暂停待放行',stale:'已失效',delivered:'已送达',sending:'发送中',pending:'待发送'});
-function renderTimelineSettings(){ $('attention').innerHTML=runIdleHint(run); }
+function renderTimelineSettings(preserveSelection){updateMarkup($('attention'),runIdleHint(run),preserveSelection);}
 function runIdleHint(value){
   const tasks=Object.values(value.tasks||{});
   if(value.status!=='running'||value.identity_read_only||!tasks.length||value.settings.completion_rule!=null||value.settings.termination_signal||(value.agent_sessions||[]).length||(value.has_diagnostics||(value.diagnostics||[]).length)||(value.agent_tasks?.items||[]).length||!tasks.every(t=>['completed','skipped','cancelled'].includes(t.status)))return '';
@@ -54,35 +54,16 @@ function runTaskIssues(issues){
   }).join('')}</ul>`;
 }
 
-const runActivityLabels={created:'创建运行',completed:'运行结束',pause:'暂停运行',resume:'恢复运行',terminate:'终止运行',
-  method_updated:'更新后续任务的 Loop 版本',settings:'修改运行配置',monitor_retry:'恢复外部监控',retry_applied:'自动安排重试',
-  waiting_user:'等待用户处理',agent_failure_pause:'Agent 连续失败，运行暂停',gate:'任务在执行前暂停',
-  release_gate:'放行任务',budget_exhausted:'任务预算已用尽',transition:'节点出现异常'};
-const runTaskChangeLabels={update:'调整任务',cancel:'取消任务',retry:'重试任务'};
-const runFailureLabels={external_rejected:'外部任务提交被拒',process_error:'执行进程出现异常',
-  failed_requires_agent:'节点失败，需 Agent 处理',failed_retryable:'节点失败，可重试'};
-function runActivityHTML(){
-  if(!run.history.length)return '<p class="empty-inline">这一页没有关键变更。</p>';
-  const rows=run.history.map(h=>{
-    const title=h.kind==='agent_action_change'?runTaskChangeLabels[h.operation]||'修改任务':
-      h.kind==='transition'?runFailureLabels[h.event]||runActivityLabels.transition:runActivityLabels[h.kind];
-    const task=run.tasks[h.task_id];
-    return `<li><time datetime="${new Date(h.at*1000).toISOString()}">${esc(taskTime(h.at))}</time><div><strong>${esc(title)}</strong>${task?`<div class="run-activity-task">${runTaskLink(task.id,taskDisplayName(task))}</div>`:''}${h.note?`<p>${esc(h.note)}</p>`:''}</div></li>`;
-  }).join('');
-  const end=runHistoryOffset+run.history.length;
-  const pagination=run.history_total>50?`<div class="run-pagination"><button data-history-offset="${Math.max(0,runHistoryOffset-50)}" ${runHistoryOffset?'':'disabled'}>← 更新的记录</button><span>${runHistoryOffset+1}–${end} / ${run.history_total} 条</span><button data-history-offset="${end}" ${end<run.history_total?'':'disabled'}>更早的记录 →</button></div>`:'';
-  return `<ol class="run-activity">${rows}</ol>${pagination}`;
-}
 function renderRunPanel(tab,issues,detailError){
   if(tab==='task-history')return renderTaskHistory(detailError);
   if(tab==='tasks')return runTaskIssues(issues);
-  if(tab==='activity')return runActivityHTML();
   const ended=run.identity_read_only||['completed','terminated','continued'].includes(run.status);
   const held=run.hook_firings.filter(f=>f.status==='held').map(f=>{
     const task=run.tasks[f.tasks];
     return `<div class="task-card">等待放行${task?' · '+runTaskLink(task.id,taskDisplayName(task)):''} <button class="primary" data-release-gate="${esc(f.id)}" ${ended?'disabled':''}>放行本次工作</button></div>`;
   }).join('');
-  return held+notificationCards()+noticeScheduleHTML(run,run.settings.bindings||{});
+  return `<p class="run-notification-outlet">通知出口 · ${esc(outletLabel(runNotificationRoute(run)))}</p>`+
+    held+notificationCards()+noticeScheduleHTML(run,run.settings.bindings||{});
 }
 document.addEventListener('click',event=>safely(async()=>{
   const d=event.target.closest('button')?.dataset;if(!d||!run)return;

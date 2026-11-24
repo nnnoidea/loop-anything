@@ -3,7 +3,7 @@ import copy
 import re
 
 from loop_anything.runtime.checks import evaluate, validate_expression
-from loop_anything.runtime.model import Invalid, path, digest
+from loop_anything.runtime.model import Invalid, path, digest, contract
 from loop_anything.runtime.timeline_model import expand
 from loop_anything.runtime.timeline_plan import add_task, build_plan, validate_task_dependencies
 from loop_anything.runtime.task_scope import attach_tasks, owner_for
@@ -11,6 +11,11 @@ from loop_anything.runtime.task_scope import attach_tasks, owner_for
 
 CONTEXT_FIELDS = {'inputs', 'outputs', 'parameters', 'settings', 'detail', 'attempt', 'task_revision',
                   'task', 'transition', 'item', 'index'}
+ROUND_TEMPLATE = {'oneOf': [
+    {'type': 'string', 'pattern': r'\S'},
+    {'type': 'object', 'properties': {'$': {'type': 'string', 'pattern': r'\S'}},
+     'required': ['$'], 'additionalProperties': False},
+]}
 
 
 def validate_routes(bp):
@@ -40,9 +45,13 @@ def validate_routes(bp):
             for field in ('values', 'steps'):
                 if field in route and not isinstance(route[field], dict):
                     raise Invalid('Route ' + field + ' must be an object template', path=here + [field])
-            for field in ('each', 'round'):
-                if field in route and (not isinstance(route[field], str) or not route[field].strip()):
-                    raise Invalid('Route ' + field + ' must be nonempty text', path=here + [field])
+            if 'each' in route and (not isinstance(route['each'], str) or not route['each'].strip()):
+                raise Invalid('Route each must be nonempty text', path=here + ['each'])
+            if 'round' in route:
+                try:
+                    contract(route['round'], ROUND_TEMPLATE, 'Route round')
+                except Invalid as exc:
+                    raise Invalid(str(exc), path=here + ['round']) from None
             if 'when' in route:
                 if not isinstance(route['when'], dict) or not route['when']:
                     raise Invalid('Route when must be a deterministic expression', path=here + ['when'])
@@ -63,7 +72,7 @@ def validate_routes(bp):
                     for child in value.values():references(child, expression)
                 elif isinstance(value, list):
                     for child in value:references(child, expression)
-            for field in ('values', 'steps'):
+            for field in ('values', 'steps', 'round'):
                 references(route.get(field, {}))
             references(route.get('when', {}), True)
             if 'each' in route and route['each'].split('.')[0] not in CONTEXT_FIELDS - {'item', 'index'}:
@@ -115,8 +124,9 @@ def prepare_routes(store, run, execution, report, context):
     actor = owner_for(run, execution['token']) if execution['implementation']['kind'] == 'agent' else None
     for spec in attach_tasks(shadow, reported_tasks(store, shadow, execution, report.get('envelope', {})), execution['task_id'], actor):
         add_task(shadow, spec, {'execution': execution['id']})
+    task_spec = run['tasks'][execution['task_id']]['spec']
     context = dict(context, task={'id': execution['task_id'], 'node': retained['node_id'] if retained else execution['node'],
-                                'outputs': run['tasks'][execution['task_id']]['spec']['outputs']})
+                                 'outputs': task_spec['outputs'], 'round': task_spec.get('round')})
     from loop_anything.runtime.task_refs import resolve_task_references, describe_references
     prepared, firings = [], []
     for route in routes:

@@ -171,12 +171,15 @@ def task_list(run, runtime, owner=None):
         return {'run_id': run['id'], 'revision': run['revision'], 'constraints': run['settings'].get('constraints', ''),
                 'items': [], 'waiting': [], 'has_tasks': False, 'state': run['status'],
                 'owners': [{k: v for k, v in o.items() if k != 'token'} for o in run.get('agent_sessions', [])]}
-    view = copy.deepcopy(run)
-    for tasks in view['tasks'].values():
-        if tasks['status'] in PENDING:
-            _, _, missing = runtime.resolve_inputs(view, tasks)
-            tasks['wait_reasons'] = missing
-            tasks['status'] = 'blocked' if missing else 'held' if gated(view, tasks) else 'ready'
+    # Readiness updates pending Task fields and may append a diagnostic to history.
+    view = dict(run, tasks=run['tasks'].copy(), history=run['history'].copy())
+    for ident, task in run['tasks'].items():
+        if task['status'] not in PENDING:
+            continue
+        pending = view['tasks'][ident] = task.copy()
+        _, _, missing = runtime.resolve_inputs(view, pending)
+        pending['wait_reasons'] = missing
+        pending['status'] = 'blocked' if missing else 'held' if gated(view, pending) else 'ready'
     runtime.diagnose(view)
     items, waiting = [], []
     dispositions = run.get('task_dispositions', {})
@@ -206,7 +209,7 @@ def task_list(run, runtime, owner=None):
                  'node': tasks['spec']['node'], 'reason': node_for(run, tasks['spec']['node'])['instructions']})
         elif tasks['status'] not in ENDED:
             waiting.append({'id': 'task:' + tasks['id'], 'kind': 'waiting', 'task_id': tasks['id'], 'status': tasks['status'],
-                            'reason': tasks.get('wait_reasons') or 'Script, event, approval or pause gate'})
+                            'reason': copy.deepcopy(tasks.get('wait_reasons')) or 'Script, event, approval or pause gate'})
     for diagnostic in view['diagnostics']:
         if diagnostic['kind'] == 'upstream_fault':
             continue

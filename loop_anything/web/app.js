@@ -3,6 +3,16 @@ const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pretty = value => JSON.stringify(value, null, 2);
 
+function hasTextSelection(element){
+  const selection=document.getSelection();
+  return Boolean(selection?.rangeCount&&!selection.isCollapsed&&selection.getRangeAt(0).intersectsNode(element));
+}
+function updateMarkup(element,markup,preserveSelection=false){
+  if(element.lastMarkup===markup||preserveSelection&&hasTextSelection(element))return;
+  element.innerHTML=markup;
+  element.lastMarkup=markup;
+}
+
 function nodePurposeHTML(node){
   const description=typeof node?.description==='string'?node.description.trim():'';
   if(!description)return '';
@@ -30,7 +40,7 @@ $('platform-power-switch').onchange=()=>safely(async()=>{
 });
 let promptDefaults={};
 let progressSignature = '', listSignature = '', inspectSignature = '';
-let runHistoryOffset=0, runViewRequest=null, runViewFailure=null;
+let runViewRequest=null, runViewFailure=null;
 const runViewTimeout=25000;
 const time = t => new Date(t * 1000).toLocaleTimeString('zh-CN', {hour12:false});
 const nodeLabel = id => run?.loop_definition.nodes[id]?.label || id;
@@ -60,15 +70,13 @@ function toast(message,timeout=5500){
   return notice;
 }
 async function safely(fn) { try { await fn(); } catch (error) { toast(error.message); } }
-function runWorkspacePath(id,{tab='task-history',task='',offset=0}={}){
+function runWorkspacePath(id,{tab='task-history',task=''}={}){
   const query=new URLSearchParams({view:'workspace',tab});
   if(task)query.set('task',task);
-  if(offset)query.set('offset',offset);
   return 'runs/'+encodeURIComponent(id)+'?'+query;
 }
 function visibleRunView(){
-  return {tab:activeTab,task:activeTab==='task-history'&&taskNeedsDetail(selectedTask)?selectedTask:'',
-    offset:activeTab==='activity'?runHistoryOffset:0};
+  return {tab:activeTab,task:activeTab==='task-history'&&taskNeedsDetail(selectedTask)?selectedTask:''};
 }
 async function fetchRunView(path,controller){
   let timedOut=false;
@@ -93,20 +101,22 @@ function refreshRunWorkspace(){
   request.promise=fetchRunView(path,controller).then(value=>{
     if(!current())return;
     runViewFailure=null;
-    run=value;renderRun();
+    run=value;renderRun({preserveSelection:true});
   }).catch(async error=>{
     if(!current()||controller.signal.aborted&&error.name!=='TimeoutError')return;
     if(error.status===404){
       run=null;selected=null;await navigateTo({type:'run-list'});return;
     }
     runViewFailure={path,serial,message:error.message};
-    renderInspect();
+    renderInspect({preserveSelection:true});
   })
     .finally(()=>{if(runViewRequest===request)runViewRequest=null;});
   runViewRequest=request;
   return request.promise;
 }
 function showPage() {
+  if(page!=='runs')runMetricsRequest?.abort();
+  if(page!=='monitors')metricRequest?.abort();
   $('settings-page').hidden=page!=='settings';
   $('monitoring-page').hidden=page!=='monitors';
   $('schedules-page').hidden=page!=='schedules';
@@ -114,9 +124,10 @@ function showPage() {
   if($('communication-page'))$('communication-page').hidden=page!=='communication';
   $('workspace').hidden = page !== 'runs' || !run;
   $('runs-page').hidden=page!=='run-list';
+  $('work-overview-page').hidden=page!=='overview';
   $('timelines-page').hidden=page!=='timelines';
   $('timeline-page').hidden=page!=='timeline';
-  const inWork=['timelines','timeline','run-list','runs','monitors','schedules'].includes(page);
+  const inWork=['overview','timelines','timeline','run-list','runs','monitors','schedules'].includes(page);
   $('workbench-header').hidden=!inWork;
   $('workbench-header').classList.toggle('workbench-detail',page==='timeline'||page==='runs');
   $('workbench-nav').classList.toggle('active',inWork);
@@ -136,8 +147,10 @@ async function refresh() {
   if(page==='plans'||page==='rsi')safely(()=>refreshAssignments());
   if(page==='timeline')safely(refreshObservations);
   if(page==='timelines')safely(()=>showWorkLibrary(true));
+  if(page==='overview')refreshWorkOverview();
   if(page==='monitors')refreshMonitoring();
   if(page==='schedules')refreshSchedules();
+  if(page==='runs'&&selected)refreshRunMetrics(selected);
   if (loading) return;
   loading = true;
   try {
@@ -156,13 +169,21 @@ async function refresh() {
 async function selectRun(id) {
   await navigateTo({type:'run',id});
 }
-function renderRun() {
+function renderRun({preserveSelection=false}={}) {
   updateNavigationUI();
-  $('run-title').textContent = run.title;
-  renderRunOutlet();
-  $('run-key').textContent = (run.loop_definition.name || run.loop_definition.id) + ' · v' + run.loop_definition.version;
-  $('run-status').innerHTML = badge(run.status)+(run.identity_read_only?' · 只读历史副本，不接管原执行':'');
-  $('run-id').textContent = run.id+' · '+(run.created_by||'未署名')+(run.archived_at?' · 已归档':'');
+  refreshRunMetrics(run.id);
+  const loopName=run.loop_definition.name||run.loop_definition.id;
+  const metadata={
+    'run-title':run.title??'',
+    'run-key':'v'+run.loop_definition.version,
+    'run-id':run.id+' · '+(run.created_by||'未署名')+(run.archived_at?' · 已归档':''),
+  };
+  for(const [id,text] of Object.entries(metadata)){
+    const field=$(id);
+    if(field.textContent!==text&&(!preserveSelection||!hasTextSelection(field)))field.textContent=text;
+  }
+  $('run-key').title=loopName;
+  updateMarkup($('run-status'),badge(run.status)+(run.identity_read_only?' · 只读历史副本，不接管原执行':''),preserveSelection);
   if($('archive-run'))$('archive-run').textContent=run.archived_at?'取消归档':'归档';
   const simulation = run.simulation ?? Object.values(run.implementations).some(entry => Object.values(implementationOptions(entry)).some(b => b.kind === 'mock' || b.simulation));
   $('simulation-label').hidden = !simulation;
@@ -170,29 +191,31 @@ function renderRun() {
   $('pause-run').textContent = run.status === 'paused' ? '▷ 恢复' : 'Ⅱ 暂停';
   $('pause-run').hidden = $('stop-run').hidden = Boolean(run.superseded_by);
   $('pause-run').disabled = $('stop-run').disabled = ended;
-  const progress=runProgressHTML(run);
-  if(progressSignature!==progress){
-    const opened=$('run-progress').querySelector('details')?.open && $('run-progress').dataset.run===run.id;
-    $('run-progress').innerHTML=progress;progressSignature=progress;$('run-progress').dataset.run=run.id;
-    if(opened && $('run-progress').querySelector('details'))$('run-progress').querySelector('details').open=true;
+  const progress=runningNodesHTML(run);
+  if(progressSignature!==progress&&(!preserveSelection||!hasTextSelection($('run-progress')))){
+    $('run-progress').innerHTML=progress;
+    $('run-progress').hidden=!progress;
+    progressSignature=progress;
   }
-  renderTimelineSettings();
-  if (!['TEXTAREA','INPUT','SELECT'].includes(document.activeElement?.tagName) || !document.activeElement.closest('#inspect')) renderInspect();
-  loadSettings();
+  renderTimelineSettings(preserveSelection);
+  if (!['TEXTAREA','INPUT','SELECT'].includes(document.activeElement?.tagName) || !document.activeElement.closest('#inspect')) renderInspect({preserveSelection});
+  loadSettings(preserveSelection);
 }
-function loadSettings(){
-  $('run-settings-readonly').innerHTML=`${['running','paused'].includes(run.status)&&!run.superseded_by?'<label><input type="checkbox" id="follow-loop-updates" '+(run.follow_loop_updates?'checked':'')+'> 跟随此 Loop 后续发布的版本</label>':''}<p>目标和限制属于独立 Timeline；修改后由 Agent 检查并向用户汇报。</p>${run.timeline_id?'<button data-work-timeline="'+esc(run.timeline_id)+'">查看 Timeline 与进度</button>':''}${run.settings.objective?`<h3>目标</h3><p>${esc(run.settings.objective)}</p>`:''}${run.settings.constraints?`<h3>限制</h3><p>${esc(run.settings.constraints)}</p>`:''}`;
+function loadSettings(preserveSelection){
+  const markup=`${['running','paused'].includes(run.status)&&!run.superseded_by?'<label><input type="checkbox" id="follow-loop-updates" '+(run.follow_loop_updates?'checked':'')+'> 跟随此 Loop 后续发布的版本</label>':''}<p>目标和限制属于独立 Timeline；修改后由 Agent 检查并向用户汇报。</p>${run.timeline_id?'<button data-work-timeline="'+esc(run.timeline_id)+'">查看 Timeline 与进度</button>':''}${run.settings.objective?`<h3>目标</h3><p>${esc(run.settings.objective)}</p>`:''}${run.settings.constraints?`<h3>限制</h3><p>${esc(run.settings.constraints)}</p>`:''}`;
+  updateMarkup($('run-settings-readonly'),markup,preserveSelection);
 }
 function runViewErrorHTML(message){
   return `<div class="notice run-view-error" role="alert"><span>${esc(message)}</span><button data-retry-run-view>重试</button></div>`;
 }
-function renderInspect() {
+function renderInspect({preserveSelection=false}={}) {
   const wanted=visibleRunView();
   const path=runWorkspacePath(run.id,wanted);
   if(runViewRequest&&(runViewRequest.path!==path||runViewRequest.serial!==navigationSerial))runViewRequest.controller.abort();
+  if(preserveSelection&&hasTextSelection($('inspect')))return;
   const error=runViewFailure?.path===path&&runViewFailure.serial===navigationSerial?runViewFailure.message:'';
   const ready=!run.workspace_view||Object.keys(wanted).every(key=>run.workspace_view[key]===wanted[key]);
-  const signature = pretty([run.id,filterNode,wanted,ready,error,run.executions,run.history,run.history_total,run.changed_tasks,run.settings.revision,run.tasks,run.agent_sessions,run.task_dependencies,run.agent_tasks,run.task_dispositions,run.notifications,run.events,run.hook_firings,run.controls_available]);
+  const signature = pretty([run.id,filterNode,wanted,ready,error,run.executions,run.changed_tasks,run.settings.revision,run.tasks,run.agent_sessions,run.task_dependencies,run.agent_tasks,run.task_dispositions,run.notifications,run.events,run.hook_firings,run.controls_available]);
   if(inspectSignature===signature)return;inspectSignature=signature;
   const issues=runAttentionItems(run);
   $('run-task-count').textContent=issues.length||'';
@@ -217,9 +240,14 @@ document.addEventListener('click',event=>safely(async()=>{
   const d=button.dataset;
   if(d.run){await selectRun(d.run);return;}
   if(d.node){filterNode=d.node;activeTab='task-history';inspectSignature='';renderInspect();return;}
-  if(d.tab){activeTab=d.tab;renderInspect();if(button.closest('#attention'))document.querySelector('.run-tabs').scrollIntoView({block:'start'});return;}
+  if(d.tab){
+    activeTab=d.tab;renderInspect();
+    const menu=button.closest('.run-menu');
+    if(menu)menu.open=false;
+    if(menu||button.closest('#attention'))document.querySelector('.run-tabs').scrollIntoView({block:'start'});
+    return;
+  }
   if(d.retryRunView!==undefined){runViewFailure=null;renderInspect();await refreshRunWorkspace();return;}
-  if(d.historyOffset!==undefined){runHistoryOffset=Number(d.historyOffset);renderInspect();return;}
   if(d.validate){const c=catalog.find(x=>x.key===d.validate);const r=await api('validate',c);toast(r.valid?'验证通过 · '+r.warnings.join('；'):r.errors.join('；'));return;}
   const runId=run?.id;
   switch(button.id){

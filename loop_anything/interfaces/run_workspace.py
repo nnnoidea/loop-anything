@@ -2,6 +2,7 @@
 
 import json
 import re
+from collections import defaultdict
 
 from loop_anything.interfaces.agent_tasks import task_list
 from loop_anything.interfaces.run_results import display_results
@@ -141,6 +142,56 @@ def task_summary(task):
     return result
 
 
+def workspace_rounds(run, dependencies):
+    """Read business rounds and recover display groups from recorded route batches."""
+    tasks = run['tasks']
+    annotations = run.get('task_rounds', {})
+    rounds = {
+        ident: label for ident, task in tasks.items()
+        if (label := task['spec'].get('round') or annotations.get(ident))
+    }
+    by_execution = {e['id']: e['task_id'] for e in run['executions']}
+    batches, children = defaultdict(set), defaultdict(set)
+    for ident, task in tasks.items():
+        origin = task.get('origin') or {}
+        source = by_execution.get(origin.get('execution') or origin.get('agent'))
+        if source in tasks:
+            children[source].add(ident)
+        if origin.get('batch_id') and source == task.get('parent_id') and source in tasks:
+            batches[source, origin['batch_id']].add(ident)
+
+    used = set(rounds.values())
+    number = 0
+    for (source, _), batch in sorted(batches.items(), key=lambda group: (
+            tasks[group[0][0]]['created_at'], group[0])):
+        if len(batch) < 3:
+            continue
+        incoming = {ident: batch.intersection(dependencies.get(ident, ())) for ident in batch}
+        sinks = batch.difference(*incoming.values())
+        # With one sink, all of the branches converge inside this recorded batch.
+        if len(sinks) != 1 or sum(not upstream for upstream in incoming.values()) < 2:
+            continue
+        members = batch
+        source_origin = tasks[source].get('origin') or {}
+        if children[source] == batch and not (source_origin.get('batch_id') or source_origin.get('flow_agent')):
+            members = batch | {source}
+        labels = {rounds[ident] for ident in members if ident in rounds}
+        if len(labels) > 1:
+            continue
+        if labels:
+            label = next(iter(labels))
+        else:
+            while True:
+                number += 1
+                label = f'任务批次 {number}'
+                if label not in used:
+                    break
+            used.add(label)
+        for ident in members:
+            rounds.setdefault(ident, label)
+    return rounds
+
+
 def attempt_summary(attempt, node, records, allow_approval=False, include_content=False):
     result = pick(attempt, 'id', 'node', 'task_id', 'attempt', 'status', 'created_at', 'started_at',
                   'completed_at', 'worker_active', 'activity_progress', 'child_run_id', 'child_status',
@@ -268,7 +319,8 @@ def read_workspace(store, runtime, run_id, query):
                             termination_signal=bool(settings.get('termination_signal')),
                             has_notification_command=bool(settings.get('notification_command')))
     attention = task_list(run, runtime)
-    view.update(status=public_status(run), task_dependencies=task_dependencies(run),
+    dependencies = task_dependencies(run)
+    view.update(status=public_status(run), task_dependencies=dependencies,
                 workspace_view={'tab': tab, 'task': '', 'offset': offset},
                 changed_tasks=changed, history=activity_summary(history, run) if history else [], history_total=total,
                 agent_tasks=attention_summary(attention), has_diagnostics=bool(run['diagnostics']),
@@ -286,7 +338,11 @@ def read_workspace(store, runtime, run_id, query):
                                    nodes={key: pick(node, 'label', 'description', 'readout', 'outputs') for key, node in nodes.items()},
                                    records=output_schemas(loop, nodes[waiting['node']]) if waiting else {})
     view['tasks'] = {ident: task_summary(task) for ident, task in run['tasks'].items()}
+    task_rounds = workspace_rounds(run, dependencies)
     for ident, task in run['tasks'].items():
+        display_round = task_rounds.get(ident)
+        if display_round and not task['spec'].get('round'):
+            view['tasks'][ident]['spec']['round'] = display_round
         if task.get('execution_id') and configs.get(task['spec']['node']):
             view['tasks'][ident]['has_node_details'] = True
     if details:

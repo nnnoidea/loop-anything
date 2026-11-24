@@ -24,8 +24,7 @@ test('result charts expose the exact submitted readings to the interactive plot'
   assert.match(html,/data-chart-position="1" data-chart-value="0\.876543"/);
   assert.match(html,/data-chart-label="recall" data-chart-position="1"/);
 });
-test('conditions stay readable and run links reuse existing route',()=>{
-  assert.equal(vm.runInContext("monitorCondition({op:'ge',args:[{path:'gpu.available'},8]})",ctx),'gpu.available ≥ 8');
+test('monitoring run links reuse the existing route',()=>{
   assert.match(vm.runInContext("monitoringRunLink('run-one','One')",ctx),/href="#run\/run-one" data-route-link/);
 });
 test('monitor page does not contain a second Run graph or task details',()=>{

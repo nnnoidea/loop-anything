@@ -500,6 +500,27 @@ print(json.dumps({'event':'completed','envelope':{'outputs':{'result':'fabricate
                     change = view['history'][0]
                     self.assertEqual((change['kind'], change['task_id'], change['note']), ('waiting_user', 'init', note))
 
+    def test_workspace_round_annotations_do_not_edit_task_specs(self):
+        from loop_anything.interfaces.platform_tools import PlatformTools
+        from loop_anything.interfaces.run_workspace import read_workspace
+
+        self.start()
+        self.complete('init', settings={'objective': 'Review'},
+                      tasks=[task_spec('declared', 'reason', round='第 2 轮')])
+        before=self.read()
+        platform=PlatformTools(self.store)
+        request={'run_id':self.id,'operation':'set_task_rounds','request_id':'historical-round',
+                 'arguments':{'rounds':{'init':'决策批次 1'}}}
+        self.assertEqual(platform.call('submit_run_request',request)['result'],{'tasks':1})
+        view=read_workspace(self.store,self.engine.timeline_runtime,self.id,{})
+        self.assertEqual(view['tasks']['init']['spec']['round'],'决策批次 1')
+        self.assertEqual(view['tasks']['declared']['spec']['round'],'第 2 轮')
+        self.assertEqual(self.read()['tasks'],before['tasks'])
+        self.assertEqual(self.read()['executions'],before['executions'])
+        with self.assertRaises(Invalid):
+            platform.call('submit_run_request',dict(request,request_id='override-declared',
+                          arguments={'rounds':{'declared':'第 3 轮'}}))
+
     def test_workspace_shows_why_a_fault_is_waiting_for_user_input(self):
         from loop_anything.interfaces.run_workspace import read_workspace
 

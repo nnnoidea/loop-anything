@@ -8,9 +8,25 @@ let scheduleSnapshot=null, scheduleReading=false;
 
 function scheduleTrigger(definition){
   const repeats=!definition.at && (definition.repeat ?? !definition.conditional);
+  const interval=definition.every>=60&&definition.every%60===0?`${definition.every/60} 分钟`:`${definition.every} 秒`;
   const trigger=definition.at ? `指定时间 ${scheduleTime(Date.parse(definition.at)/1000)}` :
-    `${definition.conditional?'每隔':'间隔'} ${definition.every} 秒${definition.conditional?'检查条件':''}`;
+    `每 ${interval}${definition.conditional?'检查条件':''}`;
   return `${trigger} · ${repeats?'重复':'单次'}${definition.until?' · 截止 '+scheduleTime(Date.parse(definition.until)/1000):''}`;
+}
+
+function observedScheduleCard(task){
+  const {definition,runtime}=task;
+  const result=runtime.last_result;
+  return `<article class="catalog-card observed-schedule">
+    <div class="library-card-top"><div><h2 class="card-title">${esc(definition.name)}</h2>
+      <p class="muted small">${esc(scheduleTrigger(definition))}</p></div>
+      <span class="badge ${esc(runtime.status)}">${esc(scheduleLabels[runtime.status] || runtime.status)}</span></div>
+    ${definition.description?`<p class="card-description">${esc(definition.description)}</p>`:''}
+    <dl class="schedule-times">
+      ${runtime.status==='waiting'&&runtime.next_at?`<div><dt>${definition.conditional?'下次检查':'下次执行'}</dt><dd>${scheduleTime(runtime.next_at)}</dd></div>`:''}
+      <div><dt>${result?.returncode===0?'最近成功':'最近执行'}</dt><dd>${scheduleTime(result?.at)}${result?.returncode!=null&&result.returncode!==0?' · 执行失败':''}</dd></div>
+    </dl>
+  </article>`;
 }
 
 function scheduleCard(task, open){
@@ -57,8 +73,9 @@ async function refreshSchedules(){
     const list=$('schedules-list');
     const open=new Set(Array.from(list.querySelectorAll('details[open]'),element=>element.dataset.scheduleResult));
     const focused=document.activeElement?.dataset.scheduleId;
-    list.innerHTML=data.tasks.map(task=>scheduleCard(task,open.has(task.id))).join('') ||
-      '<p class="empty-inline">还没有登记任务。请用 Agent 或 CLI 把任务登记到上面的目录。</p>';
+    list.innerHTML=(data.observed||[]).map(observedScheduleCard).join('')+
+      data.tasks.map(task=>scheduleCard(task,open.has(task.id))).join('') ||
+      '<p class="empty-inline">还没有登记定时任务。</p>';
     if(focused)scheduleButton(focused)?.focus({preventScroll:true});
   }catch(error){
     if(page==='schedules'){

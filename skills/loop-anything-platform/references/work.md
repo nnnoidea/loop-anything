@@ -90,6 +90,14 @@ the original process is alive. Missing/failed/unknown sessions are explicit;
 resume_work_session requires checking that the prior process stopped. Never
 silently replace an unavailable session. Another Agent can continue the work from its Timeline.
 
+On the planning page, **发送指令** resumes the original Agent after its process
+exits, including plans that are waiting, completed or stopped. The instruction
+is recorded on the same Timeline. The resumed Agent checks registered waits
+and cancels ones superseded by the new instruction. On the local page, **停止规划** cancels the
+plan's pending and ready waits after the Agent exits. Existing Runs and their
+external jobs keep their own lifecycle. To wait again after a cancellation,
+register a new wait key.
+
 ## Monitor scripts and instances
 
 Users may keep scripts inside a Loop using existing command/observe/event
@@ -104,6 +112,9 @@ positive interval and a stable request_id. An optional run_id associates the
 instance with one experiment/Run; omitting it creates a standing monitor.
 Each instance snapshots the script and owns its own results. Registering a
 definition does not create a standing instance.
+Set show_on_dashboard=true when the user should see the instance. The default
+keeps it in Agent tools only. set_monitor_visibility changes this setting for an
+existing instance and leaves its sampling and waits intact.
 
 Each check receives JSON {monitor_id,run_id,parameters} on stdin. It returns one
 JSON object on stdout. Business fields are arbitrary, such as available_gpu,
@@ -126,9 +137,12 @@ original explicit-start behavior.
 ## Monitoring overview
 
 read_monitor_dashboard is read-only and returns compact Run states (paged),
-monitor samples, pending waits and registered definitions. It never polls or
-starts a script. The webpage links to the existing Run view for task/flow detail.
-No application-specific monitoring scripts are bundled or registered by default.
+saved result curves, monitor samples, external execution readings, pending
+waits and registered definitions. The webpage requests dashboard_only=true to
+receive Run states, result curves and explicitly displayed monitor instances.
+The script library lists the registered definitions used by those instances.
+Execution readings belong to the Run detail page. Agents can read pending
+waits through their normal tools. Reading the overview never starts a script.
 
 Script definitions may optionally declare metrics=[{key,label,unit}]; keys may
 address nested fields with dots. Units are never inferred. Set optional `display` to

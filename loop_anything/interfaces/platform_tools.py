@@ -6,6 +6,7 @@ from loop_anything.interfaces.agent_tasks import RunTools, object_schema
 from loop_anything.runtime.timeline_model import validate_v2
 from loop_anything.runtime.model import Invalid, Conflict, contract, check_schema
 from loop_anything.runtime.node_details import DETAILS
+from loop_anything.runtime.routing import ROUND_TEMPLATE
 from loop_anything.runtime import shared_resources
 from loop_anything.runtime.store import uid
 from loop_anything.runtime.implementations import options, default_id
@@ -46,7 +47,7 @@ SCENARIO = object_schema({
 SCENARIOS = {'type':'array','maxItems':20,'items':SCENARIO}
 ROUTES = {'type': 'array', 'items': {'oneOf': [
     object_schema({'id': TEXT, 'event': TEXT, 'plan': TEXT, 'values': OBJ,
-                   'each': TEXT, 'when': OBJ, 'steps': OBJ, 'round': TEXT}, ['id', 'event', 'plan', 'values']),
+                   'each': TEXT, 'when': OBJ, 'steps': OBJ, 'round': ROUND_TEMPLATE}, ['id', 'event', 'plan', 'values']),
     object_schema({'id': TEXT, 'event': TEXT, 'flow_agent': {'const': True}, 'when': OBJ}, ['id', 'event', 'flow_agent'])]}}
 
 

@@ -1,5 +1,8 @@
 'use strict';
 let monitoringData=null,monitoringBusy=false,monitoringLast=0,monitoringOffset=0,monitoringTab='overview',monitoringSignature='';
+let metricGroup='active',metricOffset=0,metricRequest=null,metricLast=0;
+const metricPages=new Map();
+const metricPageSize=12;
 const monitorNames={running:'采集中',stopped:'已停止采集',completed:'采集结束',unknown:'执行待核实'};
 const collectionNames={fresh:'有效',error:'采集失败',empty:'尚无数据',stale:'数据过期',unknown:'状态未知',stopped:'已停止'};
 function monitorAge(at){if(!at)return '尚未采集';const n=Math.max(0,Math.floor(Date.now()/1000-at));return n<60?n+' 秒前':n<3600?Math.floor(n/60)+' 分钟前':new Date(at*1000).toLocaleString('zh-CN');}
@@ -38,12 +41,6 @@ document.addEventListener('toggle',({target})=>{
   if(target.open)refreshMonitorTrends();
 },true);
 function monitoringRunLink(id,title){return `<a href="#run/${encodeURIComponent(id)}" data-route-link>${esc(title||id)}</a>`;}
-function monitorCondition(expr){
-  if(!expr||typeof expr!=='object')return typeof expr==='string'?expr:String(expr);
-  if(expr.path)return Array.isArray(expr.path)?expr.path.join('.'):expr.path;
-  const args=(expr.args||[]).map(monitorCondition),symbol={eq:'＝',ge:'≥',le:'≤',and:'且',or:'或',add:'＋'};
-  return symbol[expr.op]?args.join(' '+symbol[expr.op]+' '):expr.op+'('+args.join(', ')+')';
-}
 // Labels such as "queue A · total" share a row when several resources report
 // the same measures. Other label formats keep their original reading order.
 function metricMatrix(metrics) {
@@ -188,55 +185,113 @@ document.addEventListener('change',event=>{
   refreshMonitorTrends();
 });
 
-function resultMonitorCard(chart){
-  const timeline=routeHash({type:'timeline',id:chart.timeline_id});
+function resultMonitorCard(chart, showRun=true){
   return `<article class="monitor-card result-monitor-card" data-result-monitor-run="${esc(chart.run_id)}">
-    <header class="monitor-card-heading"><h3>${monitoringRunLink(chart.run_id,chart.run_title)}</h3>
-    <a href="${esc(timeline)}" data-route-link>查看 Timeline</a></header>
-    <p class="result-monitor-label">${esc(chart.name)}</p>
+    <header class="monitor-card-heading"><h3>${showRun?monitoringRunLink(chart.run_id,chart.run_title):esc(chart.name)}</h3>
+    ${showRun?navLink({type:'timeline',id:chart.timeline_id},'查看 Timeline'):''}</header>
+    ${showRun?`<p class="result-monitor-label">${esc(chart.name)}</p>`:''}
     ${chart.summary?`<p class="small muted">${esc(chart.summary)}</p>`:''}
     ${observationFigure(chart.series)}
-    <small class="muted">更新于 ${esc(runDate(chart.at))}</small>
+    ${showRun?`<small class="muted">更新于 ${esc(runDate(chart.at))}</small>`:''}
   </article>`;
 }
 
-function externalMonitorGroups(items,showEmpty=true){
-  const runs=new Map();
-  for(const item of items){
-    if(!runs.has(item.run_id))runs.set(item.run_id,new Map());
-    const nodes=runs.get(item.run_id);
-    if(!nodes.has(item.node))nodes.set(item.node,[]);
-    nodes.get(item.node).push(item);
+let runMetricsRequest=null,runMetricsLast=0;
+async function refreshRunMetrics(id){
+  const root=$('run-metrics');
+  if(root.dataset.run!==id){
+    runMetricsRequest?.abort();
+    root.dataset.run=id;
+    root.hidden=true;
+    root.innerHTML='';
+    root.dataset.signature='';
+    runMetricsLast=0;
   }
-  function state(e){
-    if(['completed','cancelled','skipped','terminated','fault'].includes(e.status))return labels[e.status]||e.status;
-    if(e.error)return '采集异常';
-    const raw=e.business_status;
-    return ({RUNNING:'运行中',PENDING:'等待中',QUEUED:'排队中',FAILED:'失败',SUCCEEDED:'成功',COMPLETED:'已完成'})[String(raw).toUpperCase()]||raw||labels[e.status]||e.status;
-  }
-  function sample(e){
-    const facts=TaskHistory.readings(e.readout,e);
-    const time=e.sampled_at;
-    const link=routeHash({type:'run',id:e.run_id,task:e.task_id});
-    const identity=[e.round,e.ref||e.external_id||e.task_id].filter(Boolean).join(' · ');
-    const values=facts.map(f=>`<div><dt>${esc(f.label)}</dt><dd>${esc(f.value)}<small>${esc(f.unit||'')}</small></dd></div>`).join('');
-    return `<div class="external-reading"><dl class="node-facts">${values}</dl><div><a href="${esc(link)}" data-route-link>${esc(identity)}</a><small>${esc(state(e))}${time?' · '+esc(runDate(time))+' 回报':''}</small></div></div>`;
-  }
-  let without=0;
-  const cards=Array.from(runs,([id,nodes])=>{
-    const sections=[];
-    for(const [node,list] of nodes){
-      const reported=list.filter(e=>TaskHistory.readings(e.readout,e).length);
-      without+=list.length-reported.length;
-      if(!reported.length)continue;
-      reported.sort((a,b)=>(b.sampled_at||0)-(a.sampled_at||0));
-      const first=reported[0],rest=reported.slice(3);
-      sections.push(`<section><header><strong>${esc(first.label||node)}</strong></header>${reported.slice(0,3).map(sample).join('')}${rest.length?`<details data-external-group="${esc(JSON.stringify([id,node]))}"><summary>其他执行 · ${rest.length}</summary>${rest.map(sample).join('')}</details>`:''}</section>`);
+  if((runMetricsRequest&&!runMetricsRequest.signal.aborted)||Date.now()-runMetricsLast<5000)return;
+  const controller=new AbortController();
+  runMetricsRequest=controller;runMetricsLast=Date.now();
+  let timedOut=false;
+  const timeout=setTimeout(()=>{timedOut=true;controller.abort();},runViewTimeout);
+  try{
+    const {charts}=await api('runs/'+encodeURIComponent(id)+'/metrics',undefined,{signal:controller.signal});
+    if(page!=='runs'||selected!==id||controller.signal.aborted)return;
+    const content=charts.length?`<h2>运行指标</h2><div class="run-metrics-grid">${charts.map(chart=>resultMonitorCard(chart,false)).join('')}</div>`:'';
+    if(root.dataset.signature!==content||(!content&&root.innerHTML)){
+      root.innerHTML=content;
+      root.dataset.signature=content;
     }
-    const first=nodes.values().next().value[0];
-    return sections.length?`<article class="monitor-card external-group"><h3>${monitoringRunLink(id,first.run_title)}</h3>${sections.join('')}</article>`:'';
-  }).join('');
-  return cards+(without&&showEmpty?`<small class="monitor-empty">${without} 项外部执行尚无指标回报</small>`:'');
+    root.hidden=!content;
+  }catch(error){
+    if((!controller.signal.aborted||timedOut)&&page==='runs'&&selected===id&&runMetricsRequest===controller&&!root.innerHTML){
+      root.innerHTML='<h2>运行指标</h2><p class="small muted">暂时无法读取指标，正在重试。</p>';
+      root.hidden=false;
+    }
+  }finally{
+    clearTimeout(timeout);
+    if(runMetricsRequest===controller)runMetricsRequest=null;
+  }
+}
+
+function selectMetricGroup(group){
+  if(metricGroup!==group)changeMetricPage(group,0);
+}
+function changeMetricPage(group, offset){
+  metricRequest?.abort();
+  metricGroup=group;metricOffset=offset;
+  $('metric-status').hidden=true;
+  renderMetricGroup();
+}
+function renderMetricGroup(){
+  const root=$('monitoring-instances');
+  document.querySelectorAll('[data-metric-group]').forEach(button=>{
+    const selected=button.dataset.metricGroup===metricGroup;
+    button.classList.toggle('active',selected);
+    button.setAttribute('aria-pressed',String(selected));
+  });
+  const cached=metricPages.get(metricGroup);
+  const metricPage=cached?.offset===metricOffset?cached:null;
+  const charts=metricPage?.result_charts||[];
+  const cards=charts.map(chart=>resultMonitorCard(chart)).join('');
+  const empty=metricPage?(metricGroup==='finished'?'暂无已结束的 Run 曲线。':'暂无进行中的 Run 曲线。'):
+    $('metric-status').hidden?'正在读取指标…':'';
+  const html=cards||(empty?`<p class="monitor-empty">${empty}</p>`:'');
+  if(root.dataset.signature!==html){
+    root.innerHTML=html;
+    root.dataset.signature=html;
+  }
+  const total=metricPage?.total_runs||0, limit=metricPage?.limit||metricPageSize;
+  $('metric-pagination').hidden=total<=limit;
+  $('metric-page-number').textContent=total?`${metricOffset+1}–${metricOffset+metricPage.runs.length} / ${total}`:'0';
+  $('metric-prev').disabled=!metricOffset;
+  $('metric-next').disabled=metricOffset+limit>=total;
+}
+
+async function refreshMetricPage(force){
+  if(metricRequest&&!metricRequest.signal.aborted||!force&&Date.now()-metricLast<5000)return;
+  const group=metricGroup,offset=metricOffset;
+  const controller=new AbortController();
+  metricRequest=controller;metricLast=Date.now();
+  let timedOut=false;
+  const timeout=setTimeout(()=>{timedOut=true;controller.abort();},runViewTimeout);
+  try{
+    const data=await platformCall('read_monitor_dashboard',
+      {offset,limit:metricPageSize,run_group:group,charts_only:true,dashboard_only:true},{signal:controller.signal});
+    if(page!=='monitors'||controller.signal.aborted)return;
+    metricPages.set(group,data);
+    metricOffset=data.offset;
+    $('metric-status').hidden=true;
+    renderMetricGroup();
+  }catch(error){
+    if(page==='monitors'&&metricRequest===controller&&(!controller.signal.aborted||timedOut)){
+      const status=$('metric-status');
+      status.textContent=timedOut?'读取指标超时，将自动重试。':'读取指标失败 · '+error.message;
+      status.hidden=false;
+      renderMetricGroup();
+    }
+  }finally{
+    clearTimeout(timeout);
+    if(metricRequest===controller)metricRequest=null;
+  }
 }
 
 function renderMonitoring(){
@@ -244,7 +299,7 @@ function renderMonitoring(){
   const d=monitoringData;
   $('monitoring-overview').hidden=monitoringTab!=='overview';$('monitoring-scripts').hidden=monitoringTab!=='scripts';
   document.querySelectorAll('[data-monitor-tab]').forEach(b=>{b.classList.toggle('active',b.dataset.monitorTab===monitoringTab);b.setAttribute('aria-selected',String(b.dataset.monitorTab===monitoringTab));});
-  const signature=JSON.stringify([d.counts,d.runs,d.monitors,d.result_charts,d.external,d.waits,d.scripts,monitoringOffset]);
+  const signature=JSON.stringify([d.counts,d.runs,d.monitors,d.scripts,monitoringOffset]);
   $('monitoring-updated').textContent='更新于 '+new Date(d.at*1000).toLocaleTimeString('zh-CN',{hour12:false});
   document.querySelectorAll('#monitoring-page [data-monitor-at]').forEach(e=>{e.textContent=monitorAge(Number(e.dataset.monitorAt));});
   if(signature===monitoringSignature){refreshMonitorTrends();return;}
@@ -254,28 +309,30 @@ function renderMonitoring(){
   $('monitoring-page-number').textContent=d.total_runs?`${d.offset+1}–${d.offset+d.runs.length} / ${d.total_runs}`:'0 条';
   $('monitoring-prev').disabled=d.offset===0;$('monitoring-next').disabled=d.offset+d.runs.length>=d.total_runs;
   $('monitoring-pagination').hidden=d.total_runs<=d.limit;
-  $('monitoring-standing').innerHTML=d.monitors.filter(m=>!m.run_id).map(monitorCard).join('')||'<p class="monitor-empty">尚未接入常态监控。用户或团队可以注册自己的资源监控脚本。</p>';
-  const instances=d.monitors.filter(m=>m.run_id).map(monitorCard).join('');
-  const results=(d.result_charts||[]).map(resultMonitorCard).join('');
-  const instancesRoot=$('monitoring-instances');
-  const opened=new Set([...instancesRoot.querySelectorAll('[data-external-group][open]')].map(el=>el.dataset.externalGroup));
-  instancesRoot.innerHTML=results+instances+externalMonitorGroups(d.external,!results)||'<p class="monitor-empty">尚无 Run 监控实例。</p>';
-  for(const el of instancesRoot.querySelectorAll('[data-external-group]'))el.open=opened.has(el.dataset.externalGroup);
-  $('monitoring-waits-title').textContent='等待条件 · '+d.waits.length;
-  $('monitoring-waits').innerHTML=d.waits.map(w=>`<div class="monitor-wait"><div><strong>${esc(w.message||'等待条件满足后唤醒 Agent')}</strong> <span class="muted">${w.state==='ready'?'条件已满足，待会话处理':'等待中'}</span></div><p>${esc(monitorCondition(w.condition))}</p><p class="small">${Object.entries(w.sources).map(([name,s])=>s.kind==='monitor'?`<button class="monitor-detail-button" data-monitor-detail="${esc(s.id)}">${esc(name)} · 监控</button>`:monitoringRunLink(s.id,name)).join(' · ')} · <button data-work-timeline="${esc(w.timeline_id)}">查看 Timeline</button></p>${w.error?`<p class="monitor-warning small">当前无法判断：${esc(w.error)}</p>`:''}</div>`).join('')||'<p class="muted">当前没有待处理的条件等待。</p>';
-  $('monitoring-script-list').innerHTML=d.scripts.length?`<div class="monitor-table-wrap"><table class="monitor-table"><thead><tr><th>脚本定义</th><th>版本</th><th>实例</th></tr></thead><tbody>${d.scripts.map(s=>`<tr><td>${esc(s.description||s.id)}<small>${esc(s.id)}</small></td><td>${s.revision}</td><td>${s.instances}</td></tr>`).join('')}</tbody></table></div>`:'<p class="monitor-empty">脚本库为空。这里不预置通用 GPU 或实验脚本，由用户或团队提供自己的实现。</p>';
+  $('monitoring-standing').innerHTML=d.monitors.filter(m=>!m.run_id).map(monitorCard).join('')||'<p class="monitor-empty">暂无展示中的常态监控。</p>';
+  const runMonitors=d.monitors.filter(m=>m.run_id);
+  $('monitoring-run-monitors').innerHTML=runMonitors.map(monitorCard).join('');
+  $('monitoring-run-monitor-section').hidden=!runMonitors.length;
+  $('monitoring-script-list').innerHTML=d.scripts.length?`<div class="monitor-table-wrap"><table class="monitor-table"><thead><tr><th>脚本定义</th><th>版本</th><th>展示实例</th></tr></thead><tbody>${d.scripts.map(s=>`<tr><td>${esc(s.description||s.id)}<small>${esc(s.id)}</small></td><td>${s.revision}</td><td>${s.instances}</td></tr>`).join('')}</tbody></table></div>`:'<p class="monitor-empty">暂无用于面板展示的已注册脚本。</p>';
   refreshMonitorTrends();
 }
 async function refreshMonitoring(force=false){
-  if(page!=='monitors'||monitoringBusy||(!force&&Date.now()-monitoringLast<5000))return;
-  monitoringBusy=true;monitoringLast=Date.now();const requestedOffset=monitoringOffset;
+  if(page!=='monitors')return;
+  refreshMetricPage(force);
+  if(monitoringBusy||(!force&&Date.now()-monitoringLast<5000))return;
+  monitoringBusy=true;monitoringLast=Date.now();
+  const requestedOffset=monitoringOffset;
   try{
-    const data=await platformCall('read_monitor_dashboard',{offset:monitoringOffset,limit:20});
+    const data=await platformCall('read_monitor_dashboard',
+      {offset:requestedOffset,limit:20,include_charts:false,dashboard_only:true},{signal:AbortSignal.timeout(runViewTimeout)});
     if(page!=='monitors'||requestedOffset!==monitoringOffset)return;
     monitoringOffset=data.offset;monitoringData=data;$('monitoring-error').hidden=true;renderMonitoring();
   }catch(error){
     if(page==='monitors'){$('monitoring-error').hidden=false;$('monitoring-error').textContent='更新失败，以下为上次读取的数据：'+error.message;}
-  }finally{monitoringBusy=false;if(page==='monitors'&&requestedOffset!==monitoringOffset)refreshMonitoring(true);}
+  }finally{
+    monitoringBusy=false;
+    if(page==='monitors'&&requestedOffset!==monitoringOffset&&monitoringData?.offset!==monitoringOffset)refreshMonitoring(true);
+  }
 }
 function monitorTrend(samples,metric){
   return monitorPlot(samples.map(s=>({at:s.at,value:!s.error?monitorValue(s.data,metric.key):null})),metric);
@@ -306,6 +363,13 @@ document.addEventListener('click',event=>safely(async()=>{
   const b=event.target.closest('button');if(!b)return;
   if(b.id==='monitoring-refresh')await refreshMonitoring(true);
   if(b.dataset.monitorTab){monitoringTab=b.dataset.monitorTab;renderMonitoring();}
+  if(b.dataset.metricGroup&&b.dataset.metricGroup!==metricGroup){
+    await navigateTo({type:'monitors',group:b.dataset.metricGroup});
+  }
+  if(b.id==='metric-prev'||b.id==='metric-next'){
+    changeMetricPage(metricGroup,Math.max(0,metricOffset+(b.id==='metric-next'?metricPageSize:-metricPageSize)));
+    await refreshMetricPage(true);
+  }
   if(b.dataset.monitorDetail)await openMonitorDetail(b.dataset.monitorDetail);
   if(b.id==='monitoring-prev'||b.id==='monitoring-next'){monitoringOffset=Math.max(0,monitoringOffset+(b.id==='monitoring-next'?20:-20));await refreshMonitoring(true);}
 }));

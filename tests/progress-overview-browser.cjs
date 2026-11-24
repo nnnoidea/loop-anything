@@ -24,6 +24,11 @@ withPlatform(async({url,page,tool,api,startRun})=>{
   const old=await tool('start_run',{key,request_id:randomUUID(),title:'首批验证',objective:'比较 A、B 两组的准确率与基线，核对每轮验证结果。'});
   await api('runs/'+old.run_id+'/command',{action:'terminate'});
   const run=await tool('start_run',{key,timeline_id:old.timeline_id,request_id:randomUUID(),title:'多轮实验 · 结果核对'});
+  const runOwner=await tool('acquire_run',{run_id:run.run_id});
+  try{
+    await tool('update_run_method',{run_id:run.run_id,token:runOwner.token,observations:{'运行指标样例':{on:null,steps:[{kind:'command',
+      command:report({series:[{label:'准确率',points:[[1,82],[2,87.5]]}]})}]}}});
+  }finally{await tool('finish',{run_id:run.run_id,token:runOwner.token});}
   const changes=[];
   for(let round=1;round<=6;round++)for(const batch of ['A','B'])for(const node of Object.keys(nodes)){
     const ref=node+'-'+batch+'-'+round, args={ref,key:ref,node_id:node,inputs:{},round:'第 '+round+' 轮'};
@@ -96,20 +101,34 @@ withPlatform(async({url,page,tool,api,startRun})=>{
     assert.equal(requests,1);
   }finally{release();}
   const hero=page.locator('#run-progress');
-  await hero.getByText('找不到文件或目录 official_aggregate.json。',{exact:true}).waitFor();
+  await hero.getByRole('link',{name:/训练模型.*train-A-6/}).waitFor();
   await page.unroute(workspaceURL);
-  assert(!(await hero.innerText()).includes('Traceback'));
+  assert.equal(await hero.getByRole('link').count(),2);
+  assert(!/后续已安排|评估输出|找不到文件/.test(await hero.innerText()));
+  assert.equal(await page.getByText('多轮实验 · 结果核对',{exact:true}).locator('visible=true').count(),1);
+  await hero.getByRole('link',{name:/训练模型.*train-A-6/}).click();
+  await page.locator('#task-detail').getByRole('heading',{name:'训练模型',exact:true}).waitFor();
+  await page.getByRole('button',{name:'关闭节点详情'}).click();
   const graph=page.locator('.process-canvas');
   const toggles=graph.locator('[data-round-toggle]');
   assert.equal(await toggles.count(),6);
-  assert.equal(await graph.locator('[data-task-row]').count(),3);
+  assert.equal(await graph.locator('[data-task-row]').count(),0);
   const third=graph.locator('[data-round-toggle="第 3 轮"]');
+  const rowOf=locator=>locator.evaluate(el=>el.closest('[data-graph-row]').dataset.graphRow);
+  const thirdRow=await rowOf(third);
+  const fourth=graph.locator('[data-round-toggle="第 4 轮"]');
+  const fourthX=(await fourth.boundingBox()).x;
   await third.click();
   assert.equal(await third.getAttribute('aria-expanded'),'true');
-  assert.equal(await graph.locator('[data-task-row]').count(),9);
+  assert.equal(await graph.locator('[data-task-row]').count(),6);
   const frame=graph.getByRole('region',{name:'第 3 轮',exact:true});
+  assert.equal(await rowOf(frame),thirdRow);
+  assert(Math.abs((await fourth.boundingBox()).x-fourthX)<1);
   assert.equal(await frame.locator('[data-task-row]').count(),6);
   assert.equal(await frame.locator('[data-edge-kind="dependency"]').count(),4);
+  const ready=frame.locator('[data-task-row]').filter({hasText:'prepare-A-3'});
+  const score=frame.locator('[data-task-row]').filter({hasText:'score-A-3'});
+  assert((await score.boundingBox()).x>(await ready.boundingBox()).x);
   const incoming=graph.locator('svg').first().locator('[data-edge-to="$round:第 3 轮"]');
   assert.equal(await incoming.count(),1);
   assert.equal(await incoming.locator('title').textContent(),'4 条执行依赖');
@@ -123,12 +142,44 @@ withPlatform(async({url,page,tool,api,startRun})=>{
   assert(taskDetail.executions.every(e=>omitted.every(key=>!Object.hasOwn(e,key))));
   assert(taskDetail.executions.some(e=>e.task_id===memberId&&e.output_readout.some(r=>r.value===87.5)));
   assert(!JSON.stringify(taskDetail).includes('/scratch/'));
+  const cardRef=member.locator('.task-card-ref');
+  await cardRef.scrollIntoViewIfNeeded();
+  const textBounds=await cardRef.evaluate(el=>{
+    const range=document.createRange();range.selectNodeContents(el);
+    return range.getBoundingClientRect().toJSON();
+  });
+  const textY=textBounds.y+textBounds.height/2;
+  await page.mouse.move(textBounds.left,textY);
+  await page.mouse.down();
+  await page.mouse.move(textBounds.right,textY,{steps:8});
+  await page.mouse.up();
+  assert.equal(await page.evaluate(()=>getSelection().toString()),'score-A-3');
+  assert.equal(await page.locator('#task-detail').isVisible(),false);
   await member.click();
   await page.getByRole('heading',{name:'任务关系与推进'}).waitFor();
   assert(await page.locator('.task-flow').getByRole('button',{name:'训练模型 · train-A-3'}).isVisible());
   await page.locator('#task-detail .node-result').getByText('验证准确率',{exact:true}).waitFor();
   assert.match(await page.locator('#task-detail .node-result').innerText(),/87.5 %/);
   assert.equal(await page.locator('#inspect [data-task-result]').count(),0);
+  const resultValue=page.locator('#task-detail .node-result-readings dd').first();
+  await resultValue.evaluate(el=>{
+    const selection=getSelection(),range=document.createRange();
+    range.selectNodeContents(el);selection.removeAllRanges();selection.addRange(range);
+  });
+  const runWorkspaceRequest=requestURL=>requestURL.pathname===new URL(runURL).pathname&&
+    requestURL.searchParams.get('view')==='workspace'&&requestURL.searchParams.get('tab')==='task-history';
+  await page.route(runWorkspaceRequest,async route=>{
+    const response=await route.fetch(),updated=await response.json();
+    updated.created_by='刷新到达';
+    const attempt=updated.executions.find(e=>e.task_id===memberId&&e.output_readout.some(r=>r.label==='验证准确率'));
+    attempt.output_readout.find(r=>r.label==='验证准确率').value=88.5;
+    await route.fulfill({json:updated});
+  });
+  await page.locator('#run-id').getByText('刷新到达',{exact:false}).waitFor();
+  assert.equal(await page.evaluate(()=>getSelection().toString()),'87.5 %');
+  await page.evaluate(()=>getSelection().removeAllRanges());
+  await resultValue.getByText('88.5 %',{exact:true}).waitFor();
+  await page.unroute(runWorkspaceRequest);
   await page.reload();
   await page.locator('#task-detail').getByRole('heading',{name:'评估输出',exact:true}).waitFor();
   assert.equal(await page.locator('#task-detail').getAttribute('data-task'),memberId);
@@ -137,36 +188,15 @@ withPlatform(async({url,page,tool,api,startRun})=>{
   assert.equal(await third.getAttribute('aria-expanded'),'true');
   assert.equal(await page.locator('#task-detail').isVisible(),false);
   await third.click();
-  assert.equal(await graph.locator('[data-task-row]').count(),3);
-  const activityURL=runURL+'?view=workspace&tab=activity';
-  const changesTab=page.getByRole('button',{name:'关键变更',exact:true});
-  const activityEntry=page.locator('.run-activity').getByText('暂停运行',{exact:true});
-  const activityError=page.locator('#inspect .run-view-error');
-  await page.route(activityURL,route=>route.fulfill({status:502,json:{error:'暂时无法读取关键变更'}}),{times:1});
-  await changesTab.click();
-  await activityError.getByText('暂时无法读取关键变更',{exact:true}).waitFor();
-  await activityError.getByRole('button',{name:'重试',exact:true}).click();
-  await activityEntry.waitFor();
-  await page.getByRole('button',{name:'运行过程',exact:true}).click();
-  let releaseActivity;
-  const heldActivity=new Promise(resolve=>{releaseActivity=resolve;});
-  await page.route(activityURL,async route=>{await heldActivity;await route.abort().catch(()=>{});},{times:1});
-  await page.evaluate(()=>{
-    window.testOriginalSetTimeout=window.setTimeout;
-    window.setTimeout=(callback,delay,...args)=>window.testOriginalSetTimeout(callback,delay===runViewTimeout?120:delay,...args);
-  });
-  try{
-    await changesTab.click();
-    await activityError.getByText('读取运行详情超时。',{exact:true}).waitFor();
-    await activityEntry.waitFor();
-    assert.equal(await activityError.count(),0);
-  }finally{
-    releaseActivity();
-    await page.evaluate(()=>{window.setTimeout=window.testOriginalSetTimeout;delete window.testOriginalSetTimeout;});
-  }
+  assert.equal(await graph.locator('[data-task-row]').count(),0);
+  assert.equal(await page.getByRole('button',{name:'关键变更',exact:true}).count(),0);
+  assert.equal(await page.getByText('节点进度',{exact:true}).count(),0);
+  await page.locator('.run-menu summary').click();
+  await page.locator('.run-menu').getByRole('button',{name:'通知与控制',exact:true}).click();
+  await page.locator('#inspect').getByText(/通知出口/).first().waitFor();
   assert.equal(await page.locator('#inspect pre').count(),0);
   await page.getByRole('button',{name:'运行过程',exact:true}).click();
-  await graph.locator('[data-task-row]').filter({hasText:'score-B-6'}).locator('.task-card-main').click();
+  await page.locator('[data-graph-current]').click();
   await page.locator('#task-detail').getByText('找不到文件或目录 official_aggregate.json。',{exact:true}).waitFor();
   assert(!(await page.locator('#task-detail').innerText()).includes('Traceback'));
   const failedId=await page.locator('#task-detail').getAttribute('data-task');
@@ -174,9 +204,9 @@ withPlatform(async({url,page,tool,api,startRun})=>{
   assert(!JSON.stringify(failedView).includes('Traceback'));
   assert((await (await fetch(runURL)).json()).executions.some(e=>e.task_id===failedId&&e.error?.includes('Traceback')));
   await page.locator('#task-round').selectOption('第 6 轮');
-  assert.equal(await graph.locator('[data-task-row]').count(),3);
+  assert.equal(await graph.locator('[data-task-row]').count(),0);
   assert.equal(await graph.locator('.round-card').count(),1);
-  assert.equal(await graph.locator('[data-status="fault"]').count(),1);
+  assert.match(await graph.locator('.round-card').innerText(),/执行失败 1/);
   await page.locator('#task-round').selectOption('');
   await page.locator('[data-task-order="time"]').click();
   await page.locator('.process-list [data-task-row]').nth(35).waitFor({state:'attached'});
@@ -188,9 +218,25 @@ withPlatform(async({url,page,tool,api,startRun})=>{
     await tool('update_run_method',{run_id:scored.run_id,token,observations:{'评测结果':{on:null,steps:[{kind:'command',
       command:report({summary:'两次评测',series:[{label:'准确率',points:[[1,82],[2,87.5]]}]})}]}}});
   }finally{await tool('finish',{run_id:scored.run_id,token});}
+  await tool('register_monitor',{script_id:'test-standing',revision:0,script:{description:'可用资源',command:report({count:8})}});
+  await tool('start_monitor',{request_id:randomUUID(),script_id:'test-standing',interval:60,show_on_dashboard:true});
+  await tool('start_monitor',{request_id:randomUUID(),script:{description:'内部巡检',command:report({count:4})},interval:60});
+  await tool('start_monitor',{request_id:randomUUID(),run_id:run.run_id,script:{description:'试验资源用量',command:report({count:1})},
+    interval:60,show_on_dashboard:true});
   for(const [name,width] of [['desktop',1280],['mobile',390]]){
     await page.setViewportSize({width,height:850});
-    await page.goto(url+'/#run/'+run.run_id);await page.reload();await hero.getByText(/official_aggregate/).waitFor();await page.evaluate(()=>window.scrollTo(0,0));
+    await page.goto(url+'/#run/'+run.run_id);await page.reload();await hero.getByRole('link',{name:/训练模型.*train-A-6/}).waitFor();await page.evaluate(()=>window.scrollTo(0,0));
+    const metrics=page.locator('#run-metrics');
+    await metrics.getByRole('heading',{name:'运行指标样例'}).waitFor();
+    const activeBox=await hero.boundingBox(),metricsBox=await metrics.boundingBox();
+    assert(metricsBox.y<(await page.locator('.run-tabs').boundingBox()).y);
+    if(width===1280){
+      assert(Math.abs(activeBox.y-metricsBox.y)<2);
+      assert(metricsBox.x>=activeBox.x+activeBox.width);
+    }else{
+      assert(Math.abs(activeBox.x-metricsBox.x)<2);
+      assert(metricsBox.y>=activeBox.y+activeBox.height);
+    }
     if(process.env.PROGRESS_SCREENSHOTS){
       await page.screenshot({path:path.join(process.env.PROGRESS_SCREENSHOTS,name+'-run.png')});
       await page.locator('.dependency-scroll').screenshot({path:path.join(process.env.PROGRESS_SCREENSHOTS,name+'-nodes.png')});
@@ -198,8 +244,8 @@ withPlatform(async({url,page,tool,api,startRun})=>{
     assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
     assert.equal(await graph.locator('.round-card').count(),6);
     if(width===390){
+      assert.equal(await page.locator('#graph-scale').innerText(),'100%');
       await page.getByRole('button',{name:'适应宽度'}).click();
-      assert(parseInt(await page.locator('#graph-scale').innerText(),10)>=85);
       assert(await page.locator('.dependency-scroll').evaluate(el=>el.scrollWidth<=el.clientWidth+1));
     }
     const scroll=page.locator('.dependency-scroll');
@@ -232,9 +278,12 @@ withPlatform(async({url,page,tool,api,startRun})=>{
     assert.equal(expanded.width,width);
     assert.equal(expanded.height,850);
     assert(await full.locator('.dependency-scroll').evaluate(el=>el.scrollHeight<=el.clientHeight+1));
+    const firstRound=full.locator('button[data-round-toggle="第 1 轮"]');
+    await firstRound.click();
     await full.locator('[data-task-row] .task-card-main').first().click();
     await full.locator('#task-detail').waitFor();
     await full.getByRole('button',{name:'关闭节点详情',exact:true}).click();
+    await firstRound.click();
     assert.equal(await page.locator('#run-process-controls').isVisible(),false);
     await page.getByRole('button',{name:'筛选',exact:true}).click();
     assert(await page.locator('#run-process-controls').isVisible());
@@ -250,15 +299,15 @@ withPlatform(async({url,page,tool,api,startRun})=>{
     await savedChart.getByText('评测结果',{exact:true}).waitFor();
     assert.equal(await savedChart.locator('.observation-chart circle').count(),2);
     assert.equal(await savedChart.getByRole('link',{name:'查看 Timeline'}).getAttribute('href'),'#work/timelines/'+scored.timeline_id);
-    const group=page.locator('.external-group');
-    await group.getByText('训练模型',{exact:true}).waitFor();
-    assert.equal(await group.count(),1);
-    assert((await group.innerText()).includes('7 / 10'));
-    assert((await group.innerText()).includes('验证损失') && (await group.innerText()).includes('0.24'));
-    if(process.env.PROGRESS_SCREENSHOTS)await group.screenshot({path:path.join(process.env.PROGRESS_SCREENSHOTS,name+'-external.png')});
-    assert.equal(await group.locator('.external-reading').count(),2);
-    await group.locator('.external-reading a').last().click();
-    await page.locator('#task-detail').getByRole('heading',{name:'训练模型',exact:true}).waitFor();
+    await page.locator('#monitoring-standing').getByRole('button',{name:'可用资源'}).waitFor();
+    const runMonitors=page.locator('#monitoring-run-monitor-section');
+    if(await runMonitors.getAttribute('open')===null)await runMonitors.locator('summary').click();
+    await runMonitors.getByRole('button',{name:'试验资源用量'}).waitFor();
+    assert.doesNotMatch(await page.locator('#monitoring-overview').innerText(),/内部巡检|7 \/ 10|验证损失|等待条件/);
+    await page.getByRole('tab',{name:'脚本库'}).click();
+    await page.locator('#monitoring-script-list').getByText('test-standing',{exact:true}).waitFor();
+    assert.equal(await page.locator('#monitoring-script-list tbody tr').count(),1);
+    await page.getByRole('tab',{name:'总览'}).click();
   }
   const cancelledRound='第 3 轮',singleRound='证据判读';
   const cancelNote='由绑定同一数据集与 checkpoint 的 32768 token 预测、官方评分及后续判读任务接替。';
@@ -322,7 +371,6 @@ withPlatform(async({url,page,tool,api,startRun})=>{
   await deferred.getByText('等待用户处理',{exact:true}).waitFor();
   await deferred.getByRole('link',{name:'查看节点'}).click();
   await page.locator('#task-detail .wait-description').getByText(reason,{exact:true}).waitFor();
-  await changesTab.click();
-  const activityRow=page.locator('.run-activity li').filter({hasText:reason});
-  assert.equal(await activityRow.getByRole('link').getAttribute('href'),'#run/'+run.run_id+'/task/'+encodeURIComponent(failedId));
+  const activityAfterDeferral=await api('runs/'+run.run_id+'?view=workspace&tab=activity');
+  assert(activityAfterDeferral.history.some(item=>item.note===reason&&item.task_id===failedId));
 }).catch(error=>{console.error(error);process.exitCode=1;});

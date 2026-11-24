@@ -21,8 +21,9 @@ def definitions():
         ('read_observations','Read the saved views and effective observation arrangements for a Timeline.',{'timeline_id':T},['timeline_id'],True),
         ('update_run_method','Hot-apply an installed version or opt in/out of published updates. Patch named observations; null disables, inherit restores Loop defaults. Existing tasks keep their method.',{'run_id':T,'token':T,'key':T,'follow':{'type':'boolean'},'observations':O,'inherit':{'type':'array','items':T}},['run_id','token'],False),
         ('refresh_observation','Generate the current view now, without sending a notification. Confirm a stopped process only when explicitly recovering an interrupted attempt.',{'run_id':T,'token':T,'name':T,'confirmed_stopped':{'type':'boolean'}},['run_id','token','name'],False),
-        ('read_monitor_dashboard','Read-only monitoring overview: Run states, saved result charts, external monitor samples and pending waits. Never starts or polls scripts. Run summaries exclude execution archives and credentials.',
-         {'offset':N,'limit':{'type':'integer','minimum':1,'maximum':100}},[],True),
+        ('read_monitor_dashboard','Read Run states, saved result charts, monitor samples and pending waits without starting checks. Use dashboard_only=true for the web dashboard: only explicitly displayed monitors and their registered definitions, with no internal execution samples or waits.',
+         {'offset':N,'limit':{'type':'integer','minimum':1,'maximum':100},'run_group':{'enum':['active','finished']},
+          'charts_only':{'type':'boolean'},'include_charts':{'type':'boolean'},'dashboard_only':{'type':'boolean'}},[],True),
         ('read_monitor_history','Read up to 240 retained checks for one monitor. Supply metric to receive only its timestamp/value points, with gaps for failed or missing readings.',
          {'monitor_id':T,'metric':T,'limit':{'type':'integer','minimum':1,'maximum':240}},['monitor_id'],True),
         ('create_timeline','Create work context without a Loop/Run. Only objective and constraints are fixed user semantic fields.',
@@ -42,9 +43,9 @@ def definitions():
          dict(page,revision=N),['timeline_id'],True),
         ('update_timeline','Edit objective/constraints at the read revision. Follow the returned notice: inspect the whole Timeline, especially running tasks, and report to the user. Does NOT pause, cancel, invalidate, or reschedule any work.',
          {'timeline_id':T,'revision':N,'change':O,'message':TEXT},['timeline_id','revision','change'],False),
-        ('append_timeline','Append a note, progress or decision. Stable key deduplicates. References identify evidence. To publish a Loop review to RSI from any entry point, supply review={loop_id,run_count}.',
+        ('append_timeline','Append a note, progress or decision. Stable key deduplicates. References identify evidence. For a Loop review supply review={loop_id,run_count} and the standalone ReadableDocs HTML as review_html. The HTML is served separately from the Timeline text.',
          {'timeline_id':T,'key':T,'text':TEXT,'kind':{'enum':['note','progress','decision']},'refs':{'type':'array','items':O},
-          'review':object_schema({'loop_id':T,'run_count':N},['loop_id'])},
+          'review':object_schema({'loop_id':T,'run_count':N},['loop_id']),'review_html':T},
          ['timeline_id','key','text'],False),
         ('register_work_session','Register this exact server Agent session and actual Agent PID, with implementation and resumable native identity. Does not start a Run or launch another Agent. Retain returned session token.',
          {'native_session':O,'implementation':O,'process_id':{'type':'integer','minimum':2}},['native_session','implementation','process_id'],False),
@@ -63,11 +64,14 @@ def definitions():
         ('register_monitor','Register/update a reusable script definition; revision=0 creates. Does not execute. script has command argv, optional cwd/timeout/description/parameter_schema and optional metrics=[{key,label,unit}] and display (stat, table, bars, trend). Each check reads JSON {parameters,run_id,monitor_id} on stdin and writes a JSON object; done=true ends an instance.',
          {'script_id':T,'revision':N,'script':O},['script_id','revision','script'],False),
         ('list_monitor_scripts','List reusable monitor definitions.',{},[],True),
-        ('start_monitor','Explicitly start an instance from script_id or an inline script (exactly one). Optional run_id associates an experiment-specific instance; omit for a standing monitor. Parameters isolate instances. Existing Loop observe scripts remain supported. Snapshot the script for this instance.',
-         {'request_id':T,'script_id':T,'script':O,'parameters':O,'run_id':T,'interval':{'type':'number','exclusiveMinimum':0}},
+        ('start_monitor','Start an instance from script_id or an inline script (exactly one). Optional run_id associates it with a Run. The instance snapshots its script. Set show_on_dashboard=true to display it for users. Default: Agent tools only.',
+         {'request_id':T,'script_id':T,'script':O,'parameters':O,'run_id':T,'interval':{'type':'number','exclusiveMinimum':0},
+          'show_on_dashboard':{'type':'boolean'}},
          ['request_id','interval'],False),
         ('read_monitor','Read latest sample, sample time, execution state and errors.',{'monitor_id':T},['monitor_id'],True),
         ('list_monitors','List monitor instances; optional run_id filters.',{'run_id':T},[],True),
+        ('set_monitor_visibility','Change whether an existing instance appears on the web dashboard. Sampling and waits continue independently.',
+         {'monitor_id':T,'show_on_dashboard':{'type':'boolean'}},['monitor_id','show_on_dashboard'],False),
         ('stop_monitor','Stop future checks only; does not stop the observed experiment or shared waiters.',{'monitor_id':T},['monitor_id'],False),
         ('restart_monitor','Explicitly restart stopped/failed monitoring; unknown processes require confirmed_stopped=true.',
          {'monitor_id':T,'confirmed_stopped':{'type':'boolean'}},['monitor_id'],False)
@@ -119,13 +123,19 @@ def call(store,name,a):
         if name=='create_timeline':return {'timeline':timelines.create(db,**a)}
         if name=='update_timeline':return timelines.update(db,a['timeline_id'],a['revision'],a['change'],a.get('message',''))
         if name=='append_timeline':
-            return {'entry':timelines.append(db,a['timeline_id'],a['key'],a['text'],a.get('kind','note'),a.get('refs'),actor='agent',review=a.get('review'))}
+            entry=timelines.append(db,a['timeline_id'],a['key'],a['text'],a.get('kind','note'),a.get('refs'),actor='agent',review=a.get('review'))
+            result={'entry':entry}
+            if 'review_html' in a:
+                from loop_anything.runtime.web_assignments import save_report_html
+                result['report_url']=save_report_html(db,entry,a['review_html'])
+            return result
         if name=='list_monitor_scripts':return {'scripts':work.rows(db,'monitor_script')}
         if name=='list_monitors':return {'monitors':[v for v in work.rows(db,'monitor') if not a.get('run_id') or v.get('run_id')==a['run_id']]}
         if name=='read_monitor':return {'monitor':work.get(db,'monitor',a['monitor_id'])}
-        if name in ('stop_monitor','restart_monitor'):
+        if name in ('set_monitor_visibility','stop_monitor','restart_monitor'):
             value=work.get(db,'monitor',a['monitor_id'])
-            if name=='stop_monitor':value['status']='stopped'
+            if name=='set_monitor_visibility':value['show_on_dashboard']=a['show_on_dashboard']
+            elif name=='stop_monitor':value['status']='stopped'
             else:
                 if value.get('call_id') and not a.get('confirmed_stopped'):raise Conflict('Check previous monitor process and confirm stopped')
                 if value.get('process',{}).get('pid') and work.alive(value['process']['pid']) and value.get('call_id'):raise Conflict('Monitor process is still alive')

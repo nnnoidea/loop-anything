@@ -17,6 +17,9 @@ def initialize(db):
         CREATE INDEX IF NOT EXISTS work_entry_at ON work_entries(timeline_id,json_extract(document,'$.at') DESC);
         CREATE INDEX IF NOT EXISTS work_review_at ON work_entries(json_extract(document,'$.review.loop_id'),json_extract(document,'$.at') DESC)
             WHERE json_type(document,'$.review.loop_id')='text';
+        CREATE TABLE IF NOT EXISTS work_review_html(timeline_id TEXT NOT NULL, key TEXT NOT NULL,
+            html BLOB NOT NULL, PRIMARY KEY(timeline_id,key),
+            FOREIGN KEY(timeline_id,key) REFERENCES work_entries(timeline_id,key) ON DELETE CASCADE);
     ''')
 
 

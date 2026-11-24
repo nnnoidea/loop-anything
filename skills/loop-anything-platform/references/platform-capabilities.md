@@ -88,7 +88,7 @@ Read the relevant mechanism when implementing a design. activation=automatic mea
 - Author provides: Supply a JSON-check script and explicit start/interval; Loop-owned scripts remain supported.
 - Configuration: `register_monitor`, `start_monitor`, `read_monitor`, `stop_monitor`
 - Limits: Registration never starts execution. Stale or failed readings are unknown. Stopping monitoring does not stop the experiment.
-- Tools: read_monitor_dashboard, read_monitor_history, register_monitor, list_monitor_scripts, start_monitor, read_monitor, list_monitors, stop_monitor, restart_monitor
+- Tools: read_monitor_dashboard, read_monitor_history, register_monitor, list_monitor_scripts, start_monitor, read_monitor, list_monitors, set_monitor_visibility, stop_monitor, restart_monitor
 - Reference: [references/work.md](work.md)
 
 ## run_facts

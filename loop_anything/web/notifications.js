@@ -30,8 +30,7 @@ document.addEventListener('submit',e=>{if(!['send-notice-form','reply-notice-for
 loadNotificationChannels().catch(()=>{});
 
 function outletLabel(id){return id==='workspace'?'平台通知区':id==='user'?'本次发送命令':id==='default'?'本次 Run 的通知出口':notificationChannels.channels[id]?.label||id||'平台通知区';}
-function renderRunOutlet(){let el=$('run-outlet-summary');if(!el){el=document.createElement('div');el.id='run-outlet-summary';$('run-id').after(el);}el.innerHTML=`<span>通知出口：<strong>${esc(outletLabel(runNotificationRoute(run)))}</strong></span><button type="button" data-open-run-notices>通知安排与记录</button>`;}
-document.addEventListener('click',e=>{if(e.target.closest('[data-open-run-notices]')){activeTab='hooks';renderInspect();$('inspect').scrollIntoView({behavior:'smooth',block:'start'});}const b=e.target.closest('[data-focus-outlet]');if(!b)return;const input=$(b.dataset.focusOutlet==='run'?'run-notification-route':'launch-notification-route');if(!input)return;for(let p=input.parentElement;p;p=p.parentElement)if(p.tagName==='DETAILS')p.open=true;input.scrollIntoView({behavior:'smooth',block:'center'});input.focus({preventScroll:true});});
+document.addEventListener('click',e=>{const b=e.target.closest('[data-focus-outlet]');if(!b)return;const input=$(b.dataset.focusOutlet==='run'?'run-notification-route':'launch-notification-route');if(!input)return;for(let p=input.parentElement;p;p=p.parentElement)if(p.tagName==='DETAILS')p.open=true;input.scrollIntoView({behavior:'smooth',block:'center'});input.focus({preventScroll:true});});
 
 // User approval is a Run operation; it is not manual submission on behalf of an Agent.
 document.addEventListener('click',event=>{

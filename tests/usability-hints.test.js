@@ -38,13 +38,28 @@ test('missing fixed notification bindings do not claim original-chat replies are
   assert.doesNotMatch(run('groupNotificationSummary({})'),/通信仅保留平台记录/);
   assert.match(run("groupNotificationSummary({x:{enabled:true,sender_name:'机器',route:'通知'}})"),/无原聊天来源时/);
 });
-test('a running recovery only changes the headline for its own failed task',()=>{
-  load('workspace.js','function readingText(','function taskCard(');
-  const failure={tasks:{id:'score',spec:{node:'score'},status:'fault'},attempts:[{failure_summary:'找不到文件或目录 official_aggregate.json。'}],dependencies:[]};
-  const repair={tasks:{id:'fix',spec:{node:'fix'},status:'executing',origin:{fallback:true,issues:[{task_id:'score'}]}},attempts:[],dependencies:[]};
-  Object.assign(ctx,{TaskHistory:{rows:()=>[failure,repair]},taskLabel:t=>t.id,labels:{},routeHash:()=>'',badge:()=>'',value:{id:'r',status:'running'}});
-  const html=run('runProgressHTML(value)');
-  assert.match(html,/正在处理异常/);assert.match(html,/找不到文件或目录 official_aggregate.json/);assert.doesNotMatch(html,/Traceback|\/tmp\//);
-  repair.tasks.origin.issues=[];
-  assert.doesNotMatch(run('runProgressHTML(value)'),/正在处理异常/);
+test('the Run summary only links to currently running nodes',()=>{
+  load('workspace.js','function runningNodesHTML(','function taskCard(');
+  const nodes={},tasks={},executions=[];
+  for(const [id,status,attempt] of [
+    ['local','executing',{}],
+    ['live-agent','decision',{worker_active:'worker'}],
+    ['prediction','waiting',{implementation:{kind:'external'},activity_progress:{external_status:'STARTED'}}],
+    ['child','waiting',{implementation:{kind:'loop'},child_status:'running'}],
+    ['external-queued','waiting',{implementation:{kind:'external'},activity_progress:{external_status:'QUEUED'}}],
+    ['external-poll','executing',{implementation:{kind:'external'},activity_progress:{classification:'resource_wait'}}],
+    ['external-unknown','waiting',{implementation:{kind:'external'},activity_progress:{external_status:'RUNNING'},observation_error:true}],
+    ['agent-idle','decision',{}],['event','waiting',{implementation:{kind:'event'}}],
+    ['failure','fault',{}],['later','planned',{}],['done','completed',{}],
+  ]){
+    tasks[id]={id,status,execution_id:id,spec:{node:id}};
+    nodes[id]={label:id};
+    executions.push({id,...attempt});
+  }
+  Object.assign(ctx,{routeHash:r=>`#run/${r.id}/task/${r.task}`,value:{id:'r',status:'running',tasks,executions,loop_definition:{nodes}}});
+  const markup=run('runningNodesHTML(value)');
+  assert.deepEqual([...markup.matchAll(/href="#run\/r\/task\/([^"]+)"/g)].map(m=>m[1]),['local','live-agent','prediction','child']);
+  assert.match(markup,/href="#run\/r\/task\/prediction"/);
+  ctx.value.status='completed';
+  assert.equal(run('runningNodesHTML(value)'),'');
 });

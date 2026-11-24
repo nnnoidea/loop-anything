@@ -12,9 +12,10 @@ ACTIVE_STATES = ('waiting', 'checking', 'running')
 
 
 class ScheduleControls:
-    def __init__(self, database, local=True):
+    def __init__(self, database, local=True, observed_directory=None):
         self.database = Path(database).resolve()
         self.local = local
+        self.observed_directory = observed_directory
         self.active = {}
         self.lock = threading.Lock()
         self.closed = False
@@ -26,6 +27,28 @@ class ScheduleControls:
 
     def list(self):
         registry = self.registry
+        observed=[]
+        if self.observed_directory:
+            source=TaskRegistry(self.observed_directory)
+            if source.root!=registry.root:
+                for item in source.list():
+                    state=item['runtime']
+                    definition=item['definition']
+                    if state['status'] in ACTIVE_STATES:
+                        definition=state.get('schedule') or definition
+                    if definition.get('receiver'):
+                        continue
+                    result=state.get('last_result')
+                    # Host jobs are exposed as read-only summaries.
+                    runtime={k:state[k] for k in ('status','next_at') if k in state}
+                    if result:
+                        runtime['last_result']={k:result[k] for k in ('at','returncode') if k in result}
+                    observed.append({'id':item['id'],'definition':schedule_summary(definition),
+                                     'runtime':runtime,'read_only':True})
+        return {'directory':str(registry.root),'machine':socket.gethostname(),
+                'tasks':self.read_tasks(registry),'observed':observed}
+
+    def read_tasks(self, registry):
         tasks = []
         for item in registry.list():
             definition = item['definition']
@@ -41,7 +64,7 @@ class ScheduleControls:
             tasks.append({'id': item['id'], 'revision': item['revision'], 'definition': schedule_summary(definition),
                           'runtime': runtime, 'execution': {'state': execution['state']} if execution else None})
         tasks.sort(key=lambda item: (item['definition']['name'].casefold(), item['id']))
-        return {'directory': str(registry.root), 'machine': socket.gethostname(), 'tasks': tasks}
+        return tasks
 
     def control(self, ident, action, body):
         if action not in ('start', 'stop'):

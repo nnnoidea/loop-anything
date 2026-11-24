@@ -67,10 +67,18 @@ class WebSchedulesTests(unittest.TestCase):
             job = registry.register({'name': 'One shot', 'every': .1, 'repeat': False, 'command': command}, 'once')
             registry.register({'name': 'Waiting job', 'every': 60, 'command': command}, 'waiting')
             registry.register({'name': 'Receiver', 'every': 1, 'receiver': {'server': 'nas:///unused'}}, 'receiver')
+            external = TaskRegistry(root / 'host-jobs')
+            external.register({'name': 'Database backup', 'every': 600, 'command': command}, 'backup')
+            now = time.time()
+            (external.path('backup') / 'state.json').write_text(json.dumps({
+                'status': 'waiting', 'heartbeat': now, 'next_at': now + 600, 'owner': 'host-only',
+                'last_result': {'at': now, 'returncode': 0, 'stdout': 'private result'},
+            }))
             log = root / 'server.log'
             with log.open('w') as output:
                 process = subprocess.Popen([sys.executable, '-m', 'loop_anything', '--db', str(database),
-                                            'serve', '--port', '0', '--allow-sleep'], stdout=output, stderr=output,
+                                            'serve', '--port', '0', '--allow-sleep',
+                                            '--observed-schedules', str(external.root)], stdout=output, stderr=output,
                                            env=dict(os.environ, LOOP_ANYTHING_IDENTITY_DIR=str(root / 'identity')))
                 try:
                     def startup():
@@ -93,6 +101,18 @@ class WebSchedulesTests(unittest.TestCase):
                     listed = api()
                     self.assertEqual(Path(listed['directory']), registry.root)
                     self.assertEqual([item['id'] for item in listed['tasks']], ['once', 'waiting'])
+                    observed, = listed['observed']
+                    self.assertTrue(observed['read_only'])
+                    self.assertEqual(observed['definition']['name'], 'Database backup')
+                    self.assertEqual(observed['definition']['every'], 600)
+                    self.assertNotIn('command', observed['definition'])
+                    self.assertEqual(observed['runtime'], {
+                        'status': 'waiting', 'next_at': now + 600, 'last_result': {'at': now, 'returncode': 0},
+                    })
+                    with self.assertRaises(HTTPError) as external_control:
+                        api('/backup/stop', {'directory': str(external.root), 'owner': 'host-only'})
+                    self.assertEqual(external_control.exception.code, 409)
+                    self.assertFalse((external.path('backup') / 'stop.json').exists())
                     self.assertNotIn('command', task('once')['definition'])
                     self.assertEqual(task('once')['runtime']['status'], 'registered')
                     self.assertFalse(marker.exists())

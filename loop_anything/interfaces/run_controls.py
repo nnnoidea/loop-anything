@@ -7,7 +7,7 @@ from loop_anything.runtime.model import Conflict, Invalid, contract, digest
 
 def definitions():
     text = {'type':'string','minLength':1}
-    actions = ['command','update_run','delete_run','edit_tasks','follow_loop_updates','refresh_observation']
+    actions = ['command','update_run','delete_run','edit_tasks','follow_loop_updates','refresh_observation','set_task_rounds']
     request = object_schema({'request_id':text,'run_id':text,'operation':{'enum':actions},
                              'arguments':{'type':'object'},'message':{'type':'string'}},
                             ['request_id','run_id','operation','arguments'])
@@ -57,6 +57,16 @@ def call(store, name, a):
                               'created_by':{'type':'string'},'archived':{'type':'boolean'}}
                     contract(args,object_schema(fields,['metadata_revision']),'arguments')
                     result = update_run_in_run(store,run,**args)
+                elif op == 'set_task_rounds':
+                    labels = {'type':'object','additionalProperties':{'type':'string','minLength':1}}
+                    contract(args,object_schema({'rounds':labels}),'arguments')
+                    rounds = {task_id:label.strip() for task_id,label in args['rounds'].items()}
+                    if any(not label or task_id not in run['tasks'] or run['tasks'][task_id]['spec'].get('round')
+                           for task_id,label in rounds.items()):
+                        raise Invalid('Supply nonempty display labels for existing Tasks without a round')
+                    if rounds != run.get('task_rounds',{}):
+                        run['task_rounds'] = rounds
+                    result = {'tasks':len(rounds)}
                 elif op == 'command':
                     tools = RunTools(store,run_id)
                     schema = next(d['inputSchema'] for d in tools.definitions() if d['name']=='command')

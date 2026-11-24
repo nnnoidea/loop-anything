@@ -1,4 +1,64 @@
 'use strict';
+
+let workOverviewBusy=false,workOverviewLast=0,workOverviewSignature='';
+function overviewRun(row, attention=false){
+  const status=row.superseded_by?'continued':row.status;
+  return `<li><div class="overview-run-name">
+    ${navLink({type:'run',id:row.id},row.title)}
+    ${attention?`<small>${row.attention_count} 个节点需查看</small>`:''}
+  </div><div class="overview-run-state">${badge(status)}${!attention&&row.last_activity_at?`<small>${esc(runDate(row.last_activity_at))}</small>`:''}</div></li>`;
+}
+function overviewSchedule(job){
+  const {definition,runtime:{status,next_at,last_result:result}}=job;
+  return `<li><div><strong>${esc(definition.name)}</strong>
+    <span class="badge ${esc(status)}">${esc(scheduleLabels[status]||status)}</span></div>
+    ${status==='waiting'&&next_at?`<small>${definition.conditional?'下次检查':'下次执行'} ${esc(runDate(next_at))}</small>`:''}
+    ${result?.at?`<small>${result.returncode===0?'最近成功':'最近执行'} ${esc(runDate(result.at))}${result.returncode!=null&&result.returncode!==0?' · 失败':''}</small>`:''}
+  </li>`;
+}
+function workOverviewHTML(runs,schedules){
+  return `<div class="work-overview">
+    <div class="overview-main">
+      <section class="overview-panel">
+        <header><h2>当前运行 <span>${runs.active_total}</span></h2>${navLink({type:'run-list'},'全部运行 →')}</header>
+        ${runs.active.length?`<ul class="overview-run-list">${runs.active.map(row=>overviewRun(row)).join('')}</ul>`:'<p class="muted">当前没有运行中的 Run。</p>'}
+      </section>
+      <section class="overview-panel">
+        <header><h2>最近结束</h2>${navLink({type:'monitors',group:'finished'},'历史指标 →')}</header>
+        ${runs.recent.length?`<ul class="overview-run-list">${runs.recent.map(row=>overviewRun(row)).join('')}</ul>`:'<p class="muted">暂无已结束的 Run。</p>'}
+      </section>
+    </div>
+    <div class="overview-side">
+      <section class="overview-panel overview-attention">
+        <header><h2>需要处理</h2></header>
+        ${runs.attention.length?`<ul class="overview-run-list">${runs.attention.map(row=>overviewRun(row,true)).join('')}</ul>`:'<p class="muted">当前没有待处理的节点。</p>'}
+      </section>
+      <section class="overview-panel overview-schedules">
+        <header><h2>定时任务</h2>${navLink({type:'schedules'},'查看任务 →')}</header>
+        ${schedules?.length?`<ul>${schedules.slice(0,3).map(overviewSchedule).join('')}</ul>`:
+          `<p class="muted">${schedules?'尚无定时任务。':'暂时无法读取定时任务。'}</p>`}
+      </section>
+    </div>
+  </div>`;
+}
+async function refreshWorkOverview(force=false){
+  if(page!=='overview'||workOverviewBusy||(!force&&Date.now()-workOverviewLast<6000))return;
+  workOverviewBusy=true;workOverviewLast=Date.now();
+  try{
+    const [runs,schedules]=await Promise.all([
+      api('workbench',undefined,{signal:AbortSignal.timeout(runViewTimeout)}),
+      api('schedules',undefined,{signal:AbortSignal.timeout(runViewTimeout)}).catch(()=>null)
+    ]);
+    if(page!=='overview')return;
+    const html=workOverviewHTML(runs,schedules?[...(schedules.observed||[]),...schedules.tasks]:null);
+    if(html!==workOverviewSignature){
+      $('work-overview-content').innerHTML=html;
+      workOverviewSignature=html;
+    }
+  }catch(error){
+    if(page==='overview'&&!workOverviewSignature)$('work-overview-content').innerHTML=`<p class="notice">读取工作台失败 · ${esc(error.message)}</p>`;
+  }finally{workOverviewBusy=false;}
+}
 let workReadSerial=0;
 const workEntryLabels={note:'记录',progress:'进展',decision:'决定',action:'执行',change:'目标 / 限制变更',view:'工作概览',state:'业务状态',result:'已保存结果'};
 const timelineGroupPages=new Map(),openTimelineGroups=new Set();

@@ -27,6 +27,37 @@ def initialize(db):
             timeline_id TEXT, name TEXT, job_id INTEGER NOT NULL, document TEXT NOT NULL,
             PRIMARY KEY(timeline_id,name));
         CREATE INDEX IF NOT EXISTS observation_views_run ON observation_views(json_extract(document,'$.run_id'));
+        -- Keep the Timeline's latest view and retain a Run's curves when another Run takes over.
+        CREATE TABLE IF NOT EXISTS observation_chart_history(
+            run_id TEXT NOT NULL, name TEXT NOT NULL, document TEXT NOT NULL, PRIMARY KEY(run_id,name));
+        CREATE TRIGGER IF NOT EXISTS retain_replaced_run_charts AFTER UPDATE OF document ON observation_views
+        WHEN json_extract(old.document,'$.run_id') <> json_extract(new.document,'$.run_id')
+        BEGIN
+            DELETE FROM observation_chart_history
+            WHERE run_id=json_extract(new.document,'$.run_id') AND name=new.name;
+            INSERT INTO observation_chart_history(run_id,name,document)
+            SELECT json_extract(old.document,'$.run_id'),old.name,
+                   json_object('at',json_extract(old.document,'$.at'),'view',json_object(
+                       'summary',json_extract(old.document,'$.view.summary'),
+                       'series',json_extract(old.document,'$.view.series')))
+            WHERE EXISTS (SELECT 1 FROM json_each(old.document,'$.view.series') l
+                          WHERE json_array_length(l.value,'$.points')>0)
+              AND EXISTS (SELECT 1 FROM observations s WHERE s.run_id=json_extract(old.document,'$.run_id')
+                          AND s.name=old.name AND s.timeline_id=old.timeline_id)
+            ON CONFLICT(run_id,name) DO UPDATE SET document=excluded.document;
+        END;
+        CREATE VIEW IF NOT EXISTS run_chart_views AS
+            SELECT s.run_id,v.name,v.document
+            FROM observation_views v JOIN observations s
+              ON s.timeline_id=v.timeline_id AND s.name=v.name
+              AND s.run_id=json_extract(v.document,'$.run_id')
+            WHERE EXISTS (SELECT 1 FROM json_each(v.document,'$.view.series') l
+                          WHERE json_array_length(l.value,'$.points')>0)
+            UNION ALL
+            SELECT run_id,name,document FROM observation_chart_history;
+        CREATE TRIGGER IF NOT EXISTS remove_run_chart_history AFTER DELETE ON runs BEGIN
+            DELETE FROM observation_chart_history WHERE run_id=old.id;
+        END;
         CREATE TRIGGER IF NOT EXISTS remove_observation_jobs AFTER DELETE ON observations BEGIN
             DELETE FROM observation_jobs WHERE run_id=old.run_id AND name=old.name;
         END;

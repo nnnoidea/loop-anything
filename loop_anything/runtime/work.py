@@ -65,8 +65,11 @@ def alive(pid):
     return True
 
 
-def retry_session(session, confirmed_stopped=False):
-    if session.get('assignment') and session['state'] not in ('failed','unknown','needs_input'):
+def retry_session(session, confirmed_stopped=False, *, follow_up=False):
+    retryable = ('failed','unknown','needs_input')
+    if follow_up:
+        retryable += ('idle','stopped','completed')
+    if session.get('assignment') and session['state'] not in retryable:
         raise Conflict('当前工作没有等待重试或补充说明')
     if session['state']=='unknown' and not confirmed_stopped:
         raise Conflict('请先确认原 Agent 进程已停止')
@@ -193,6 +196,7 @@ def start_monitor(store,a):
             return prior
         value=dict(id=ident,fingerprint=fingerprint,script=script,parameters=a.get('parameters',{}),
                    run_id=a.get('run_id'),interval=interval,status='running',next_at=time.time(),
+                   show_on_dashboard=a.get('show_on_dashboard',False),
                    sample=None,error=None,call_id=None,created_at=time.time())
         put(db,'monitor',value)
         return value
@@ -314,6 +318,7 @@ def register_wait(store,a):
         if 'max_age' in source and (type(source['max_age']) not in (int,float) or source['max_age']<=0 or not math.isfinite(source['max_age'])):raise Invalid('Invalid max_age')
     with transaction(store) as db:
         session=session_auth(db,a['session_id'],a['session_token'])
+        if session['state']=='stopped':raise Conflict('规划已停止，请先续接原会话')
         timelines.get(db,a['timeline_id'])
         ident='wait-'+digest([session['id'],a['key']])[:24]
         fingerprint=digest({k:v for k,v in a.items() if k!='session_token'})
@@ -463,9 +468,13 @@ class WorkRuntime:
         from loop_anything.runtime.host_runtime import run_command,CommandNotStopped
         from loop_anything.paths import platform_skill_directory
         ident=session['id'];call=session['wake']
-        with self.store.connection() as db:
-            waits=[get(db,'wait',w['id']) for w in waits if get(db,'wait',w['id'])['state']=='ready']
         assignment=session.get('assignment')
+        with self.store.connection() as db:
+            current_waits=[v for v in rows(db,'wait') if v['session_id']==ident]
+            ready_ids={w['id'] for w in waits}
+            waits=[w for w in current_waits if w['id'] in ready_ids and w['state']=='ready']
+            pending_waits=[w for w in current_waits if w['state']=='waiting' or
+                           (w['state']=='ready' and w['id'] not in ready_ids)]
         if not waits and not assignment:
             with transaction(self.store) as db:
                 current=get(db,'session',ident)
@@ -492,6 +501,8 @@ class WorkRuntime:
                 from pathlib import Path
                 if assignment['kind']=='plan':
                     context['schedule_directory']=assignment.get('schedule_directory') or schedule_directory(self.store)
+                    if session.get('reply'):
+                        context['pending_waits']=pending_waits
                 config,prompt=web_assignments.launch(session,context)
                 directory=Path(self.store.filename).resolve().parent/'agent-work'/ident
                 directory.mkdir(parents=True,exist_ok=True)
@@ -515,4 +526,8 @@ class WorkRuntime:
             # Require an explicit retry for unacknowledged work after a successful but incomplete turn.
             if not error and any(get(db,'wait',w['id'])['state']=='ready' for w in waits):
                 current.update(state='failed',error='Wake finished without acknowledging its waits; inspect before retry')
+            if assignment and current['state'] not in ('failed','unknown'):
+                current.pop('reply',None)
+                current.pop('reply_sequence',None)
+                current.pop('reply_after_stop',None)
             put(db,'session',current)

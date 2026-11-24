@@ -62,6 +62,7 @@ def main():
     start.add_argument('--team-dir',help='NAS request/receipt mailbox; --db independently selects server storage')
     start.add_argument('--no-web',action='store_true',help='Run the NAS service without an HTTP listener or webpage')
     start.add_argument('--public-url',help='Reachable HTTP URL for callbacks; NAS is used by default with --team-dir')
+    start.add_argument('--observed-schedules',help='Existing host schedule directory to display read-only in the workspace')
     for name in ('validate', 'publish'):
         cmd = commands.add_parser(name)
         cmd.add_argument('loop_definition')
@@ -256,6 +257,7 @@ def main():
         from loop_anything.runtime.engine import Engine
         engine = Engine(store)
         store.space=args.space
+        store.observed_schedules=getattr(args,'observed_schedules',None)
         mailbox=None
         if getattr(args,'public_url',None):engine.platform_url=args.public_url
         if team_dir:

@@ -35,7 +35,8 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
     from loop_anything.interfaces.schedules import ScheduleControls
     platform_tools = PlatformTools(store)
     space=getattr(store,'space','local')
-    schedules = ScheduleControls(store.filename, local=space=='local')
+    schedules = ScheduleControls(store.filename, local=space=='local',
+                                 observed_directory=getattr(store,'observed_schedules',None))
     from loop_anything.runtime.tool_client import module
     personal_spaces=module('spaces')
     root = Path(__file__).resolve().parents[1] / 'web'
@@ -72,11 +73,19 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             if encoded:
                 self.send_header('Content-Encoding', 'gzip')
             self.send_header('Content-Length', str(len(content)))
-            self.end_headers()
-            self.wfile.write(content)
+            try:
+                self.end_headers()
+                self.wfile.write(content)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # The browser left the view before the response finished.
 
         def personal_settings_allowed(self):
             return space=='local' and host in ('127.0.0.1','localhost','::1') and self.client_address[0] in ('127.0.0.1','::1') and self.headers.get('Host') in tuple(name+':'+str(server.server_port) for name in ('127.0.0.1','localhost','[::1]'))
+
+        def plan_stop_allowed(self):
+            # A reverse proxy can preserve the public host in X-Forwarded-Host.
+            return (self.client_address[0] in ('127.0.0.1','::1')
+                    and not self.headers.get('X-Forwarded-Host'))
 
         def do_GET(self):
             try:
@@ -105,6 +114,14 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 return
             if parts == ['api', 'schedules']:
                 self.send(schedules.list())
+                return
+            if parts == ['api', 'workbench']:
+                from loop_anything.runtime.monitoring import workbench_runs
+                self.send(workbench_runs(store))
+                return
+            if len(parts)==4 and parts[:2]==['api','runs'] and parts[3]=='metrics':
+                from loop_anything.runtime.monitoring import charts_for_run
+                self.send({'charts':charts_for_run(store,parts[2])},compressible=True)
                 return
             if len(parts)==5 and parts[0]=='communication' and parts[3:]==['api','tools']:
                 self.send(engine.communication.scoped_definitions(parts[1],parts[2]));return
@@ -152,9 +169,25 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
             if parts == ['api','notification-channels']:
                 self.send(platform_tools.call('read_notification_channels',{}))
                 return
+            if parts == ['api','assignments','review','report']:
+                from loop_anything.runtime.web_assignments import read_report_html
+                html=read_report_html(store,query.get('timeline_id'),query.get('key'))
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('Content-Length', str(len(html)))
+                self.send_header('Cache-Control', 'no-store')
+                self.send_header('X-Content-Type-Options', 'nosniff')
+                self.send_header('Referrer-Policy', 'no-referrer')
+                self.send_header('Content-Security-Policy', "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+                self.end_headers()
+                try:
+                    self.wfile.write(html)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
             if len(parts)==3 and parts[:2]==['api','assignments']:
                 from loop_anything.runtime.web_assignments import overview
-                self.send(overview(store,parts[2]))
+                self.send(overview(store,parts[2],allow_stop=self.plan_stop_allowed()))
                 return
             if parts == ['api', 'platform']:
                 import platform
@@ -320,9 +353,14 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 from loop_anything.runtime.web_assignments import start
                 self.send(start(store,body))
                 return
-            if len(parts)==4 and parts[:2]==['api','assignments'] and parts[3]=='reply':
-                from loop_anything.runtime.web_assignments import follow_up
-                self.send(follow_up(store,parts[2],body))
+            if len(parts)==4 and parts[:2]==['api','assignments'] and parts[3] in ('reply','instruct','stop'):
+                from loop_anything.runtime import web_assignments
+                if parts[3]=='stop' and not self.plan_stop_allowed():
+                    self.send({'error':'请在本机入口管理这条规划'},403)
+                    return
+                result=(web_assignments.stop_plan(store,parts[2]) if parts[3]=='stop'
+                        else web_assignments.follow_up(store,parts[2],body,instruction=parts[3]=='instruct'))
+                self.send(result)
                 return
             if body.get('expected_workspace') is not None and body['expected_workspace']!=engine.communication.settings()['instance_id']:
                 raise Conflict('Request belongs to another platform workspace')
@@ -357,7 +395,8 @@ def serve(store, engine, port, initial_run=None, protection=None, open_browser=F
                 raise Invalid('独立网页 Agent 对话已移除；节点 session 仅用于 Run 任务。')
             if parts == ['api', 'tools']:
                 result = platform_tools.respond(body['tool'],body.get('arguments',{}))
-                self.send(result, 200 if result['ok'] else 409 if result['error']['code'] == 'conflict' else 400)
+                self.send(result, 200 if result['ok'] else 409 if result['error']['code'] == 'conflict' else 400,
+                          compressible=body['tool']=='read_monitor_dashboard')
                 return
             if parts == ['api', 'packages', 'export']:
                 from loop_anything.packaging.packages import make_archive, decode_assets

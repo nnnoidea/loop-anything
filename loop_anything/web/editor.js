@@ -72,8 +72,8 @@ async function loadDraftCards(){
   savedDrafts=await api('drafts?include_archived='+String(!!$('show-archived-loops')?.checked));
   $('draft-cards').innerHTML=savedDrafts.length?`<section class="panel draft-list"><h2>草稿</h2>${savedDrafts.map(d=>`<div class="draft-row"><div>${esc(d.loop_definition.name || d.loop_definition.id || '未命名Loop 定义')}<small>${d.archived_at?'已归档 · ':''}revision ${d.revision} · ${new Date(d.updated_at*1000).toLocaleString('zh-CN')}</small></div><button data-open-draft="${esc(d.id)}">查看 Loop →</button></div>`).join('')}</section>`:'';
 }
-async function platformCall(tool,values={}){
-  const result=await api('tools',{tool,arguments:values});
+async function platformCall(tool,values={},options){
+  const result=await api('tools',{tool,arguments:values},options);
   if(!result.ok)throw new Error(result.error?.message || '操作失败');
   return result;
 }

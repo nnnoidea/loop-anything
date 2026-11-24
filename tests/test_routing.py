@@ -120,6 +120,44 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(self.store.get(self.id),before)
         self.assertTrue(self.tools.call('report_task',self.initial_report([{'batch':2}]))['accepted'])
 
+    def test_route_can_inherit_source_task_round(self):
+        self.edit('put_node',node_id='initialize',routes=[dict(self.route,round={'$':'task.round'})])
+        self.start()
+        with self.store.edit(self.id) as run:
+            run['tasks'][self.task_id]['spec']['round']='第 2 轮'
+        receipt=self.tools.call('report_task',self.initial_report([{'batch':2},{'batch':3}]))
+        tasks=self.store.get(self.id)['tasks']
+        created=receipt['routes'][0]['batches'][0]['task_ids']
+        self.assertEqual(len(created),3)
+        self.assertEqual({tasks[task]['spec']['round'] for task in created},{'第 2 轮'})
+
+    def test_workspace_groups_a_recorded_fork_and_join_without_loop_rounds(self):
+        from loop_anything.interfaces.run_workspace import read_workspace
+
+        self.start()
+        receipt=self.tools.call('report_task',self.initial_report([{'batch':2},{'batch':3}]))
+        members=[self.task_id,*receipt['routes'][0]['batches'][0]['task_ids']]
+        view=read_workspace(self.store,self.engine.timeline_runtime,self.id,{})
+        self.assertEqual({view['tasks'][task]['spec']['round'] for task in members},{'任务批次 1'})
+        self.assertTrue(all('round' not in task['spec'] for task in self.store.get(self.id)['tasks'].values()))
+
+    def test_workspace_keeps_a_source_shared_by_two_batches_outside_both(self):
+        from loop_anything.interfaces.run_workspace import read_workspace
+
+        routes=[self.route,dict(self.route,id='second_batch')]
+        self.edit('put_node',node_id='initialize',routes=routes)
+        self.start()
+        receipt=self.tools.call('report_task',self.initial_report([{'batch':2},{'batch':3}]))
+        view=read_workspace(self.store,self.engine.timeline_runtime,self.id,{})
+        self.assertNotIn('round',view['tasks'][self.task_id]['spec'])
+        labels=[]
+        for route in receipt['routes']:
+            members=route['batches'][0]['task_ids']
+            values={view['tasks'][task]['spec']['round'] for task in members}
+            self.assertEqual(len(values),1)
+            labels.extend(values)
+        self.assertEqual(set(labels),{'任务批次 1','任务批次 2'})
+
     def test_each_conditional_routes_and_candidate_overrides(self):
         route=dict(self.route,each='outputs.requests',when={'path':'item.enabled'},
                    values={'experiments':{'$':'item.experiments'}},steps={'evaluate':{'implementation':{'$':'item.implementation'}}},round='{item.name}')

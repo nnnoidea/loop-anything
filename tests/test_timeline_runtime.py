@@ -6,7 +6,7 @@ import time
 import unittest
 from pathlib import Path
 from loop_anything.runtime import engine
-from loop_anything.interfaces.agent_tasks import RunTools
+from loop_anything.interfaces.agent_tasks import RunTools, task_list
 from loop_anything.runtime.store import Store
 from loop_anything.runtime.model import Invalid, Conflict
 
@@ -210,6 +210,13 @@ class RuntimeTests(unittest.TestCase):
 
     def test_diagnostic_enters_default_attention_once(self):
         self.initialize([task_spec('consume', 'produce', {'source': {'record': 'missing'}}, {'text': 'copy'})])
+        run = self.read()
+        run['diagnostics'] = []
+        before = copy.deepcopy(run)
+        view = task_list(run, self.engine.timeline_runtime)
+        self.assertTrue(any(item.get('task_id') == 'consume' and item['reason']['kind'] == 'dependency_gap'
+                            for item in view['items'] if item['kind'] == 'unexpected'))
+        self.assertEqual(run, before)
         for _ in range(5):
             self.engine.tick(self.id)
         self.assertEqual(2, len(self.read()['tasks']))

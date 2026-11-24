@@ -6,10 +6,11 @@ const editorSessions=new Map(),runReturns=new Map(),routeScroll=new Map();
 function routeHash(route){
   if(route.type==='settings')return '#settings/'+(route.tab||'general');
   if(route.type==='communication')return '#communication/'+(route.tab||'agents');
-  if(route.type==='timelines'||route.type==='home')return '#work/timelines';
+  if(route.type==='overview'||route.type==='home')return '#work/overview';
+  if(route.type==='timelines')return '#work/timelines';
   if(route.type==='timeline')return '#work/timelines/'+encodeURIComponent(route.id);
   if(route.type==='run-list')return '#work/runs'+(route.loopId?'/'+encodeURIComponent(route.loopId):'');
-  if(route.type==='monitors')return '#work/monitors';
+  if(route.type==='monitors')return '#work/monitors'+(route.group==='finished'?'/finished':'');
   if(route.type==='schedules')return '#work/schedules';
   if(route.type==='plans')return '#plans'+(route.id?'/'+encodeURIComponent(route.id):'');
   if(route.type==='rsi')return '#rsi';
@@ -27,7 +28,8 @@ function parseRoute(hash){
   if(parts[0]==='work'){
     if(parts[1]==='timelines'&&parts[2])return {type:'timeline',id:decodeURIComponent(parts[2])};
     if(parts[1]==='runs'&&parts[2])return {type:'run-list',loopId:decodeURIComponent(parts[2])};
-    const type={timelines:'timelines',runs:'run-list',monitors:'monitors',schedules:'schedules'}[parts[1]];
+    if(parts[1]==='monitors'&&parts[2]==='finished')return {type:'monitors',group:'finished'};
+    const type={overview:'overview',timelines:'timelines',runs:'run-list',monitors:'monitors',schedules:'schedules'}[parts[1]];
     if(type)return {type};
   }
   if(!parts[0])return {type:'home'};
@@ -104,7 +106,8 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
     activeRoute=structuredClone(route);
     if(route.type==='settings'){page='settings';await renderSettings(route.tab||'general');}
     else if(route.type==='communication'){page='communication';await renderCommunication();}
-    else if(route.type==='timelines'||route.type==='home'){page='timelines';await showWorkLibrary();}
+    else if(route.type==='overview'||route.type==='home'){page='overview';refreshWorkOverview(true);}
+    else if(route.type==='timelines'){page='timelines';await showWorkLibrary();}
     else if(route.type==='timeline'){page='timeline';await showWorkTimeline(route.id);}
     else if(route.type==='plans'||route.type==='rsi'){page=route.type;await refreshAssignments(true);}
     else if(route.type==='run-list'){page='run-list';
@@ -115,7 +118,7 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
         el.value=route.loopId;$('runs-archived').value='include';runOffset=0;
       }
       await refreshRunLibrary();}
-    else if(route.type==='monitors'){page='monitors';refreshMonitoring(true);}
+    else if(route.type==='monitors'){page='monitors';selectMetricGroup(route.group||'active');refreshMonitoring(true);}
     else if(route.type==='schedules'){page='schedules';refreshSchedules();}
     else if(route.type==='resources'){page='resources';await openSharedResources(route,serial);}
     else if(route.type==='catalog'){page='catalog';await loadCatalog();}
@@ -125,13 +128,13 @@ async function navigateTo(route,{replace=false,external=false,capture=true}={}){
       populateMeta();renderEditor();renderProperties();
     }else if(route.type==='run'){
       if(previous.type!=='run')runReturns.set(route.id,structuredClone(previous));
-      if(previous.type!=='run'||previous.id!==route.id){document.querySelector('.run-menu').open=false;taskOrder='graph';taskRound='';runHistoryOffset=0;restoreRounds(route.id);}
+      if(previous.type!=='run'||previous.id!==route.id){document.querySelector('.run-menu').open=false;taskOrder='graph';taskRound='';restoreRounds(route.id);}
       if(previous.type!=='run'||previous.id!==route.id||previous.task!==route.task||route.task){
-        if(route.task){taskOrder='graph';taskRound='';}
+        if(route.task){taskOrder=nextRun.tasks[route.task]?.origin?.flow_agent?'time':'graph';taskRound='';}
         selectedTask=route.task || null;activeTab='task-history';taskStatus='';taskSearch='';inspectSignature='';
       }
       selected=route.id;run=nextRun;settingsBase=null;filterNode=null;page='runs';renderRun();
-    }else{page='timelines';await showWorkLibrary();}
+    }else{page='overview';refreshWorkOverview(true);}
     if(serial!==navigationSerial)return false;
     showPage();
     updateNavigationUI();
@@ -155,13 +158,14 @@ function updateNavigationUI(){
   $('settings-nav').classList.toggle('active',page==='settings');
   $('resources-nav').classList.toggle('active',page==='resources');
   $('communication-nav').classList.toggle('active',page==='communication');
-  const workPage=['timelines','timeline','run-list','runs','monitors','schedules'].includes(page);
-  const crumbs=workPage?[navLink({type:'timelines'},'工作台')]:page==='settings'?['设置']:page==='communication'?['Agent 通信']:page==='resources'?(activeRoute.id?[navLink({type:'resources'},'共享资源'),esc($('shared-resource-title')?.textContent||activeRoute.id)]:['共享资源']):[navLink({type:'catalog'},'Loop 库')];
+  const workPage=['overview','timelines','timeline','run-list','runs','monitors','schedules'].includes(page);
+  const crumbs=workPage?[navLink({type:'overview'},'工作台')]:page==='settings'?['设置']:page==='communication'?['Agent 通信']:page==='resources'?(activeRoute.id?[navLink({type:'resources'},'共享资源'),esc($('shared-resource-title')?.textContent||activeRoute.id)]:['共享资源']):[navLink({type:'catalog'},'Loop 库')];
   if(page==='plans')crumbs.splice(0,crumbs.length,'规划托管');
   else if(page==='rsi')crumbs.splice(0,crumbs.length,navLink({type:'catalog'},'Loop'),'RSI for loop');
   else if(page==='settings')crumbs.push(settingsLabels[activeRoute.tab||'general']);
   else if(page==='communication'){crumbs.push({agents:'Agent',requests:'协作请求'}[activeRoute.tab||'agents']);}
   else if(page==='timelines'){crumbs.push('Timeline');}
+  else if(page==='overview'){crumbs.push('总览');}
   else if(page==='timeline'){crumbs.push(navLink({type:'timelines'},'Timeline'));crumbs.push(esc($('timeline-title').textContent));}
   else if(page==='run-list'){crumbs.push('运行');}
   else if(page==='monitors'){crumbs.push('监控');}
@@ -174,17 +178,17 @@ function updateNavigationUI(){
     if(activeRoute.implementation)crumbs.push(esc(activeRoute.implementation));
   }else if(page==='runs' && run){
     const asset={type:'loop',key:run.loop_key,tab:'overview'};
-    const timeline=run.timeline;
-    const currentId=timeline?.active_run_id;
     const origin=runReturns.get(run.id);
-    const timelineLink=run.timeline_id?navLink({type:'timeline',id:run.timeline_id},timeline?.title||timeline?.objective||run.timeline_id):'';
-    crumbs.push(navLink({type:'run-list'},'运行'));crumbs.push(esc(run.title));
-    const role=timelineRunLabel(run.status,currentId===run.id);
-    $('run-navigation').innerHTML=(timelineLink?`<div class="run-parent"><strong>进展与结果</strong>${timelineLink}<span>／ ${role}</span></div>`:'')+
-      (origin?.type==='timeline'&&origin.id===run.timeline_id?'':navLink(origin||{type:'run-list'},!origin||origin.type==='run-list'?'← 返回运行列表':'← 返回来源页面'))+navLink(asset,'Loop 定义');
-
+    const fromTimeline=origin?.type==='timeline'&&origin.id===run.timeline_id;
+    const latest=run.timeline?.active_run_id;
+    crumbs.push(navLink({type:'run-list'},'运行'));
+    updateMarkup($('run-navigation'),
+      (origin&&!fromTimeline&&routeHash(origin)!==routeHash({type:'run-list'})?navLink(origin,'← 返回来源页面'):'')+
+      (run.timeline_id?navLink({type:'timeline',id:run.timeline_id},fromTimeline?'← 返回 Timeline':'Timeline'):'')+
+      navLink(asset,'Loop 定义')+
+      (run.superseded_by&&latest&&latest!==run.id?navLink({type:'run',id:latest},'查看接续 Run'):''));
   }
-  $('breadcrumbs').innerHTML=crumbs.join('<span> / </span>');
+  updateMarkup($('breadcrumbs'),crumbs.join('<span> / </span>'));
 }
 document.addEventListener('click',event=>{
   const link=event.target.closest('[data-route-link]');
