@@ -31,7 +31,7 @@ Use actual IDs from `read_loop` and `read_loop_config.targets`; these are illust
       }
     },
     "train": {
-      "merlin": {"cwd": "/shared/team/project", "executor": "worker-training"}
+      "training_service": {"cwd": "/shared/team/project", "executor": "worker-training"}
     }
   }
 }

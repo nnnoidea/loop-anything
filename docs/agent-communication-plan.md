@@ -47,7 +47,7 @@
 | `runtime/store.py`、`interfaces/server.py`、`runtime/engine.py` | 本地 SQLite、HTTP 工具、后台推进和进程池。 | 增加本机群组服务、请求和收发持久化；各实例数据库保持本地独立。 |
 | `interfaces/platform_tools.py`、`capabilities.py`、`authoring_guidance.py`、平台 Skill | 工具、能力发现、作者引导和交付。 | 同期扩展新能力、使用条件、限制与三个完整场景。 |
 
-Merlin 核查依据：`loops/auto-research-loop-r624-with-feedback/auto-research-loop-r624.loop.zip` 中的 `loop.json`、`scripts/auto_research_stage_common.py` 及提交/观察入口。训练通过 external 候选提交 Merlin，持久化作业标识，观察并报告结果；这证明通用异步生命周期可复用，不证明 NAS 或远端 Agent 已经具备。
+外部训练任务由 external 候选提交，平台保存作业标识，随后观察进展并接收结果。
 
 已执行的相关核查：`tests/test_lifecycle.py` 中监控失败保留身份、转交后恢复监控、真实本地 HTTP 报告三个用例通过。未进行真实 NAS、多机或模型验收。
 
@@ -76,7 +76,7 @@ Merlin 核查依据：`loops/auto-research-loop-r624-with-feedback/auto-research
 - 本机 Loop 使用设置：选择群组；启动 Run 时可覆盖，Run 保存绑定。修改当前绑定只影响新请求，已发布请求保持原关联。
 - 分享包：保留可移植的协作要求；不打包实际 NAS 路径、通知接收位置、运行凭据或某台机器的私有配置。安装方重新绑定本地群组。
 - Agent 候选：建议在现有 `kind: agent` 下增加执行位置配置，缺省为本地；群组执行可指定成员或能力条件。字段名在阶段 P0 固定。
-- 本轮以远程 Agent 为新交付重点；脚本的现有 command/external/Merlin 路径保持。是否增加 NAS 群组脚本执行配置，作为范围问题明确确认，不默认为新需求。
+- 本轮以远程 Agent 为新交付重点；脚本的现有 command/external 路径保持。是否增加 NAS 群组脚本执行配置，作为范围问题明确确认，不默认为新需求。
 
 ### 3.3 调用范围与目标选择（已确认补充）
 
@@ -245,7 +245,7 @@ Merlin 核查依据：`loops/auto-research-loop-r624-with-feedback/auto-research
 | P0：固定契约 | 对象和请求/报告 schema、本机目录和调用范围、状态转移、认领确认、重启窗口、等待/唤醒、权限、资源映射、兼容方案；独立实验核查目标 NAS。 | 无需要猜测的主路径；反例和恢复路径均有确定处理。未获得目标 NAS 时保留多机未验证门槛。 |
 | P1：系统收发与成员 | 本地数据库增量结构、instance/group/agent 配置、后台收发、心跳、认领、outbox/inbox/回执、退出。 | 两个独立平台进程/数据库通过共享目录完成收发、认领、断线恢复和去重；不触发业务 Loop。 |
 | P2：独立外援闭环 | 无 Run 请求、本机具名外援直接执行、远端真实子进程、统一结构化结果、日志/session 归属、查询追问取消。 | 无 NAS/群组时本机调用可用；A 的普通工具客户端选择群组请求 B 并取回结果；均由内置协作 Run 跟踪，不需用户编写业务 Loop。 |
-| P3：远程正式节点 | Agent 执行位置、原 Task 请求关联、上下文/工具桥接、报告/finish、权限/版本与过期结果。 | A 的节点在 B 执行，结果由 A 校验推进；B 不启动 A 的其他本地节点；Merlin external 保持。 |
+| P3：远程正式节点 | Agent 执行位置、原 Task 请求关联、上下文/工具桥接、报告/finish、权限/版本与过期结果。 | A 的节点在 B 执行，结果由 A 校验推进；B 不启动 A 的其他本地节点；原有 external 任务继续执行。 |
 | P4：节点内外援与继续 | 协助记录、上下文选择、持久等待、回复唤醒、会话新建/继续和异常处理。 | 论文外援有/无两种场景均合理；回复竞态、Run 暂停/终止、成员退出不误推进。 |
 | P5：通知与产品界面 | Run/独立请求通知归属、三档通知、群组/成员/任务/请求界面；工具与 Skill 同步。 | 网页与 CLI 可操作同一对象；本地通知适配测试通过，真实渠道另行验证。 |
 | P6：综合验收与交付 | 回归、双端重启/重复/乱序/断线、真实 NAS 多机及 CLI 验收、打包检查、升级回滚说明。 | 下列验收矩阵有证据，未验证项明确列出；部署和推送按后续授权进行。 |
@@ -282,7 +282,7 @@ Merlin 核查依据：`loops/auto-research-loop-r624-with-feedback/auto-research
 | 非匹配 assignment/跨群/越权上下文或结果 | 明确拒绝；NAS 可见性不等于业务写权限。 |
 | 跨机器挂载路径不同、资源缺失 | 资源正确解析或明确报缺，原机器路径不被误认为可用。 |
 | 通知 Run 与独立请求两种来源 | 明确出口，来源侧去重；外援完成与节点完成分明，无心跳刷屏。 |
-| 旧 Loop、external、终端和恢复回归 | 本地默认、Merlin 监控、输出契约、finish、已有历史均保持。 |
+| 旧 Loop、external、终端和恢复回归 | 本地默认、外部作业监控、输出契约、finish、已有历史均保持。 |
 | 只给构建 Agent 已安装平台与 Skill | 能发现并使用能力，不需要阅读平台源码或另造 NAS 收发脚本。 |
 
 验收分层：本机双实例/共享临时目录只证明协议与代码行为；真实 NAS 两机器才证明目标部署；真实 CLI/模型测试才证明 Agent 接入；真实飞书/微信回执才证明渠道送达。不能跨层声称完成。
@@ -370,7 +370,7 @@ Merlin 核查依据：`loops/auto-research-loop-r624-with-feedback/auto-research
 
 | 讨论约束 | 代码及可观察结果 |
 |---|---|
-| workflow 节点各自工作，解决远端执行与写回 | dispatch 保留 Agent 节点及原 Task；source RPC 使用原 report_task/finish。Merlin 继续使用 external；没有增加成果合并框架。 |
+| workflow 节点各自工作，解决远端执行与写回 | dispatch 保留 Agent 节点及原 Task；source RPC 使用原 report_task/finish。外部训练作业继续使用 external；没有增加成果合并框架。 |
 | 各机器有身份和独立本地数据，共享 NAS 负责通信 | instance_id、group.json、各端本地数据库、outbox/inbox/ACK；复制工作区换身份后不能发送原机器的旧消息和通知。 |
 | 具名 Agent 认领，session 仅决定新建或复用 | claim/grant 按 agent_id/instance_id；原生 session 单独校验来源、Agent、父任务范围和运行占用。 |
 | 普通常规 Agent 只在来源运行 | 未声明 dispatch 的节点继续本地执行；普通 CLI/session 不自动加入目录；远端只执行明确且已确认的请求。 |
